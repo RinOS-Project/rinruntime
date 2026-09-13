@@ -1,6 +1,8 @@
 /* SPDX-License-Identifier: MIT */
 #include <rinruntime/crash.h>
 
+#include <stddef.h>
+
 int rinruntime_crash_summary_validate(
     const RinRuntimeCrashSummaryV1* summary)
 {

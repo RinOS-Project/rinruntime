@@ -30,7 +30,8 @@ if(NOT WIN32)
         src/durable_file_portal.c
         src/file_chooser_portal.c
         src/file_operation_service_client.c
-        src/accessibility_service_client.c)
+        src/accessibility_service_client.c
+        src/audio/rin_audio_service_client.c)
 endif()
 add_library(RinRuntime ${RINRUNTIME_LIBRARY_TYPE}
     ${RINRUNTIME_SOURCES})
@@ -87,6 +88,12 @@ if(RINRUNTIME_BUILD_TESTS)
                    tests/serial_portal_contract_test.c)
     target_link_libraries(rinruntime-serial-portal-test PRIVATE RinRuntime::RinRuntime)
     add_test(NAME rinruntime-serial-portal COMMAND rinruntime-serial-portal-test)
+    if(NOT WIN32)
+        add_executable(rinruntime-audio-ring-test
+                       tests/audio/rin_audio_service_client_ring_test.c)
+        target_link_libraries(rinruntime-audio-ring-test PRIVATE RinRuntime::RinRuntime)
+        add_test(NAME rinruntime-audio-ring COMMAND rinruntime-audio-ring-test)
+    endif()
 endif()
 
 if(RINRUNTIME_BUILD_EXAMPLES)
