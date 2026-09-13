@@ -1,0 +1,10 @@
+prefix=@CMAKE_INSTALL_PREFIX@
+exec_prefix=${prefix}
+libdir=${exec_prefix}/@CMAKE_INSTALL_LIBDIR@
+includedir=${prefix}/@CMAKE_INSTALL_INCLUDEDIR@
+
+Name: rinruntime
+Description: RinOS public application models and service-client contracts
+Version: @PROJECT_VERSION@
+Libs: -L${libdir} -lRinRuntime
+Cflags: -I${includedir}
