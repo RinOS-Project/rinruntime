@@ -30,6 +30,10 @@ struct ArchiveEntry {
     std::uint32_t localOffset = 0;
     std::uint16_t method = 8;
     bool directory = false;
+    /* Symbolic links are intentionally not an archive-plan primitive.  A
+     * provider must materialize regular files/directories only, otherwise a
+     * link could escape the authenticated extraction root. */
+    bool symbolicLink = false;
 };
 
 struct ArchiveCreatedPath {
@@ -119,7 +123,7 @@ private:
     static bool entryValid(const ArchiveEntry& entry)
     {
         int directory = 0;
-        if (!sourcePathValid(entry.sourcePath) ||
+        if (entry.symbolicLink || !sourcePathValid(entry.sourcePath) ||
             !rinruntime_archive_path_valid(entry.name.data(), entry.name.size(),
                                            &directory, nullptr) ||
             (directory != 0) != entry.directory ||

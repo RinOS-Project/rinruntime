@@ -20,6 +20,13 @@ int main() {
     assert(plan.addSource(source));
     RinRuntime::ArchiveSource traversal{"../escape", "escape", false};
     assert(!plan.addSource(traversal));
+    RinRuntime::ArchiveEntry link{};
+    link.name = "link";
+    link.sourcePath = "target";
+    link.compressedSize = 1u;
+    link.uncompressedSize = 1u;
+    link.symbolicLink = true;
+    assert(!plan.add(link));
 
     RinRuntime::AccessibilityTree tree = {};
     tree.window = 7u;
