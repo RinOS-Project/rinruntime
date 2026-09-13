@@ -23,6 +23,23 @@ int rinruntime_portal_token_validate(
     return nonzero ? RINRUNTIME_PORTAL_OK : RINRUNTIME_PORTAL_DENIED;
 }
 
+int rinruntime_portal_request_validate(
+    const RinRuntimePortalRequestV1* request, uint64_t expected_owner,
+    uint64_t expected_generation)
+{
+    if (request == NULL || request->struct_size != sizeof(*request) ||
+        request->version != RINRUNTIME_PORTAL_IPC_PROTOCOL_VERSION ||
+        request->operation == 0u || request->request_id == 0u ||
+        request->timeout_ns == 0u ||
+        request->timeout_ns > RINRUNTIME_PORTAL_MAX_TIMEOUT_NS ||
+        (request->flags & ~RINRUNTIME_PORTAL_REQUEST_FLAG_CANCELABLE) != 0u ||
+        request->reserved[0] != 0u || request->reserved[1] != 0u)
+        return RINRUNTIME_PORTAL_INVALID_ARGUMENT;
+    return rinruntime_portal_token_validate(&request->token, expected_owner,
+                                            expected_generation,
+                                            request->requested_rights);
+}
+
 int rinruntime_portal_label_validate(const char* label, size_t length,
                                      size_t maximum_length)
 {

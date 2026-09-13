@@ -3,8 +3,10 @@
 #define RINRUNTIME_UMBRELLA_HPP
 
 #include "portal.h"
+#include "crash.h"
 #include "cancellation.h"
 #include "accessibility.hpp"
+#include "accessibility_wire.hpp"
 #include "event.hpp"
 #include "layout.hpp"
 #include "display_policy.hpp"
@@ -20,5 +22,8 @@
 #include "window_layout.hpp"
 #include "archive_policy.h"
 #include "archive.hpp"
+#include "backup_restore.h"
+#include "known_folders.h"
+#include "file_operation.h"
 
 #endif

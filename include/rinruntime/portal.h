@@ -12,6 +12,9 @@ extern "C" {
 #define RINRUNTIME_API_VERSION 1u
 #define RINRUNTIME_PORTAL_TOKEN_VERSION 1u
 #define RINRUNTIME_PORTAL_TOKEN_BYTES 32u
+#define RINRUNTIME_PORTAL_IPC_PROTOCOL_VERSION 1u
+#define RINRUNTIME_PORTAL_MAX_TIMEOUT_NS UINT64_C(300000000000)
+#define RINRUNTIME_PORTAL_REQUEST_FLAG_CANCELABLE UINT32_C(0x00000001)
 #define RINRUNTIME_PORTAL_RIGHT_READ UINT32_C(0x00000001)
 #define RINRUNTIME_PORTAL_RIGHT_WRITE UINT32_C(0x00000002)
 #define RINRUNTIME_PORTAL_RIGHT_LIST UINT32_C(0x00000004)
@@ -38,6 +41,24 @@ typedef struct RinRuntimePortalTokenV1 {
     uint32_t reserved;
     uint8_t opaque[RINRUNTIME_PORTAL_TOKEN_BYTES];
 } RinRuntimePortalTokenV1;
+
+/* A request contains no path or live OS object.  An authenticated broker
+ * binds the token to its own capability table and observes the deadline. */
+typedef struct RinRuntimePortalRequestV1 {
+    uint32_t struct_size;
+    uint16_t version;
+    uint16_t operation;
+    RinRuntimePortalTokenV1 token;
+    uint32_t requested_rights;
+    uint32_t flags;
+    uint64_t request_id;
+    uint64_t timeout_ns;
+    uint64_t reserved[2];
+} RinRuntimePortalRequestV1;
+
+int rinruntime_portal_request_validate(
+    const RinRuntimePortalRequestV1* request, uint64_t expected_owner,
+    uint64_t expected_generation);
 
 int rinruntime_portal_token_validate(
     const RinRuntimePortalTokenV1* token, uint64_t expected_owner,

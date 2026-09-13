@@ -14,5 +14,9 @@ cmake --build build
 ctest --test-dir build --output-on-failure
 ```
 
+Use `-DRINRUNTIME_BUILD_SHARED=ON` for the shared-library policy. The native
+`.rll` packaging path is owned by the RinOS SDK/package toolchain and is not
+needed by the host library or its tests.
+
 The C++ entry point is `<rinruntime/rinruntime.hpp>`. C service-client
 contracts are available from `<rinruntime/portal.h>`.

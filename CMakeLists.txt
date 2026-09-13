@@ -2,7 +2,17 @@ cmake_minimum_required(VERSION 3.16)
 project(RinRuntime VERSION 1.0.0 LANGUAGES C CXX)
 
 option(RINRUNTIME_BUILD_TESTS "Build RinRuntime host tests" ON)
-add_library(RinRuntime STATIC src/portal.c)
+option(RINRUNTIME_BUILD_SHARED "Build RinRuntime as a shared library" OFF)
+set(RINRUNTIME_LIBRARY_TYPE STATIC)
+if(RINRUNTIME_BUILD_SHARED)
+    set(RINRUNTIME_LIBRARY_TYPE SHARED)
+endif()
+add_library(RinRuntime ${RINRUNTIME_LIBRARY_TYPE}
+    src/portal.c
+    src/crash.c
+    src/backup_restore.c
+    src/known_folders.c
+    src/file_operation.c)
 add_library(RinRuntime::RinRuntime ALIAS RinRuntime)
 target_compile_features(RinRuntime PUBLIC c_std_11)
 target_include_directories(RinRuntime PUBLIC
@@ -37,4 +47,7 @@ if(RINRUNTIME_BUILD_TESTS)
     add_executable(rinruntime-portal-test tests/portal_contract_test.c)
     target_link_libraries(rinruntime-portal-test PRIVATE RinRuntime::RinRuntime)
     add_test(NAME rinruntime-portal COMMAND rinruntime-portal-test)
+    add_executable(rinruntime-policy-test tests/policy_contract_test.c)
+    target_link_libraries(rinruntime-policy-test PRIVATE RinRuntime::RinRuntime)
+    add_test(NAME rinruntime-policy COMMAND rinruntime-policy-test)
 endif()
