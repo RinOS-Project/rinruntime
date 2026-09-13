@@ -12,7 +12,8 @@ not smuggled into the public include path.
 | `backup_restore.c` | B: public service client/policy | Canonical bounded RBK1 manifest encoder/decoder is public; the system coordinator is not. |
 | `known_folders.c` | C: public utility | Only canonical path construction and bounded logical IDs are public. |
 | `file_operation.c` | B/C | Execution is callback-based, so filesystem authority stays with an authenticated adapter. |
-| `file_portal.c`, durable portal, chooser | B | Public contract is represented by opaque portal tokens and request validation; privileged broker code remains OS-Core. |
+| `file_portal.c`, durable portal, chooser | B: public service client | Token/call ABI, bounded path/text validation, and the real client transports are public; privileged broker and filesystem authority remain OS-Core. |
+| `file_operation_service_client.c` | B: public service client | Uses the authenticated FileOperation wire contract and reports unavailable, denied, malformed, and I/O outcomes without a success fallback. |
 | `compositor_gui.c`, helpers | D: private provider | Socket, shared-memory, compositor and window-server implementation remain private. |
 | `crash_service.c` | B: public policy adapter | Converts bounded session metadata into the SDK crashd registration record; the daemon and raw process memory remain private. |
 | `crash_service_client.c` | B: public service client | Uses the SDK crashd wire/socket ABI. Endpoint absence, identity mismatch, timeout, and malformed replies remain explicit errors. |

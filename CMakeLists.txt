@@ -17,12 +17,18 @@ set(RINRUNTIME_SOURCES
     src/safe_save.c
     src/safe_save_posix.c
     src/session_recovery.c
-    src/crash_service.c)
+    src/crash_service.c
+    src/path.c)
 # crashd is a RinOS local-socket service.  The host Windows build has no
 # RinOS AF_UNIX/poll ABI; keep that transport out of the host library rather
 # than substituting a success path.  RinOS/Unix builds include the real client.
 if(NOT WIN32)
     list(APPEND RINRUNTIME_SOURCES src/crash_service_client.c)
+    list(APPEND RINRUNTIME_SOURCES
+        src/file_portal.c
+        src/durable_file_portal.c
+        src/file_chooser_portal.c
+        src/file_operation_service_client.c)
 endif()
 add_library(RinRuntime ${RINRUNTIME_LIBRARY_TYPE}
     ${RINRUNTIME_SOURCES})
@@ -67,6 +73,9 @@ if(RINRUNTIME_BUILD_TESTS)
     add_executable(rinruntime-crash-service-test tests/crash_service_contract_test.c)
     target_link_libraries(rinruntime-crash-service-test PRIVATE RinRuntime::RinRuntime)
     add_test(NAME rinruntime-crash-service COMMAND rinruntime-crash-service-test)
+    add_executable(rinruntime-file-portal-abi-test tests/file_portal_abi_compile_test.c)
+    target_link_libraries(rinruntime-file-portal-abi-test PRIVATE RinRuntime::RinRuntime)
+    add_test(NAME rinruntime-file-portal-abi COMMAND rinruntime-file-portal-abi-test)
 endif()
 
 if(RINRUNTIME_BUILD_EXAMPLES)
