@@ -18,6 +18,7 @@ not smuggled into the public include path.
 | `crash_service.c` | B: public policy adapter | Converts bounded session metadata into the SDK crashd registration record; the daemon and raw process memory remain private. |
 | `crash_service_client.c` | B: public service client | Uses the SDK crashd wire/socket ABI. Endpoint absence, identity mismatch, timeout, and malformed replies remain explicit errors. |
 | `accessibility_service_client.c` | B: public service client | Uses the SDK accessibility wire contract and returns transport/protocol errors; the accessibility daemon remains OS-Core. |
+| `rin_serial_portal_protocol.*` | A/B: public wire client contract | Pointer-free serial portal frames and strict encode/decode helpers are public; serial device authority and the authenticated portal service remain OS-Core. |
 | `file_crypt.c`, `secure_folder.c` | D/B | Key ownership is delegated to RinTLS and the credential service; no key material is copied here. |
 | `archive*.hpp` and `archive_policy.h` | A/C | Metadata planning and traversal/bomb policy are public; codec/filesystem providers are not. |
 | `rin_runtime.c`, `rin_atexit_registry.c`, libc/libcxx glue | D | Process runtime and OS ABI glue remain private. |

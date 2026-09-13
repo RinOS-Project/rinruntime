@@ -3,7 +3,8 @@ project('RinRuntime', ['c', 'cpp'], version: '1.0.0',
 
 inc = include_directories('include')
 runtime_sources = files('src/portal.c', 'src/crash.c', 'src/backup_restore.c',
-                        'src/known_folders.c', 'src/file_operation.c')
+                        'src/known_folders.c', 'src/file_operation.c',
+                        'src/serial_portal_protocol.c')
 runtime = library('RinRuntime', runtime_sources, include_directories: inc,
                   install: true, version: '1.0.0')
 runtime_dep = declare_dependency(link_with: runtime, include_directories: inc)
@@ -16,4 +17,6 @@ if get_option('buildtype') != 'plain'
         'tests/portal_contract_test.c', dependencies: runtime_dep))
   test('rinruntime-policy', executable('rinruntime-policy-test',
         'tests/policy_contract_test.c', dependencies: runtime_dep))
+  test('rinruntime-serial-portal', executable('rinruntime-serial-portal-test',
+        'tests/serial_portal_contract_test.c', dependencies: runtime_dep))
 endif

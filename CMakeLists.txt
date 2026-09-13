@@ -18,7 +18,8 @@ set(RINRUNTIME_SOURCES
     src/safe_save_posix.c
     src/session_recovery.c
     src/crash_service.c
-    src/path.c)
+    src/path.c
+    src/serial_portal_protocol.c)
 # crashd is a RinOS local-socket service.  The host Windows build has no
 # RinOS AF_UNIX/poll ABI; keep that transport out of the host library rather
 # than substituting a success path.  RinOS/Unix builds include the real client.
@@ -82,6 +83,10 @@ if(RINRUNTIME_BUILD_TESTS)
     target_link_libraries(rinruntime-accessibility-client-abi-test PRIVATE RinRuntime::RinRuntime)
     add_test(NAME rinruntime-accessibility-client-abi
              COMMAND rinruntime-accessibility-client-abi-test)
+    add_executable(rinruntime-serial-portal-test
+                   tests/serial_portal_contract_test.c)
+    target_link_libraries(rinruntime-serial-portal-test PRIVATE RinRuntime::RinRuntime)
+    add_test(NAME rinruntime-serial-portal COMMAND rinruntime-serial-portal-test)
 endif()
 
 if(RINRUNTIME_BUILD_EXAMPLES)
