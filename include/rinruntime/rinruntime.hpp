@@ -4,6 +4,8 @@
 
 #include "portal.h"
 #include "crash.h"
+#include "crash_service.h"
+#include "session_recovery.h"
 #include "cancellation.h"
 #include "accessibility.hpp"
 #include "accessibility_wire.hpp"

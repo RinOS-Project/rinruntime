@@ -14,8 +14,8 @@ not smuggled into the public include path.
 | `file_operation.c` | B/C | Execution is callback-based, so filesystem authority stays with an authenticated adapter. |
 | `file_portal.c`, durable portal, chooser | B | Public contract is represented by opaque portal tokens and request validation; privileged broker code remains OS-Core. |
 | `compositor_gui.c`, helpers | D: private provider | Socket, shared-memory, compositor and window-server implementation remain private. |
-| `crash_service.c` | D: private service | The public side may carry a validated redacted summary, never the daemon or raw process memory. |
-| `crash_service_client.c` | B | The transport adapter is private until the RinOS-SDK service ABI is the shared dependency. |
+| `crash_service.c` | B: public policy adapter | Converts bounded session metadata into the SDK crashd registration record; the daemon and raw process memory remain private. |
+| `crash_service_client.c` | B: public service client | Uses the SDK crashd wire/socket ABI. Endpoint absence, identity mismatch, timeout, and malformed replies remain explicit errors. |
 | `accessibility_service_client.c` | B | Public tree model is present; service socket ownership stays with the SDK/OS-Core adapter. |
 | `file_crypt.c`, `secure_folder.c` | D/B | Key ownership is delegated to RinTLS and the credential service; no key material is copied here. |
 | `archive*.hpp` and `archive_policy.h` | A/C | Metadata planning and traversal/bomb policy are public; codec/filesystem providers are not. |
