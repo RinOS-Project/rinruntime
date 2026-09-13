@@ -25,5 +25,7 @@
 #include "backup_restore.h"
 #include "known_folders.h"
 #include "file_operation.h"
+#include "application_data.hpp"
+#include "rin_app.hpp"
 
 #endif

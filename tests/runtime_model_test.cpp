@@ -38,5 +38,23 @@ int main() {
     assert(decoded.nodes.size() == 1u && decoded.nodes[0].id == 1u);
     wire.nodes[0].name.bytes[0] = 0xffu;
     assert(!RinRuntime::AccessibilityWireCodec::decode(wire, &decoded));
+
+    Rin::Application application;
+    assert(application.start());
+    assert(application.requestQuit());
+    assert(application.stop());
+    Rin::Document document;
+    assert(document.setText("Rin"));
+    assert(document.insert(3u, "OS"));
+    assert(document.text() == "RinOS");
+    Rin::FormValidator form;
+    form.required("name");
+    assert(!form.validate({{"name", ""}}));
+    assert(form.validate({{"name", "Rin"}}));
+    Rin::PrintSettings print;
+    assert(print.valid());
+    Rin::ActivityFeed feed;
+    assert(feed.add({"Build", "completed", false}));
+    assert(feed.markRead(0u));
     return 0;
 }

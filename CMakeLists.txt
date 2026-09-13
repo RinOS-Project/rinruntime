@@ -3,6 +3,7 @@ project(RinRuntime VERSION 1.0.0 LANGUAGES C CXX)
 
 option(RINRUNTIME_BUILD_TESTS "Build RinRuntime host tests" ON)
 option(RINRUNTIME_BUILD_SHARED "Build RinRuntime as a shared library" OFF)
+option(RINRUNTIME_BUILD_EXAMPLES "Build RinRuntime host examples" ON)
 set(RINRUNTIME_LIBRARY_TYPE STATIC)
 if(RINRUNTIME_BUILD_SHARED)
     set(RINRUNTIME_LIBRARY_TYPE SHARED)
@@ -50,4 +51,18 @@ if(RINRUNTIME_BUILD_TESTS)
     add_executable(rinruntime-policy-test tests/policy_contract_test.c)
     target_link_libraries(rinruntime-policy-test PRIVATE RinRuntime::RinRuntime)
     add_test(NAME rinruntime-policy COMMAND rinruntime-policy-test)
+endif()
+
+if(RINRUNTIME_BUILD_EXAMPLES)
+    foreach(example_name IN ITEMS basic_widgets layout accessibility
+            application_data document_app printing crash_reporter)
+        add_executable(rinruntime-example-${example_name}
+                       examples/${example_name}.cpp)
+        target_link_libraries(rinruntime-example-${example_name}
+                              PRIVATE RinRuntime::RinRuntime)
+        target_include_directories(rinruntime-example-${example_name}
+                                   PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+        set_target_properties(rinruntime-example-${example_name}
+                              PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES)
+    endforeach()
 endif()

@@ -18,5 +18,10 @@ Use `-DRINRUNTIME_BUILD_SHARED=ON` for the shared-library policy. The native
 `.rll` packaging path is owned by the RinOS SDK/package toolchain and is not
 needed by the host library or its tests.
 
+`RINRUNTIME_BUILD_EXAMPLES=ON` builds the host-only Basic Widgets, Layout,
+Accessibility, Application Data, Document, Printing, and Crash Reporter
+examples. `file_portal.c` and `hello_window.cpp` demonstrate the C portal and
+window-boundary contracts without opening a privileged service.
+
 The C++ entry point is `<rinruntime/rinruntime.hpp>`. C service-client
 contracts are available from `<rinruntime/portal.h>`.
