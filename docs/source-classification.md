@@ -17,7 +17,7 @@ not smuggled into the public include path.
 | `compositor_gui.c`, helpers | D: private provider | Socket, shared-memory, compositor and window-server implementation remain private. |
 | `crash_service.c` | B: public policy adapter | Converts bounded session metadata into the SDK crashd registration record; the daemon and raw process memory remain private. |
 | `crash_service_client.c` | B: public service client | Uses the SDK crashd wire/socket ABI. Endpoint absence, identity mismatch, timeout, and malformed replies remain explicit errors. |
-| `accessibility_service_client.c` | B | Public tree model is present; service socket ownership stays with the SDK/OS-Core adapter. |
+| `accessibility_service_client.c` | B: public service client | Uses the SDK accessibility wire contract and returns transport/protocol errors; the accessibility daemon remains OS-Core. |
 | `file_crypt.c`, `secure_folder.c` | D/B | Key ownership is delegated to RinTLS and the credential service; no key material is copied here. |
 | `archive*.hpp` and `archive_policy.h` | A/C | Metadata planning and traversal/bomb policy are public; codec/filesystem providers are not. |
 | `rin_runtime.c`, `rin_atexit_registry.c`, libc/libcxx glue | D | Process runtime and OS ABI glue remain private. |

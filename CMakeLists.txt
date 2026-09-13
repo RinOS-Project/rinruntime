@@ -28,7 +28,8 @@ if(NOT WIN32)
         src/file_portal.c
         src/durable_file_portal.c
         src/file_chooser_portal.c
-        src/file_operation_service_client.c)
+        src/file_operation_service_client.c
+        src/accessibility_service_client.c)
 endif()
 add_library(RinRuntime ${RINRUNTIME_LIBRARY_TYPE}
     ${RINRUNTIME_SOURCES})
@@ -76,6 +77,11 @@ if(RINRUNTIME_BUILD_TESTS)
     add_executable(rinruntime-file-portal-abi-test tests/file_portal_abi_compile_test.c)
     target_link_libraries(rinruntime-file-portal-abi-test PRIVATE RinRuntime::RinRuntime)
     add_test(NAME rinruntime-file-portal-abi COMMAND rinruntime-file-portal-abi-test)
+    add_executable(rinruntime-accessibility-client-abi-test
+                   tests/accessibility_client_abi_compile_test.c)
+    target_link_libraries(rinruntime-accessibility-client-abi-test PRIVATE RinRuntime::RinRuntime)
+    add_test(NAME rinruntime-accessibility-client-abi
+             COMMAND rinruntime-accessibility-client-abi-test)
 endif()
 
 if(RINRUNTIME_BUILD_EXAMPLES)

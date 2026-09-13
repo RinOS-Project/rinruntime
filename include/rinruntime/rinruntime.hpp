@@ -32,6 +32,7 @@
 #include "file_chooser_portal.h"
 #include "file_operation_service.h"
 #include "text_codec.h"
+#include "accessibility_service_client.h"
 #include "application_data.hpp"
 #include "rin_app.hpp"
 
