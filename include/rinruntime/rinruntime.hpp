@@ -7,6 +7,7 @@
 #include "crash_service.h"
 #include "session_recovery.h"
 #include "cancellation.h"
+#include "setting_provenance.h"
 #include "download_resume.hpp"
 #include "download_range_transport.hpp"
 #include "accessibility.hpp"
