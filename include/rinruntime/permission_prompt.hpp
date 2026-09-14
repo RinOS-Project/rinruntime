@@ -4,6 +4,9 @@
 #ifndef RINRUNTIME_PERMISSION_PROMPT_HPP
 #define RINRUNTIME_PERMISSION_PROMPT_HPP
 
+#include <functional>
+#include <utility>
+
 #include "text_input.hpp"
 #include "widget.hpp"
 

@@ -1,0 +1,30 @@
+option('build_rll', type: 'boolean', value: false,
+       description: 'Expose the signed RinCompiler/rld RinRuntime .rll target route')
+option('rll_rcc', type: 'string', value: 'rcc',
+       description: 'RinCompiler rcc executable for the target .rll route')
+option('rll_rld', type: 'string', value: 'rld',
+       description: 'RinCompiler rld executable for the target .rll route')
+option('rll_rinsign', type: 'string', value: 'rinsign',
+       description: 'rinsign executable for the target .rll route')
+option('rll_sign_key', type: 'string', value: '',
+       description: 'signing private key for the target .rll route')
+option('rll_public_key', type: 'string', value: '',
+       description: 'signing public key for the target .rll route')
+option('rll_target', type: 'string', value: 'x86_64-unknown-rinos',
+       description: 'RinCompiler target triple for the target .rll route')
+option('rll_sign_profile', type: 'combo', choices: ['debug', 'release'],
+       value: 'release', description: 'signing profile for the target .rll route')
+option('rll_sources', type: 'array', value: [
+  'src/portal.c', 'src/crash.c', 'src/backup_restore.c',
+  'src/known_folders.c', 'src/file_operation.c', 'src/safe_save.c',
+  'src/safe_save_posix.c', 'src/session_recovery.c', 'src/crash_service.c',
+  'src/path.c', 'src/serial_portal_protocol.c', 'src/platform.c',
+  'src/crash_service_client.c', 'src/file_portal.c',
+  'src/backup_payload.c', 'src/rin_keyring_client.c',
+  'src/durable_file_portal.c', 'src/file_chooser_portal.c',
+  'src/file_operation_service_client.c',
+  'src/accessibility_service_client.c',
+  'src/audio/rin_audio_service_client.c'],
+  description: 'RinRuntime C sources for the target .rll route')
+option('rll_dependencies', type: 'array', value: [],
+       description: 'dependency .rll images for the target .rll route')

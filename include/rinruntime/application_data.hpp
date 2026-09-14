@@ -25,7 +25,8 @@ enum class ApplicationDataSchemaAction : uint8_t {
 enum class ApplicationDataUninstallAction : uint8_t {
     PreserveUserData = 0,
     RemoveTransientCache = 1,
-    RetainImmutablePayload = 2
+    RetainImmutablePayload = 2,
+    RemoveUserData = 3
 };
 
 /* Application data roots are private to one authenticated user and one
@@ -129,12 +130,14 @@ public:
     }
 
     static ApplicationDataUninstallAction uninstallAction(
-        ApplicationDataKind kind, bool immutablePayload) {
+        ApplicationDataKind kind, bool immutablePayload,
+        bool preserveUserData = true) {
         if (immutablePayload)
             return ApplicationDataUninstallAction::RetainImmutablePayload;
         if (kind == ApplicationDataKind::Cache)
             return ApplicationDataUninstallAction::RemoveTransientCache;
-        return ApplicationDataUninstallAction::PreserveUserData;
+        return preserveUserData ? ApplicationDataUninstallAction::PreserveUserData
+                                 : ApplicationDataUninstallAction::RemoveUserData;
     }
 
     /* Schema bytes are never copied on downgrade.  Forward changes must use

@@ -23,3 +23,11 @@ release, and present lifecycle without exposing a frame-context structure.
 The CMake build enables the real Unix compositor client with
 `RINRUNTIME_BUILD_GUI=ON` (the default on non-Windows hosts).  It consumes the
 public SDK headers and the standalone `Aquamarine::Aquamarine` target only.
+
+For a RinOS target image, opt into `RINRUNTIME_BUILD_RLL` (or Meson's
+`-Dbuild_rll=true`).  The route invokes RinCompiler `rcc` for every configured
+C source, links with `rld --shared`, and requires `rinsign`, a private key, a
+matching public key, and explicit dependency `.rll` images.  The signed image
+is atomically published only after the complete route succeeds; missing
+toolchain inputs or dependencies are errors, and no host-library or unsigned
+fallback is emitted.

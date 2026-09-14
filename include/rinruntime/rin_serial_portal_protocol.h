@@ -2,7 +2,7 @@
 /* Authenticated Browser-to-generic Serial Device Portal wire contract. */
 
 #ifndef RIN_RUNTIME_SERIAL_PORTAL_PROTOCOL_H
-#define RIN_APPS_COMMON_SERIAL_PORTAL_PROTOCOL_H
+#define RIN_RUNTIME_SERIAL_PORTAL_PROTOCOL_H
 
 #include <stddef.h>
 #include <stdint.h>

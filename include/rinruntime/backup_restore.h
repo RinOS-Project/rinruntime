@@ -60,7 +60,9 @@ typedef enum RinRuntimeBackupResult {
     RINRUNTIME_BACKUP_IDENTITY_MISMATCH = -6,
     RINRUNTIME_BACKUP_IDENTITY_NOT_AUTHORIZED = -7,
     RINRUNTIME_BACKUP_MIGRATION_REQUIRED = -8,
-    RINRUNTIME_BACKUP_MIGRATION_FAILED = -9
+    RINRUNTIME_BACKUP_MIGRATION_FAILED = -9,
+    /* The kernel File Portal rejected or malformed a payload exchange. */
+    RINRUNTIME_BACKUP_TRANSPORT_FAILED = -10
 } RinRuntimeBackupResult;
 
 /* This value is supplied by the authenticated package launcher, not an app
@@ -178,6 +180,20 @@ RinRuntimeBackupResult rinruntime_backup_restore_item(
     void* migrate_context, const uint8_t* archived_bytes,
     uint32_t archived_size, uint8_t* restored_out,
     uint32_t restored_capacity, uint32_t* restored_size_out);
+
+/* Payload transport is descriptor-based only after the caller has obtained a
+ * current-process descriptor through the File Portal OPEN/DURABLE_OPEN ABI.
+ * Each call is bounded by RIN_FILE_PORTAL_PAYLOAD_DATA_SIZE and larger data
+ * must be streamed by increasing offset. */
+RinRuntimeBackupResult rinruntime_backup_payload_read(
+    int32_t descriptor, uint64_t offset, uint8_t* bytes, uint32_t capacity,
+    uint32_t* bytes_read);
+RinRuntimeBackupResult rinruntime_backup_payload_write(
+    int32_t descriptor, uint64_t offset, const uint8_t* bytes, uint32_t size,
+    uint32_t* bytes_written);
+RinRuntimeBackupResult rinruntime_backup_payload_sync(int32_t descriptor);
+RinRuntimeBackupResult rinruntime_backup_payload_truncate(
+    int32_t descriptor, uint64_t size);
 
 #ifdef __cplusplus
 }

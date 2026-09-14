@@ -4,6 +4,8 @@
 #ifndef RINRUNTIME_WINDOW_LAYOUT_HPP
 #define RINRUNTIME_WINDOW_LAYOUT_HPP
 
+#include <utility>
+
 #include "layout.hpp"
 
 namespace RinRuntime {
