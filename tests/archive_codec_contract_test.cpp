@@ -13,6 +13,12 @@
 #include <string>
 #include <vector>
 
+static bool cancelNow(void* context)
+{
+    return context != nullptr &&
+           *static_cast<const std::uint32_t*>(context) != 0u;
+}
+
 static void put16(std::vector<std::uint8_t>& bytes, std::uint16_t value)
 {
     bytes.push_back(static_cast<std::uint8_t>(value));
@@ -115,6 +121,19 @@ int main()
     assert(deflate.decode(stored, sizeof(stored), 5u, 0x3610a686u,
                           output) == RinRuntime::ArchiveDeflateResult::Ok);
     assert(output == "hello");
+
+    RinRuntime::ArchiveDeflateEncoder encoder;
+    std::vector<std::uint8_t> encoded;
+    assert(encoder.encode(reinterpret_cast<const std::uint8_t*>("hello"), 5u,
+                          encoded) == RinRuntime::ArchiveDeflateResult::Ok);
+    output.clear();
+    assert(deflate.decode(encoded.data(), encoded.size(), 5u, 0x3610a686u,
+                          output) == RinRuntime::ArchiveDeflateResult::Ok &&
+           output == "hello");
+    std::uint32_t cancellationRequested = 1u;
+    assert(encoder.encode(reinterpret_cast<const std::uint8_t*>("hello"), 5u,
+                          encoded, cancelNow, &cancellationRequested) ==
+           RinRuntime::ArchiveDeflateResult::Cancelled && encoded.empty());
 
     const std::vector<std::uint8_t> gzip = makeGzip(
         reinterpret_cast<const std::uint8_t*>("hello"), 5u);

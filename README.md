@@ -56,5 +56,7 @@ generic transport contract.
 The archive headers are public, backend-independent codec contracts.  The
 DEFLATE, GZIP, strict ustar TAR, TAR.GZ, and ordinary ZIP readers consume
 caller-owned bytes or bounded callbacks and never open paths or publish files.
-Filesystem extraction, archive service IPC, and File Portal publication remain
-private RinOS adapters.
+`ArchiveDeflateEncoder` emits deterministic stored-DEFLATE blocks for ordinary
+applications and tools; ZIP's denser authoring strategies remain local to the
+ZIP writer.  Filesystem extraction, archive service IPC, and File Portal
+publication remain private RinOS adapters.

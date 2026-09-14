@@ -1,9 +1,11 @@
 # Archive backend boundary
 
 The public archive headers provide deterministic, bounded metadata planning and
-the built-in raw DEFLATE, GZIP, strict ustar TAR, TAR.GZ, and ordinary ZIP
-codecs.  They do not open a filesystem path, create a symlink, or publish a
-filesystem transaction.  No third-party codec is linked into `RinRuntime`.
+the built-in raw DEFLATE encoder/decoder, GZIP, strict ustar TAR, TAR.GZ, and
+ordinary ZIP codecs.  `ArchiveDeflateEncoder` emits stored blocks with a
+bounded output and optional cancellation callback.  They do not open a
+filesystem path, create a symlink, or publish a filesystem transaction.  No
+third-party codec is linked into `RinRuntime`.
 
 The codecs operate on caller-owned bytes or bounded caller-owned source/sink
 callbacks.  Filesystem and service providers must validate their own

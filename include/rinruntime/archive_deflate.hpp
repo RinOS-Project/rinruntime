@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <cstring>
 #include <string>
+#include <vector>
 
 namespace RinRuntime {
 
@@ -584,7 +585,78 @@ private:
 
 };
 
+/*
+ * Encode a bounded raw DEFLATE stream without depending on a filesystem or
+ * an external compression library. The v1 encoder deliberately emits stored
+ * blocks: it is a portable compressor contract with deterministic output and
+ * no hidden match-finder allocation. ZIP writers may continue to select a
+ * denser private strategy, while ordinary applications can use this public
+ * entry point when interoperability matters more than ratio.
+ */
+class ArchiveDeflateEncoder final {
+public:
+    ArchiveDeflateResult encode(const std::uint8_t* input,
+                                std::size_t inputSize,
+                                std::vector<std::uint8_t>& output) const
+    {
+        return encode(input, inputSize, output, nullptr, nullptr);
+    }
+
+    ArchiveDeflateResult encode(
+        const std::uint8_t* input, std::size_t inputSize,
+        std::vector<std::uint8_t>& output,
+        ArchiveDeflateCancellationFunction cancellation,
+        void* cancellationContext) const
+    {
+        constexpr std::size_t kStoredBlockPayload = 65535u;
+        const std::uint64_t contentLimit =
+            static_cast<std::uint64_t>(RINRUNTIME_ARCHIVE_CONTENT_LIMIT);
+        output.clear();
+        if (input == nullptr && inputSize != 0u)
+            return ArchiveDeflateResult::InvalidArgument;
+        if (static_cast<std::uint64_t>(inputSize) > contentLimit ||
+            inputSize > static_cast<std::size_t>(UINT32_MAX))
+            return ArchiveDeflateResult::Limit;
+
+        std::size_t offset = 0u;
+        do {
+            if (cancellation != nullptr && cancellation(cancellationContext)) {
+                output.clear();
+                return ArchiveDeflateResult::Cancelled;
+            }
+            const std::size_t remaining = inputSize - offset;
+            const std::size_t blockSize = remaining > kStoredBlockPayload
+                ? kStoredBlockPayload : remaining;
+            const bool finalBlock = blockSize == remaining;
+            if (static_cast<std::uint64_t>(output.size()) > contentLimit ||
+                contentLimit - static_cast<std::uint64_t>(output.size()) <
+                    static_cast<std::uint64_t>(blockSize) + 5u) {
+                output.clear();
+                return ArchiveDeflateResult::Limit;
+            }
+
+            /* BFINAL plus BTYPE=00, followed by zero padding to the byte. */
+            output.push_back(finalBlock ? 0x01u : 0x00u);
+            const std::uint16_t length = static_cast<std::uint16_t>(blockSize);
+            const std::uint16_t inverse = static_cast<std::uint16_t>(~length);
+            output.push_back(static_cast<std::uint8_t>(length));
+            output.push_back(static_cast<std::uint8_t>(length >> 8u));
+            output.push_back(static_cast<std::uint8_t>(inverse));
+            output.push_back(static_cast<std::uint8_t>(inverse >> 8u));
+            if (blockSize != 0u)
+                output.insert(output.end(), input + offset,
+                              input + offset + blockSize);
+            offset += blockSize;
+        } while (offset < inputSize || inputSize == 0u);
+
+        if (cancellation != nullptr && cancellation(cancellationContext)) {
+            output.clear();
+            return ArchiveDeflateResult::Cancelled;
+        }
+        return ArchiveDeflateResult::Ok;
+    }
+};
+
 } // namespace RinRuntime
 
 #endif /* RINRUNTIME_ARCHIVE_DEFLATE_HPP */
-
