@@ -31,3 +31,9 @@ matching public key, and explicit dependency `.rll` images.  The signed image
 is atomically published only after the complete route succeeds; missing
 toolchain inputs or dependencies are errors, and no host-library or unsigned
 fallback is emitted.
+
+The public C++ runtime also provides the backend-independent bounded
+`EventLoop` model in `event_loop.hpp`.  POSIX hosts may opt into the
+`PollEventLoopBackend` adapter in `event_loop_poll.hpp`; it owns only the
+userspace `poll(2)` translation, while RinOS wait syscalls and production IPC
+owners remain target-side adapters through `EventLoop::WaitFunction`.
