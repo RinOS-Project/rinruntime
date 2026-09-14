@@ -67,6 +67,13 @@ applications and external package tooling. It is a pure model: package
 signatures, private keys, installed roots, filesystem publication, and kernel
 admission remain private owners.
 
+`update_metadata.hpp` provides the corresponding bounded update description:
+product/update identity, target version, channel, applicability floor, release
+notes, and sorted package artifacts with exact sizes and SHA-256 digests. It has
+no URL, pathname, signature, private key, socket, staging handle, or install
+operation, so ordinary applications and external tooling can validate the same
+metadata while a repository/updater remains the private authenticated owner.
+
 The archive headers are public, backend-independent codec contracts.  The
 DEFLATE, GZIP, strict ustar TAR, TAR.GZ, and ordinary ZIP readers consume
 caller-owned bytes or bounded callbacks and never open paths or publish files.

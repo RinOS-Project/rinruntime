@@ -16,6 +16,7 @@
 #include "download_resume.hpp"
 #include "download_range_transport.hpp"
 #include "package_metadata.hpp"
+#include "update_metadata.hpp"
 #include "dns_transport.hpp"
 #include "accessibility.hpp"
 #include "accessibility_bridge.hpp"
