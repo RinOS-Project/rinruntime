@@ -190,6 +190,18 @@ if(RINRUNTIME_BUILD_TESTS)
     target_link_libraries(rinruntime-accessibility-client-abi-test PRIVATE RinRuntime::RinRuntime)
     add_test(NAME rinruntime-accessibility-client-abi
              COMMAND rinruntime-accessibility-client-abi-test)
+    if(NOT WIN32)
+        add_executable(rinruntime-event-loop-poll-test
+                       tests/event_loop_poll_contract_test.cpp)
+        target_link_libraries(rinruntime-event-loop-poll-test
+                              PRIVATE RinRuntime::RinRuntime)
+        target_include_directories(rinruntime-event-loop-poll-test
+                                   PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+        set_target_properties(rinruntime-event-loop-poll-test
+                              PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES)
+        add_test(NAME rinruntime-event-loop-poll
+                 COMMAND rinruntime-event-loop-poll-test)
+    endif()
     add_executable(rinruntime-serial-portal-test
                    tests/serial_portal_contract_test.c)
     target_link_libraries(rinruntime-serial-portal-test PRIVATE RinRuntime::RinRuntime)
