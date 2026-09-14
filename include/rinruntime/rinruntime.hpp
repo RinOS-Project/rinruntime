@@ -12,6 +12,7 @@
 #include "tls_client_certificate_binding.hpp"
 #include "setting_provenance.h"
 #include "settings_search.hpp"
+#include "file_associations.hpp"
 #include "download_resume.hpp"
 #include "download_range_transport.hpp"
 #include "dns_transport.hpp"
