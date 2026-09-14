@@ -14,7 +14,7 @@
 #include <unistd.h>
 #include <rin/contract_abi.h>
 #include <rin/socket_abi.h>
-#include "../../../../src/api/rin_abi.h"
+#include <rin/abi.h>
 #endif
 
 #if !defined(_WIN32)
@@ -1222,4 +1222,3 @@ RinRuntimeFileChooserResult rinruntime_file_chooser_save_destination_release(
     return response_result;
 #endif
 }
-
