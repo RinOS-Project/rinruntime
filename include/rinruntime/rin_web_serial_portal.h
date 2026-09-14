@@ -21,6 +21,14 @@ typedef struct RinWebSerialDeviceV1 {
     RinSerialCapabilityV1 capability;
 } RinWebSerialDeviceV1;
 
+/* A portal-backed topology transition.  The device snapshot is copied from
+ * the authenticated portal response; callers never receive a path or a
+ * pointer into portal-owned storage. */
+typedef struct RinWebSerialEventV1 {
+    RinWebSerialDeviceV1 device;
+    uint32_t connected;
+} RinWebSerialEventV1;
+
 /* The default operations are supplied by the OS-Core VFS adapter. Tests and
  * alternate WebContent hosts may install an equivalent bounded file owner;
  * a missing callback is reported as an error, never as readiness/success. */
@@ -59,6 +67,10 @@ void rin_web_serial_set_portal_transport(
 
 int rin_web_serial_enumerate(RinWebSerialDeviceV1* output, uint32_t capacity,
                              uint32_t* count_out);
+/* Poll the portal-owned topology snapshot.  The first successful poll only
+ * establishes a baseline; subsequent calls return one bounded connect or
+ * disconnect transition, or RIN_SERIAL_EAGAIN when unchanged. */
+int rin_web_serial_poll_event(RinWebSerialEventV1* event_out);
 int rin_web_serial_request_port(const char* origin, uint32_t user_activation,
                                 const RinSerialPortalFilterV1* filters,
                                 uint32_t filter_count,
