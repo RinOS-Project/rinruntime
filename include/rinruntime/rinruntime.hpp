@@ -8,6 +8,7 @@
 #include "session_recovery.h"
 #include "cancellation.h"
 #include "setting_provenance.h"
+#include "settings_search.hpp"
 #include "download_resume.hpp"
 #include "download_range_transport.hpp"
 #include "accessibility.hpp"

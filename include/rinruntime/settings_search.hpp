@@ -4,6 +4,12 @@
 #ifndef RINRUNTIME_SETTINGS_SEARCH_HPP
 #define RINRUNTIME_SETTINGS_SEARCH_HPP
 
+#include <cstddef>
+#include <cstdint>
+#include <string>
+#include <vector>
+
+#include "cancellation.h"
 #include "text_input.hpp"
 
 namespace RinRuntime {
@@ -16,9 +22,9 @@ struct SettingSearchMetadata {
 };
 
 class SettingSearchIndex {
-    static constexpr size_t kMaximumEntries = 256u;
-    static constexpr size_t kMaximumFieldBytes = 255u;
-    static constexpr size_t kMaximumQueryBytes = 128u;
+    static constexpr std::size_t kMaximumEntries = 256u;
+    static constexpr std::size_t kMaximumFieldBytes = 255u;
+    static constexpr std::size_t kMaximumQueryBytes = 128u;
 
     std::vector<SettingSearchMetadata> entries_;
     std::string query_;
@@ -70,6 +76,12 @@ class SettingSearchIndex {
     }
 
 public:
+    enum class MatchResult : std::uint8_t {
+        Completed = 0,
+        Cancelled = 1,
+        InvalidArgument = 2,
+    };
+
     static constexpr size_t maximumEntries() { return kMaximumEntries; }
     static constexpr size_t maximumQueryBytes() { return kMaximumQueryBytes; }
 
@@ -109,7 +121,6 @@ public:
         const SettingSearchMetadata* metadata = entry(index);
         if (!metadata) return false;
         if (query_.empty()) return true;
-
         size_t tokenStart = 0u;
         while (tokenStart < query_.length()) {
             while (tokenStart < query_.length() &&
@@ -127,14 +138,33 @@ public:
         return true;
     }
 
-    size_t matchingIndices(size_t* output, size_t capacity) const {
-        if (!output && capacity != 0u) return 0u;
-        size_t count = 0u;
+    MatchResult matchingIndicesCancellable(
+        size_t* output, size_t capacity,
+        RinRuntimeCancellationFunction cancellation, void* context,
+        size_t* matchedCount) const {
+        if (matchedCount == nullptr || (!output && capacity != 0u))
+            return MatchResult::InvalidArgument;
+        *matchedCount = 0u;
         for (size_t index = 0u; index < entries_.size(); ++index) {
+            if (cancellation != nullptr && cancellation(context) != 0) {
+                for (size_t clear = 0u; clear < *matchedCount && clear < capacity;
+                     ++clear)
+                    output[clear] = 0u;
+                *matchedCount = 0u;
+                return MatchResult::Cancelled;
+            }
             if (!matches(index)) continue;
-            if (count < capacity) output[count] = index;
-            ++count;
+            if (*matchedCount < capacity) output[*matchedCount] = index;
+            ++*matchedCount;
         }
+        return MatchResult::Completed;
+    }
+
+    size_t matchingIndices(size_t* output, size_t capacity) const {
+        size_t count = 0u;
+        if (matchingIndicesCancellable(output, capacity, nullptr, nullptr,
+                                       &count) != MatchResult::Completed)
+            return 0u;
         return count;
     }
 };
