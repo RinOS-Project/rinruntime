@@ -70,6 +70,26 @@ static RinRuntime::DownloadRangeRequest makeRequest() {
 }
 
 int main() {
+    RinRuntime::DownloadPartialReceipt receipt;
+    receipt.requestId = 9u;
+    receipt.totalBytes = 5u;
+    receipt.committedBytes = 2u;
+    receipt.generation = 4u;
+    receipt.validator = "etag-4";
+    std::uint8_t receiptWire[RinRuntime::DownloadPartialReceipt::kWireSize] = {};
+    std::size_t receiptSize = 0u;
+    assert(receipt.encode(receiptWire, sizeof(receiptWire), receiptSize));
+    RinRuntime::DownloadPartialReceipt decodedReceipt;
+    assert(RinRuntime::DownloadPartialReceipt::decode(
+        receiptWire, receiptSize, decodedReceipt));
+    receiptWire[42u] = 1u;
+    assert(!RinRuntime::DownloadPartialReceipt::decode(
+        receiptWire, receiptSize, decodedReceipt));
+    receiptWire[42u] = 0u;
+    receiptWire[43u] = 1u;
+    assert(!RinRuntime::DownloadPartialReceipt::decode(
+        receiptWire, receiptSize, decodedReceipt));
+
     Owner ordinaryOwner;
     RinRuntime::DownloadRangeTransportOpsV1 ordinaryOps;
     ordinaryOps.structSize = sizeof(ordinaryOps);

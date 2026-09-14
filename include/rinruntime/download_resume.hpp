@@ -93,6 +93,7 @@ struct DownloadPartialReceipt {
         if (input == nullptr || inputSize != kWireSize ||
             get32(input + 0u) != kMagic || get16(input + 4u) != kVersion ||
             get16(input + 6u) != 0u ||
+            get16(input + 42u) != 0u ||
             get16(input + 40u) > kMaxValidatorBytes)
             return false;
         const std::size_t validatorSize = get16(input + 40u);
