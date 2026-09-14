@@ -21,6 +21,22 @@
 
 namespace RinRuntime {
 
+static_assert(static_cast<std::uint32_t>(EventLoop::WAIT_READABLE) ==
+                  static_cast<std::uint32_t>(RIN_WAIT_EVENT_READABLE),
+              "RinOS wait-event readable bit drift");
+static_assert(static_cast<std::uint32_t>(EventLoop::WAIT_WRITABLE) ==
+                  static_cast<std::uint32_t>(RIN_WAIT_EVENT_WRITABLE),
+              "RinOS wait-event writable bit drift");
+static_assert(static_cast<std::uint32_t>(EventLoop::WAIT_ERROR) ==
+                  static_cast<std::uint32_t>(RIN_WAIT_EVENT_ERROR),
+              "RinOS wait-event error bit drift");
+static_assert(static_cast<std::uint32_t>(EventLoop::WAIT_HANGUP) ==
+                  static_cast<std::uint32_t>(RIN_WAIT_EVENT_HANGUP),
+              "RinOS wait-event hangup bit drift");
+static_assert(static_cast<std::uint32_t>(EventLoop::WAIT_EVENTS_ALL) ==
+                  static_cast<std::uint32_t>(RIN_WAIT_EVENT_ALL),
+              "RinOS wait-event mask drift");
+
 class RinEventLoopBackend final {
 public:
     using Size = EventLoop::Size;

@@ -41,8 +41,11 @@ owners remain target-side adapters through `EventLoop::WaitFunction`.
 RinOS applications may opt into `RinEventLoopBackend` in
 `event_loop_rin.hpp`. It translates the same bounded requests to the public
 `rin_wait_set_*` SDK contract and keeps the wait-set handle private to the
-adapter. The EventLoop model and both userspace adapters are public runtime;
-the kernel owns only the wait-set syscall and IPC readiness producers.
+adapter. The adapter has compile-time checks against the public
+`RIN_WAIT_EVENT_*` bit contract, so the kernel producer and userspace model
+cannot silently drift into different masks. The EventLoop model and both
+userspace adapters are public runtime; the kernel owns only the wait-set
+syscall and IPC readiness producers.
 
 The public runtime also provides the bounded `DownloadPartialReceipt`,
 `DownloadRangeRequest`, and `DownloadRangeTransportAdapter` contracts. Receipt
