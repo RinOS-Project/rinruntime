@@ -10,6 +10,7 @@
 #include "accessibility.hpp"
 #include "accessibility_wire.hpp"
 #include "event.hpp"
+#include "event_loop.hpp"
 #include "layout.hpp"
 #include "display_policy.hpp"
 #include "widget.hpp"

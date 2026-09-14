@@ -4,6 +4,9 @@
 #include <cassert>
 
 int main() {
+    RinRuntime::EventLoop event_loop;
+    assert(event_loop.pendingEvents() == 0u);
+
     RinRuntime::Button button("Open");
     assert(button.setAccessibilityName("Open"));
     assert(button.accessibilityDefaultName() == "Open");
