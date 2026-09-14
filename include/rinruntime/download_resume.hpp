@@ -18,8 +18,15 @@
 
 namespace RinRuntime {
 
+/*
+ * A receipt is metadata only: it does not contain a pathname, descriptor, or
+ * portal handle.  The authenticated HTTP owner supplies requestId,
+ * generation, and validator (for example an ETag) when it creates the
+ * receipt.  A resumed range is accepted only when every identity field and
+ * the exact ordered byte offset match the durable record.
+ */
 struct DownloadPartialReceipt {
-    static constexpr std::uint32_t kMagic = 0x31504452u;
+    static constexpr std::uint32_t kMagic = 0x31504452u; /* "RDP1" */
     static constexpr std::uint16_t kVersion = 1u;
     static constexpr std::size_t kMaxValidatorBytes = 127u;
     static constexpr std::uint64_t kMaxBytes = 128u * 1024u * 1024u;
@@ -90,8 +97,9 @@ struct DownloadPartialReceipt {
             return false;
         const std::size_t validatorSize = get16(input + 40u);
         for (std::size_t index = 44u + validatorSize; index < kWireSize;
-             ++index)
+             ++index) {
             if (input[index] != 0u) return false;
+        }
         output.requestId = get64(input + 8u);
         output.totalBytes = get64(input + 16u);
         output.committedBytes = get64(input + 24u);
@@ -237,6 +245,7 @@ public:
     virtual bool read(std::uint8_t* buffer, std::size_t capacity,
                       std::size_t& bytesRead) = 0;
     virtual void abort() = 0;
+    virtual bool wasCancelled() const { return false; }
 };
 
 inline bool parseDownloadContentRange(const std::string& value,

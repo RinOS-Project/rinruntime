@@ -15,6 +15,7 @@
 #include <string>
 #endif
 
+#include "cancellation.h"
 #include "download_resume.hpp"
 
 namespace RinRuntime {
@@ -26,6 +27,7 @@ using DownloadRangeReadFunction = int (*)(
     void* context, std::uint8_t* buffer, std::size_t capacity,
     std::size_t* bytesRead);
 using DownloadRangeAbortFunction = void (*)(void* context);
+using DownloadRangeCancellationFunction = RinRuntimeCancellationFunction;
 
 struct DownloadRangeTransportOpsV1 {
     std::uint32_t structSize = 0u;
@@ -35,6 +37,7 @@ struct DownloadRangeTransportOpsV1 {
     DownloadRangeBeginFunction begin = nullptr;
     DownloadRangeReadFunction read = nullptr;
     DownloadRangeAbortFunction abort = nullptr;
+    DownloadRangeCancellationFunction cancelled = nullptr;
 };
 
 class DownloadRangeTransportAdapter final : public DownloadRangeTransport {
@@ -46,6 +49,7 @@ public:
         Idle = 0,
         Streaming = 1,
         Failed = 2,
+        Cancelled = 3,
     };
 
 private:
@@ -68,7 +72,22 @@ private:
         return ops.structSize == sizeof(DownloadRangeTransportOpsV1) &&
                ops.version == kVersion && ops.reserved0 == 0u &&
                ops.context != nullptr && ops.begin != nullptr &&
-               ops.read != nullptr && ops.abort != nullptr;
+               ops.read != nullptr && ops.abort != nullptr &&
+               ops.cancelled != nullptr;
+    }
+
+    int cancellationStatus() const {
+        if (ops_.cancelled == nullptr) return -1;
+        return ops_.cancelled(ops_.context);
+    }
+
+    void cancelAndAbort() {
+        if (state_ == State::Streaming && ops_.abort != nullptr)
+            ops_.abort(ops_.context);
+        request_.clear();
+        remaining_ = 0u;
+        rangeExhausted_ = false;
+        state_ = State::Cancelled;
     }
 
     void failAndAbort() {
@@ -103,6 +122,17 @@ public:
             return false;
         request_ = request;
         state_ = State::Streaming;
+        const int beforeBegin = cancellationStatus();
+        if (beforeBegin == 1) {
+            request_.clear();
+            state_ = State::Cancelled;
+            return false;
+        }
+        if (beforeBegin != 0) {
+            failAndAbort();
+            state_ = State::Idle;
+            return false;
+        }
         const DownloadRangeRequest requestBaseline = request_;
         DownloadRangeResponse candidate{};
         const int result = ops_.begin(ops_.context, &request_, &candidate);
@@ -112,6 +142,16 @@ public:
             request_.clear();
             remaining_ = 0u;
             rangeExhausted_ = false;
+            state_ = State::Idle;
+            return false;
+        }
+        const int afterBegin = cancellationStatus();
+        if (afterBegin == 1) {
+            cancelAndAbort();
+            return false;
+        }
+        if (afterBegin != 0) {
+            failAndAbort();
             state_ = State::Idle;
             return false;
         }
@@ -125,13 +165,33 @@ public:
               std::size_t& bytesRead) override {
         bytesRead = 0u;
         if (state_ != State::Streaming) return false;
+        const int beforeRead = cancellationStatus();
+        if (beforeRead == 1) {
+            cancelAndAbort();
+            return false;
+        }
+        if (beforeRead != 0) {
+            failAndAbort();
+            return false;
+        }
         if (!opsValid(ops_) || buffer == nullptr || capacity == 0u ||
             capacity > kMaxChunkBytes) {
             failAndAbort();
             return false;
         }
         std::size_t candidate = 0u;
-        if (ops_.read(ops_.context, buffer, capacity, &candidate) == 0) {
+        const int readResult = ops_.read(ops_.context, buffer, capacity,
+                                         &candidate);
+        const int afterRead = cancellationStatus();
+        if (afterRead == 1) {
+            cancelAndAbort();
+            return false;
+        }
+        if (afterRead != 0) {
+            failAndAbort();
+            return false;
+        }
+        if (readResult == 0) {
             if (candidate == 0u) {
                 if (!rangeExhausted_) {
                     failAndAbort();
@@ -167,6 +227,7 @@ public:
     }
 
     State state() const { return state_; }
+    bool wasCancelled() const override { return state_ == State::Cancelled; }
     std::uint64_t remaining() const { return remaining_; }
 };
 
