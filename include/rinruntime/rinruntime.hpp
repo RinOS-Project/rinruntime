@@ -11,6 +11,7 @@
 #include "settings_search.hpp"
 #include "download_resume.hpp"
 #include "download_range_transport.hpp"
+#include "dns_transport.hpp"
 #include "accessibility.hpp"
 #include "accessibility_wire.hpp"
 #include "event.hpp"
