@@ -47,7 +47,8 @@ the kernel owns only the wait-set syscall and IPC readiness producers.
 The public runtime also provides the bounded `DownloadPartialReceipt`,
 `DownloadRangeRequest`, and `DownloadRangeTransportAdapter` contracts. Receipt
 decoding rejects non-zero reserved wire bytes and malformed identity/offset
-fields. A caller may omit cancellation entirely; when supplied, its callback
+fields. The callback context is optional, so a stateless owner may pass a null
+cookie. A caller may omit cancellation entirely; when supplied, its callback
 preserves `Cancelled` as a distinct state and the owner is aborted after
 admission. Browser portal/storage and HTTPS/TLS owners remain outside this
 generic transport contract.

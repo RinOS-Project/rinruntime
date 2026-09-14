@@ -74,8 +74,8 @@ private:
     static bool opsValid(const DownloadRangeTransportOpsV1& ops) {
         return ops.structSize == sizeof(DownloadRangeTransportOpsV1) &&
                ops.version == kVersion && ops.reserved0 == 0u &&
-               ops.context != nullptr && ops.begin != nullptr &&
-               ops.read != nullptr && ops.abort != nullptr;
+               ops.begin != nullptr && ops.read != nullptr &&
+               ops.abort != nullptr;
     }
 
     int cancellationStatus() const {

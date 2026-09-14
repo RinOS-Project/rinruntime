@@ -55,6 +55,34 @@ static void abortRange(void* opaque) {
     ++static_cast<Owner*>(opaque)->abortCalls;
 }
 
+static int statelessBegin(void*,
+                          const RinRuntime::DownloadRangeRequest* request,
+                          RinRuntime::DownloadRangeResponse* response) {
+    if (request == nullptr || response == nullptr) return -1;
+    response->statusCode = 206u;
+    response->contentRangeStart = request->offset;
+    response->contentRangeEnd = request->totalBytes - 1u;
+    response->contentRangeTotal = request->totalBytes;
+    response->contentLength = request->totalBytes - request->offset;
+    response->generation = request->generation;
+    response->validator = request->validator;
+    return 0;
+}
+
+static int statelessRead(void*, std::uint8_t*, std::size_t,
+                         std::size_t* bytesRead) {
+    if (bytesRead == nullptr) return -1;
+    static unsigned calls = 0u;
+    if (calls++ == 0u) {
+        *bytesRead = 3u;
+        return 0;
+    }
+    *bytesRead = 0u;
+    return 0;
+}
+
+static void statelessAbort(void*) {}
+
 static int cancelAfterBegin(void* opaque) {
     return static_cast<Owner*>(opaque)->beginCalls == 0u ? 0 : 1;
 }
@@ -108,6 +136,19 @@ int main() {
     assert(ordinary.read(buffer, sizeof(buffer), bytesRead) && bytesRead == 2u);
     assert(ordinary.read(buffer, sizeof(buffer), bytesRead) && bytesRead == 1u);
     assert(ordinary.read(buffer, sizeof(buffer), bytesRead) && bytesRead == 0u);
+
+    /* A callback cookie is optional: stateless owners are valid public
+     * consumers and must not be forced to invent a context object. */
+    RinRuntime::DownloadRangeTransportOpsV1 statelessOps;
+    statelessOps.structSize = sizeof(statelessOps);
+    statelessOps.begin = statelessBegin;
+    statelessOps.read = statelessRead;
+    statelessOps.abort = statelessAbort;
+    RinRuntime::DownloadRangeTransportAdapter stateless;
+    assert(stateless.bind(statelessOps));
+    assert(stateless.begin(request, response));
+    assert(stateless.read(buffer, sizeof(buffer), bytesRead) && bytesRead == 3u);
+    assert(stateless.read(buffer, sizeof(buffer), bytesRead) && bytesRead == 0u);
 
     Owner cancellableOwner;
     RinRuntime::DownloadRangeTransportOpsV1 cancellableOps = ordinaryOps;
