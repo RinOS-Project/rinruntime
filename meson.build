@@ -126,4 +126,7 @@ if get_option('buildtype') != 'plain'
           'tests/audio/rin_audio_service_client_ring_test.c',
           dependencies: runtime_dep, override_options: test_override_options))
   endif
+  test('rinruntime-download-range', executable('rinruntime-download-range-test',
+        'tests/download_range_transport_contract_test.cpp',
+        dependencies: runtime_dep, override_options: test_override_options))
 endif

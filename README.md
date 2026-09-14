@@ -37,3 +37,10 @@ The public C++ runtime also provides the backend-independent bounded
 `PollEventLoopBackend` adapter in `event_loop_poll.hpp`; it owns only the
 userspace `poll(2)` translation, while RinOS wait syscalls and production IPC
 owners remain target-side adapters through `EventLoop::WaitFunction`.
+
+The public runtime also provides the bounded `DownloadPartialReceipt`,
+`DownloadRangeRequest`, and `DownloadRangeTransportAdapter` contracts. A
+caller may omit cancellation entirely; when supplied, its callback preserves
+`Cancelled` as a distinct state and the owner is aborted after admission.
+Browser portal/storage and HTTPS/TLS owners remain outside this generic
+transport contract.

@@ -210,8 +210,18 @@ if(RINRUNTIME_BUILD_TESTS)
         add_executable(rinruntime-audio-ring-test
                        tests/audio/rin_audio_service_client_ring_test.c)
         target_link_libraries(rinruntime-audio-ring-test PRIVATE RinRuntime::RinRuntime)
-        add_test(NAME rinruntime-audio-ring COMMAND rinruntime-audio-ring-test)
+    add_test(NAME rinruntime-audio-ring COMMAND rinruntime-audio-ring-test)
     endif()
+    add_executable(rinruntime-download-range-test
+                   tests/download_range_transport_contract_test.cpp)
+    target_link_libraries(rinruntime-download-range-test
+                          PRIVATE RinRuntime::RinRuntime)
+    target_include_directories(rinruntime-download-range-test
+                               PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    set_target_properties(rinruntime-download-range-test PROPERTIES
+                          CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES)
+    add_test(NAME rinruntime-download-range
+             COMMAND rinruntime-download-range-test)
 endif()
 
 if(RINRUNTIME_BUILD_EXAMPLES)
