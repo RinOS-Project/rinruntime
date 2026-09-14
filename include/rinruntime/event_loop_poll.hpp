@@ -83,7 +83,10 @@ public:
 
     bool wait(const EventLoop::WaitRequest* requests, Size count,
               std::uint64_t deadline, EventLoop::WaitResult* ready) noexcept {
-        if (requests == nullptr || ready == nullptr || count == 0u ||
+        if (ready == nullptr) return false;
+        ready->id = 0u;
+        ready->events = 0u;
+        if (requests == nullptr || count == 0u ||
             count > EventLoop::kWaitCapacity)
             return false;
 

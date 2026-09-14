@@ -48,7 +48,7 @@ int main() {
     timeout_request.id = 1u;
     timeout_request.nativeHandle = pipe_fds[0];
     timeout_request.events = EventLoop::WAIT_READABLE;
-    EventLoop::WaitResult ready = {};
+    EventLoop::WaitResult ready = {99u, EventLoop::WAIT_READABLE};
     assert(!backend.wait(&timeout_request, 1u, g_now, &ready));
     assert(ready.id == 0u && ready.events == 0u);
 
