@@ -37,6 +37,9 @@ struct DownloadRangeTransportOpsV1 {
     DownloadRangeBeginFunction begin = nullptr;
     DownloadRangeReadFunction read = nullptr;
     DownloadRangeAbortFunction abort = nullptr;
+    /* Optional for callers that do not expose cancellation.  When present,
+     * it must return 0 for continue, 1 for cancellation, or another value
+     * for an owner failure. */
     DownloadRangeCancellationFunction cancelled = nullptr;
 };
 
@@ -72,12 +75,11 @@ private:
         return ops.structSize == sizeof(DownloadRangeTransportOpsV1) &&
                ops.version == kVersion && ops.reserved0 == 0u &&
                ops.context != nullptr && ops.begin != nullptr &&
-               ops.read != nullptr && ops.abort != nullptr &&
-               ops.cancelled != nullptr;
+               ops.read != nullptr && ops.abort != nullptr;
     }
 
     int cancellationStatus() const {
-        if (ops_.cancelled == nullptr) return -1;
+        if (ops_.cancelled == nullptr) return 0;
         return ops_.cancelled(ops_.context);
     }
 
