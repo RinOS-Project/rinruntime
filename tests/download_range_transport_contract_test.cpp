@@ -137,6 +137,19 @@ int main() {
     assert(ordinary.read(buffer, sizeof(buffer), bytesRead) && bytesRead == 1u);
     assert(ordinary.read(buffer, sizeof(buffer), bytesRead) && bytesRead == 0u);
 
+    /* The cancellation callback was appended to the public v1 table.  An
+     * owner built against the original prefix remains valid and simply has
+     * no cancellation hook. */
+    RinRuntime::DownloadRangeTransportOpsV1 legacyOps = ordinaryOps;
+    legacyOps.structSize =
+        offsetof(RinRuntime::DownloadRangeTransportOpsV1, cancelled);
+    RinRuntime::DownloadRangeTransportAdapter legacy;
+    assert(legacy.bind(legacyOps));
+    assert(legacy.begin(request, response));
+    assert(legacy.read(buffer, sizeof(buffer), bytesRead) && bytesRead == 2u);
+    assert(legacy.read(buffer, sizeof(buffer), bytesRead) && bytesRead == 1u);
+    assert(legacy.read(buffer, sizeof(buffer), bytesRead) && bytesRead == 0u);
+
     /* A callback cookie is optional: stateless owners are valid public
      * consumers and must not be forced to invent a context object. */
     RinRuntime::DownloadRangeTransportOpsV1 statelessOps;

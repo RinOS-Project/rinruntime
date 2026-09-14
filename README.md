@@ -53,6 +53,11 @@ preserves `Cancelled` as a distinct state and the owner is aborted after
 admission. Browser portal/storage and HTTPS/TLS owners remain outside this
 generic transport contract.
 
+The public v1 transport callback table accepts both the original fixed prefix
+and the extended table containing the optional cancellation callback. Older
+owners therefore remain usable without inventing a cancellation context; a
+future incompatible table must use a new ABI version.
+
 The archive headers are public, backend-independent codec contracts.  The
 DEFLATE, GZIP, strict ustar TAR, TAR.GZ, and ordinary ZIP readers consume
 caller-owned bytes or bounded callbacks and never open paths or publish files.

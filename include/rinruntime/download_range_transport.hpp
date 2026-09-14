@@ -72,10 +72,33 @@ private:
     }
 
     static bool opsValid(const DownloadRangeTransportOpsV1& ops) {
-        return ops.structSize == sizeof(DownloadRangeTransportOpsV1) &&
+        /* `cancelled` was appended to the v1 callback table after the
+         * original public release.  Accept the original prefix and only
+         * inspect the optional field when the caller's declared size covers
+         * it.  Reject future larger tables until a new version is published.
+         */
+        constexpr std::size_t kBaseSize =
+            offsetof(DownloadRangeTransportOpsV1, cancelled);
+        return (ops.structSize == kBaseSize ||
+                ops.structSize == sizeof(DownloadRangeTransportOpsV1)) &&
                ops.version == kVersion && ops.reserved0 == 0u &&
                ops.begin != nullptr && ops.read != nullptr &&
                ops.abort != nullptr;
+    }
+
+    static DownloadRangeTransportOpsV1 normalizeOps(
+        const DownloadRangeTransportOpsV1& ops) {
+        DownloadRangeTransportOpsV1 normalized{};
+        normalized.structSize = sizeof(DownloadRangeTransportOpsV1);
+        normalized.version = ops.version;
+        normalized.reserved0 = ops.reserved0;
+        normalized.context = ops.context;
+        normalized.begin = ops.begin;
+        normalized.read = ops.read;
+        normalized.abort = ops.abort;
+        if (ops.structSize == sizeof(DownloadRangeTransportOpsV1))
+            normalized.cancelled = ops.cancelled;
+        return normalized;
     }
 
     int cancellationStatus() const {
@@ -104,7 +127,7 @@ private:
 public:
     bool bind(const DownloadRangeTransportOpsV1& ops) {
         if (state_ != State::Idle || !opsValid(ops)) return false;
-        ops_ = ops;
+        ops_ = normalizeOps(ops);
         return true;
     }
 
