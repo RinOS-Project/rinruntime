@@ -61,6 +61,12 @@ and the extended table containing the optional cancellation callback. Older
 owners therefore remain usable without inventing a cancellation context; a
 future incompatible table must use a new ABI version.
 
+`package_metadata.hpp` provides the same bounded package identity, numeric
+version, dependency ordering, and entry-point validation to ordinary
+applications and external package tooling. It is a pure model: package
+signatures, private keys, installed roots, filesystem publication, and kernel
+admission remain private owners.
+
 The archive headers are public, backend-independent codec contracts.  The
 DEFLATE, GZIP, strict ustar TAR, TAR.GZ, and ordinary ZIP readers consume
 caller-owned bytes or bounded callbacks and never open paths or publish files.
