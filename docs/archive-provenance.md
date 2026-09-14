@@ -1,10 +1,14 @@
 # Archive backend boundary
 
-The public `ArchivePlan` is an admission and metadata model.  It does not
-ship a gzip/deflate implementation, open a filesystem path, create a symlink,
-or link a third-party codec into `RinRuntime`.  Method `8` is accepted only as
-metadata for an authenticated provider; the provider must declare its own
-license provenance before it is linked into an application.
+The public archive headers provide deterministic, bounded metadata planning and
+the built-in raw DEFLATE, GZIP, strict ustar TAR, TAR.GZ, and ordinary ZIP
+codecs.  They do not open a filesystem path, create a symlink, or publish a
+filesystem transaction.  No third-party codec is linked into `RinRuntime`.
+
+The codecs operate on caller-owned bytes or bounded caller-owned source/sink
+callbacks.  Filesystem and service providers must validate their own
+authority, and must discard staging output when a codec reports malformed
+input, a limit, cancellation, or a sink failure.
 
 Archive plans reject symbolic-link entries, absolute member names, `..`
 components, excessive depth, and decompression ratios above the bounded

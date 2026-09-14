@@ -51,3 +51,9 @@ fields. A caller may omit cancellation entirely; when supplied, its callback
 preserves `Cancelled` as a distinct state and the owner is aborted after
 admission. Browser portal/storage and HTTPS/TLS owners remain outside this
 generic transport contract.
+
+The archive headers are public, backend-independent codec contracts.  The
+DEFLATE, GZIP, strict ustar TAR, TAR.GZ, and ordinary ZIP readers consume
+caller-owned bytes or bounded callbacks and never open paths or publish files.
+Filesystem extraction, archive service IPC, and File Portal publication remain
+private RinOS adapters.
