@@ -23,13 +23,22 @@ int main() {
     EventLoop loop;
     Event ready_event = {};
     ready_event.type = EventType::Close;
+
+    assert(loop.scheduleAt(g_now + 1u, ready_event) != 0u);
+    Event output = {};
+    assert(!loop.wait(g_now, PollEventLoopBackend::waitFunction, &backend,
+                      &output));
+    ++g_now;
+    assert(loop.wait(g_now, PollEventLoopBackend::waitFunction, &backend,
+                     &output));
+    assert(output.type == EventType::Close);
+
     const EventLoop::WaitId read_id = loop.watch(
         pipe_fds[0], EventLoop::WAIT_READABLE, ready_event);
     assert(read_id != 0u);
 
     char byte = 'r';
     assert(write(pipe_fds[1], &byte, sizeof(byte)) == 1);
-    Event output = {};
     assert(loop.wait(g_now, PollEventLoopBackend::waitFunction, &backend,
                      &output));
     assert(output.type == EventType::Close);

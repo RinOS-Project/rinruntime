@@ -86,8 +86,9 @@ public:
         if (ready == nullptr) return false;
         ready->id = 0u;
         ready->events = 0u;
-        if (requests == nullptr || count == 0u ||
-            count > EventLoop::kWaitCapacity)
+        if ((requests == nullptr && count != 0u) ||
+            count > EventLoop::kWaitCapacity ||
+            (count == 0u && deadline == UINT64_MAX))
             return false;
 
         struct pollfd descriptors[EventLoop::kWaitCapacity] = {};

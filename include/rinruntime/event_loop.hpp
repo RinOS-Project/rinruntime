@@ -233,7 +233,9 @@ public:
      * adapter for one readiness result.  The callback receives the earliest
      * timer deadline as an absolute value, or UINT64_MAX when no timer exists.
      * A result must name an active generation-bound watch and may only report
-     * events requested by that watch. */
+     * events requested by that watch.  A zero-count request is allowed when a
+     * finite timer deadline exists so the adapter can sleep for a timer-only
+     * loop; it must not manufacture a readiness result in that case. */
     bool wait(std::uint64_t now, WaitFunction backend, void* context,
               Event* output) noexcept {
         if (backend == nullptr || output == nullptr) return false;
@@ -249,10 +251,14 @@ public:
             requests[count].events = watch.events;
             ++count;
         }
-        if (count == 0u) return false;
-
         std::uint64_t deadline = UINT64_MAX;
         (void)nextDeadline(&deadline);
+        if (count == 0u) {
+            WaitResult idleResult = {};
+            if (deadline != UINT64_MAX) (void)backend(
+                context, nullptr, 0u, deadline, &idleResult);
+            return false;
+        }
         WaitResult ready = {};
         if (!backend(context, requests, count, deadline, &ready) ||
             ready.id == 0u || ready.events == 0u)
