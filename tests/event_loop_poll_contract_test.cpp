@@ -71,7 +71,7 @@ int main() {
     assert(loop.unwatch(hangup_id));
     assert(close(pipe_fds[0]) == 0);
 
-    timeout_request.nativeHandle = static_cast<int64_t>(INT32_MAX) + 1;
+    timeout_request.nativeHandle = static_cast<uint64_t>(INT32_MAX) + 1u;
     assert(!backend.wait(&timeout_request, 1u, g_now, &ready));
     return 0;
 }

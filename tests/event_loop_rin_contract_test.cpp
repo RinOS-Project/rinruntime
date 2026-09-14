@@ -79,21 +79,22 @@ int main() {
     RinRuntime::EventLoop loop;
     RinRuntime::Event event = {};
     event.type = RinRuntime::EventType::Close;
+    const uint64_t opaque_handle = UINT64_C(0xfeedface01234567);
     const RinRuntime::EventLoop::WaitId watch = loop.watch(
-        7, RinRuntime::EventLoop::WAIT_READABLE, event);
+        opaque_handle, RinRuntime::EventLoop::WAIT_READABLE, event);
     assert(watch != 0u);
     RinRuntime::Event output = {};
     assert(loop.wait(g_now, RinRuntime::RinEventLoopBackend::waitFunction,
                      &backend, &output));
     assert(output.type == RinRuntime::EventType::Close);
     assert(g_set_items_calls == 1u);
-    assert(g_item.handle == 7u);
+    assert(g_item.handle == opaque_handle);
     assert(g_item.events == RinRuntime::EventLoop::WAIT_READABLE);
     assert(g_item.user_tag == watch);
 
     RinRuntime::EventLoop::WaitRequest invalid = {};
     invalid.id = 1u;
-    invalid.nativeHandle = -1;
+    invalid.nativeHandle = 0u;
     invalid.events = RinRuntime::EventLoop::WAIT_READABLE;
     RinRuntime::EventLoop::WaitResult ready = {};
     assert(!backend.wait(&invalid, 1u, g_now, &ready));

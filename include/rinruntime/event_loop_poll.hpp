@@ -97,8 +97,7 @@ public:
             if (request.id == 0u || request.events == 0u ||
                 (request.events & ~static_cast<std::uint32_t>(
                                       EventLoop::WAIT_EVENTS_ALL)) != 0u ||
-                request.nativeHandle < 0 ||
-                request.nativeHandle > static_cast<std::int64_t>(INT_MAX))
+                request.nativeHandle > static_cast<std::uint64_t>(INT_MAX))
                 return false;
             descriptors[index].fd = static_cast<int>(request.nativeHandle);
             descriptors[index].events = pollEvents(request.events);

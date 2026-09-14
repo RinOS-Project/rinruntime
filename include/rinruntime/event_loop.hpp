@@ -35,12 +35,12 @@ public:
     };
 
     /* The OS adapter supplies native wait semantics while the loop owns only
-     * bounded metadata.  nativeHandle is intentionally wide enough for both
-     * file descriptors and target opaque handles, but is never interpreted by
-     * this class. */
+     * bounded metadata.  nativeHandle covers the full public opaque-handle
+     * range; a POSIX adapter narrows it to its descriptor range, but this
+     * class never interprets it. */
     struct WaitRequest {
         WaitId id = 0u;
-        std::int64_t nativeHandle = 0;
+        std::uint64_t nativeHandle = 0u;
         std::uint32_t events = 0u;
     };
 
