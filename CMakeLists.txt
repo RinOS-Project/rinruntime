@@ -222,6 +222,18 @@ if(RINRUNTIME_BUILD_TESTS)
                           CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES)
     add_test(NAME rinruntime-download-range
              COMMAND rinruntime-download-range-test)
+    add_executable(rinruntime-event-loop-rin-test
+                   tests/event_loop_rin_contract_test.cpp
+                   ../../RinOS-SDK/src/rinsdk_v1.c)
+    target_link_libraries(rinruntime-event-loop-rin-test
+                          PRIVATE RinRuntime::RinRuntime)
+    target_include_directories(rinruntime-event-loop-rin-test
+                               PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include
+                                       ${CMAKE_CURRENT_SOURCE_DIR}/../../RinOS-SDK/include)
+    set_target_properties(rinruntime-event-loop-rin-test PROPERTIES
+                          CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES)
+    add_test(NAME rinruntime-event-loop-rin
+             COMMAND rinruntime-event-loop-rin-test)
 endif()
 
 if(RINRUNTIME_BUILD_EXAMPLES)

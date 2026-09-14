@@ -38,6 +38,12 @@ The public C++ runtime also provides the backend-independent bounded
 userspace `poll(2)` translation, while RinOS wait syscalls and production IPC
 owners remain target-side adapters through `EventLoop::WaitFunction`.
 
+RinOS applications may opt into `RinEventLoopBackend` in
+`event_loop_rin.hpp`. It translates the same bounded requests to the public
+`rin_wait_set_*` SDK contract and keeps the wait-set handle private to the
+adapter. The EventLoop model and both userspace adapters are public runtime;
+the kernel owns only the wait-set syscall and IPC readiness producers.
+
 The public runtime also provides the bounded `DownloadPartialReceipt`,
 `DownloadRangeRequest`, and `DownloadRangeTransportAdapter` contracts. Receipt
 decoding rejects non-zero reserved wire bytes and malformed identity/offset
