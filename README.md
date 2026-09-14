@@ -1,31 +1,25 @@
-# RinRuntime
+# RinRuntime public window API
 
-RinRuntime is the public RinOS application model and service-client boundary.
-It provides backend-independent widgets, accessibility, layout, bounded text
-editing, archive admission policy, cancellation, and versioned portal
-capability records. Private compositor/service/provider implementations remain
-outside this repository. The Audio Service client is owned here; its versioned
-IPC, device, format, and shared-ring ABI is published by the sibling RinOS SDK
-under `<rin/audio/>`.
+`rinruntime` exposes the native-window transport through `window.h` and the
+C++ `RinRuntime::Window` wrapper.  Rendering is a borrowed-frame operation:
 
-## Standalone host build
+```cpp
+#include <rinruntime/window.hpp>
+#include <aquamarine.h>
 
-```text
-cmake -S . -B build -DRINRUNTIME_BUILD_TESTS=ON
-cmake --build build
-ctest --test-dir build --output-on-failure
+RinRuntime::Window window("Hello", 0, 0, 640, 480);
+window.onPaint([](AqSurface& surface) {
+    aq_surface_clear(&surface, AQ_RGB(24, 32, 48));
+});
+window.paint();
 ```
 
-Use `-DRINRUNTIME_BUILD_SHARED=ON` for the shared-library policy. The native
-`.rll` packaging path is owned by the RinOS SDK/package toolchain and is not
-needed by the host library or its tests.
+`currentRenderSurface()` and `currentRenderFont()` are valid only on the
+thread and during the callback's active frame.  The compositor owns the
+surface mapping; applications must not retain those pointers or inspect a
+physical framebuffer.  The C API in `render.h` provides the same acquire,
+release, and present lifecycle without exposing a frame-context structure.
 
-`RINRUNTIME_BUILD_EXAMPLES=ON` builds the host-only Basic Widgets, Layout,
-Accessibility, Application Data, Document, Printing, and Crash Reporter
-examples. `file_portal.c` and `hello_window.cpp` demonstrate the C portal and
-window-boundary contracts without opening a privileged service.
-
-The C++ entry point is `<rinruntime/rinruntime.hpp>`. C service-client
-contracts are available from `<rinruntime/portal.h>` and
-`<rinruntime/rin_audio_service_client.h>`. Audio lifecycle guidance is in
-`docs/audio/`.
+The CMake build enables the real Unix compositor client with
+`RINRUNTIME_BUILD_GUI=ON` (the default on non-Windows hosts).  It consumes the
+public SDK headers and the standalone `Aquamarine::Aquamarine` target only.

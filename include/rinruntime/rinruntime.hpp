@@ -34,6 +34,11 @@
 #include "text_codec.h"
 #include "accessibility_service_client.h"
 #include "application_data.hpp"
-#include "rin_app.hpp"
+#include "application.hpp"
+#include "window.h"
+#include "render.h"
+#include "events.hpp"
+#include "render_context.hpp"
+#include "window.hpp"
 
 #endif

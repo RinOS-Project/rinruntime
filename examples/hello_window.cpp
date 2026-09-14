@@ -1,7 +1,11 @@
 /* SPDX-License-Identifier: MIT */
-#include <rinruntime/rinruntime.hpp>
+#include <rinruntime/window.hpp>
 
 int main() {
-    RinRuntime::Button windowTitle("RinOS Hello Window");
-    return windowTitle.accessibilityDefaultName() == "RinOS Hello Window" ? 0 : 1;
+    RinRuntime::WindowOptions options;
+    options.title = "RinOS Hello Window";
+    options.width = 640;
+    options.height = 480;
+    RinRuntime::Window window(options);
+    return window.valid() ? 0 : 1;
 }

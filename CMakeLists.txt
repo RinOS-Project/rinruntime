@@ -4,6 +4,12 @@ project(RinRuntime VERSION 1.0.0 LANGUAGES C CXX)
 option(RINRUNTIME_BUILD_TESTS "Build RinRuntime host tests" ON)
 option(RINRUNTIME_BUILD_SHARED "Build RinRuntime as a shared library" OFF)
 option(RINRUNTIME_BUILD_EXAMPLES "Build RinRuntime host examples" ON)
+set(RINRUNTIME_GUI_DEFAULT ON)
+if(WIN32)
+    set(RINRUNTIME_GUI_DEFAULT OFF)
+endif()
+option(RINRUNTIME_BUILD_GUI
+       "Build the public compositor-backed native window API" ${RINRUNTIME_GUI_DEFAULT})
 set(RINRUNTIME_LIBRARY_TYPE STATIC)
 if(RINRUNTIME_BUILD_SHARED)
     set(RINRUNTIME_LIBRARY_TYPE SHARED)
@@ -33,13 +39,30 @@ if(NOT WIN32)
         src/accessibility_service_client.c
         src/audio/rin_audio_service_client.c)
 endif()
+if(RINRUNTIME_BUILD_GUI)
+    if(WIN32)
+        message(FATAL_ERROR
+                "RINRUNTIME_BUILD_GUI requires the RinOS Unix compositor transport")
+    endif()
+    add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../aquamarine
+                     ${CMAKE_CURRENT_BINARY_DIR}/aquamarine EXCLUDE_FROM_ALL)
+    list(APPEND RINRUNTIME_SOURCES
+         src/compositor_gui.c
+         src/render.c
+         src/render_context.cpp)
+endif()
 add_library(RinRuntime ${RINRUNTIME_LIBRARY_TYPE}
     ${RINRUNTIME_SOURCES})
 add_library(RinRuntime::RinRuntime ALIAS RinRuntime)
 target_compile_features(RinRuntime PUBLIC c_std_11)
+if(RINRUNTIME_BUILD_GUI)
+    target_compile_features(RinRuntime PUBLIC cxx_std_17)
+    target_link_libraries(RinRuntime PUBLIC Aquamarine::Aquamarine)
+endif()
 target_include_directories(RinRuntime PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../../RinOS-SDK/include>
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../aquamarine>
     $<INSTALL_INTERFACE:include>)
 if(NOT MSVC)
     target_compile_options(RinRuntime PRIVATE -Wall -Wextra -Wpedantic)
@@ -79,6 +102,17 @@ if(RINRUNTIME_BUILD_TESTS)
     add_executable(rinruntime-file-portal-abi-test tests/file_portal_abi_compile_test.c)
     target_link_libraries(rinruntime-file-portal-abi-test PRIVATE RinRuntime::RinRuntime)
     add_test(NAME rinruntime-file-portal-abi COMMAND rinruntime-file-portal-abi-test)
+    if(RINRUNTIME_BUILD_GUI)
+        add_executable(rinruntime-window-abi-test tests/window_abi_compile_test.c)
+        target_link_libraries(rinruntime-window-abi-test PRIVATE RinRuntime::RinRuntime)
+        add_test(NAME rinruntime-window-abi COMMAND rinruntime-window-abi-test)
+        add_library(rinruntime-render-context-abi-test OBJECT
+                    tests/render_context_abi_compile_test.cpp)
+        target_link_libraries(rinruntime-render-context-abi-test
+                              PRIVATE RinRuntime::RinRuntime)
+        set_target_properties(rinruntime-render-context-abi-test
+                              PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES)
+    endif()
     add_executable(rinruntime-accessibility-client-abi-test
                    tests/accessibility_client_abi_compile_test.c)
     target_link_libraries(rinruntime-accessibility-client-abi-test PRIVATE RinRuntime::RinRuntime)
@@ -108,4 +142,16 @@ if(RINRUNTIME_BUILD_EXAMPLES)
         set_target_properties(rinruntime-example-${example_name}
                               PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES)
     endforeach()
+    if(RINRUNTIME_BUILD_GUI)
+        foreach(gui_example IN ITEMS hello-window aquamarine-drawing resize input clipping)
+            add_library(rinruntime-example-${gui_example} OBJECT
+                        examples/${gui_example}/main.cpp)
+            target_link_libraries(rinruntime-example-${gui_example}
+                                  PRIVATE RinRuntime::RinRuntime)
+            set_target_properties(rinruntime-example-${gui_example}
+                                  PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES)
+        endforeach()
+        add_library(rinruntime-example-c-window OBJECT examples/c-window/main.c)
+        target_link_libraries(rinruntime-example-c-window PRIVATE RinRuntime::RinRuntime)
+    endif()
 endif()
