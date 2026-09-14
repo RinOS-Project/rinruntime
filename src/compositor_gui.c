@@ -25,6 +25,17 @@
 #define RIN_RUNTIME_GUI_MAX_BUFFER_BYTES (64u * 1024u * 1024u)
 #define RIN_RUNTIME_GUI_REQUEST_TIMEOUT_MS 8000u
 
+#if defined(__GNUC__) || defined(__clang__)
+#define RIN_RUNTIME_OPTIONAL_WEAK __attribute__((weak))
+#else
+#define RIN_RUNTIME_OPTIONAL_WEAK
+#endif
+
+/* RinOS applications provide this through the process runtime.  Keeping the
+ * symbol weak leaves the public host library usable by callers that provide
+ * an explicit wnd_set_icon_path() value instead. */
+extern const char* rin_process_argv(int index) RIN_RUNTIME_OPTIONAL_WEAK;
+
 typedef struct RinRuntimeGuiSurface {
     uint32_t active;
     RinRuntimeGuiHandle handle_token;
@@ -110,6 +121,35 @@ static int runtime_send_icon_path(uint32_t surface_id, const char* path) {
                         0, 0u, &reply_size, &status) != 0 || status != 0 ||
         reply_size != 0u) return -1;
     return 0;
+}
+
+static int runtime_store_icon_path(RinRuntimeGuiSurface* surface,
+                                   const char* path) {
+    size_t length = 0u;
+    if (!surface || !path || runtime_send_icon_path(surface->id, path) != 0)
+        return -1;
+    while (length < sizeof(surface->icon_path) - 1u &&
+           path[length] != '\0')
+        ++length;
+    if (path[length] != '\0') return -1;
+    if (path != surface->icon_path) {
+        memset(surface->icon_path, 0, sizeof(surface->icon_path));
+        memcpy(surface->icon_path, path, length);
+    }
+    return 0;
+}
+
+static const char* runtime_process_icon_path(void) {
+    const char* path;
+    if (!rin_process_argv) return 0;
+    path = rin_process_argv(0);
+    return path && path[0] != '\0' ? path : 0;
+}
+
+static int runtime_role_has_application_icon(uint32_t role) {
+    return role != RIN_COMPOSITOR_ROLE_DESKTOP &&
+           role != RIN_COMPOSITOR_ROLE_PANEL &&
+           role != RIN_COMPOSITOR_ROLE_CURSOR;
 }
 
 static void runtime_drop_input_ring(void) {
@@ -617,9 +657,11 @@ static int runtime_rebind_surface(RinRuntimeGuiSurface* surface) {
         reply_size != 0u)
         return -1;
     if (surface->icon_path[0] != '\0' &&
-        (g_compositor_features & RIN_COMPOSITOR_FEATURE_ICON_METADATA) != 0u &&
-        runtime_send_icon_path(new_id, surface->icon_path) != 0)
-        return -1;
+        (g_compositor_features & RIN_COMPOSITOR_FEATURE_ICON_METADATA) != 0u) {
+        if (runtime_store_icon_path(surface, surface->icon_path) != 0) {
+            return -1;
+        }
+    }
     memset(&position, 0, sizeof(position));
     position.surface_id = new_id;
     position.x = surface->x;
@@ -848,6 +890,14 @@ RinRuntimeGuiHandle wnd_create_flags(const char* title, int x, int y, int w,
             goto fail_server_surface;
         }
     }
+    if (runtime_role_has_application_icon(role) &&
+        (g_compositor_features & RIN_COMPOSITOR_FEATURE_ICON_METADATA) != 0u) {
+        const char* icon_path = runtime_process_icon_path();
+        if (icon_path && runtime_store_icon_path(surface, icon_path) != 0) {
+            runtime_destroy_local_surface(surface);
+            goto fail_server_surface;
+        }
+    }
     return (RinRuntimeGuiHandle)surface->handle_token;
 fail_server_surface:
     (void)runtime_request(RIN_COMPOSITOR_DESTROY_SURFACE, &id, sizeof(id),
@@ -915,14 +965,7 @@ void wnd_title(RinRuntimeGuiHandle handle, const char* title) {
 
 int wnd_set_icon_path(RinRuntimeGuiHandle handle, const char* path) {
     RinRuntimeGuiSurface* surface = runtime_surface(handle);
-    if (!surface || !path || runtime_send_icon_path(surface->id, path) != 0)
-        return -1;
-    memset(surface->icon_path, 0, sizeof(surface->icon_path));
-    size_t length = 0u;
-    while (length < sizeof(surface->icon_path) - 1u && path[length] != '\0')
-        ++length;
-    memcpy(surface->icon_path, path, length);
-    return 0;
+    return runtime_store_icon_path(surface, path);
 }
 
 void wnd_move(RinRuntimeGuiHandle handle, int x, int y) {
