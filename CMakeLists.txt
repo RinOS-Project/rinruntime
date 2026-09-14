@@ -4,6 +4,27 @@ project(RinRuntime VERSION 1.0.0 LANGUAGES C CXX)
 option(RINRUNTIME_BUILD_TESTS "Build RinRuntime host tests" ON)
 option(RINRUNTIME_BUILD_SHARED "Build RinRuntime as a shared library" OFF)
 option(RINRUNTIME_BUILD_EXAMPLES "Build RinRuntime host examples" ON)
+option(RINRUNTIME_BUILD_RLL
+       "Expose the signed RinCompiler/rld RinRuntime .rll target route" OFF)
+set(RINRUNTIME_RLL_RCC "" CACHE FILEPATH
+    "RinCompiler rcc executable used by the target .rll route")
+set(RINRUNTIME_RLL_RLD "" CACHE FILEPATH
+    "RinCompiler rld executable used by the target .rll route")
+set(RINRUNTIME_RLL_RINSIGN "" CACHE FILEPATH
+    "rinsign executable used by the target .rll route")
+set(RINRUNTIME_RLL_SIGN_KEY "" CACHE FILEPATH
+    "signing private key used by the target .rll route")
+set(RINRUNTIME_RLL_PUBLIC_KEY "" CACHE FILEPATH
+    "signing public key used by the target .rll route")
+set(RINRUNTIME_RLL_TARGET "x86_64-unknown-rinos" CACHE STRING
+    "RinCompiler target triple used by the target .rll route")
+set(RINRUNTIME_RLL_SIGN_PROFILE "release" CACHE STRING
+    "RinCompiler signing profile used by the target .rll route")
+set(RINRUNTIME_RLL_SOURCES
+    "src/portal.c;src/crash.c;src/backup_restore.c;src/known_folders.c;src/file_operation.c;src/safe_save.c;src/safe_save_posix.c;src/session_recovery.c;src/crash_service.c;src/path.c;src/serial_portal_protocol.c;src/platform.c;src/crash_service_client.c;src/file_portal.c;src/durable_file_portal.c;src/file_chooser_portal.c;src/file_operation_service_client.c;src/accessibility_service_client.c;src/audio/rin_audio_service_client.c"
+    CACHE STRING "semicolon-separated RinRuntime C sources for the target .rll route")
+set(RINRUNTIME_RLL_DEPENDENCIES "" CACHE STRING
+    "semicolon-separated dependency .rll images for the target .rll route")
 set(RINRUNTIME_GUI_DEFAULT ON)
 if(WIN32)
     set(RINRUNTIME_GUI_DEFAULT OFF)
@@ -30,7 +51,11 @@ set(RINRUNTIME_SOURCES
 # RinOS AF_UNIX/poll ABI; keep that transport out of the host library rather
 # than substituting a success path.  RinOS/Unix builds include the real client.
 if(NOT WIN32)
+    list(APPEND RINRUNTIME_SOURCES src/backup_payload.c)
+    list(APPEND RINRUNTIME_RLL_SOURCES src/backup_payload.c)
     list(APPEND RINRUNTIME_SOURCES src/platform.c)
+    list(APPEND RINRUNTIME_SOURCES src/rin_keyring_client.c)
+    list(APPEND RINRUNTIME_RLL_SOURCES src/rin_keyring_client.c)
     list(APPEND RINRUNTIME_SOURCES src/crash_service_client.c)
     list(APPEND RINRUNTIME_SOURCES
         src/file_portal.c
@@ -83,6 +108,52 @@ install(EXPORT RinRuntimeTargets
 configure_file(rinruntime.pc.in rinruntime.pc @ONLY)
 install(FILES ${CMAKE_CURRENT_BINARY_DIR}/rinruntime.pc
         DESTINATION ${CMAKE_INSTALL_LIBDIR}/pkgconfig)
+
+if(RINRUNTIME_BUILD_RLL)
+    if(NOT RINRUNTIME_RLL_RCC OR NOT RINRUNTIME_RLL_RLD OR
+       NOT RINRUNTIME_RLL_RINSIGN OR NOT RINRUNTIME_RLL_SIGN_KEY OR
+       NOT RINRUNTIME_RLL_PUBLIC_KEY)
+        message(FATAL_ERROR
+                "RINRUNTIME_BUILD_RLL requires rcc, rld, rinsign, sign key, and public key")
+    endif()
+    if(NOT RINRUNTIME_RLL_SIGN_PROFILE STREQUAL "debug" AND
+       NOT RINRUNTIME_RLL_SIGN_PROFILE STREQUAL "release")
+        message(FATAL_ERROR
+                "RINRUNTIME_RLL_SIGN_PROFILE must be debug or release")
+    endif()
+    find_package(Python3 COMPONENTS Interpreter REQUIRED)
+    set(RINRUNTIME_RLL_SCRIPT
+        ${CMAKE_CURRENT_SOURCE_DIR}/scripts/build_rll.py)
+    set(RINRUNTIME_RLL_COMMAND
+        ${Python3_EXECUTABLE} ${RINRUNTIME_RLL_SCRIPT}
+        --rcc ${RINRUNTIME_RLL_RCC}
+        --rld ${RINRUNTIME_RLL_RLD}
+        --rinsign ${RINRUNTIME_RLL_RINSIGN}
+        --sign-key ${RINRUNTIME_RLL_SIGN_KEY}
+        --public-key ${RINRUNTIME_RLL_PUBLIC_KEY}
+        --sign-profile ${RINRUNTIME_RLL_SIGN_PROFILE}
+        --target ${RINRUNTIME_RLL_TARGET}
+        --source-root ${CMAKE_CURRENT_SOURCE_DIR}
+        --output ${CMAKE_CURRENT_BINARY_DIR}/RinRuntime.rll
+        --include ${CMAKE_CURRENT_SOURCE_DIR}/include
+        --include ${CMAKE_CURRENT_SOURCE_DIR}/../../RinOS-SDK/include)
+    foreach(rll_source IN LISTS RINRUNTIME_RLL_SOURCES)
+        list(APPEND RINRUNTIME_RLL_COMMAND --source ${rll_source})
+    endforeach()
+    foreach(rll_dependency IN LISTS RINRUNTIME_RLL_DEPENDENCIES)
+        list(APPEND RINRUNTIME_RLL_COMMAND --dependency ${rll_dependency})
+    endforeach()
+    add_custom_command(
+        OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/RinRuntime.rll
+        COMMAND ${RINRUNTIME_RLL_COMMAND}
+        DEPENDS ${RINRUNTIME_RLL_SCRIPT} ${RINRUNTIME_RLL_SOURCES}
+                ${RINRUNTIME_RLL_DEPENDENCIES}
+        VERBATIM)
+    add_custom_target(rinruntime-rll
+                      DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/RinRuntime.rll)
+    install(FILES ${CMAKE_CURRENT_BINARY_DIR}/RinRuntime.rll
+            DESTINATION ${CMAKE_INSTALL_LIBDIR})
+endif()
 
 if(RINRUNTIME_BUILD_TESTS)
     enable_testing()

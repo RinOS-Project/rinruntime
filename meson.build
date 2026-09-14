@@ -1,6 +1,8 @@
 project('RinRuntime', ['c', 'cpp'], version: '1.0.0',
         default_options: ['cpp_std=c++17', 'warning_level=3'])
 
+python = import('python').find_installation(required: true)
+fs = import('fs')
 inc = include_directories('include', '../../RinOS-SDK/include')
 runtime_sources = files('src/portal.c', 'src/crash.c', 'src/backup_restore.c',
                         'src/known_folders.c', 'src/file_operation.c',
@@ -8,6 +10,7 @@ runtime_sources = files('src/portal.c', 'src/crash.c', 'src/backup_restore.c',
                         'src/session_recovery.c', 'src/crash_service.c',
                         'src/path.c', 'src/serial_portal_protocol.c')
 if host_machine.system() != 'windows'
+  runtime_sources += files('src/backup_payload.c')
   runtime_sources += files('src/platform.c')
   runtime_sources += files('src/crash_service_client.c',
                            'src/file_portal.c',
@@ -15,7 +18,8 @@ if host_machine.system() != 'windows'
                            'src/file_chooser_portal.c',
                            'src/file_operation_service_client.c',
                            'src/accessibility_service_client.c',
-                           'src/audio/rin_audio_service_client.c')
+                           'src/audio/rin_audio_service_client.c',
+                           'src/rin_keyring_client.c')
   aq_inc = include_directories('../aquamarine', '../libunicode', '../../RinOS-SDK/include')
   aq_sources = files('../aquamarine/aq_blend.c', '../aquamarine/aq_color.c',
                      '../aquamarine/aq_draw.c', '../aquamarine/aq_gradient.c',
@@ -47,6 +51,54 @@ runtime = library('RinRuntime', runtime_sources, include_directories: inc,
 runtime_dep = declare_dependency(link_with: runtime, include_directories: inc,
                                  dependencies: runtime_deps)
 install_subdir('include/rinruntime', install_dir: get_option('includedir'))
+
+if get_option('build_rll')
+  if get_option('rll_sign_key') == '' or get_option('rll_public_key') == ''
+    error('build_rll requires rll_sign_key and rll_public_key')
+  endif
+  rll_sources = get_option('rll_sources')
+  if rll_sources.length() == 0
+    error('build_rll requires at least one rll_sources entry')
+  endif
+  foreach rll_source : rll_sources
+    if not fs.is_file(join_paths(meson.current_source_dir(), rll_source))
+      error('build_rll source does not exist: ' + rll_source)
+    endif
+  endforeach
+  rll_source_files = []
+  foreach rll_source : rll_sources
+    rll_source_files += files(rll_source)
+  endforeach
+  rll_command = [
+    python, files('scripts/build_rll.py'),
+    '--rcc', find_program(get_option('rll_rcc'), required: true).full_path(),
+    '--rld', find_program(get_option('rll_rld'), required: true).full_path(),
+    '--rinsign', find_program(get_option('rll_rinsign'), required: true).full_path(),
+    '--sign-key', get_option('rll_sign_key'),
+    '--public-key', get_option('rll_public_key'),
+    '--sign-profile', get_option('rll_sign_profile'),
+    '--target', get_option('rll_target'),
+    '--source-root', meson.current_source_dir(),
+    '--output', '@OUTPUT@',
+    '--include', join_paths(meson.current_source_dir(), 'include'),
+    '--include', join_paths(meson.current_source_dir(), '../../RinOS-SDK/include'),
+  ]
+  foreach rll_source : rll_sources
+    rll_command += ['--source', rll_source]
+  endforeach
+  foreach rll_dependency : get_option('rll_dependencies')
+    rll_command += ['--dependency', rll_dependency]
+  endforeach
+  rinruntime_rll = custom_target(
+    'RinRuntime-rll',
+    input: rll_source_files,
+    output: 'RinRuntime.rll',
+    command: rll_command,
+    build_by_default: false,
+  )
+  alias_target('rll', [rinruntime_rll])
+  install_data(rinruntime_rll, install_dir: get_option('libdir'))
+endif
 
 if get_option('buildtype') != 'plain'
   test('rinruntime-model', executable('rinruntime-model-test',
