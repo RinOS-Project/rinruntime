@@ -17,6 +17,7 @@
 #include "download_range_transport.hpp"
 #include "abi_feature_manifest.hpp"
 #include "package_metadata.hpp"
+#include "service_configuration.hpp"
 #include "update_metadata.hpp"
 #include "dns_transport.hpp"
 #include "accessibility.hpp"
