@@ -81,8 +81,9 @@ int endNativeFrame() noexcept {
     if (!g_context.active) return RIN_ERROR_BUSY;
     const int release_result =
         wnd_release_render_target(g_context.handle, &g_context.target);
-    if (release_result != RIN_SUCCESS) return release_result;
-    const int present_result = wnd_present(g_context.handle);
+    const int present_result = release_result == RIN_SUCCESS
+        ? wnd_present(g_context.handle)
+        : release_result;
     clearContext();
     return present_result;
 }

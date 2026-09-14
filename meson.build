@@ -4,9 +4,18 @@ project('RinRuntime', ['c', 'cpp'], version: '1.0.0',
 inc = include_directories('include', '../../RinOS-SDK/include')
 runtime_sources = files('src/portal.c', 'src/crash.c', 'src/backup_restore.c',
                         'src/known_folders.c', 'src/file_operation.c',
-                        'src/serial_portal_protocol.c')
+                        'src/safe_save.c', 'src/safe_save_posix.c',
+                        'src/session_recovery.c', 'src/crash_service.c',
+                        'src/path.c', 'src/serial_portal_protocol.c')
 if host_machine.system() != 'windows'
-  runtime_sources += files('src/audio/rin_audio_service_client.c')
+  runtime_sources += files('src/platform.c')
+  runtime_sources += files('src/crash_service_client.c',
+                           'src/file_portal.c',
+                           'src/durable_file_portal.c',
+                           'src/file_chooser_portal.c',
+                           'src/file_operation_service_client.c',
+                           'src/accessibility_service_client.c',
+                           'src/audio/rin_audio_service_client.c')
   aq_inc = include_directories('../aquamarine', '../libunicode', '../../RinOS-SDK/include')
   aq_sources = files('../aquamarine/aq_blend.c', '../aquamarine/aq_color.c',
                      '../aquamarine/aq_draw.c', '../aquamarine/aq_gradient.c',
@@ -25,9 +34,8 @@ runtime_link_args = []
 test_override_options = []
 if host_machine.system() != 'windows'
   runtime_deps += aquamarine_dep
-  # RinOS supplies the SHM, clock, sleep, and service hooks at final app
-  # link/load time.  Keep these real platform ABI imports instead of adding
-  # host-only fallback implementations to the public runtime.
+  # The public runtime carries its real RinOS syscall adapters.  Service
+  # implementations remain outside this library.
   runtime_link_args += ['-Wl,--allow-shlib-undefined']
   test_override_options += ['b_lundef=false']
 endif

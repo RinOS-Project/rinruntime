@@ -30,6 +30,7 @@ set(RINRUNTIME_SOURCES
 # RinOS AF_UNIX/poll ABI; keep that transport out of the host library rather
 # than substituting a success path.  RinOS/Unix builds include the real client.
 if(NOT WIN32)
+    list(APPEND RINRUNTIME_SOURCES src/platform.c)
     list(APPEND RINRUNTIME_SOURCES src/crash_service_client.c)
     list(APPEND RINRUNTIME_SOURCES
         src/file_portal.c

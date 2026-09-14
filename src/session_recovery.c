@@ -2,16 +2,13 @@
 
 #include <rinruntime/session_recovery.h>
 
-#include <string.h>
+#include <rin/net/socket_abi.h>
+#include "platform.h"
 
-/* Legacy hosts may not provide the authenticated launcher adapter.  Keep the
- * optional hook weak so the runtime library remains linkable on those hosts. */
-#if defined(__GNUC__)
-extern int rin_runtime_get_authenticated_session_identity(
-    RinRuntimeSessionRecoveryIdentityV1* identity_out) __attribute__((weak));
-#else
-extern int rin_runtime_get_authenticated_session_identity(
-    RinRuntimeSessionRecoveryIdentityV1* identity_out);
+#include <string.h>
+#if !defined(_WIN32)
+#include <sys/socket.h>
+#include <unistd.h>
 #endif
 
 #define RINRUNTIME_SESSION_RECOVERY_MAGIC UINT32_C(0x31525352) /* RSR1 */
@@ -88,19 +85,58 @@ int rinruntime_session_recovery_identity_valid(
 int rinruntime_session_recovery_get_authenticated_identity(
     RinRuntimeSessionRecoveryIdentityV1* identity_out)
 {
-    int result;
     if (identity_out == NULL)
         return RINRUNTIME_SESSION_RECOVERY_INVALID_ARGUMENT;
+#if defined(_WIN32)
+    return RINRUNTIME_SESSION_RECOVERY_IDENTITY_MISMATCH;
+#else
+    rin_unix_peer_session_identity_v1 session_identity;
+    rin_unix_peer_package_identity_v1 package_identity;
+    socklen_t session_size = sizeof(session_identity);
+    socklen_t package_size = sizeof(package_identity);
+    int pair[2] = {-1, -1};
+    uint64_t process_id;
     memset(identity_out, 0, sizeof(*identity_out));
-    if (rin_runtime_get_authenticated_session_identity == NULL)
-        return RINRUNTIME_SESSION_RECOVERY_IDENTITY_MISMATCH;
-    result = rin_runtime_get_authenticated_session_identity(identity_out);
-    if (result != 0 ||
-        !rinruntime_session_recovery_identity_valid(identity_out)) {
-        memset(identity_out, 0, sizeof(*identity_out));
-        return RINRUNTIME_SESSION_RECOVERY_IDENTITY_MISMATCH;
-    }
+    memset(&session_identity, 0, sizeof(session_identity));
+    memset(&package_identity, 0, sizeof(package_identity));
+    process_id = rinruntime_process_id();
+    if (process_id == 0u || socketpair(AF_UNIX, SOCK_STREAM, 0, pair) != 0)
+        goto mismatch;
+    if (getsockopt(pair[0], SOL_SOCKET, SO_RIN_UNIX_PEER_SESSION_IDENTITY,
+                   &session_identity, &session_size) != 0 ||
+        getsockopt(pair[0], SOL_SOCKET, SO_RIN_UNIX_PEER_PACKAGE_IDENTITY,
+                   &package_identity, &package_size) != 0 ||
+        session_size != sizeof(session_identity) ||
+        package_size != sizeof(package_identity) ||
+        !rin_unix_peer_session_identity_valid(&session_identity) ||
+        !rin_unix_peer_package_identity_valid(&package_identity) ||
+        package_identity.process_id != process_id ||
+        package_identity.process_instance_cookie !=
+            session_identity.instance_cookie)
+        goto mismatch;
+    identity_out->struct_size = sizeof(*identity_out);
+    identity_out->version = RINRUNTIME_SESSION_RECOVERY_VERSION;
+    memcpy(identity_out->application_id, package_identity.application_id,
+           sizeof(identity_out->application_id));
+    memcpy(identity_out->package_digest, package_identity.package_digest,
+           sizeof(identity_out->package_digest));
+    identity_out->package_generation = package_identity.package_generation;
+    if (!rinruntime_session_recovery_identity_valid(identity_out))
+        goto mismatch;
+    close(pair[0]);
+    close(pair[1]);
+    memset(&session_identity, 0, sizeof(session_identity));
+    memset(&package_identity, 0, sizeof(package_identity));
     return RINRUNTIME_SESSION_RECOVERY_OK;
+
+mismatch:
+    if (pair[0] >= 0) close(pair[0]);
+    if (pair[1] >= 0) close(pair[1]);
+    memset(identity_out, 0, sizeof(*identity_out));
+    memset(&session_identity, 0, sizeof(session_identity));
+    memset(&package_identity, 0, sizeof(package_identity));
+    return RINRUNTIME_SESSION_RECOVERY_IDENTITY_MISMATCH;
+#endif
 }
 
 static int recovery_snapshot_valid(
@@ -329,5 +365,3 @@ _Static_assert(sizeof(RinRuntimeSessionRecoveryIdentityV1) == 96u,
 _Static_assert(sizeof(RinRuntimeSessionRecoveryMetadataV1) == 184u,
                "RinRuntimeSessionRecoveryMetadataV1 ABI drift");
 #endif
-
-

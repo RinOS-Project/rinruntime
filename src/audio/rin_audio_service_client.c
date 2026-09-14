@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: MIT */
 
 #include <rinruntime/rin_audio_service_client.h>
+#include "../platform.h"
 
 #include <rin/shm_abi.h>
 #include <rin/socket_abi.h>
@@ -12,12 +13,6 @@
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <unistd.h>
-
-extern int rin_shm_get(const char* name, uint32_t size, uint32_t flags);
-extern void* rin_shm_at(int handle, void* address_hint, uint32_t prot);
-extern int rin_shm_dt(int handle, void* address);
-extern uint64_t rin_monotonic_ms(void);
-extern void rin_sleep(unsigned int milliseconds);
 
 #define CLIENT_STREAM_SLOTS 8u
 #define CLIENT_IO_RETRIES 4096u

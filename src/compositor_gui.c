@@ -7,6 +7,7 @@
  * buffer acquisition and presentation; it never owns drawing primitives.
  */
 #include <rinruntime/window.h>
+#include "platform.h"
 #include <rin/contract_abi.h>
 #include <rin/ipc/shm_abi.h>
 #include <errno.h>
@@ -23,11 +24,6 @@
 #define RIN_RUNTIME_GUI_MAX_PAYLOAD 8192u
 #define RIN_RUNTIME_GUI_MAX_BUFFER_BYTES (64u * 1024u * 1024u)
 #define RIN_RUNTIME_GUI_REQUEST_TIMEOUT_MS 8000u
-
-extern int rin_shm_get(const char* name, uint32_t size, uint32_t flags);
-extern void* rin_shm_at(int handle, void* address_hint, uint32_t prot);
-extern int rin_shm_dt(int handle, void* address);
-extern uint64_t rin_monotonic_ms(void);
 
 typedef struct RinRuntimeGuiSurface {
     uint32_t active;

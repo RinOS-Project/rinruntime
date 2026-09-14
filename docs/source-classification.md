@@ -14,7 +14,7 @@ not smuggled into the public include path.
 | `file_operation.c` | B/C | Execution is callback-based, so filesystem authority stays with an authenticated adapter. |
 | `file_portal.c`, durable portal, chooser | B: public service client | Token/call ABI, bounded path/text validation, and the real client transports are public; privileged broker and filesystem authority remain OS-Core. |
 | `file_operation_service_client.c` | B: public service client | Uses the authenticated FileOperation wire contract and reports unavailable, denied, malformed, and I/O outcomes without a success fallback. |
-| `compositor_gui.c`, helpers | D: private provider | Socket, shared-memory, compositor and window-server implementation remain private. |
+| `compositor_gui.c`, render context | B: public native-window client | Window lifecycle, input, shared-memory buffers, and presentation use the public compositor/window ABI; the compositor service and physical backend remain OS-Core. |
 | `crash_service.c` | B: public policy adapter | Converts bounded session metadata into the SDK crashd registration record; the daemon and raw process memory remain private. |
 | `crash_service_client.c` | B: public service client | Uses the SDK crashd wire/socket ABI. Endpoint absence, identity mismatch, timeout, and malformed replies remain explicit errors. |
 | `accessibility_service_client.c` | B: public service client | Uses the SDK accessibility wire contract and returns transport/protocol errors; the accessibility daemon remains OS-Core. |
@@ -22,9 +22,12 @@ not smuggled into the public include path.
 | `file_crypt.c`, `secure_folder.c` | D/B | Key ownership is delegated to RinTLS and the credential service; no key material is copied here. |
 | `archive*.hpp` and `archive_policy.h` | A/C | Metadata planning and traversal/bomb policy are public; codec/filesystem providers are not. |
 | `rin_runtime.c`, `rin_atexit_registry.c`, libc/libcxx glue | D | Process runtime and OS ABI glue remain private. |
-| audio, serial, tray, wallpaper, resolver, theme, management clients | B/D | Each needs an SDK-owned wire contract before it can enter this public repository. |
+| audio service client | B: public service client | Uses the SDK audio wire/shared-ring contract; the audio daemon, device authority, and USB publication remain OS-Core. |
+| serial device, tray, wallpaper, resolver, theme, management clients | B/D | Each still needs an SDK-owned wire contract before it can enter this public repository. |
 
 Every public header in this repository is standalone against the C/C++
-standard library and this repository's own headers.  No public implementation
-is allowed to open a privileged endpoint or to turn a logical identifier into
-authority without an authenticated adapter.
+standard library and this repository's own headers.  The public RinRuntime
+build consumes only `public-base/libs/rinruntime/src`, the public SDK, and
+public-base libraries; it does not include or link `libs/rinruntime`.
+No public implementation is allowed to open a privileged endpoint or to turn
+a logical identifier into authority without an authenticated adapter.

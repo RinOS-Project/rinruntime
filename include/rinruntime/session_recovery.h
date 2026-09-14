@@ -108,9 +108,8 @@ typedef int (*RinRuntimeSessionRecoveryCrashdRegisterFn)(
 int rinruntime_session_recovery_identity_valid(
     const RinRuntimeSessionRecoveryIdentityV1* identity);
 
-/* Resolve the identity handed off by the authenticated application launcher.
- * The launcher hook is optional for legacy hosts, but a missing hook or an
- * invalid response is never converted into a caller-authored identity.  On
+/* Resolve the identity captured by the authenticated RinOS socket ABI.  The
+ * result is never synthesized from caller-provided application data.  On
  * every failure identity_out is cleared. */
 int rinruntime_session_recovery_get_authenticated_identity(
     RinRuntimeSessionRecoveryIdentityV1* identity_out);
@@ -158,5 +157,4 @@ RinRuntimeSessionRecoveryResult rinruntime_session_recovery_register_crashd(
 #endif
 
 #endif /* RINRUNTIME_SESSION_RECOVERY_H */
-
 
