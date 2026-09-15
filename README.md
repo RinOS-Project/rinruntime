@@ -105,6 +105,12 @@ applications and external package tooling. It is a pure model: package
 signatures, private keys, installed roots, filesystem publication, and kernel
 admission remain private owners.
 
+`package_metadata_json.hpp` provides the matching bounded JSON parser. It
+uses public `rinjson` limits and converts package identity, dependency ranges,
+entry points, publisher generation, and size fields failure-atomically into the
+public model. Repository authentication, signatures, installed-root
+publication, and kernel admission remain private owners.
+
 `update_metadata.hpp` provides the corresponding bounded update description:
 product/update identity, target version, channel, applicability floor, release
 notes, and sorted package artifacts with exact sizes and SHA-256 digests. It has

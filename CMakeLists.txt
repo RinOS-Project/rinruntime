@@ -261,6 +261,18 @@ if(RINRUNTIME_BUILD_TESTS)
                           CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES)
     add_test(NAME rinruntime-update-metadata-json
              COMMAND rinruntime-update-metadata-json-test)
+    add_executable(rinruntime-package-metadata-json-test
+                   tests/package_metadata_json_test.cpp
+                   ../../rinjson/src/json.cpp)
+    target_link_libraries(rinruntime-package-metadata-json-test
+                          PRIVATE RinRuntime::RinRuntime)
+    target_include_directories(rinruntime-package-metadata-json-test
+                               PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include
+                                       ${CMAKE_CURRENT_SOURCE_DIR}/../rinjson/include)
+    set_target_properties(rinruntime-package-metadata-json-test PROPERTIES
+                          CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES)
+    add_test(NAME rinruntime-package-metadata-json
+             COMMAND rinruntime-package-metadata-json-test)
     add_executable(rinruntime-archive-codec-test
                    tests/archive_codec_contract_test.cpp)
     target_link_libraries(rinruntime-archive-codec-test

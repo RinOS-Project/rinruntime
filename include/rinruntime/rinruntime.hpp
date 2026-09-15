@@ -18,6 +18,7 @@
 #include "abi_policy.hpp"
 #include "abi_feature_manifest.hpp"
 #include "package_metadata.hpp"
+#include "package_metadata_json.hpp"
 #include "service_configuration.hpp"
 #include "application_metadata.hpp"
 #include "cursor.h"
