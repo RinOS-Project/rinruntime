@@ -24,6 +24,14 @@ struct ArchiveSource {
 struct ArchiveEntry {
     std::string name;
     std::string sourcePath;
+    /* A filesystem owner may populate this snapshot during authenticated
+     * enumeration.  It is intentionally not required for synthetic plans,
+     * but a backend that sets it must revalidate the source before reading so
+     * a post-enumeration replacement cannot be archived silently. */
+    bool sourceSnapshotValid = false;
+    std::uint64_t sourceModifiedNs = 0u;
+    std::uint64_t sourceCreatedNs = 0u;
+    std::uint32_t sourceLinkCount = 0u;
     std::uint32_t crc = 0;
     std::uint32_t compressedSize = 0;
     std::uint32_t uncompressedSize = 0;
