@@ -81,3 +81,9 @@ caller-owned bytes or bounded callbacks and never open paths or publish files.
 applications and tools; ZIP's denser authoring strategies remain local to the
 ZIP writer.  Filesystem extraction, archive service IPC, and File Portal
 publication remain private RinOS adapters.
+
+The standalone `rincompression/deflate.hpp` header provides the generic
+bounded deterministic stored-DEFLATE encoder. `rinruntime/archive_deflate.hpp`
+keeps `ArchiveDeflateEncoder` as a compatibility wrapper, while archive
+policy, filesystem extraction, service IPC, and File Portal publication remain
+outside the compression library.

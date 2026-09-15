@@ -244,6 +244,16 @@ if(RINRUNTIME_BUILD_TESTS)
                           CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES)
     add_test(NAME rinruntime-archive-codec
              COMMAND rinruntime-archive-codec-test)
+    add_executable(rincompression-deflate-test
+                   tests/deflate_contract_test.cpp)
+    target_link_libraries(rincompression-deflate-test
+                          PRIVATE RinRuntime::RinRuntime)
+    target_include_directories(rincompression-deflate-test
+                               PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    set_target_properties(rincompression-deflate-test PROPERTIES
+                          CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES)
+    add_test(NAME rincompression-deflate
+             COMMAND rincompression-deflate-test)
 endif()
 
 if(RINRUNTIME_BUILD_EXAMPLES)

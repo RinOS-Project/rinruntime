@@ -51,6 +51,7 @@ runtime = library('RinRuntime', runtime_sources, include_directories: inc,
 runtime_dep = declare_dependency(link_with: runtime, include_directories: inc,
                                  dependencies: runtime_deps)
 install_subdir('include/rinruntime', install_dir: get_option('includedir'))
+install_subdir('include/rincompression', install_dir: get_option('includedir'))
 
 if get_option('build_rll')
   if get_option('rll_sign_key') == '' or get_option('rll_public_key') == ''
@@ -135,5 +136,8 @@ if get_option('buildtype') != 'plain'
         cpp_args: ['-std=c++17']))
   test('rinruntime-archive-codec', executable('rinruntime-archive-codec-test',
         'tests/archive_codec_contract_test.cpp', dependencies: runtime_dep,
+        override_options: test_override_options, cpp_args: ['-std=c++17']))
+  test('rincompression-deflate', executable('rincompression-deflate-test',
+        'tests/deflate_contract_test.cpp', dependencies: runtime_dep,
         override_options: test_override_options, cpp_args: ['-std=c++17']))
 endif
