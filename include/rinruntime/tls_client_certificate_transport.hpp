@@ -50,6 +50,12 @@ class TlsClientCertificateTransport final {
         RINRUNTIME_TLS_CLIENT_CERTIFICATE_TRANSCRIPT_MAX;
     static constexpr std::size_t kMaxSignatureBytes = 512u;
 
+    static void clearBytes(std::uint8_t* bytes, std::size_t size) noexcept {
+        if (bytes == nullptr) return;
+        volatile std::uint8_t* target = bytes;
+        while (size-- != 0u) *target++ = 0u;
+    }
+
     static bool signatureSchemeSupported(std::uint16_t scheme) {
         switch (scheme) {
         case 0x0403u:
@@ -140,12 +146,12 @@ public:
     }
 
     void reset() {
+        clearBytes(certificate_list_, sizeof(certificate_list_));
+        clearBytes(capability_, sizeof(capability_));
         request_ = RinRuntimeTlsClientCertificateRequestV1{};
         signer_ = nullptr;
         signer_context_ = nullptr;
         signing_ = false;
-        for (auto& byte : certificate_list_) byte = 0u;
-        for (auto& byte : capability_) byte = 0u;
         state_ = TlsClientCertificateTransportState::Idle;
     }
 
@@ -165,8 +171,7 @@ private:
     int failSign(std::uint8_t* signature, std::size_t signature_capacity) {
         if (signature != nullptr && signature_capacity != 0u &&
             signature_capacity <= kMaxSignatureBytes)
-            for (std::size_t index = 0u; index < signature_capacity; ++index)
-                signature[index] = 0u;
+            clearBytes(signature, signature_capacity);
         state_ = TlsClientCertificateTransportState::Failed;
         return -1;
     }

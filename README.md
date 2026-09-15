@@ -64,6 +64,13 @@ and the extended table containing the optional cancellation callback. Older
 owners therefore remain usable without inventing a cancellation context; a
 future incompatible table must use a new ABI version.
 
+The public TLS client-certificate transport keeps only the bounded TLS wire
+certificate list and opaque signer capability. `reset()` and all rejected
+signature paths use an optimization-resistant clear for copied certificate,
+capability, and caller signature bytes. Private keys, certificate stores,
+keyrings, and HTTPS socket ownership remain outside this public signer
+transport.
+
 `timezone.hpp` provides the backend-independent `ClockReading`,
 `TimeZoneSnapshot`, and `TimeZoneTransition` models. Snapshots validate bounded
 timezone identifiers, offsets, abbreviations, ordered DST transitions, and

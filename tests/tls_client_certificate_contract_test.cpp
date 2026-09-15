@@ -79,5 +79,11 @@ int main() {
     assert(signature_length == 3u && signature[0] == (1u ^ 0x5au) &&
            signature[1] == (2u ^ 0xa5u) && signature[2] == (3u ^ 0x3cu));
     assert(transport.state() == RinRuntime::TlsClientCertificateTransportState::Signed);
+    transport.reset();
+    assert(transport.state() == RinRuntime::TlsClientCertificateTransportState::Idle);
+    assert(transport.requestId() == 0u &&
+           transport.connectionGeneration() == 0u &&
+           transport.certificateList() == nullptr &&
+           transport.certificateListSize() == 0u);
     return 0;
 }
