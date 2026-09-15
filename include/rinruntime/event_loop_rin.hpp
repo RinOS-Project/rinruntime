@@ -132,6 +132,9 @@ public:
         result.version = RIN_SDK_STRUCT_VERSION_1;
         if (rin_wait_set_wait_v1(waitSet_, timeout, &result) != RIN_SUCCESS)
             return false;
+        if (result.struct_size < sizeof(result) ||
+            result.version != RIN_SDK_STRUCT_VERSION_1)
+            return false;
         for (std::uint64_t reserved : result.reserved)
             if (reserved != 0u) return false;
         if (result.index >= count || result.user_tag != items_[result.index].user_tag ||

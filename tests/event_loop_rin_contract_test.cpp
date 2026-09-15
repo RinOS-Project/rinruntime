@@ -17,6 +17,7 @@ struct SdkArgsV1 {
 
 static RinWaitItemV1 g_item;
 static uint32_t g_set_items_calls;
+static bool g_malformed_wait_result;
 static uint64_t g_now = 100u;
 
 static uint64_t test_clock(void*) noexcept { return g_now; }
@@ -53,6 +54,7 @@ static RinResult fake_invoke(uint64_t, uint32_t library, uint32_t operation,
         RinWaitResultV1* result = static_cast<RinWaitResultV1*>(response);
         result->struct_size = sizeof(*result);
         result->version = RIN_SDK_STRUCT_VERSION_1;
+        if (g_malformed_wait_result) ++result->version;
         result->index = 0u;
         result->events = g_item.events;
         result->user_tag = g_item.user_tag;
@@ -92,11 +94,21 @@ int main() {
     assert(g_item.events == RinRuntime::EventLoop::WAIT_READABLE);
     assert(g_item.user_tag == watch);
 
+    RinRuntime::EventLoop::WaitRequest valid = {};
+    valid.id = watch;
+    valid.nativeHandle = opaque_handle;
+    valid.events = RinRuntime::EventLoop::WAIT_READABLE;
+    RinRuntime::EventLoop::WaitResult ready = {};
+    g_malformed_wait_result = true;
+    assert(!backend.wait(&valid, 1u, g_now, &ready));
+    assert(ready.id == 0u && ready.events == 0u);
+    g_malformed_wait_result = false;
+
     RinRuntime::EventLoop::WaitRequest invalid = {};
     invalid.id = 1u;
     invalid.nativeHandle = 0u;
     invalid.events = RinRuntime::EventLoop::WAIT_READABLE;
-    RinRuntime::EventLoop::WaitResult ready = {};
+    ready = {};
     assert(!backend.wait(&invalid, 1u, g_now, &ready));
     assert(ready.id == 0u && ready.events == 0u);
 
