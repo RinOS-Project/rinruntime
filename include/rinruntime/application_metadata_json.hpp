@@ -11,6 +11,7 @@
 
 #include <rinjson/json.hpp>
 
+#include "../../../rinresource/include/rinresource/loader.h"
 #include "application_metadata.hpp"
 
 namespace RinRuntime {
@@ -132,6 +133,43 @@ public:
         }
 #endif
         output = std::move(candidate);
+        return true;
+    }
+
+    /* Resolve one public TYPE_APPLICATION resource into caller-owned storage
+     * before parsing it.  The callback remains the filesystem/service owner;
+     * this helper performs no allocation or path access of its own. */
+    static bool parseResource(
+        const RinResourceCatalogV1* catalog, std::uint32_t resourceId,
+        RinResourceCatalogReadPathFunction readPath, void* context,
+        std::uint8_t* source, std::size_t sourceCapacity,
+        std::size_t* sourceSizeOut, ApplicationMetadata& output,
+        std::string& error) {
+        std::uint64_t loadedSize = 0u;
+        output = {};
+        error.clear();
+        if (sourceSizeOut == nullptr) {
+            error = "metadata resource size";
+            return false;
+        }
+        *sourceSizeOut = 0u;
+        const RinResourceCatalogStatus resourceStatus =
+            rin_resource_catalog_load(
+                catalog, RIN_RESOURCE_CATALOG_TYPE_APPLICATION, resourceId,
+                readPath, context, source,
+                static_cast<std::uint64_t>(sourceCapacity), &loadedSize);
+        if (resourceStatus != RIN_RESOURCE_CATALOG_OK || loadedSize == 0u ||
+            loadedSize > static_cast<std::uint64_t>(SIZE_MAX)) {
+            error = "metadata resource";
+            return false;
+        }
+        if (!parse(std::string_view(reinterpret_cast<const char*>(source),
+                                    static_cast<std::size_t>(loadedSize)),
+                   output, error)) {
+            output = {};
+            return false;
+        }
+        *sourceSizeOut = static_cast<std::size_t>(loadedSize);
         return true;
     }
 };
