@@ -228,6 +228,50 @@ class ApplicationDataLifecycle final {
             std::string(reinterpret_cast<const char*>(item.item_id), length));
     }
 
+    static ApplicationDataLifecycleResult restoreItemFromPlan(
+        const ApplicationDataProfile& profile,
+        const ApplicationDataLifecyclePlan& plan,
+        const std::uint8_t* sourceManifestBytes,
+        std::size_t sourceManifestSize, std::uint32_t itemIndex,
+        ApplicationDataIdentityAuthorizerFn authorizeIdentity,
+        void* authorizeContext, ApplicationDataMigrationFn migrate,
+        void* migrateContext, const std::uint8_t* archivedBytes,
+        std::uint32_t archivedSize, std::uint8_t* restoredOut,
+        std::uint32_t restoredCapacity, std::uint32_t* restoredSizeOut,
+        ApplicationDataRestorePublishFn publish, void* publishContext) {
+        RinRuntimeBackupItemV1 item{};
+        std::size_t itemLength = 0u;
+        if (restoredSizeOut != nullptr) *restoredSizeOut = 0u;
+        if (restoredOut != nullptr && restoredCapacity != 0u)
+            std::memset(restoredOut, 0, restoredCapacity);
+        if (restoredSizeOut == nullptr || publish == nullptr ||
+            (archivedSize != 0u &&
+             (archivedBytes == nullptr || restoredOut == nullptr)))
+            return ApplicationDataLifecycleResult::InvalidArgument;
+        RinRuntimeBackupResult result = rinruntime_backup_manifest_entry_at(
+            sourceManifestBytes, sourceManifestSize, itemIndex, &item);
+        if (result != RINRUNTIME_BACKUP_OK || !itemIdLength(item, itemLength))
+            return mapRestoreResult(result == RINRUNTIME_BACKUP_OK
+                                         ? RINRUNTIME_BACKUP_INVALID_ARGUMENT
+                                         : result);
+        result = rinruntime_backup_restore_item(
+            sourceManifestBytes, sourceManifestSize, itemIndex,
+            &profile.backupIdentity, profile.dataSchemaVersion,
+            authorizeIdentity, authorizeContext, migrate, migrateContext,
+            archivedBytes, archivedSize, restoredOut, restoredCapacity,
+            restoredSizeOut);
+        if (result != RINRUNTIME_BACKUP_OK)
+            return mapRestoreResult(result);
+        if (publish(publishContext, &plan, &item, restoredOut,
+                    *restoredSizeOut) != 0) {
+            if (restoredOut != nullptr && restoredCapacity != 0u)
+                std::memset(restoredOut, 0, restoredCapacity);
+            *restoredSizeOut = 0u;
+            return ApplicationDataLifecycleResult::PublishFailed;
+        }
+        return ApplicationDataLifecycleResult::Ok;
+    }
+
 public:
     static bool validProfile(const ApplicationDataProfile& profile) {
         return profileIdentityMatches(profile);
@@ -346,39 +390,44 @@ public:
         std::uint32_t restoredCapacity, std::uint32_t* restoredSizeOut,
         ApplicationDataRestorePublishFn publish, void* publishContext) {
         ApplicationDataLifecyclePlan plan;
-        RinRuntimeBackupItemV1 item{};
-        std::size_t itemLength = 0u;
-        if (restoredSizeOut != nullptr) *restoredSizeOut = 0u;
-        if (restoredSizeOut == nullptr || publish == nullptr ||
-            (archivedSize != 0u &&
-             (archivedBytes == nullptr || restoredOut == nullptr)))
-            return ApplicationDataLifecycleResult::InvalidArgument;
         const ApplicationDataLifecycleResult planResult = buildUninstallPlan(
             profile, true, plan);
         if (planResult != ApplicationDataLifecycleResult::Ok)
             return planResult;
-        RinRuntimeBackupResult result = rinruntime_backup_manifest_entry_at(
-            sourceManifestBytes, sourceManifestSize, itemIndex, &item);
-        if (result != RINRUNTIME_BACKUP_OK || !itemIdLength(item, itemLength))
-            return mapRestoreResult(result == RINRUNTIME_BACKUP_OK
-                                         ? RINRUNTIME_BACKUP_INVALID_ARGUMENT
-                                         : result);
-        result = rinruntime_backup_restore_item(
-            sourceManifestBytes, sourceManifestSize, itemIndex,
-            &profile.backupIdentity, profile.dataSchemaVersion,
+        return restoreItemFromPlan(
+            profile, plan, sourceManifestBytes, sourceManifestSize, itemIndex,
             authorizeIdentity, authorizeContext, migrate, migrateContext,
             archivedBytes, archivedSize, restoredOut, restoredCapacity,
-            restoredSizeOut);
-        if (result != RINRUNTIME_BACKUP_OK)
-            return mapRestoreResult(result);
-        if (publish(publishContext, &plan, &item, restoredOut,
-                    *restoredSizeOut) != 0) {
-            if (restoredOut != nullptr && restoredCapacity != 0u)
-                std::memset(restoredOut, 0, restoredCapacity);
-            *restoredSizeOut = 0u;
-            return ApplicationDataLifecycleResult::PublishFailed;
+            restoredSizeOut, publish, publishContext);
+    }
+
+    /* Product restore entry point.  The same authenticated Known Folder
+     * owner used for uninstall planning must also own the restore publish
+     * plan; accepting an ambient resolver here would allow a different
+     * profile to receive the restored bytes. */
+    static ApplicationDataLifecycleResult restoreItem(
+        const ApplicationDataProfile& profile,
+        const ApplicationDataKnownFolderOwner& owner,
+        const std::uint8_t* sourceManifestBytes,
+        std::size_t sourceManifestSize, std::uint32_t itemIndex,
+        ApplicationDataIdentityAuthorizerFn authorizeIdentity,
+        void* authorizeContext, ApplicationDataMigrationFn migrate,
+        void* migrateContext, const std::uint8_t* archivedBytes,
+        std::uint32_t archivedSize, std::uint8_t* restoredOut,
+        std::uint32_t restoredCapacity, std::uint32_t* restoredSizeOut,
+        ApplicationDataRestorePublishFn publish, void* publishContext) {
+        ApplicationDataLifecyclePlan plan;
+        const ApplicationDataLifecycleResult planResult = buildUninstallPlan(
+            profile, true, owner, plan);
+        if (planResult != ApplicationDataLifecycleResult::Ok) {
+            if (restoredSizeOut != nullptr) *restoredSizeOut = 0u;
+            return planResult;
         }
-        return ApplicationDataLifecycleResult::Ok;
+        return restoreItemFromPlan(
+            profile, plan, sourceManifestBytes, sourceManifestSize, itemIndex,
+            authorizeIdentity, authorizeContext, migrate, migrateContext,
+            archivedBytes, archivedSize, restoredOut, restoredCapacity,
+            restoredSizeOut, publish, publishContext);
     }
 };
 
