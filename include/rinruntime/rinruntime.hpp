@@ -20,6 +20,7 @@
 #include "package_metadata.hpp"
 #include "service_configuration.hpp"
 #include "application_metadata.hpp"
+#include "cursor.h"
 #include "update_metadata.hpp"
 #include "timezone.hpp"
 #include "dns_transport.hpp"

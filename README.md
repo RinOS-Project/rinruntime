@@ -79,6 +79,14 @@ snapshot from TZif/ICU data; the public model owns no syscall, RTC, catalog,
 filesystem, or persistence boundary, so ordinary applications and external
 tooling can consume the same contract.
 
+`cursor.h` provides the backend-independent `RinRuntimeCursorFrameV1` and
+`RinRuntimeCursorImageV1` views. Pixel storage and frame arrays remain
+caller-owned; dimensions, stride, hotspot, duration, frame count, and storage
+limits are validated before a private CUR/ICO/ANI loader or compositor owner
+publishes a frame. The public model has no cursor path, theme root, allocator,
+or compositor handle, so ordinary applications and external toolkits may use
+the same bounded ARGB contract.
+
 `abi_policy.hpp` provides the backend-independent part of the library ABI
 policy: same-major/minor-floor compatibility and append-only struct-prefix
 checks. SONAME, symbol export/versioning, deprecation/removal, signatures,

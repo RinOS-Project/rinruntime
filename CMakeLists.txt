@@ -190,6 +190,9 @@ if(RINRUNTIME_BUILD_TESTS)
     target_link_libraries(rinruntime-accessibility-client-abi-test PRIVATE RinRuntime::RinRuntime)
     add_test(NAME rinruntime-accessibility-client-abi
              COMMAND rinruntime-accessibility-client-abi-test)
+    add_executable(rinruntime-cursor-test tests/cursor_contract_test.c)
+    target_link_libraries(rinruntime-cursor-test PRIVATE RinRuntime::RinRuntime)
+    add_test(NAME rinruntime-cursor COMMAND rinruntime-cursor-test)
     if(NOT WIN32)
         add_executable(rinruntime-event-loop-poll-test
                        tests/event_loop_poll_contract_test.cpp)

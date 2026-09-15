@@ -137,6 +137,9 @@ if get_option('buildtype') != 'plain'
         'tests/event_loop_rin_contract_test.cpp', '../../RinOS-SDK/src/rinsdk_v1.c',
         dependencies: runtime_dep, override_options: test_override_options,
         cpp_args: ['-std=c++17']))
+  test('rinruntime-cursor', executable('rinruntime-cursor-test',
+        'tests/cursor_contract_test.c', dependencies: runtime_dep,
+        override_options: test_override_options))
   test('rinruntime-archive-codec', executable('rinruntime-archive-codec-test',
         'tests/archive_codec_contract_test.cpp', dependencies: runtime_dep,
         override_options: test_override_options, cpp_args: ['-std=c++17']))
