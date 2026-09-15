@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 
 #include <assert.h>
+#include <chrono>
 #include <stdint.h>
 #include <unistd.h>
 
@@ -59,6 +60,15 @@ int main() {
     timeout_request.events = EventLoop::WAIT_READABLE;
     EventLoop::WaitResult ready = {99u, EventLoop::WAIT_READABLE};
     assert(!backend.wait(&timeout_request, 1u, g_now, &ready));
+    assert(ready.id == 0u && ready.events == 0u);
+
+    const auto timeout_start = std::chrono::steady_clock::now();
+    ready = {99u, EventLoop::WAIT_READABLE};
+    assert(!backend.wait(&timeout_request, 1u, g_now + 2000000u, &ready));
+    const auto timeout_elapsed = std::chrono::duration_cast<
+        std::chrono::milliseconds>(std::chrono::steady_clock::now() -
+                                   timeout_start);
+    assert(timeout_elapsed.count() < 500);
     assert(ready.id == 0u && ready.events == 0u);
 
     assert(close(pipe_fds[1]) == 0);

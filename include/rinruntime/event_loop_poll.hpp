@@ -68,9 +68,13 @@ private:
             return true;
         }
         const std::uint64_t remaining = deadline - now;
-        *timeout = remaining > static_cast<std::uint64_t>(INT_MAX)
+        constexpr std::uint64_t kNanosecondsPerMillisecond = 1000000u;
+        const std::uint64_t milliseconds =
+            remaining / kNanosecondsPerMillisecond +
+            (remaining % kNanosecondsPerMillisecond == 0u ? 0u : 1u);
+        *timeout = milliseconds > static_cast<std::uint64_t>(INT_MAX)
                        ? INT_MAX
-                       : static_cast<int>(remaining);
+                       : static_cast<int>(milliseconds);
         return true;
     }
 
