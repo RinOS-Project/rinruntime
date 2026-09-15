@@ -23,7 +23,9 @@ namespace RinRuntime {
  * portal handle.  The authenticated HTTP owner supplies requestId,
  * generation, and validator (for example an ETag) when it creates the
  * receipt.  A resumed range is accepted only when every identity field and
- * the exact ordered byte offset match the durable record.
+ * the exact ordered byte offset match the durable record.  Authentication,
+ * authorization, and the storage location of the partial bytes are outside
+ * this public metadata contract and remain caller-owned.
  */
 struct DownloadPartialReceipt {
     static constexpr std::uint32_t kMagic = 0x31504452u; /* "RDP1" */

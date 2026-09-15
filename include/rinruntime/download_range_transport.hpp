@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: MIT */
-/* Callback adapter for an authenticated HTTP range owner. */
+/* Callback adapter for a caller-owned range source. */
 
 #ifndef RINRUNTIME_DOWNLOAD_RANGE_TRANSPORT_HPP
 #define RINRUNTIME_DOWNLOAD_RANGE_TRANSPORT_HPP
