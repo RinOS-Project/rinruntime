@@ -284,6 +284,16 @@ if(RINRUNTIME_BUILD_TESTS)
                           CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES)
     add_test(NAME rincompression-lz4
              COMMAND rincompression-lz4-test)
+    add_executable(rincompression-zstd-test
+                   tests/zstd_contract_test.cpp)
+    target_link_libraries(rincompression-zstd-test
+                          PRIVATE RinRuntime::RinRuntime)
+    target_include_directories(rincompression-zstd-test
+                               PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    set_target_properties(rincompression-zstd-test PROPERTIES
+                          CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES)
+    add_test(NAME rincompression-zstd
+             COMMAND rincompression-zstd-test)
     add_executable(rinruntime-timezone-test
                    tests/timezone_contract_test.cpp)
     target_link_libraries(rinruntime-timezone-test
