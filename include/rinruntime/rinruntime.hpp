@@ -18,6 +18,8 @@
 #include "drag_drop.hpp"
 #include "abi_policy.hpp"
 #include "abi_feature_manifest.hpp"
+#include "device_manifest.hpp"
+#include "device_manifest_json.hpp"
 #include "package_metadata.hpp"
 #include "package_metadata_json.hpp"
 #include "service_configuration.hpp"
