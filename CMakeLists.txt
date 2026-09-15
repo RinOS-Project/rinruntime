@@ -245,6 +245,28 @@ if(RINRUNTIME_BUILD_TESTS)
     set_target_properties(rinruntime-abi-policy-test PROPERTIES
                           CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES)
     add_test(NAME rinruntime-abi-policy COMMAND rinruntime-abi-policy-test)
+    add_executable(rinruntime-device-manifest-test
+                   tests/device_manifest_test.cpp)
+    target_link_libraries(rinruntime-device-manifest-test
+                          PRIVATE RinRuntime::RinRuntime)
+    target_include_directories(rinruntime-device-manifest-test
+                               PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    set_target_properties(rinruntime-device-manifest-test PROPERTIES
+                          CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES)
+    add_test(NAME rinruntime-device-manifest
+             COMMAND rinruntime-device-manifest-test)
+    add_executable(rinruntime-device-manifest-json-test
+                   tests/device_manifest_json_test.cpp
+                   ../rinjson/src/json.cpp)
+    target_link_libraries(rinruntime-device-manifest-json-test
+                          PRIVATE RinRuntime::RinRuntime)
+    target_include_directories(rinruntime-device-manifest-json-test
+                               PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include
+                                       ${CMAKE_CURRENT_SOURCE_DIR}/../rinjson/include)
+    set_target_properties(rinruntime-device-manifest-json-test PROPERTIES
+                          CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES)
+    add_test(NAME rinruntime-device-manifest-json
+             COMMAND rinruntime-device-manifest-json-test)
     add_executable(rinruntime-event-loop-rin-test
                    tests/event_loop_rin_contract_test.cpp
                    ../../RinOS-SDK/src/rinsdk_v1.c)
