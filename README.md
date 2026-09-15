@@ -64,6 +64,14 @@ and the extended table containing the optional cancellation callback. Older
 owners therefore remain usable without inventing a cancellation context; a
 future incompatible table must use a new ABI version.
 
+`drag_drop.hpp` provides the public `DragDropSession` model for ordinary
+applications and external toolkits. It copies only bounded MIME payloads and
+labels, tracks a generation-bound session lifecycle, and requires an explicit
+single Copy/Move/Link acceptance before a drop. It does not carry paths,
+descriptors, sockets, compositor handles, or portal authority; private
+compositor, File Portal, and permission-broker adapters decide whether an
+accepted payload may actually be delivered.
+
 `clipboard.h` provides the public application text clipboard client.  It
 validates the UTF-8 byte bound and uses the public GUI syscall adapter with
 failure-atomic output handling.  The private kernel broker remains the owner

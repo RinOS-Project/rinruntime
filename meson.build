@@ -3,7 +3,8 @@ project('RinRuntime', ['c', 'cpp'], version: '1.0.0',
 
 python = import('python').find_installation(required: true)
 fs = import('fs')
-inc = include_directories('include', '../../RinOS-SDK/include', '../rinjson/include')
+inc = include_directories('include', '../../RinOS-SDK/include',
+                          '../rinjson/include', '../rinpath/include')
 runtime_sources = files('src/portal.c', 'src/crash.c', 'src/backup_restore.c',
                         'src/known_folders.c', 'src/file_operation.c',
                         'src/safe_save.c', 'src/safe_save_posix.c',
@@ -131,6 +132,9 @@ if get_option('buildtype') != 'plain'
   test('rinruntime-download-range', executable('rinruntime-download-range-test',
         'tests/download_range_transport_contract_test.cpp',
         dependencies: runtime_dep, override_options: test_override_options))
+  test('rinruntime-drag-drop', executable('rinruntime-drag-drop-test',
+        'tests/drag_drop_contract_test.cpp', dependencies: runtime_dep,
+        override_options: test_override_options))
   test('rinruntime-abi-policy', executable('rinruntime-abi-policy-test',
         'tests/abi_policy_test.cpp', dependencies: runtime_dep,
         override_options: test_override_options, cpp_args: ['-std=c++17']))
@@ -142,15 +146,15 @@ if get_option('buildtype') != 'plain'
         'tests/clipboard_contract_test.c', dependencies: runtime_dep,
         override_options: test_override_options))
   test('rinruntime-update-metadata-json', executable('rinruntime-update-metadata-json-test',
-        'tests/update_metadata_json_test.cpp', '../../rinjson/src/json.cpp',
+        'tests/update_metadata_json_test.cpp', '../rinjson/src/json.cpp',
         dependencies: runtime_dep, override_options: test_override_options,
         cpp_args: ['-std=c++17']))
   test('rinruntime-package-metadata-json', executable('rinruntime-package-metadata-json-test',
-        'tests/package_metadata_json_test.cpp', '../../rinjson/src/json.cpp',
+        'tests/package_metadata_json_test.cpp', '../rinjson/src/json.cpp',
         dependencies: runtime_dep, override_options: test_override_options,
         cpp_args: ['-std=c++17']))
   test('rinruntime-application-metadata-json', executable('rinruntime-application-metadata-json-test',
-        'tests/application_metadata_json_test.cpp', '../../rinjson/src/json.cpp',
+        'tests/application_metadata_json_test.cpp', '../rinjson/src/json.cpp',
         dependencies: runtime_dep, override_options: test_override_options,
         cpp_args: ['-std=c++17']))
   test('rinruntime-cursor', executable('rinruntime-cursor-test',

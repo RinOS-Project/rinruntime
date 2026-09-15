@@ -90,6 +90,7 @@ target_include_directories(RinRuntime PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../../RinOS-SDK/include>
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../rinjson/include>
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../rinpath/include>
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../aquamarine>
     $<INSTALL_INTERFACE:include>)
 if(NOT MSVC)
@@ -227,6 +228,16 @@ if(RINRUNTIME_BUILD_TESTS)
                           CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES)
     add_test(NAME rinruntime-download-range
              COMMAND rinruntime-download-range-test)
+    add_executable(rinruntime-drag-drop-test
+                   tests/drag_drop_contract_test.cpp)
+    target_link_libraries(rinruntime-drag-drop-test
+                          PRIVATE RinRuntime::RinRuntime)
+    target_include_directories(rinruntime-drag-drop-test
+                               PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    set_target_properties(rinruntime-drag-drop-test PROPERTIES
+                          CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES)
+    add_test(NAME rinruntime-drag-drop
+             COMMAND rinruntime-drag-drop-test)
     add_executable(rinruntime-abi-policy-test tests/abi_policy_test.cpp)
     target_link_libraries(rinruntime-abi-policy-test PRIVATE RinRuntime::RinRuntime)
     target_include_directories(rinruntime-abi-policy-test
@@ -251,7 +262,7 @@ if(RINRUNTIME_BUILD_TESTS)
     add_test(NAME rinruntime-clipboard COMMAND rinruntime-clipboard-test)
     add_executable(rinruntime-update-metadata-json-test
                    tests/update_metadata_json_test.cpp
-                   ../../rinjson/src/json.cpp)
+                   ../rinjson/src/json.cpp)
     target_link_libraries(rinruntime-update-metadata-json-test
                           PRIVATE RinRuntime::RinRuntime)
     target_include_directories(rinruntime-update-metadata-json-test
@@ -263,7 +274,7 @@ if(RINRUNTIME_BUILD_TESTS)
              COMMAND rinruntime-update-metadata-json-test)
     add_executable(rinruntime-package-metadata-json-test
                    tests/package_metadata_json_test.cpp
-                   ../../rinjson/src/json.cpp)
+                   ../rinjson/src/json.cpp)
     target_link_libraries(rinruntime-package-metadata-json-test
                           PRIVATE RinRuntime::RinRuntime)
     target_include_directories(rinruntime-package-metadata-json-test
@@ -275,7 +286,7 @@ if(RINRUNTIME_BUILD_TESTS)
              COMMAND rinruntime-package-metadata-json-test)
     add_executable(rinruntime-application-metadata-json-test
                    tests/application_metadata_json_test.cpp
-                   ../../rinjson/src/json.cpp)
+                   ../rinjson/src/json.cpp)
     target_link_libraries(rinruntime-application-metadata-json-test
                           PRIVATE RinRuntime::RinRuntime)
     target_include_directories(rinruntime-application-metadata-json-test
