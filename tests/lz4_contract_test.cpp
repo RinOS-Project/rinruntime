@@ -3,6 +3,7 @@
 
 #include "../include/rincompression/lz4.hpp"
 
+#include <algorithm>
 #include <cassert>
 #include <cstdint>
 #include <string>
@@ -16,10 +17,20 @@ static bool cancelNow(void* context)
 
 int main()
 {
+    RinCompression::Lz4BlockEncoder encoder;
     RinCompression::Lz4BlockDecoder decoder;
     std::vector<std::uint8_t> output;
 
     const std::uint8_t literal[] = {0x50u, 'h', 'e', 'l', 'l', 'o'};
+    std::vector<std::uint8_t> encoded;
+    assert(encoder.encode(reinterpret_cast<const std::uint8_t*>("hello"), 5u,
+                          encoded) == RinCompression::Lz4Result::Ok);
+    assert(encoded.size() == sizeof(literal));
+    assert(std::equal(encoded.begin(), encoded.end(), literal));
+    assert(decoder.decode(encoded.data(), encoded.size(), output) ==
+           RinCompression::Lz4Result::Ok);
+    assert(std::string(output.begin(), output.end()) == "hello");
+
     assert(decoder.decode(literal, sizeof(literal), output) ==
            RinCompression::Lz4Result::Ok);
     assert(std::string(output.begin(), output.end()) == "hello");
@@ -53,5 +64,10 @@ int main()
     assert(output.empty());
     assert(decoder.decode(nullptr, 1u, output) ==
            RinCompression::Lz4Result::InvalidArgument);
+    std::uint32_t cancelledEncode = 1u;
+    assert(encoder.encode(reinterpret_cast<const std::uint8_t*>("hello"), 5u,
+                          encoded, cancelNow, &cancelledEncode) ==
+           RinCompression::Lz4Result::Cancelled);
+    assert(encoded.empty());
     return 0;
 }

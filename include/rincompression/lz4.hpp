@@ -130,6 +130,66 @@ public:
     }
 };
 
+/* Emit a deterministic final-literals-only block.  This is deliberately a
+ * portable interoperability encoder, not a compression-ratio strategy; a
+ * container owner may choose a denser private match finder. */
+class Lz4BlockEncoder final {
+    static bool cancelled(Lz4CancellationFunction function, void* context) {
+        return function != nullptr && function(context);
+    }
+
+public:
+    Lz4Result encode(const std::uint8_t* input,
+                     std::size_t inputSize,
+                     std::vector<std::uint8_t>& output) const {
+        return encode(input, inputSize, output, nullptr, nullptr);
+    }
+
+    Lz4Result encode(const std::uint8_t* input,
+                     std::size_t inputSize,
+                     std::vector<std::uint8_t>& output,
+                     Lz4CancellationFunction cancellation,
+                     void* cancellationContext) const {
+        std::size_t extension = 0u;
+        output.clear();
+        if (input == nullptr && inputSize != 0u)
+            return Lz4Result::InvalidArgument;
+        if (inputSize > kLz4MaximumBytes)
+            return Lz4Result::Limit;
+        if (cancelled(cancellation, cancellationContext))
+            return Lz4Result::Cancelled;
+        if (inputSize == 0u) return Lz4Result::Ok;
+
+        const bool extended = inputSize >= 15u;
+        if (extended) {
+            extension = inputSize - 15u;
+            const std::size_t extensionBytes = extension / 255u + 1u;
+            if (extensionBytes > kLz4MaximumBytes - 1u ||
+                inputSize > kLz4MaximumBytes - 1u - extensionBytes)
+                return Lz4Result::Limit;
+        } else if (inputSize > kLz4MaximumBytes - 1u) {
+            return Lz4Result::Limit;
+        }
+
+        output.reserve(1u + inputSize + (extended ? extension / 255u + 1u : 0u));
+        output.push_back(static_cast<std::uint8_t>(
+            extended ? 0xf0u : static_cast<std::uint8_t>(inputSize << 4u)));
+        if (extended) {
+            while (extension >= 255u) {
+                output.push_back(255u);
+                extension -= 255u;
+            }
+            output.push_back(static_cast<std::uint8_t>(extension));
+        }
+        output.insert(output.end(), input, input + inputSize);
+        if (cancelled(cancellation, cancellationContext)) {
+            output.clear();
+            return Lz4Result::Cancelled;
+        }
+        return Lz4Result::Ok;
+    }
+};
+
 } // namespace RinCompression
 
 #endif /* RINCOMPRESSION_LZ4_HPP */
