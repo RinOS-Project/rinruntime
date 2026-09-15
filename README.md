@@ -64,6 +64,13 @@ and the extended table containing the optional cancellation callback. Older
 owners therefore remain usable without inventing a cancellation context; a
 future incompatible table must use a new ABI version.
 
+`clipboard.h` provides the public application text clipboard client.  It
+validates the UTF-8 byte bound and uses the public GUI syscall adapter with
+failure-atomic output handling.  The private kernel broker remains the owner
+of capability checks, per-user ownership, generation, locale metadata, and
+the clipboard store; those private details are not required by ordinary
+applications or external toolkits.
+
 The public TLS client-certificate transport keeps only the bounded TLS wire
 certificate list and opaque signer capability. `reset()` and all rejected
 signature paths use an optimization-resistant clear for copied certificate,
