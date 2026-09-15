@@ -15,6 +15,13 @@ static bool cancelNow(void* context)
            *static_cast<const std::uint32_t*>(context) != 0u;
 }
 
+static bool cancelAfterSeveralPolls(void* context)
+{
+    auto* polls = static_cast<std::uint32_t*>(context);
+    if (polls == nullptr) return true;
+    return ++*polls >= 3u;
+}
+
 int main()
 {
     RinCompression::Lz4BlockEncoder encoder;
@@ -69,5 +76,21 @@ int main()
                           encoded, cancelNow, &cancelledEncode) ==
            RinCompression::Lz4Result::Cancelled);
     assert(encoded.empty());
+
+    std::vector<std::uint8_t> large(128u * 1024u, 0x5au);
+    std::uint32_t encoderPolls = 0u;
+    assert(encoder.encode(large.data(), large.size(), encoded,
+                          cancelAfterSeveralPolls, &encoderPolls) ==
+           RinCompression::Lz4Result::Cancelled);
+    assert(encoded.empty());
+
+    assert(encoder.encode(large.data(), large.size(), encoded) ==
+           RinCompression::Lz4Result::Ok);
+    std::uint32_t decoderPolls = 0u;
+    assert(decoder.decode(encoded.data(), encoded.size(), output,
+                          RinCompression::kLz4MaximumBytes,
+                          cancelAfterSeveralPolls, &decoderPolls) ==
+           RinCompression::Lz4Result::Cancelled);
+    assert(output.empty());
     return 0;
 }

@@ -82,9 +82,19 @@ public:
                 return fail(output, Lz4Result::Malformed);
             if (literalLength > maximumOutputBytes - output.size())
                 return fail(output, Lz4Result::Limit);
-            output.insert(output.end(), compressed + position,
-                          compressed + position + literalLength);
-            position += literalLength;
+            const std::size_t literalEnd = position + literalLength;
+            while (position < literalEnd) {
+                if (cancelled(cancellation, cancellationContext))
+                    return fail(output, Lz4Result::Cancelled);
+                const std::size_t remaining = literalEnd - position;
+                const std::size_t chunk = remaining > 64u * 1024u
+                    ? 64u * 1024u : remaining;
+                output.insert(output.end(), compressed + position,
+                              compressed + position + chunk);
+                position += chunk;
+            }
+            if (cancelled(cancellation, cancellationContext))
+                return fail(output, Lz4Result::Cancelled);
 
             /* The final sequence contains literals only. */
             if (position == compressedSize) break;
@@ -181,7 +191,19 @@ public:
             }
             output.push_back(static_cast<std::uint8_t>(extension));
         }
-        output.insert(output.end(), input, input + inputSize);
+        std::size_t copied = 0u;
+        while (copied < inputSize) {
+            if (cancelled(cancellation, cancellationContext)) {
+                output.clear();
+                return Lz4Result::Cancelled;
+            }
+            const std::size_t remaining = inputSize - copied;
+            const std::size_t chunk = remaining > 64u * 1024u
+                ? 64u * 1024u : remaining;
+            output.insert(output.end(), input + copied,
+                          input + copied + chunk);
+            copied += chunk;
+        }
         if (cancelled(cancellation, cancellationContext)) {
             output.clear();
             return Lz4Result::Cancelled;
