@@ -4,6 +4,7 @@
 #define RINRUNTIME_APPLICATION_METADATA_JSON_HPP
 
 #include <cstddef>
+#include <cstdint>
 #include <string>
 #include <string_view>
 #include <utility>
