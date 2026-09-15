@@ -21,7 +21,7 @@ set(RINRUNTIME_RLL_TARGET "x86_64-unknown-rinos" CACHE STRING
 set(RINRUNTIME_RLL_SIGN_PROFILE "release" CACHE STRING
     "RinCompiler signing profile used by the target .rll route")
 set(RINRUNTIME_RLL_SOURCES
-    "src/portal.c;src/crash.c;src/backup_restore.c;src/known_folders.c;src/file_operation.c;src/safe_save.c;src/safe_save_posix.c;src/session_recovery.c;src/crash_service.c;src/path.c;src/serial_portal_protocol.c;src/platform.c;src/crash_service_client.c;src/file_portal.c;src/durable_file_portal.c;src/file_chooser_portal.c;src/file_operation_service_client.c;src/accessibility_service_client.c;src/audio/rin_audio_service_client.c"
+    "src/portal.c;src/crash.c;src/backup_restore.c;src/known_folders.c;src/file_operation.c;src/safe_save.c;src/safe_save_posix.c;src/session_recovery.c;src/crash_service.c;src/path.c;src/serial_portal_protocol.c;src/platform.c;src/clipboard.c;src/crash_service_client.c;src/file_portal.c;src/durable_file_portal.c;src/file_chooser_portal.c;src/file_operation_service_client.c;src/accessibility_service_client.c;src/audio/rin_audio_service_client.c"
     CACHE STRING "semicolon-separated RinRuntime C sources for the target .rll route")
 set(RINRUNTIME_RLL_DEPENDENCIES "" CACHE STRING
     "semicolon-separated dependency .rll images for the target .rll route")
@@ -54,6 +54,7 @@ if(NOT WIN32)
     list(APPEND RINRUNTIME_SOURCES src/backup_payload.c)
     list(APPEND RINRUNTIME_RLL_SOURCES src/backup_payload.c)
     list(APPEND RINRUNTIME_SOURCES src/platform.c)
+    list(APPEND RINRUNTIME_SOURCES src/clipboard.c)
     list(APPEND RINRUNTIME_SOURCES src/rin_keyring_client.c)
     list(APPEND RINRUNTIME_RLL_SOURCES src/rin_keyring_client.c)
     list(APPEND RINRUNTIME_SOURCES src/crash_service_client.c)
@@ -244,6 +245,9 @@ if(RINRUNTIME_BUILD_TESTS)
                           CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES)
     add_test(NAME rinruntime-event-loop-rin
              COMMAND rinruntime-event-loop-rin-test)
+    add_executable(rinruntime-clipboard-test tests/clipboard_contract_test.c)
+    target_link_libraries(rinruntime-clipboard-test PRIVATE RinRuntime::RinRuntime)
+    add_test(NAME rinruntime-clipboard COMMAND rinruntime-clipboard-test)
     add_executable(rinruntime-archive-codec-test
                    tests/archive_codec_contract_test.cpp)
     target_link_libraries(rinruntime-archive-codec-test

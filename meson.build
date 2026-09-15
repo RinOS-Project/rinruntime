@@ -12,6 +12,7 @@ runtime_sources = files('src/portal.c', 'src/crash.c', 'src/backup_restore.c',
 if host_machine.system() != 'windows'
   runtime_sources += files('src/backup_payload.c')
   runtime_sources += files('src/platform.c')
+  runtime_sources += files('src/clipboard.c')
   runtime_sources += files('src/crash_service_client.c',
                            'src/file_portal.c',
                            'src/durable_file_portal.c',
@@ -137,6 +138,9 @@ if get_option('buildtype') != 'plain'
         'tests/event_loop_rin_contract_test.cpp', '../../RinOS-SDK/src/rinsdk_v1.c',
         dependencies: runtime_dep, override_options: test_override_options,
         cpp_args: ['-std=c++17']))
+  test('rinruntime-clipboard', executable('rinruntime-clipboard-test',
+        'tests/clipboard_contract_test.c', dependencies: runtime_dep,
+        override_options: test_override_options))
   test('rinruntime-cursor', executable('rinruntime-cursor-test',
         'tests/cursor_contract_test.c', dependencies: runtime_dep,
         override_options: test_override_options))

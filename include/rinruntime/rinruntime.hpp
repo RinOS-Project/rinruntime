@@ -49,6 +49,7 @@
 #include "file_portal.h"
 #include "durable_file_portal.h"
 #include "file_chooser_portal.h"
+#include "clipboard.h"
 #include "file_operation_service.h"
 #include "rin_keyring_client.h"
 #include "text_codec.h"
