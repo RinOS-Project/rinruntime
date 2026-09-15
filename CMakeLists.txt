@@ -271,6 +271,16 @@ if(RINRUNTIME_BUILD_TESTS)
                           CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES)
     add_test(NAME rincompression-deflate
              COMMAND rincompression-deflate-test)
+    add_executable(rincompression-lz4-test
+                   tests/lz4_contract_test.cpp)
+    target_link_libraries(rincompression-lz4-test
+                          PRIVATE RinRuntime::RinRuntime)
+    target_include_directories(rincompression-lz4-test
+                               PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    set_target_properties(rincompression-lz4-test PROPERTIES
+                          CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES)
+    add_test(NAME rincompression-lz4
+             COMMAND rincompression-lz4-test)
     add_executable(rinruntime-timezone-test
                    tests/timezone_contract_test.cpp)
     target_link_libraries(rinruntime-timezone-test

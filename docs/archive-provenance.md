@@ -7,6 +7,12 @@ bounded output and optional cancellation callback.  They do not open a
 filesystem path, create a symlink, or publish a filesystem transaction.  No
 third-party codec is linked into `RinRuntime`.
 
+The standalone compression surface also includes bounded raw LZ4 block
+encoder/decoder contracts in `rincompression/lz4.hpp`. The encoder is
+deterministic and literal-only; denser match-finding, LZ4 frame headers,
+checksums, filesystem extraction, and service publication remain private
+adapter responsibilities.
+
 The codecs operate on caller-owned bytes or bounded caller-owned source/sink
 callbacks.  Filesystem and service providers must validate their own
 authority, and must discard staging output when a codec reports malformed

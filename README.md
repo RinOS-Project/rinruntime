@@ -110,3 +110,10 @@ bounded deterministic stored-DEFLATE encoder. `rinruntime/archive_deflate.hpp`
 keeps `ArchiveDeflateEncoder` as a compatibility wrapper, while archive
 policy, filesystem extraction, service IPC, and File Portal publication remain
 outside the compression library.
+
+The public `rincompression/lz4.hpp` header provides bounded raw LZ4 block
+encoder/decoder contracts with failure-atomic caller-owned output and optional
+cancellation. The encoder is deterministic and literal-only, leaving denser
+match-finding strategies to a private owner. The public codec does not parse
+LZ4 frames, open files, or publish extracted data; frame, filesystem, service,
+and portal ownership remains with the private adapter.
