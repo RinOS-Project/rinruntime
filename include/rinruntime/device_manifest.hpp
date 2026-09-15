@@ -121,15 +121,16 @@ struct DeviceManifest {
             if (!device.valid() ||
                 (index != 0u && devices[index - 1u].id >= device.id))
                 return false;
-            if (!device.parentId.empty()) {
-                bool parentFound = false;
-                for (std::size_t parent = 0u; parent < index; ++parent)
-                    if (devices[parent].id == device.parentId) {
-                        parentFound = true;
-                        break;
-                    }
-                if (!parentFound) return false;
-            }
+        }
+        for (const DeviceManifestDevice& device : devices) {
+            if (device.parentId.empty()) continue;
+            bool parentFound = false;
+            for (const DeviceManifestDevice& parent : devices)
+                if (parent.id == device.parentId) {
+                    parentFound = true;
+                    break;
+                }
+            if (!parentFound) return false;
         }
         return true;
     }

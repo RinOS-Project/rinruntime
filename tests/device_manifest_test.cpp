@@ -40,5 +40,15 @@ int main() {
     manifest.devices.front().parentId.clear();
     manifest.devices.front().id = "bad/id";
     assert(!manifest.valid());
+
+    DeviceManifest parentAfterChild;
+    parentAfterChild.versionMajor = 1u;
+    parentAfterChild.manifestId = "desktop.devices";
+    parentAfterChild.generation = 5u;
+    DeviceManifestDevice child = validDevice("usb.001");
+    child.parentId = "usb.900";
+    parentAfterChild.devices.push_back(child);
+    parentAfterChild.devices.push_back(validDevice("usb.900"));
+    assert(parentAfterChild.valid());
     return 0;
 }
