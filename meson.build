@@ -140,6 +140,9 @@ if get_option('buildtype') != 'plain'
   test('rinruntime-archive-codec', executable('rinruntime-archive-codec-test',
         'tests/archive_codec_contract_test.cpp', dependencies: runtime_dep,
         override_options: test_override_options, cpp_args: ['-std=c++17']))
+  test('rinruntime-tls-client-certificate', executable('rinruntime-tls-client-certificate-test',
+        'tests/tls_client_certificate_contract_test.cpp', dependencies: runtime_dep,
+        override_options: test_override_options, cpp_args: ['-std=c++17']))
   test('rincompression-deflate', executable('rincompression-deflate-test',
         'tests/deflate_contract_test.cpp', dependencies: runtime_dep,
         override_options: test_override_options, cpp_args: ['-std=c++17']))
