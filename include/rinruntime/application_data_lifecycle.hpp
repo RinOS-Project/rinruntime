@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <cstring>
 #include <string>
+#include <utility>
 
 namespace RinRuntime {
 
@@ -38,6 +39,29 @@ struct ApplicationDataProfile final {
     std::uint64_t dataSchemaVersion = 0u;
 };
 
+/* Product launchers provide this owner for lifecycle mutations.  The
+ * callback is an authority boundary: it resolves a root only for the exact
+ * authenticated user/application identity supplied by the launcher.  The
+ * returned value is a canonical directory label, not a capability by
+ * itself; the filesystem owner must still enforce access on open/mutate. */
+using ApplicationDataKnownFolderResolveFn = int (*)(
+    void* context, const ApplicationDataIdentity* owner,
+    const char* applicationId, RinRuntimeApplicationDirectory directory,
+    char* pathOut, std::size_t pathCapacity);
+
+struct ApplicationDataKnownFolderOwner final {
+    ApplicationDataIdentity identity{};
+    ApplicationDataKnownFolderResolveFn resolve = nullptr;
+    void* context = nullptr;
+
+    bool validFor(const ApplicationDataIdentity& expected) const {
+        return resolve != nullptr &&
+               identity.userId == expected.userId &&
+               identity.applicationTag == expected.applicationTag &&
+               identity.packageGeneration == expected.packageGeneration;
+    }
+};
+
 struct ApplicationDataLifecyclePlan final {
     ApplicationDataIdentity owner{};
     std::string applicationId;
@@ -52,6 +76,8 @@ struct ApplicationDataLifecyclePlan final {
         ApplicationDataUninstallAction::RemoveTransientCache;
     std::uint64_t archiveGeneration = 0u;
     bool preserveUserData = false;
+    /* True only when all roots came from the authenticated owner callback. */
+    bool ownerBound = false;
 };
 
 /* The publisher is called only after RBK1 identity, item eligibility and
@@ -124,6 +150,53 @@ class ApplicationDataLifecycle final {
                               : ApplicationDataLifecycleResult::Ok;
     }
 
+    static bool resolvedRootValid(const std::string& path,
+                                  const std::string& applicationId) {
+        if (path.empty() || path.size() >= RINRUNTIME_KNOWN_FOLDER_PATH_MAX ||
+            path.front() != '/' || path.back() == '/' ||
+            !ApplicationDataPolicy::validApplicationId(applicationId))
+            return false;
+        std::size_t componentStart = 1u;
+        for (std::size_t index = 1u; index <= path.size(); ++index) {
+            if (index != path.size() && path[index] != '/') {
+                const unsigned char byte =
+                    static_cast<unsigned char>(path[index]);
+                if (byte < 0x20u || byte == 0x7fu || byte == '\\')
+                    return false;
+                continue;
+            }
+            const std::size_t componentLength = index - componentStart;
+            if (componentLength == 0u ||
+                (componentLength == 1u && path[componentStart] == '.') ||
+                (componentLength == 2u && path[componentStart] == '.' &&
+                 path[componentStart + 1u] == '.'))
+                return false;
+            componentStart = index + 1u;
+        }
+        const std::string suffix = "/" + applicationId;
+        return path.size() > suffix.size() &&
+               path.compare(path.size() - suffix.size(), suffix.size(),
+                            suffix) == 0;
+    }
+
+    static ApplicationDataLifecycleResult resolveOwnedDirectory(
+        const ApplicationDataProfile& profile,
+        const ApplicationDataKnownFolderOwner& owner,
+        RinRuntimeApplicationDirectory directory, std::string& output) {
+        char path[RINRUNTIME_KNOWN_FOLDER_PATH_MAX] = {};
+        output.clear();
+        if (!profileIdentityMatches(profile) || !owner.validFor(profile.owner) ||
+            owner.resolve(owner.context, &profile.owner,
+                          profile.applicationId.c_str(), directory, path,
+                          sizeof(path)) != 0 ||
+            std::memchr(path, '\0', sizeof(path)) == nullptr)
+            return ApplicationDataLifecycleResult::KnownFolderUnavailable;
+        output.assign(path);
+        return resolvedRootValid(output, profile.applicationId)
+                   ? ApplicationDataLifecycleResult::Ok
+                   : ApplicationDataLifecycleResult::KnownFolderUnavailable;
+    }
+
     static ApplicationDataLifecycleResult mapRestoreResult(
         RinRuntimeBackupResult result) {
         switch (result) {
@@ -190,6 +263,63 @@ public:
                              profile.applicationId, output.backupRoot) !=
                 ApplicationDataLifecycleResult::Ok)
             return ApplicationDataLifecycleResult::KnownFolderUnavailable;
+        if (preserveUserData) {
+            output.archiveRoot = output.backupRoot + "/uninstall";
+            if (!appendGeneration(output.archiveRoot,
+                                  output.archiveGeneration)) {
+                output = ApplicationDataLifecyclePlan{};
+                return ApplicationDataLifecycleResult::ArchivePathUnavailable;
+            }
+        }
+        return ApplicationDataLifecycleResult::Ok;
+    }
+
+    /* Product lifecycle entry point.  Unlike the compatibility overload
+     * above, this path never consults ambient environment variables and
+     * cannot use a resolver registered for another user or package
+     * generation. */
+    static ApplicationDataLifecycleResult buildUninstallPlan(
+        const ApplicationDataProfile& profile, bool preserveUserData,
+        const ApplicationDataKnownFolderOwner& owner,
+        ApplicationDataLifecyclePlan& output) {
+        output = ApplicationDataLifecyclePlan{};
+        if (!profileIdentityMatches(profile) || !owner.validFor(profile.owner))
+            return ApplicationDataLifecycleResult::InvalidArgument;
+        std::string dataRoot;
+        std::string cacheRoot;
+        std::string stateRoot;
+        std::string backupRoot;
+        if (resolveOwnedDirectory(profile, owner,
+                                  RINRUNTIME_APPLICATION_DIRECTORY_DATA,
+                                  dataRoot) !=
+                ApplicationDataLifecycleResult::Ok ||
+            resolveOwnedDirectory(profile, owner,
+                                  RINRUNTIME_APPLICATION_DIRECTORY_CACHE,
+                                  cacheRoot) !=
+                ApplicationDataLifecycleResult::Ok ||
+            resolveOwnedDirectory(profile, owner,
+                                  RINRUNTIME_APPLICATION_DIRECTORY_STATE,
+                                  stateRoot) !=
+                ApplicationDataLifecycleResult::Ok ||
+            resolveOwnedDirectory(profile, owner,
+                                  RINRUNTIME_APPLICATION_DIRECTORY_BACKUP,
+                                  backupRoot) !=
+                ApplicationDataLifecycleResult::Ok)
+            return ApplicationDataLifecycleResult::KnownFolderUnavailable;
+
+        output.owner = profile.owner;
+        output.applicationId = profile.applicationId;
+        output.dataRoot = std::move(dataRoot);
+        output.cacheRoot = std::move(cacheRoot);
+        output.stateRoot = std::move(stateRoot);
+        output.backupRoot = std::move(backupRoot);
+        output.archiveGeneration = profile.owner.packageGeneration;
+        output.preserveUserData = preserveUserData;
+        output.ownerBound = true;
+        output.dataAction = ApplicationDataPolicy::uninstallAction(
+            ApplicationDataKind::Data, false, preserveUserData);
+        output.cacheAction = ApplicationDataPolicy::uninstallAction(
+            ApplicationDataKind::Cache, false, false);
         if (preserveUserData) {
             output.archiveRoot = output.backupRoot + "/uninstall";
             if (!appendGeneration(output.archiveRoot,
