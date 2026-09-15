@@ -271,6 +271,16 @@ if(RINRUNTIME_BUILD_TESTS)
                           CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES)
     add_test(NAME rincompression-deflate
              COMMAND rincompression-deflate-test)
+    add_executable(rinruntime-timezone-test
+                   tests/timezone_contract_test.cpp)
+    target_link_libraries(rinruntime-timezone-test
+                          PRIVATE RinRuntime::RinRuntime)
+    target_include_directories(rinruntime-timezone-test
+                               PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    set_target_properties(rinruntime-timezone-test PROPERTIES
+                          CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES)
+    add_test(NAME rinruntime-timezone
+             COMMAND rinruntime-timezone-test)
 endif()
 
 if(RINRUNTIME_BUILD_EXAMPLES)

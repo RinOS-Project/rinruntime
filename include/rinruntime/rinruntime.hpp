@@ -21,6 +21,7 @@
 #include "service_configuration.hpp"
 #include "application_metadata.hpp"
 #include "update_metadata.hpp"
+#include "timezone.hpp"
 #include "dns_transport.hpp"
 #include "accessibility.hpp"
 #include "accessibility_bridge.hpp"

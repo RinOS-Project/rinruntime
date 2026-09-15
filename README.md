@@ -61,6 +61,14 @@ and the extended table containing the optional cancellation callback. Older
 owners therefore remain usable without inventing a cancellation context; a
 future incompatible table must use a new ABI version.
 
+`timezone.hpp` provides the backend-independent `ClockReading`,
+`TimeZoneSnapshot`, and `TimeZoneTransition` models. Snapshots validate bounded
+timezone identifiers, offsets, abbreviations, ordered DST transitions, and
+checked local-time conversion. A private clock/timezone owner may populate a
+snapshot from TZif/ICU data; the public model owns no syscall, RTC, catalog,
+filesystem, or persistence boundary, so ordinary applications and external
+tooling can consume the same contract.
+
 `abi_policy.hpp` provides the backend-independent part of the library ABI
 policy: same-major/minor-floor compatibility and append-only struct-prefix
 checks. SONAME, symbol export/versioning, deprecation/removal, signatures,
