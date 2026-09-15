@@ -111,6 +111,12 @@ entry points, publisher generation, and size fields failure-atomically into the
 public model. Repository authentication, signatures, installed-root
 publication, and kernel admission remain private owners.
 
+`application_metadata.hpp` and `application_metadata_json.hpp` provide the
+same split for application descriptors. The public parser validates bounded
+identifiers, display text, relative entry points, sorted categories and MIME
+types, while package paths, icon/resource loading, signatures, and installed
+application publication remain private owners.
+
 `update_metadata.hpp` provides the corresponding bounded update description:
 product/update identity, target version, channel, applicability floor, release
 notes, and sorted package artifacts with exact sizes and SHA-256 digests. It has

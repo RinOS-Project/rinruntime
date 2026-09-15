@@ -149,6 +149,10 @@ if get_option('buildtype') != 'plain'
         'tests/package_metadata_json_test.cpp', '../../rinjson/src/json.cpp',
         dependencies: runtime_dep, override_options: test_override_options,
         cpp_args: ['-std=c++17']))
+  test('rinruntime-application-metadata-json', executable('rinruntime-application-metadata-json-test',
+        'tests/application_metadata_json_test.cpp', '../../rinjson/src/json.cpp',
+        dependencies: runtime_dep, override_options: test_override_options,
+        cpp_args: ['-std=c++17']))
   test('rinruntime-cursor', executable('rinruntime-cursor-test',
         'tests/cursor_contract_test.c', dependencies: runtime_dep,
         override_options: test_override_options))

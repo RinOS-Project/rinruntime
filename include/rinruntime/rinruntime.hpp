@@ -21,6 +21,7 @@
 #include "package_metadata_json.hpp"
 #include "service_configuration.hpp"
 #include "application_metadata.hpp"
+#include "application_metadata_json.hpp"
 #include "cursor.h"
 #include "update_metadata.hpp"
 #include "update_metadata_json.hpp"
