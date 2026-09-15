@@ -130,6 +130,9 @@ if get_option('buildtype') != 'plain'
   test('rinruntime-download-range', executable('rinruntime-download-range-test',
         'tests/download_range_transport_contract_test.cpp',
         dependencies: runtime_dep, override_options: test_override_options))
+  test('rinruntime-abi-policy', executable('rinruntime-abi-policy-test',
+        'tests/abi_policy_test.cpp', dependencies: runtime_dep,
+        override_options: test_override_options, cpp_args: ['-std=c++17']))
   test('rinruntime-event-loop-rin', executable('rinruntime-event-loop-rin-test',
         'tests/event_loop_rin_contract_test.cpp', '../../RinOS-SDK/src/rinsdk_v1.c',
         dependencies: runtime_dep, override_options: test_override_options,

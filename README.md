@@ -61,6 +61,11 @@ and the extended table containing the optional cancellation callback. Older
 owners therefore remain usable without inventing a cancellation context; a
 future incompatible table must use a new ABI version.
 
+`abi_policy.hpp` provides the backend-independent part of the library ABI
+policy: same-major/minor-floor compatibility and append-only struct-prefix
+checks. SONAME, symbol export/versioning, deprecation/removal, signatures,
+and loader admission remain private packaging/loader responsibilities.
+
 `package_metadata.hpp` provides the same bounded package identity, numeric
 version, dependency ordering, and entry-point validation to ordinary
 applications and external package tooling. It is a pure model: package

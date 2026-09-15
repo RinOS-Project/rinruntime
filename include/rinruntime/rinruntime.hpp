@@ -15,6 +15,7 @@
 #include "file_associations.hpp"
 #include "download_resume.hpp"
 #include "download_range_transport.hpp"
+#include "abi_policy.hpp"
 #include "abi_feature_manifest.hpp"
 #include "package_metadata.hpp"
 #include "service_configuration.hpp"
