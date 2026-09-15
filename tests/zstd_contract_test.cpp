@@ -47,7 +47,7 @@ int main()
     assert(decoder.decode(nullptr, 1u, decoded) ==
            RinCompression::ZstdResult::InvalidArgument);
 
-    /* A valid frame with a compressed block is rejected explicitly. */
+    /* A frame carrying a compressed-block type is rejected explicitly. */
     const std::uint8_t compressedBlock[] = {
         0x28u, 0xb5u, 0x2fu, 0xfdu, 0x20u, 0x01u,
         0x0du, 0x00u, 0x00u, 0x00u};
@@ -61,6 +61,14 @@ int main()
         0x99u, 0xe9u, 0xd8u, 0x51u};
     assert(decoder.decode(checksumFrame, sizeof(checksumFrame), decoded) ==
            RinCompression::ZstdResult::Ok && decoded.empty());
+    /* The low 32 bits of XXH64("hello") are 0x889f6da3. */
+    const std::uint8_t helloChecksumFrame[] = {
+        0x28u, 0xb5u, 0x2fu, 0xfdu, 0x24u, 0x05u, 0x29u, 0x00u,
+        0x00u, 'h', 'e', 'l', 'l', 'o', 0xa3u, 0x6du, 0x9fu, 0x88u};
+    assert(decoder.decode(helloChecksumFrame,
+                          sizeof(helloChecksumFrame), decoded) ==
+           RinCompression::ZstdResult::Ok && decoded ==
+               std::vector<std::uint8_t>(hello, hello + sizeof(hello)));
     const std::uint8_t badChecksum[] = {
         0x28u, 0xb5u, 0x2fu, 0xfdu, 0x24u, 0x00u, 0x01u, 0x00u, 0x00u,
         0x98u, 0xe9u, 0xd8u, 0x51u};

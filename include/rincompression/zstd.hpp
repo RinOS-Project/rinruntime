@@ -177,7 +177,11 @@ class ZstdFrameEncoder final {
     static bool appendHeader(std::vector<std::uint8_t>& output,
                              std::size_t inputSize)
     {
-        if (output.size() > kZstdMaximumBytes - 5u) return false;
+        const std::size_t headerSize = inputSize <= 255u
+            ? 6u : inputSize <= 65791u ? 7u : 9u;
+        if (headerSize > kZstdMaximumBytes ||
+            output.size() > kZstdMaximumBytes - headerSize)
+            return false;
         zstd_detail::append32(output, UINT32_C(0xfd2fb528));
         if (inputSize <= 255u) {
             output.push_back(0x20u);
@@ -249,6 +253,9 @@ public:
                 ? kZstdMaximumBlockBytes : remaining;
             bool repeated = true;
             for (std::size_t index = 1u; index < blockSize; ++index) {
+                if ((index & 0xfffu) == 0u &&
+                    cancelled(cancellation, cancellationContext))
+                    return fail(output, ZstdResult::Cancelled);
                 if (input[offset + index] != input[offset]) {
                     repeated = false;
                     break;
