@@ -112,6 +112,13 @@ no URL, pathname, signature, private key, socket, staging handle, or install
 operation, so ordinary applications and external tooling can validate the same
 metadata while a repository/updater remains the private authenticated owner.
 
+`update_metadata_json.hpp` provides the matching bounded JSON parser. It uses
+the public `rinjson` limits, rejects duplicate keys and malformed fields, and
+clears the output model on every failure. JSON parsing is public and reusable
+by ordinary applications and external package tooling; repository
+authentication, HTTPS/TLS, signature verification, staging, and installation
+remain private updater owners.
+
 The archive headers are public, backend-independent codec contracts.  The
 DEFLATE, GZIP, strict ustar TAR, TAR.GZ, and ordinary ZIP readers consume
 caller-owned bytes or bounded callbacks and never open paths or publish files.

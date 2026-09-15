@@ -3,7 +3,7 @@ project('RinRuntime', ['c', 'cpp'], version: '1.0.0',
 
 python = import('python').find_installation(required: true)
 fs = import('fs')
-inc = include_directories('include', '../../RinOS-SDK/include')
+inc = include_directories('include', '../../RinOS-SDK/include', '../rinjson/include')
 runtime_sources = files('src/portal.c', 'src/crash.c', 'src/backup_restore.c',
                         'src/known_folders.c', 'src/file_operation.c',
                         'src/safe_save.c', 'src/safe_save_posix.c',
@@ -141,6 +141,10 @@ if get_option('buildtype') != 'plain'
   test('rinruntime-clipboard', executable('rinruntime-clipboard-test',
         'tests/clipboard_contract_test.c', dependencies: runtime_dep,
         override_options: test_override_options))
+  test('rinruntime-update-metadata-json', executable('rinruntime-update-metadata-json-test',
+        'tests/update_metadata_json_test.cpp', '../../rinjson/src/json.cpp',
+        dependencies: runtime_dep, override_options: test_override_options,
+        cpp_args: ['-std=c++17']))
   test('rinruntime-cursor', executable('rinruntime-cursor-test',
         'tests/cursor_contract_test.c', dependencies: runtime_dep,
         override_options: test_override_options))

@@ -89,6 +89,7 @@ endif()
 target_include_directories(RinRuntime PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../../RinOS-SDK/include>
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../rinjson/include>
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../aquamarine>
     $<INSTALL_INTERFACE:include>)
 if(NOT MSVC)
@@ -248,6 +249,18 @@ if(RINRUNTIME_BUILD_TESTS)
     add_executable(rinruntime-clipboard-test tests/clipboard_contract_test.c)
     target_link_libraries(rinruntime-clipboard-test PRIVATE RinRuntime::RinRuntime)
     add_test(NAME rinruntime-clipboard COMMAND rinruntime-clipboard-test)
+    add_executable(rinruntime-update-metadata-json-test
+                   tests/update_metadata_json_test.cpp
+                   ../../rinjson/src/json.cpp)
+    target_link_libraries(rinruntime-update-metadata-json-test
+                          PRIVATE RinRuntime::RinRuntime)
+    target_include_directories(rinruntime-update-metadata-json-test
+                               PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include
+                                       ${CMAKE_CURRENT_SOURCE_DIR}/../rinjson/include)
+    set_target_properties(rinruntime-update-metadata-json-test PROPERTIES
+                          CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES)
+    add_test(NAME rinruntime-update-metadata-json
+             COMMAND rinruntime-update-metadata-json-test)
     add_executable(rinruntime-archive-codec-test
                    tests/archive_codec_contract_test.cpp)
     target_link_libraries(rinruntime-archive-codec-test
