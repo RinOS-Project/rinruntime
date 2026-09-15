@@ -18,6 +18,18 @@ namespace RinRuntime {
 using ArchiveDeflateSinkFunction = bool (*)(
     void* context, const std::uint8_t* bytes, std::size_t size);
 using ArchiveDeflateCancellationFunction = bool (*)(void* context);
+/* A bounded pull source for one exact raw-DEFLATE payload.  The callback may
+ * return fewer bytes than requested, but must return false on I/O failure or
+ * an end-of-input condition before source.compressedSize bytes are supplied. */
+using ArchiveDeflateReadFunction = bool (*)(
+    void* context, std::uint8_t* bytes, std::size_t capacity,
+    std::size_t* bytesRead);
+
+struct ArchiveDeflateSource {
+    ArchiveDeflateReadFunction read = nullptr;
+    void* context = nullptr;
+    std::size_t compressedSize = 0u;
+};
 
 enum class ArchiveDeflateResult : int {
     Ok = 0,
@@ -69,7 +81,28 @@ public:
     {
         return decodeInternal(compressed, compressedSize, expectedSize,
                               expectedCrc, &output, nullptr, nullptr,
-                              cancellation, cancellationContext);
+                              cancellation, cancellationContext, nullptr,
+                              nullptr);
+    }
+
+    ArchiveDeflateResult decode(
+        const ArchiveDeflateSource& source, std::size_t expectedSize,
+        std::uint32_t expectedCrc, std::string& output) const
+    {
+        return decode(source, expectedSize, expectedCrc, output, nullptr,
+                      nullptr);
+    }
+
+    ArchiveDeflateResult decode(
+        const ArchiveDeflateSource& source, std::size_t expectedSize,
+        std::uint32_t expectedCrc, std::string& output,
+        ArchiveDeflateCancellationFunction cancellation,
+        void* cancellationContext) const
+    {
+        return decodeInternal(nullptr, source.compressedSize, expectedSize,
+                              expectedCrc, &output, nullptr, nullptr,
+                              cancellation, cancellationContext, source.read,
+                              source.context);
     }
 
     /* Decode directly into a bounded caller-owned staging sink. The callback
@@ -94,7 +127,29 @@ public:
     {
         return decodeInternal(compressed, compressedSize, expectedSize,
                               expectedCrc, nullptr, sink, context,
-                              cancellation, cancellationContext);
+                              cancellation, cancellationContext, nullptr,
+                              nullptr);
+    }
+
+    ArchiveDeflateResult decodeToSink(
+        const ArchiveDeflateSource& source, std::size_t expectedSize,
+        std::uint32_t expectedCrc, ArchiveDeflateSinkFunction sink,
+        void* context) const
+    {
+        return decodeToSink(source, expectedSize, expectedCrc, sink, context,
+                            nullptr, nullptr);
+    }
+
+    ArchiveDeflateResult decodeToSink(
+        const ArchiveDeflateSource& source, std::size_t expectedSize,
+        std::uint32_t expectedCrc, ArchiveDeflateSinkFunction sink,
+        void* context, ArchiveDeflateCancellationFunction cancellation,
+        void* cancellationContext) const
+    {
+        return decodeInternal(nullptr, source.compressedSize, expectedSize,
+                              expectedCrc, nullptr, sink, context,
+                              cancellation, cancellationContext, source.read,
+                              source.context);
     }
 
 private:
@@ -189,11 +244,16 @@ private:
         std::size_t expectedSize, std::uint32_t expectedCrc,
         std::string* output, ArchiveDeflateSinkFunction sink,
         void* context, ArchiveDeflateCancellationFunction cancellation,
-        void* cancellationContext) const
+        void* cancellationContext, ArchiveDeflateReadFunction read,
+        void* readContext) const
     {
+        if (read != nullptr && compressed != nullptr)
+            return ArchiveDeflateResult::InvalidArgument;
+        if (read == nullptr && compressed == nullptr)
+            return ArchiveDeflateResult::InvalidArgument;
         if (output == nullptr && (sink == nullptr || context == nullptr))
             return ArchiveDeflateResult::InvalidArgument;
-        if (compressed == nullptr || compressedSize == 0u)
+        if (compressedSize == 0u)
             return ArchiveDeflateResult::InvalidArgument;
         if (expectedSize > static_cast<std::size_t>(
                                RINRUNTIME_ARCHIVE_CONTENT_LIMIT))
@@ -205,7 +265,7 @@ private:
                              cancellation, cancellationContext);
         if (cancellation != nullptr && cancellation(cancellationContext))
             return fail(decoded, ArchiveDeflateResult::Cancelled);
-        Decoder reader(compressed, compressedSize);
+        Decoder reader(compressed, compressedSize, read, readContext);
         FixedDecodeEntry fixed[512];
         makeFixedDecodeTable(fixed);
         std::uint8_t window[32768];
@@ -294,8 +354,12 @@ private:
 
     class Decoder final {
     public:
-        Decoder(const std::uint8_t* bytes, std::size_t size)
-            : bytes_(bytes), size_(size) {}
+        Decoder(const std::uint8_t* bytes, std::size_t size,
+                ArchiveDeflateReadFunction read = nullptr,
+                void* readContext = nullptr)
+            : bytes_(bytes), size_(size), read_(read), readContext_(readContext)
+        {
+        }
 
         bool readBits(int count, std::uint32_t& value)
         {
@@ -333,7 +397,8 @@ private:
 
         bool cleanEnd() const
         {
-            return position_ == size_ && bitCount_ < 8 && bits_ == 0u;
+            return position_ == size_ && source_buffer_offset_ ==
+                       source_buffer_size_ && bitCount_ < 8 && bits_ == 0u;
         }
 
 
@@ -346,14 +411,41 @@ private:
 
         bool loadByte()
         {
+            std::uint8_t byte = 0u;
             if (position_ >= size_ || bitCount_ > 56) return false;
-            bits_ |= static_cast<std::uint64_t>(bytes_[position_++]) << bitCount_;
+            if (read_ == nullptr) {
+                byte = bytes_[position_++];
+            } else {
+                if (source_buffer_offset_ == source_buffer_size_) {
+                    std::size_t bytesRead = 0u;
+                    const std::size_t remaining = size_ - source_bytes_read_;
+                    const std::size_t capacity = remaining <
+                        sizeof(source_buffer_) ? remaining : sizeof(source_buffer_);
+                    if (capacity == 0u ||
+                        !read_(readContext_, source_buffer_, capacity,
+                               &bytesRead) || bytesRead == 0u ||
+                        bytesRead > capacity)
+                        return false;
+                    source_bytes_read_ += bytesRead;
+                    source_buffer_offset_ = 0u;
+                    source_buffer_size_ = bytesRead;
+                }
+                byte = source_buffer_[source_buffer_offset_++];
+                ++position_;
+            }
+            bits_ |= static_cast<std::uint64_t>(byte) << bitCount_;
             bitCount_ += 8;
             return true;
         }
 
-        const std::uint8_t* bytes_;
-        std::size_t size_;
+        const std::uint8_t* bytes_ = nullptr;
+        std::size_t size_ = 0u;
+        ArchiveDeflateReadFunction read_ = nullptr;
+        void* readContext_ = nullptr;
+        std::uint8_t source_buffer_[4096] = {};
+        std::size_t source_buffer_offset_ = 0u;
+        std::size_t source_buffer_size_ = 0u;
+        std::size_t source_bytes_read_ = 0u;
         std::size_t position_ = 0u;
         std::uint64_t bits_ = 0u;
         int bitCount_ = 0;
@@ -586,10 +678,16 @@ private:
 
 };
 
-/* Compatibility wrapper for the generic public compression library.  Keep
- * this name for archive consumers while the implementation lives in
- * `rincompression`, so archive policy and compression policy remain separate.
- */
+enum class ArchiveDeflateEncodeResult : int {
+    Ok = 0,
+    InvalidArgument = -1,
+    Limit = -2,
+};
+
+/* Compatibility wrapper for archive authoring helpers.  The generic
+ * `rincompression` encoder remains the public format-independent baseline;
+ * the named helpers below retain the existing archive API and are bounded,
+ * deterministic authoring strategies with no filesystem or service owner. */
 class ArchiveDeflateEncoder final {
     static ArchiveDeflateResult map(RinCompression::DeflateResult result)
     {
@@ -622,6 +720,172 @@ public:
     {
         return map(RinCompression::DeflateEncoder().encode(
             input, inputSize, output, cancellation, cancellationContext));
+    }
+
+    ArchiveDeflateEncodeResult encodeFixedRuns(
+        const std::uint8_t* data, std::size_t size,
+        std::vector<std::uint8_t>& output) const
+    {
+        output.clear();
+        if (data == nullptr && size != 0u)
+            return ArchiveDeflateEncodeResult::InvalidArgument;
+        if (size > static_cast<std::size_t>(UINT32_MAX) ||
+            size > static_cast<std::size_t>(RINRUNTIME_ARCHIVE_CONTENT_LIMIT))
+            return ArchiveDeflateEncodeResult::Limit;
+
+        BitWriter writer(output);
+        writer.write(1u, 1u); /* final block */
+        writer.write(1u, 2u); /* fixed Huffman */
+        std::size_t offset = 0u;
+        while (offset < size) {
+            const std::uint8_t value = data[offset];
+            std::size_t run = 1u;
+            while (offset + run < size && data[offset + run] == value)
+                ++run;
+            fixedSymbol(writer, value);
+            --run;
+            while (run >= 3u) {
+                const int length = run > 258u ? 258 : static_cast<int>(run);
+                fixedRun(writer, length);
+                run -= static_cast<std::size_t>(length);
+            }
+            while (run != 0u) {
+                fixedSymbol(writer, value);
+                --run;
+            }
+            offset += 1u;
+            while (offset < size && data[offset] == value) ++offset;
+        }
+        fixedSymbol(writer, 256);
+        writer.finish();
+        return finish(size, output);
+    }
+
+    ArchiveDeflateEncodeResult encodeDynamicLiterals(
+        const std::uint8_t* data, std::size_t size,
+        std::vector<std::uint8_t>& output) const
+    {
+        output.clear();
+        if (data == nullptr && size != 0u)
+            return ArchiveDeflateEncodeResult::InvalidArgument;
+        if (size > static_cast<std::size_t>(UINT32_MAX) ||
+            size > static_cast<std::size_t>(RINRUNTIME_ARCHIVE_CONTENT_LIMIT))
+            return ArchiveDeflateEncodeResult::Limit;
+
+        BitWriter writer(output);
+        writer.write(1u, 1u);  /* final block */
+        writer.write(2u, 2u);  /* dynamic Huffman */
+        writer.write(29u, 5u); /* 286 literal/length codes */
+        writer.write(0u, 5u);  /* one distance code */
+        writer.write(14u, 4u); /* 18 code-length codes */
+        static const std::uint8_t codeLengthLengths[18] = {
+            0u, 0u, 0u, 2u, 0u, 0u, 2u, 0u, 0u,
+            0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 2u};
+        for (std::uint8_t length : codeLengthLengths)
+            writer.write(length, 3u);
+        for (unsigned index = 0u; index < 257u; ++index)
+            writer.write(1u, 2u); /* code-length symbol 9 */
+        for (unsigned index = 257u; index < 286u; ++index)
+            writer.write(0u, 2u); /* code-length symbol 0 */
+        writer.write(2u, 2u);     /* code-length symbol 1 */
+        for (std::size_t index = 0u; index < size; ++index)
+            writer.write(reverseBits(data[index], 9u), 9u);
+        writer.write(reverseBits(256u, 9u), 9u); /* end-of-block */
+        writer.finish();
+        return finish(size, output);
+    }
+
+private:
+    class BitWriter final {
+    public:
+        explicit BitWriter(std::vector<std::uint8_t>& output)
+            : output_(output) {}
+
+        void write(std::uint32_t value, unsigned count)
+        {
+            bits_ |= static_cast<std::uint64_t>(value) << bitCount_;
+            bitCount_ += count;
+            while (bitCount_ >= 8u) {
+                output_.push_back(static_cast<std::uint8_t>(bits_));
+                bits_ >>= 8u;
+                bitCount_ -= 8u;
+            }
+        }
+
+        void finish()
+        {
+            if (bitCount_ != 0u)
+                output_.push_back(static_cast<std::uint8_t>(bits_));
+            bits_ = 0u;
+            bitCount_ = 0u;
+        }
+
+    private:
+        std::vector<std::uint8_t>& output_;
+        std::uint64_t bits_ = 0u;
+        unsigned bitCount_ = 0u;
+    };
+
+    static std::uint32_t reverseBits(std::uint32_t value, unsigned count)
+    {
+        std::uint32_t result = 0u;
+        for (unsigned index = 0u; index < count; ++index) {
+            result = (result << 1u) | (value & 1u);
+            value >>= 1u;
+        }
+        return result;
+    }
+
+    static void fixedSymbol(BitWriter& writer, int symbol)
+    {
+        std::uint32_t code = 0u;
+        unsigned length = 0u;
+        if (symbol <= 143) {
+            code = 0x30u + static_cast<std::uint32_t>(symbol);
+            length = 8u;
+        } else if (symbol <= 255) {
+            code = 0x190u + static_cast<std::uint32_t>(symbol - 144);
+            length = 9u;
+        } else if (symbol <= 279) {
+            code = static_cast<std::uint32_t>(symbol - 256);
+            length = 7u;
+        } else {
+            code = 0xc0u + static_cast<std::uint32_t>(symbol - 280);
+            length = 8u;
+        }
+        writer.write(reverseBits(code, length), length);
+    }
+
+    static void fixedRun(BitWriter& writer, int length)
+    {
+        static const std::uint16_t bases[29] = {
+            3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27,
+            31, 35, 43, 51, 59, 67, 83, 99, 115, 131, 163, 195,
+            227, 258};
+        static const std::uint8_t extras[29] = {
+            0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3,
+            3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0};
+        int index = 0;
+        while (index < 28 && length >= bases[index + 1]) ++index;
+        fixedSymbol(writer, 257 + index);
+        if (extras[index] != 0u)
+            writer.write(static_cast<std::uint32_t>(length - bases[index]),
+                         extras[index]);
+        writer.write(0u, 5u); /* distance code 0, distance 1 */
+    }
+
+    static ArchiveDeflateEncodeResult finish(
+        std::size_t inputSize, std::vector<std::uint8_t>& output)
+    {
+        if (output.size() > static_cast<std::size_t>(
+                                RINRUNTIME_ARCHIVE_CONTENT_LIMIT) ||
+            (inputSize != 0u &&
+             !rinruntime_archive_compression_ratio_valid(output.size(),
+                                                          inputSize))) {
+            output.clear();
+            return ArchiveDeflateEncodeResult::Limit;
+        }
+        return ArchiveDeflateEncodeResult::Ok;
     }
 };
 
