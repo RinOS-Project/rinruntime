@@ -22,6 +22,7 @@ not smuggled into the public include path.
 | `rin_web_serial_portal.h` | B: public WebContent client contract | Web Serial device records and authenticated portal/file-operation callbacks are public; the default VFS/syscall adapter remains an OS-Core implementation. |
 | `file_crypt.c`, `secure_folder.c` | D/B | Key ownership is delegated to RinTLS and the credential service; no key material is copied here. |
 | `archive*.hpp` and `archive_policy.h` | A/C | Metadata planning, bounded DEFLATE/GZIP/TAR/TAR.GZ/ZIP codecs, and traversal/bomb policy are public; filesystem/service providers are not. |
+| `rincompression/deflate.hpp`, `rincompression/lz4.hpp` | A: public codec | Caller-owned bounded DEFLATE/LZ4 block operations are public; container frames, filesystem/service providers, and publication are not. |
 | `download_resume.hpp`, `download_range_transport.hpp` | A: public runtime | Range/resume identity, bounded body transport, and optional cancellation are public; callback context may be null. Browser HTTPS/TLS, partial storage, and portal publication remain private adapters. |
 | `rin_runtime.c`, `rin_atexit_registry.c`, libc/libcxx glue | D | Process runtime and OS ABI glue remain private. |
 | audio service client | B: public service client | Uses the SDK audio wire/shared-ring contract; the audio daemon, device authority, and USB publication remain OS-Core. |

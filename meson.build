@@ -146,6 +146,9 @@ if get_option('buildtype') != 'plain'
   test('rincompression-deflate', executable('rincompression-deflate-test',
         'tests/deflate_contract_test.cpp', dependencies: runtime_dep,
         override_options: test_override_options, cpp_args: ['-std=c++17']))
+  test('rincompression-lz4', executable('rincompression-lz4-test',
+        'tests/lz4_contract_test.cpp', dependencies: runtime_dep,
+        override_options: test_override_options, cpp_args: ['-std=c++17']))
   test('rinruntime-timezone', executable('rinruntime-timezone-test',
         'tests/timezone_contract_test.cpp', dependencies: runtime_dep,
         override_options: test_override_options, cpp_args: ['-std=c++17']))

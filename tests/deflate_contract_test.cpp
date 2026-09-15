@@ -38,5 +38,6 @@ int main()
     assert(encoded.empty());
     assert(encoder.encode(nullptr, 1u, encoded) ==
            RinCompression::DeflateResult::InvalidArgument);
+
     return 0;
 }

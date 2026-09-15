@@ -60,5 +60,6 @@
 #include "events.hpp"
 #include "render_context.hpp"
 #include "window.hpp"
+#include "../rincompression/lz4.hpp"
 
 #endif
