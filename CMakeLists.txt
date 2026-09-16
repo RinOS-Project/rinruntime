@@ -318,6 +318,16 @@ if(RINRUNTIME_BUILD_TESTS)
                           CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES)
     add_test(NAME rinruntime-application-metadata-json
              COMMAND rinruntime-application-metadata-json-test)
+    add_executable(rinruntime-theme-profile-test
+                   tests/theme_profile_test.cpp)
+    target_link_libraries(rinruntime-theme-profile-test
+                          PRIVATE RinRuntime::RinRuntime)
+    target_include_directories(rinruntime-theme-profile-test
+                               PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    set_target_properties(rinruntime-theme-profile-test PROPERTIES
+                          CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES)
+    add_test(NAME rinruntime-theme-profile
+             COMMAND rinruntime-theme-profile-test)
     add_executable(rinruntime-archive-codec-test
                    tests/archive_codec_contract_test.cpp)
     target_link_libraries(rinruntime-archive-codec-test
