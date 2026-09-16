@@ -60,6 +60,10 @@ int wnd_acquire_render_target(RinRuntimeGuiHandle handle,
 int wnd_release_render_target(RinRuntimeGuiHandle handle,
                               const RinRenderTarget* target);
 int wnd_present(RinRuntimeGuiHandle handle);
+int wnd_export_gpu_image(RinRuntimeGuiHandle handle,
+                         RinCompositorGpuImageV1* image_out);
+int wnd_present_gpu(RinRuntimeGuiHandle handle,
+                    const RinCompositorGpuPresentV1* present);
 int wnd_is_focused(RinRuntimeGuiHandle handle);
 
 /* Legacy query names remain ABI-compatible with the original runtime. */

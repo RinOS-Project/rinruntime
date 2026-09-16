@@ -391,7 +391,8 @@ static int runtime_negotiate(void) {
                      RIN_COMPOSITOR_FEATURE_INPUT_SHARED_QUEUE |
                      RIN_COMPOSITOR_FEATURE_INPUT_WAKE_HANDLE |
                      RIN_COMPOSITOR_FEATURE_FRAME_CALLBACK |
-                     RIN_COMPOSITOR_FEATURE_PRESENT_FEEDBACK;
+                     RIN_COMPOSITOR_FEATURE_PRESENT_FEEDBACK |
+                     RIN_COMPOSITOR_FEATURE_GPU_SURFACE_ABI;
     if (runtime_request(RIN_COMPOSITOR_HELLO, &hello, sizeof(hello), &reply,
                         sizeof(reply), &reply_size, &status) != 0 ||
         status != 0 || reply_size != sizeof(reply) ||
@@ -1391,6 +1392,67 @@ int wnd_present(RinRuntimeGuiHandle handle) {
     memcpy(surface->pixels[next_slot], surface->pixels[surface->front_slot],
            (size_t)surface->bytes);
     surface->draw_slot = next_slot;
+    return RIN_RESULT_OK;
+}
+
+int wnd_export_gpu_image(RinRuntimeGuiHandle handle,
+                         RinCompositorGpuImageV1* image_out) {
+    RinRuntimeGuiSurface* surface = runtime_surface(handle);
+    RinCompositorGpuExportImageV1 request;
+    uint32_t reply_size = 0u;
+    int32_t status = -1;
+    if (!surface || !image_out ||
+        (g_compositor_features & RIN_COMPOSITOR_FEATURE_GPU_SURFACE_ABI) == 0u)
+        return RIN_RESULT_NOT_SUPPORTED;
+    memset(&request, 0, sizeof(request));
+    request.struct_size = sizeof(request);
+    request.version = RIN_COMPOSITOR_GPU_SURFACE_ABI_VERSION;
+    request.surface_id = surface->id;
+    request.buffer_slot = surface->draw_slot;
+    if (runtime_request(RIN_COMPOSITOR_EXPORT_GPU_IMAGE, &request,
+                        sizeof(request), image_out, sizeof(*image_out),
+                        &reply_size, &status) != 0 || status != 0 ||
+        reply_size != sizeof(*image_out) ||
+        image_out->struct_size != sizeof(*image_out) ||
+        image_out->version != RIN_COMPOSITOR_GPU_SURFACE_ABI_VERSION ||
+        image_out->surface_id != surface->id ||
+        image_out->buffer_slot != surface->draw_slot ||
+        image_out->image_handle == 0u || image_out->surface_generation == 0u)
+        return status != 0 ? status : RIN_RESULT_CORRUPT_DATA;
+    return RIN_RESULT_OK;
+}
+
+int wnd_present_gpu(RinRuntimeGuiHandle handle,
+                    const RinCompositorGpuPresentV1* present) {
+    RinRuntimeGuiSurface* surface = runtime_surface(handle);
+    RinCompositorGpuPresentV1 request;
+    uint32_t reply_size = 0u;
+    int32_t status = -1;
+    if (!surface || !present ||
+        (g_compositor_features & RIN_COMPOSITOR_FEATURE_GPU_SURFACE_ABI) == 0u)
+        return RIN_RESULT_NOT_SUPPORTED;
+    if (surface->render_target_acquired != 0u ||
+        present->struct_size != sizeof(*present) ||
+        present->version != RIN_COMPOSITOR_GPU_SURFACE_ABI_VERSION ||
+        present->reserved != 0u || present->reserved2 != 0u ||
+        present->buffer_slot != surface->draw_slot ||
+        present->frame_sequence == 0u ||
+        present->release_fence != present->frame_sequence)
+        return RIN_RESULT_INVALID_ARGUMENT;
+    request = *present;
+    request.surface_id = surface->id;
+    if (runtime_request(RIN_COMPOSITOR_PRESENT_GPU_IMAGE, &request,
+                        sizeof(request), 0, 0u, &reply_size, &status) != 0 ||
+        status != 0 || reply_size != 0u)
+        return status != 0 ? status : RIN_RESULT_IO;
+    surface->front_slot = request.buffer_slot;
+    surface->draw_slot = request.buffer_slot ^ 1u;
+    surface->frame_sequence = request.frame_sequence;
+    if (surface->draw_slot >= RIN_COMPOSITOR_MAX_BUFFERS ||
+        !surface->pixels[surface->draw_slot])
+        return RIN_RESULT_CORRUPT_DATA;
+    memcpy(surface->pixels[surface->draw_slot],
+           surface->pixels[surface->front_slot], (size_t)surface->bytes);
     return RIN_RESULT_OK;
 }
 
