@@ -118,6 +118,14 @@ int rinruntime_file_operation_path_valid(const char* path)
         }
         ++index;
     }
+    {
+        uint32_t component_size = index - component_start;
+        if (component_size == 0u ||
+            (component_size == 1u && path[component_start] == '.') ||
+            (component_size == 2u && path[component_start] == '.' &&
+             path[component_start + 1u] == '.'))
+            return 0;
+    }
     return index > 1u && path[index - 1u] != '/';
 }
 

@@ -62,7 +62,10 @@ int main(void)
         RINRUNTIME_KNOWN_FOLDER_OK)
         return 1;
     if (!rinruntime_file_operation_path_valid("/home/test/file") ||
-        rinruntime_file_operation_path_valid("/home/test/../file"))
+        rinruntime_file_operation_path_valid("/home/test/../file") ||
+        rinruntime_file_operation_path_valid("/home/test/.") ||
+        rinruntime_file_operation_path_valid("/home/test/..") ||
+        rinruntime_file_operation_path_valid("/.."))
         return 1;
     rinruntime_file_operation_init(&operation);
     if (operation.version != RINRUNTIME_FILE_OPERATION_VERSION ||
