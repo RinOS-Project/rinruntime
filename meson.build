@@ -167,6 +167,10 @@ if get_option('buildtype') != 'plain'
   test('rinruntime-theme-profile', executable('rinruntime-theme-profile-test',
         'tests/theme_profile_test.cpp', dependencies: runtime_dep,
         override_options: test_override_options, cpp_args: ['-std=c++17']))
+  test('rinruntime-theme-profile-json', executable('rinruntime-theme-profile-json-test',
+        'tests/theme_profile_json_test.cpp', '../rinjson/src/json.cpp',
+        dependencies: runtime_dep, override_options: test_override_options,
+        cpp_args: ['-std=c++17']))
   test('rinruntime-cursor', executable('rinruntime-cursor-test',
         'tests/cursor_contract_test.c', dependencies: runtime_dep,
         override_options: test_override_options))

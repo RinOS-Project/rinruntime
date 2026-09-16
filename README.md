@@ -1,5 +1,10 @@
 # RinRuntime public window API
 
+`theme.hpp` と `theme_json.hpp` は、backend-independentなThemeProfileと
+bounded JSON／`TYPE_THEME` resource consumerを提供する。palette生成、認証済み
+catalog publication、theme service、filesystem、window／compositor ownershipは
+public runtimeに含めず、RinOS側のprivate adapterへ分離する。
+
 `rinruntime` exposes the native-window transport through `window.h` and the
 C++ `RinRuntime::Window` wrapper.  Rendering is a borrowed-frame operation:
 

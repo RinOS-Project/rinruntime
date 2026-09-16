@@ -26,6 +26,7 @@
 #include "application_metadata.hpp"
 #include "application_metadata_json.hpp"
 #include "theme.hpp"
+#include "theme_json.hpp"
 #include "cursor.h"
 #include "update_metadata.hpp"
 #include "update_metadata_json.hpp"
