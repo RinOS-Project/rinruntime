@@ -188,7 +188,10 @@ RinRuntimeSafeSaveResult rinruntime_safe_save_posix(
     backend.sync_directory = posix_sync_directory;
 #ifdef _WIN32
     if (target_path == NULL) return RINRUNTIME_SAFE_SAVE_INVALID_ARGUMENT;
-    target_size = strlen(target_path);
+    target_size = 0u;
+    while (target_size < sizeof(normalized_target) &&
+           target_path[target_size] != '\0')
+        ++target_size;
     if (target_size >= sizeof(normalized_target))
         return RINRUNTIME_SAFE_SAVE_INVALID_ARGUMENT;
     for (size_t index = 0u; index <= target_size; ++index) {
@@ -199,5 +202,4 @@ RinRuntimeSafeSaveResult rinruntime_safe_save_posix(
 #endif
     return rinruntime_safe_save(&backend, target_path, data, size);
 }
-
 
