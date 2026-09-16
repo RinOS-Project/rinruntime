@@ -420,6 +420,68 @@ RinRuntimeFileChooserResult rinruntime_file_chooser_atomic_save_request_decode(
     return RINRUNTIME_FILE_CHOOSER_OK;
 }
 
+RinRuntimeFileChooserResult
+rinruntime_file_chooser_delegated_atomic_save_request_encode(
+    uint64_t request_id,
+    const RinRuntimeFileChooserSaveCapabilityV1* capability,
+    const rin_unix_peer_app_identity_v1* origin_peer, uint64_t data_size,
+    RinRuntimeFileChooserDelegatedAtomicSaveRequestV1* request_out)
+{
+    if (request_out != NULL) chooser_zero(request_out, sizeof(*request_out));
+    if (request_out == NULL || request_id == 0u ||
+        !rinruntime_file_chooser_save_capability_valid(capability) ||
+        !rin_unix_peer_app_identity_valid(origin_peer) ||
+        data_size > RINRUNTIME_FILE_CHOOSER_ATOMIC_SAVE_MAX_BYTES) {
+        return RINRUNTIME_FILE_CHOOSER_INVALID_ARGUMENT;
+    }
+    request_out->frame.magic = RINRUNTIME_FILE_CHOOSER_MAGIC;
+    request_out->frame.version = RINRUNTIME_FILE_CHOOSER_VERSION;
+    request_out->frame.operation =
+        RINRUNTIME_FILE_CHOOSER_OPERATION_DELEGATED_ATOMIC_SAVE_REQUEST;
+    request_out->frame.frame_size = sizeof(*request_out);
+    request_out->frame.request_id = request_id;
+    request_out->capability = *capability;
+    request_out->origin_peer = *origin_peer;
+    request_out->data_size = data_size;
+    return RINRUNTIME_FILE_CHOOSER_OK;
+}
+
+RinRuntimeFileChooserResult
+rinruntime_file_chooser_delegated_atomic_save_request_decode(
+    const RinRuntimeFileChooserDelegatedAtomicSaveRequestV1* request,
+    size_t frame_size,
+    RinRuntimeFileChooserSaveCapabilityV1* capability_out,
+    rin_unix_peer_app_identity_v1* origin_peer_out, uint64_t* data_size_out,
+    uint64_t* request_id_out)
+{
+    rin_unix_peer_app_identity_v1 origin_peer = {};
+    if (capability_out != NULL) chooser_zero(capability_out, sizeof(*capability_out));
+    if (origin_peer_out != NULL) chooser_zero(origin_peer_out, sizeof(*origin_peer_out));
+    if (data_size_out != NULL) *data_size_out = 0u;
+    if (request_id_out != NULL) *request_id_out = 0u;
+    if (request == NULL || capability_out == NULL || origin_peer_out == NULL ||
+        data_size_out == NULL || request_id_out == NULL ||
+        frame_size != sizeof(*request) ||
+        request->frame.magic != RINRUNTIME_FILE_CHOOSER_MAGIC ||
+        request->frame.version != RINRUNTIME_FILE_CHOOSER_VERSION ||
+        request->frame.operation !=
+            RINRUNTIME_FILE_CHOOSER_OPERATION_DELEGATED_ATOMIC_SAVE_REQUEST ||
+        request->frame.frame_size != sizeof(*request) ||
+        request->frame.request_id == 0u || request->reserved != 0u ||
+        !rinruntime_file_chooser_save_capability_valid(&request->capability) ||
+        request->data_size > RINRUNTIME_FILE_CHOOSER_ATOMIC_SAVE_MAX_BYTES) {
+        return RINRUNTIME_FILE_CHOOSER_MALFORMED_REPLY;
+    }
+    memcpy(&origin_peer, &request->origin_peer, sizeof(origin_peer));
+    if (!rin_unix_peer_app_identity_valid(&origin_peer))
+        return RINRUNTIME_FILE_CHOOSER_MALFORMED_REPLY;
+    *capability_out = request->capability;
+    *origin_peer_out = origin_peer;
+    *data_size_out = request->data_size;
+    *request_id_out = request->frame.request_id;
+    return RINRUNTIME_FILE_CHOOSER_OK;
+}
+
 static int chooser_status_operation_valid(uint16_t operation)
 {
     return operation == RINRUNTIME_FILE_CHOOSER_OPERATION_ATOMIC_SAVE_READY ||

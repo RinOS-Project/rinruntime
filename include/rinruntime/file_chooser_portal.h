@@ -8,6 +8,7 @@
 #include <stdint.h>
 
 #include "file_portal.h"
+#include <rin/net/socket_abi.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -61,6 +62,10 @@ typedef struct __attribute__((packed)) RinRuntimeFileChooserFrameV1 {
 #define RINRUNTIME_FILE_CHOOSER_OPERATION_SAVE_DESTINATION_RELEASE UINT16_C(7)
 #define RINRUNTIME_FILE_CHOOSER_OPERATION_SAVE_DESTINATION_RELEASE_COMPLETE UINT16_C(8)
 #define RINRUNTIME_FILE_CHOOSER_OPERATION_MULTIPLE_GRANT UINT16_C(9)
+/* Only the signed system archived service may use this operation.  The
+ * origin peer in the request is checked against the broker's capability
+ * record; it is not accepted as a replacement for peer authentication. */
+#define RINRUNTIME_FILE_CHOOSER_OPERATION_DELEGATED_ATOMIC_SAVE_REQUEST UINT16_C(10)
 
 /* A Save request with this flag asks File Manager to retain the user-approved
  * destination as an opaque, peer-bound capability. It intentionally does not
@@ -132,6 +137,18 @@ typedef struct __attribute__((packed)) RinRuntimeFileChooserAtomicSaveRequestV1 
     uint64_t data_size;
     uint64_t reserved;
 } RinRuntimeFileChooserAtomicSaveRequestV1;
+
+/* A path-free archive publication request.  archived connects as the
+ * authenticated service, while origin_peer identifies the application that
+ * received the user-approved save capability.  File Manager requires both
+ * identities and never trusts a caller-provided pathname. */
+typedef struct __attribute__((packed)) RinRuntimeFileChooserDelegatedAtomicSaveRequestV1 {
+    RinRuntimeFileChooserFrameV1 frame;
+    RinRuntimeFileChooserSaveCapabilityV1 capability;
+    rin_unix_peer_app_identity_v1 origin_peer;
+    uint64_t data_size;
+    uint64_t reserved;
+} RinRuntimeFileChooserDelegatedAtomicSaveRequestV1;
 
 typedef struct __attribute__((packed)) RinRuntimeFileChooserStatusV1 {
     RinRuntimeFileChooserFrameV1 frame;
@@ -295,6 +312,19 @@ RinRuntimeFileChooserResult rinruntime_file_chooser_atomic_save_request_decode(
     const RinRuntimeFileChooserAtomicSaveRequestV1* request, size_t frame_size,
     RinRuntimeFileChooserSaveCapabilityV1* capability_out,
     uint64_t* data_size_out, uint64_t* request_id_out);
+RinRuntimeFileChooserResult
+rinruntime_file_chooser_delegated_atomic_save_request_encode(
+    uint64_t request_id,
+    const RinRuntimeFileChooserSaveCapabilityV1* capability,
+    const rin_unix_peer_app_identity_v1* origin_peer, uint64_t data_size,
+    RinRuntimeFileChooserDelegatedAtomicSaveRequestV1* request_out);
+RinRuntimeFileChooserResult
+rinruntime_file_chooser_delegated_atomic_save_request_decode(
+    const RinRuntimeFileChooserDelegatedAtomicSaveRequestV1* request,
+    size_t frame_size,
+    RinRuntimeFileChooserSaveCapabilityV1* capability_out,
+    rin_unix_peer_app_identity_v1* origin_peer_out, uint64_t* data_size_out,
+    uint64_t* request_id_out);
 RinRuntimeFileChooserResult rinruntime_file_chooser_status_encode(
     uint16_t operation, uint64_t request_id, RinRuntimeFileChooserResult result,
     RinRuntimeFileChooserStatusV1* status_out);
@@ -329,6 +359,8 @@ static_assert(sizeof(RinRuntimeFileChooserSaveDestinationGrantV1) == 60u,
               "RinRuntimeFileChooserSaveDestinationGrantV1 ABI drift");
 static_assert(sizeof(RinRuntimeFileChooserAtomicSaveRequestV1) == 68u,
               "RinRuntimeFileChooserAtomicSaveRequestV1 ABI drift");
+static_assert(sizeof(RinRuntimeFileChooserDelegatedAtomicSaveRequestV1) == 148u,
+              "RinRuntimeFileChooserDelegatedAtomicSaveRequestV1 ABI drift");
 static_assert(sizeof(RinRuntimeFileChooserStatusV1) == 28u,
               "RinRuntimeFileChooserStatusV1 ABI drift");
 static_assert(sizeof(RinRuntimeFileChooserSaveDestinationReleaseV1) == 52u,
@@ -352,6 +384,8 @@ _Static_assert(sizeof(RinRuntimeFileChooserSaveDestinationGrantV1) == 60u,
                "RinRuntimeFileChooserSaveDestinationGrantV1 ABI drift");
 _Static_assert(sizeof(RinRuntimeFileChooserAtomicSaveRequestV1) == 68u,
                "RinRuntimeFileChooserAtomicSaveRequestV1 ABI drift");
+_Static_assert(sizeof(RinRuntimeFileChooserDelegatedAtomicSaveRequestV1) == 148u,
+               "RinRuntimeFileChooserDelegatedAtomicSaveRequestV1 ABI drift");
 _Static_assert(sizeof(RinRuntimeFileChooserStatusV1) == 28u,
                "RinRuntimeFileChooserStatusV1 ABI drift");
 _Static_assert(sizeof(RinRuntimeFileChooserSaveDestinationReleaseV1) == 52u,
@@ -363,5 +397,4 @@ _Static_assert(sizeof(RinRuntimeFileChooserSaveDestinationReleaseV1) == 52u,
 #endif
 
 #endif /* RINRUNTIME_FILE_CHOOSER_PORTAL_H */
-
 
