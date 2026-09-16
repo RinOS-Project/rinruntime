@@ -61,7 +61,7 @@ private:
     };
 
     struct Watch {
-        std::int64_t nativeHandle = 0;
+        std::uint64_t nativeHandle = 0u;
         std::uint32_t events = 0u;
         Event event = {};
         std::uint32_t generation = 0u;
@@ -174,7 +174,7 @@ public:
         return 0u;
     }
 
-    WaitId watch(std::int64_t nativeHandle, std::uint32_t events,
+    WaitId watch(std::uint64_t nativeHandle, std::uint32_t events,
                  const Event& event) noexcept {
         if (!validEvent(event) || events == 0u ||
             (events & ~static_cast<std::uint32_t>(WAIT_EVENTS_ALL)) != 0u)
