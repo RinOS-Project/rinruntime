@@ -62,7 +62,7 @@ public:
             bytes + header.deflateOffset, header.deflateSize, expectedSize,
             header.crc, output, cancellation, cancellationContext);
         if (result == ArchiveDeflateResult::CrcMismatch)
-            return ArchiveGzipResult::CrcMismatch;
+            return failOutput(output, ArchiveGzipResult::CrcMismatch);
         if (result == ArchiveDeflateResult::Cancelled)
             return failOutput(output, ArchiveGzipResult::Cancelled);
         if (result != ArchiveDeflateResult::Ok)
