@@ -43,6 +43,13 @@ The public C++ runtime also provides the backend-independent bounded
 userspace `poll(2)` translation, while RinOS wait syscalls and production IPC
 owners remain target-side adapters through `EventLoop::WaitFunction`.
 
+`unicode.hpp` supplies the text model's bounded UTF-8 grapheme stepping. It
+implements the common UAX #29 boundary rules needed by editing, including
+CRLF, combining/spacing marks, Hangul syllable sequences, regional-indicator
+pairs, and extended-pictographic ZWJ sequences. Full Unicode property data and
+locale-specific behavior remain the separate `libunicode`/`libi18n` data-owner
+task; the public helper never loads a database or filesystem resource.
+
 RinOS applications may opt into `RinEventLoopBackend` in
 `event_loop_rin.hpp`. It translates the same bounded requests to the public
 `rin_wait_set_*` SDK contract and keeps the wait-set handle private to the

@@ -400,6 +400,16 @@ if(RINRUNTIME_BUILD_TESTS)
                           CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES)
     add_test(NAME rinruntime-timezone
              COMMAND rinruntime-timezone-test)
+    add_executable(rinruntime-unicode-test
+                   tests/unicode_contract_test.cpp)
+    target_link_libraries(rinruntime-unicode-test
+                          PRIVATE RinRuntime::RinRuntime)
+    target_include_directories(rinruntime-unicode-test
+                               PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    set_target_properties(rinruntime-unicode-test PROPERTIES
+                          CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES)
+    add_test(NAME rinruntime-unicode
+             COMMAND rinruntime-unicode-test)
 endif()
 
 if(RINRUNTIME_BUILD_EXAMPLES)

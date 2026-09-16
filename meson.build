@@ -192,4 +192,7 @@ if get_option('buildtype') != 'plain'
   test('rinruntime-timezone', executable('rinruntime-timezone-test',
         'tests/timezone_contract_test.cpp', dependencies: runtime_dep,
         override_options: test_override_options, cpp_args: ['-std=c++17']))
+  test('rinruntime-unicode', executable('rinruntime-unicode-test',
+        'tests/unicode_contract_test.cpp', dependencies: runtime_dep,
+        override_options: test_override_options, cpp_args: ['-std=c++17']))
 endif
