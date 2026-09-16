@@ -4,12 +4,18 @@
 
 #include <stdlib.h>
 
-static size_t rinruntime_string_length(const char* value)
+static int rinruntime_string_length(const char* value, size_t limit,
+                                    size_t* length_out)
 {
-    size_t length = 0u;
-    if (value == NULL) return 0u;
-    while (value[length] != '\0') ++length;
-    return length;
+    size_t length;
+    if (value == NULL || length_out == NULL) return 0;
+    for (length = 0u; length < limit; ++length) {
+        if (value[length] == '\0') {
+            *length_out = length;
+            return 1;
+        }
+    }
+    return 0;
 }
 
 static void rinruntime_clear_output(char* output, size_t capacity)
@@ -22,7 +28,8 @@ static int rinruntime_home_is_canonical(const char* home, size_t* length_out)
     size_t index = 0u;
     size_t component_start = 0u;
     if (home == NULL || home[0] != '/') return 0;
-    while (home[index] != '\0') {
+    while (index < RINRUNTIME_KNOWN_FOLDER_PATH_MAX &&
+           home[index] != '\0') {
         unsigned char character = (unsigned char)home[index];
         if (character < 0x20u || character == 0x7fu || character == '\\')
             return 0;
@@ -35,8 +42,8 @@ static int rinruntime_home_is_canonical(const char* home, size_t* length_out)
             component_start = index + 1u;
         }
         ++index;
-        if (index >= RINRUNTIME_KNOWN_FOLDER_PATH_MAX) return 0;
     }
+    if (index == RINRUNTIME_KNOWN_FOLDER_PATH_MAX) return 0;
     if (index > 1u && home[index - 1u] == '/') return 0;
     if (component_start < index) {
         size_t component_length = index - component_start;
@@ -52,14 +59,16 @@ static int rinruntime_application_id_is_valid(const char* value, size_t* length_
 {
     size_t index = 0u;
     if (value == NULL || value[0] == '\0') return 0;
-    while (value[index] != '\0') {
+    while (index < RINRUNTIME_APPLICATION_ID_MAX && value[index] != '\0') {
         unsigned char character = (unsigned char)value[index];
         int allowed = (character >= 'a' && character <= 'z') ||
                       (character >= 'A' && character <= 'Z') ||
                       (character >= '0' && character <= '9') ||
                       character == '.' || character == '_' || character == '-';
-        if (!allowed || ++index > RINRUNTIME_APPLICATION_ID_MAX) return 0;
+        if (!allowed) return 0;
+        ++index;
     }
+    if (index == RINRUNTIME_APPLICATION_ID_MAX) return 0;
     if ((index == 1u && value[0] == '.') ||
         (index == 2u && value[0] == '.' && value[1] == '.')) return 0;
     if (length_out != NULL) *length_out = index;
@@ -128,11 +137,18 @@ static RinRuntimeKnownFolderResult rinruntime_build_path(
     char* path_out, size_t path_capacity)
 {
     char path[RINRUNTIME_KNOWN_FOLDER_PATH_MAX];
-    size_t first_length = rinruntime_string_length(first);
-    size_t second_length = rinruntime_string_length(second);
+    size_t first_length;
+    size_t second_length;
     size_t length = home_length;
     size_t index;
     size_t separator_count = 0u;
+    if (!rinruntime_string_length(first, RINRUNTIME_KNOWN_FOLDER_PATH_MAX,
+                                 &first_length) ||
+        !rinruntime_string_length(second, RINRUNTIME_KNOWN_FOLDER_PATH_MAX,
+                                  &second_length)) {
+        rinruntime_clear_output(path_out, path_capacity);
+        return RINRUNTIME_KNOWN_FOLDER_INVALID_ARGUMENT;
+    }
     if (first_length != 0u && home_length != 1u) ++separator_count;
     if (second_length != 0u) ++separator_count;
     if (home_length > RINRUNTIME_KNOWN_FOLDER_PATH_MAX - 1u ||
