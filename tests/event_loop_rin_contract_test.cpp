@@ -112,6 +112,15 @@ int main() {
     assert(!backend.wait(&invalid, 1u, g_now, &ready));
     assert(ready.id == 0u && ready.events == 0u);
 
+    RinRuntime::EventLoop::WaitRequest duplicate[2] = {};
+    duplicate[0].id = 7u;
+    duplicate[0].nativeHandle = opaque_handle;
+    duplicate[0].events = RinRuntime::EventLoop::WAIT_READABLE;
+    duplicate[1] = duplicate[0];
+    ready = {99u, RinRuntime::EventLoop::WAIT_READABLE};
+    assert(!backend.wait(duplicate, 2u, g_now, &ready));
+    assert(ready.id == 0u && ready.events == 0u);
+
     assert(loop.unwatch(watch));
     assert(backend.reset() == RIN_SUCCESS);
     assert(!backend.initialized());

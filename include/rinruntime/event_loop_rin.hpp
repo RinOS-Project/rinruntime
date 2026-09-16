@@ -48,6 +48,22 @@ private:
     RinWaitSet waitSet_ = RIN_HANDLE_INVALID;
     RinWaitItemV1 items_[EventLoop::kWaitCapacity] = {};
 
+    static bool requestsValid(const EventLoop::WaitRequest* requests,
+                              Size count) noexcept {
+        if (requests == nullptr && count != 0u) return false;
+        for (Size index = 0u; index < count; ++index) {
+            const EventLoop::WaitRequest& request = requests[index];
+            if (request.id == 0u || request.nativeHandle == 0u ||
+                request.events == 0u ||
+                (request.events & ~static_cast<std::uint32_t>(
+                                      EventLoop::WAIT_EVENTS_ALL)) != 0u)
+                return false;
+            for (Size prior = 0u; prior < index; ++prior)
+                if (requests[prior].id == request.id) return false;
+        }
+        return true;
+    }
+
     bool timeoutNanoseconds(std::uint64_t deadline,
                             std::uint64_t* timeout) const noexcept {
         if (timeout == nullptr || clock_ == nullptr) return false;
@@ -99,8 +115,7 @@ public:
               std::uint64_t deadline,
               EventLoop::WaitResult* ready) noexcept {
         if (ready == nullptr || waitSet_ == RIN_HANDLE_INVALID ||
-            (requests == nullptr && count != 0u) ||
-            count > EventLoop::kWaitCapacity ||
+            count > EventLoop::kWaitCapacity || !requestsValid(requests, count) ||
             (count == 0u && deadline == UINT64_MAX))
             return false;
         ready->id = 0u;
@@ -108,11 +123,6 @@ public:
 
         for (Size index = 0u; index < count; ++index) {
             const EventLoop::WaitRequest& request = requests[index];
-            if (request.id == 0u || request.nativeHandle <= 0 ||
-                request.events == 0u ||
-                (request.events & ~static_cast<std::uint32_t>(
-                                      EventLoop::WAIT_EVENTS_ALL)) != 0u)
-                return false;
             items_[index].handle = static_cast<RinHandle>(request.nativeHandle);
             items_[index].events = request.events;
             items_[index].observed = 0u;
