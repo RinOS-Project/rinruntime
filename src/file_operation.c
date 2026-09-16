@@ -45,11 +45,11 @@ static int file_operation_copy(char* output, uint32_t capacity, const char* inpu
 {
     uint32_t index = 0u;
     if (output == 0 || input == 0 || capacity == 0u) return 0;
-    while (input[index] != '\0') {
-        if (index + 1u >= capacity) return 0;
+    while (index + 1u < capacity && input[index] != '\0') {
         output[index] = input[index];
         ++index;
     }
+    if (input[index] != '\0') return 0;
     output[index] = '\0';
     return 1;
 }
@@ -102,10 +102,12 @@ int rinruntime_file_operation_path_valid(const char* path)
     if (path[0] != '/') return 0;
 #endif
     if (path[1] == '\0') return 1;
-    while (path[index] != '\0') {
+    while (index < RINRUNTIME_FILE_OPERATION_PATH_MAX &&
+           path[index] != '\0') {
         char value = path[index];
         if (value == '\\' || (unsigned char)value < 0x20u ||
-            (unsigned char)value == 0x7fu || index + 1u >= RINRUNTIME_FILE_OPERATION_PATH_MAX)
+            (unsigned char)value == 0x7fu ||
+            index + 1u >= RINRUNTIME_FILE_OPERATION_PATH_MAX)
             return 0;
         if (value == '/') {
             uint32_t component_size = index - component_start;
@@ -118,6 +120,7 @@ int rinruntime_file_operation_path_valid(const char* path)
         }
         ++index;
     }
+    if (index >= RINRUNTIME_FILE_OPERATION_PATH_MAX) return 0;
     {
         uint32_t component_size = index - component_start;
         if (component_size == 0u ||
