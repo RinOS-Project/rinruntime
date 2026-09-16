@@ -418,6 +418,13 @@ static int backup_identity_equal(const RinRuntimeBackupIdentityV1* left,
            left->package_generation == right->package_generation;
 }
 
+static void backup_restore_clear_output(uint8_t* restored_out,
+                                        uint32_t restored_capacity)
+{
+    if (restored_out != NULL && restored_capacity != 0u)
+        memset(restored_out, 0, restored_capacity);
+}
+
 RinRuntimeBackupResult rinruntime_backup_restore_item(
     const uint8_t* source_manifest_bytes, size_t source_manifest_size,
     uint32_t item_index, const RinRuntimeBackupIdentityV1* target_identity,
@@ -431,43 +438,74 @@ RinRuntimeBackupResult rinruntime_backup_restore_item(
     RinRuntimeBackupManifestInfoV1 source_manifest;
     RinRuntimeBackupItemV1 item;
     RinRuntimeBackupResult item_result;
+    RinRuntimeBackupResult failure_result;
     if (restored_size_out != NULL) *restored_size_out = 0u;
     if (!rinruntime_backup_identity_valid(target_identity) ||
         restored_size_out == NULL || target_schema_version == 0u ||
         (archived_size != 0u && archived_bytes == NULL) ||
         (archived_size != 0u && restored_out == NULL))
-        return RINRUNTIME_BACKUP_INVALID_ARGUMENT;
+        goto invalid_argument;
     item_result = rinruntime_backup_manifest_inspect(
         source_manifest_bytes, source_manifest_size, &source_manifest);
-    if (item_result != RINRUNTIME_BACKUP_OK) return item_result;
+    if (item_result != RINRUNTIME_BACKUP_OK) {
+        failure_result = item_result;
+        goto failure;
+    }
     item_result = rinruntime_backup_manifest_entry_at(
         source_manifest_bytes, source_manifest_size, item_index, &item);
-    if (item_result != RINRUNTIME_BACKUP_OK) return item_result;
+    if (item_result != RINRUNTIME_BACKUP_OK) {
+        failure_result = item_result;
+        goto failure;
+    }
     if (!rinruntime_backup_item_is_eligible(&item))
-        return RINRUNTIME_BACKUP_INELIGIBLE;
+        goto ineligible;
     if (!backup_identity_equal(&source_manifest.identity, target_identity)) {
         if (authorize_identity == NULL)
-            return RINRUNTIME_BACKUP_IDENTITY_MISMATCH;
+            goto identity_mismatch;
         if (authorize_identity(authorize_context, &source_manifest.identity,
                                target_identity) != 1)
-            return RINRUNTIME_BACKUP_IDENTITY_NOT_AUTHORIZED;
+            goto identity_not_authorized;
     }
     if (item.schema_version == target_schema_version) {
-        if (restored_capacity < archived_size) return RINRUNTIME_BACKUP_LIMIT;
+        if (restored_capacity < archived_size) goto limit;
         if (archived_size != 0u)
             memmove(restored_out, archived_bytes, archived_size);
         *restored_size_out = archived_size;
         return RINRUNTIME_BACKUP_OK;
     }
-    if (migrate == NULL) return RINRUNTIME_BACKUP_MIGRATION_REQUIRED;
+    if (migrate == NULL) goto migration_required;
     if (migrate(migrate_context, &item, item.schema_version,
                 target_schema_version, archived_bytes, archived_size,
                 restored_out, restored_capacity, restored_size_out) != 0 ||
         *restored_size_out > restored_capacity) {
-        *restored_size_out = 0u;
-        return RINRUNTIME_BACKUP_MIGRATION_FAILED;
+        goto migration_failed;
     }
     return RINRUNTIME_BACKUP_OK;
+
+invalid_argument:
+    failure_result = RINRUNTIME_BACKUP_INVALID_ARGUMENT;
+    goto failure;
+ineligible:
+    failure_result = RINRUNTIME_BACKUP_INELIGIBLE;
+    goto failure;
+identity_mismatch:
+    failure_result = RINRUNTIME_BACKUP_IDENTITY_MISMATCH;
+    goto failure;
+identity_not_authorized:
+    failure_result = RINRUNTIME_BACKUP_IDENTITY_NOT_AUTHORIZED;
+    goto failure;
+limit:
+    failure_result = RINRUNTIME_BACKUP_LIMIT;
+    goto failure;
+migration_required:
+    failure_result = RINRUNTIME_BACKUP_MIGRATION_REQUIRED;
+    goto failure;
+migration_failed:
+    failure_result = RINRUNTIME_BACKUP_MIGRATION_FAILED;
+failure:
+    backup_restore_clear_output(restored_out, restored_capacity);
+    if (restored_size_out != NULL) *restored_size_out = 0u;
+    return failure_result;
 }
 
 #if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L

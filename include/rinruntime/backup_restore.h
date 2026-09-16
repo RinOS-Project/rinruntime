@@ -170,7 +170,9 @@ RinRuntimeBackupResult rinruntime_backup_status_from_manifest(
 
 /* Restore exact-schema bytes or run the one explicit app migration. A package
  * change is deny-by-default and requires the authenticated launcher callback.
- * Cache, recent items, and keyring entries always return INELIGIBLE. */
+ * Cache, recent items, and keyring entries always return INELIGIBLE. On every
+ * failure, restored_size_out is zeroed and the caller-owned restored_out span
+ * is cleared when supplied. */
 RinRuntimeBackupResult rinruntime_backup_restore_item(
     const uint8_t* source_manifest_bytes, size_t source_manifest_size,
     uint32_t item_index, const RinRuntimeBackupIdentityV1* target_identity,
