@@ -218,6 +218,7 @@ inline bool utf8Encode(char* destination, std::size_t capacity,
                        std::uint32_t codepoint, std::size_t* written)
 {
     std::size_t width;
+    if (written != nullptr) *written = 0u;
     if (!destination || !written || codepoint > 0x10ffffu ||
         (codepoint >= 0xd800u && codepoint <= 0xdfffu)) return false;
     if (codepoint <= 0x7fu) width = 1u;

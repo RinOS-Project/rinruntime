@@ -21,6 +21,8 @@ static void appendScalar(std::string& value, std::uint32_t codepoint)
 
 int main()
 {
+    char encodeBytes[4] = {};
+    std::size_t encodeWritten = 0u;
     const std::string combining = std::string("a") + scalar(0x0301u) + "b";
     assert(RinRuntime::utf8GraphemeNext(combining, 0u) ==
            combining.size() - 1u);
@@ -62,5 +64,14 @@ int main()
     const std::string separate = std::string("A") + scalar(0x200du) + "B";
     assert(RinRuntime::utf8GraphemeNext(separate, 0u) ==
            1u + scalar(0x200du).size());
+
+    encodeWritten = 99u;
+    assert(!RinRuntime::utf8Encode(encodeBytes, 1u, 0x20acu,
+                                   &encodeWritten));
+    assert(encodeWritten == 0u);
+    encodeWritten = 99u;
+    assert(!RinRuntime::utf8Encode(nullptr, sizeof(encodeBytes), 'x',
+                                   &encodeWritten));
+    assert(encodeWritten == 0u);
     return 0;
 }
