@@ -57,7 +57,9 @@ adapter. The adapter has compile-time checks against the public
 `RIN_WAIT_EVENT_*` bit contract, so the kernel producer and userspace model
 cannot silently drift into different masks. The EventLoop model and both
 userspace adapters are public runtime; the kernel owns only the wait-set
-syscall and IPC readiness producers.
+syscall and IPC readiness producers. Direct adapter callers also get
+fail-closed validation for zero handles, unsupported event bits, and duplicate
+wait IDs before any wait-set items are published.
 
 The public runtime also provides the bounded `DownloadPartialReceipt`,
 `DownloadRangeRequest`, and `DownloadRangeTransportAdapter` contracts. Receipt

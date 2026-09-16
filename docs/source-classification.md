@@ -7,7 +7,7 @@ not smuggled into the public include path.
 
 | Former source family | Classification | Public treatment |
 | --- | --- | --- |
-| widget, controls, layout, print-preview geometry, event, event loop, text editor, piece table | A: public runtime | Copied as backend-independent C++ models. `event_loop_poll.hpp` is a POSIX userspace adapter and `event_loop_rin.hpp` is the SDK wait-set userspace adapter; only target wait syscalls and IPC readiness producers remain OS-Core. |
+| widget, controls, layout, print-preview geometry, event, event loop, text editor, piece table | A: public runtime | Copied as backend-independent C++ models. `event_loop_poll.hpp` is a POSIX userspace adapter and `event_loop_rin.hpp` is the SDK wait-set userspace adapter; direct adapter calls reject zero handles, unsupported masks, and duplicate wait IDs; only target wait syscalls and IPC readiness producers remain OS-Core. |
 | accessibility model and bounded tree policy | A/B | The model is public; a service transport must consume a versioned wire record. |
 | `backup_restore.c` | B: public service client/policy | Canonical bounded RBK1 manifest encoder/decoder is public; the system coordinator is not. |
 | `known_folders.c` | C: public utility | Only canonical path construction and bounded logical IDs are public. |
