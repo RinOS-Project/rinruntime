@@ -13,6 +13,9 @@ namespace RinRuntime {
  * must finish the frame before presenting or using a different window. */
 AqSurface* currentRenderSurface() noexcept;
 const AqFont* currentRenderFont() noexcept;
+/* Process-wide locale-selected font used by native UI outside a render
+ * context, such as desktop-owned compositor surfaces. */
+const AqFont* systemUiFont() noexcept;
 RinRuntimeGuiHandle currentRenderWindow() noexcept;
 std::int32_t currentFrameWidth() noexcept;
 std::int32_t currentFrameHeight() noexcept;
@@ -53,6 +56,7 @@ using RinRuntime::currentFrameValid;
 using RinRuntime::currentFrameWidth;
 using RinRuntime::currentRenderFont;
 using RinRuntime::currentRenderSurface;
+using RinRuntime::systemUiFont;
 using RinRuntime::endNativeFrame;
 using RinRuntime::popRenderClip;
 using RinRuntime::pushRenderClip;

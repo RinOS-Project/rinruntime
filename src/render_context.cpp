@@ -3,6 +3,13 @@
 #include <rinruntime/render_context.hpp>
 
 #include <aquamarine.h>
+#include <rin/runtime.h>
+#include <fcntl.h>
+#include <locale.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#include <stdlib.h>
+#include <string.h>
 
 namespace RinRuntime {
 namespace {
@@ -18,6 +25,89 @@ struct RenderContextState {
 };
 
 thread_local RenderContextState g_context;
+constexpr std::size_t kSystemUiFontMaxBytes = 4u * 1024u * 1024u;
+std::uint32_t g_system_ui_font_state = 0u;
+AqFont* g_system_ui_font = nullptr;
+std::uint8_t* g_system_ui_font_data = nullptr;
+
+void* aquamarineAllocate(unsigned size) {
+    return malloc(size);
+}
+
+void aquamarineFree(void* pointer) {
+    free(pointer);
+}
+
+const char* systemUiFontPath() noexcept {
+    const char* language = rin_locale_language();
+    const char* territory = rin_locale_territory();
+    if (language && language[0] == 'z' && language[1] == 'h') {
+        if (territory && (strcmp(territory, "TW") == 0 ||
+                          strcmp(territory, "HK") == 0 ||
+                          strcmp(territory, "MO") == 0))
+            return "/res/fonts/RIN-CJK-TC.PSF";
+        return "/res/fonts/RIN-CJK-SC.PSF";
+    }
+    if (language && language[0] == 'k' && language[1] == 'o')
+        return "/res/fonts/RIN-CJK-KR.PSF";
+    return "/res/fonts/RIN-CJK-JP.PSF";
+}
+
+AqFont* loadPsfFont(const char* path, std::uint8_t** data_out) noexcept {
+    int descriptor = open(path, O_RDONLY);
+    struct stat file_status {};
+    if (descriptor < 0) return nullptr;
+    if (fstat(descriptor, &file_status) != 0 || file_status.st_size < 32 ||
+        static_cast<std::uint64_t>(file_status.st_size) >
+            kSystemUiFontMaxBytes) {
+        close(descriptor);
+        return nullptr;
+    }
+
+    const auto size = static_cast<std::size_t>(file_status.st_size);
+    auto* data = static_cast<std::uint8_t*>(malloc(size));
+    if (!data) {
+        close(descriptor);
+        return nullptr;
+    }
+    std::size_t offset = 0u;
+    while (offset < size) {
+        const ssize_t count = read(descriptor, data + offset, size - offset);
+        if (count <= 0 || static_cast<std::size_t>(count) > size - offset) {
+            free(data);
+            close(descriptor);
+            return nullptr;
+        }
+        offset += static_cast<std::size_t>(count);
+    }
+    close(descriptor);
+
+    AqFont* font = aq_font_load_psf(data, static_cast<std::uint32_t>(size));
+    if (!font) {
+        free(data);
+        return nullptr;
+    }
+    *data_out = data;
+    return font;
+}
+
+const AqFont* loadSystemUiFont() noexcept {
+    aq_set_allocator(aquamarineAllocate, aquamarineFree);
+    g_system_ui_font = loadPsfFont(systemUiFontPath(),
+                                   &g_system_ui_font_data);
+    if (!g_system_ui_font) {
+        g_system_ui_font = loadPsfFont("/res/fonts/browser-ui.psf",
+                                       &g_system_ui_font_data);
+    }
+    if (g_system_ui_font) {
+        aq_set_default_font(g_system_ui_font);
+        rin_log("[rinruntime] locale UI font loaded\n");
+        return g_system_ui_font;
+    }
+    aq_set_default_font(aq_font_builtin_8x16());
+    rin_log("[rinruntime] UI font resources unavailable; using ASCII font\n");
+    return aq_font_builtin_8x16();
+}
 
 void clearContext() noexcept {
     g_context = RenderContextState{};
@@ -30,7 +120,27 @@ AqSurface* currentRenderSurface() noexcept {
 }
 
 const AqFont* currentRenderFont() noexcept {
-    return g_context.active ? aq_font_builtin_8x16() : nullptr;
+    return g_context.active ? systemUiFont() : nullptr;
+}
+
+const AqFont* systemUiFont() noexcept {
+    std::uint32_t state = __atomic_load_n(&g_system_ui_font_state,
+                                          __ATOMIC_ACQUIRE);
+    if (state == 2u)
+        return g_system_ui_font ? g_system_ui_font : aq_font_builtin_8x16();
+    if (state == 0u) {
+        std::uint32_t expected = 0u;
+        if (__atomic_compare_exchange_n(&g_system_ui_font_state, &expected,
+                                        1u, false, __ATOMIC_ACQ_REL,
+                                        __ATOMIC_ACQUIRE)) {
+            const AqFont* font = loadSystemUiFont();
+            __atomic_store_n(&g_system_ui_font_state, 2u, __ATOMIC_RELEASE);
+            return font;
+        }
+    }
+    /* A concurrent first paint may use the built-in ASCII font for this
+     * frame. It never blocks another UI thread on filesystem I/O. */
+    return aq_font_builtin_8x16();
 }
 
 RinRuntimeGuiHandle currentRenderWindow() noexcept {
@@ -69,6 +179,7 @@ int beginNativeFrame(RinRuntimeGuiHandle handle) noexcept {
     next.clips[0] = next.surface.clip;
     next.clip_depth = 1u;
     next.active = true;
+    (void)systemUiFont();
     /* RinRenderTarget intentionally carries physical pixel geometry only;
      * until a scaled target descriptor is introduced, logical and physical
      * frame units are identical. */
