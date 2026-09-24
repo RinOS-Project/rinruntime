@@ -73,6 +73,8 @@ class TlsClientCertificateTransport final {
 public:
     TlsClientCertificateTransport() = default;
 
+    ~TlsClientCertificateTransport() { reset(); }
+
     bool bind(const RinRuntimeTlsClientCertificateRequestV1& request,
               TlsClientCertificateKeyOwnerSignFunction signer,
               void* signer_context) {
