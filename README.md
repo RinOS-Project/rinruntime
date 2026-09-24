@@ -182,6 +182,13 @@ cancellation, and failure-atomic output validation. Entropy-compressed blocks
 and external dictionaries return `Unsupported`; a private frame owner may add
 those algorithms without changing the public filesystem or service boundary.
 
+`firewall_conntrack.h` provides filtering and pagination for a fixed-size,
+caller-owned, immutable Firewall connection snapshot. It does not retrieve
+kernel state or grant firewall authority; a private service must authenticate
+and copy the snapshot before passing its records to RinRuntime. The live
+packet observer, table owner, and kernel-to-Firewalld snapshot callback remain
+private OS-Core code.
+
 ## Public API contract
 
 | Requirement | Contract |
