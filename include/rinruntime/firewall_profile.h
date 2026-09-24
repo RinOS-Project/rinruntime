@@ -5,6 +5,7 @@
 
 #include <stdint.h>
 
+#include <rin/firewall/abi.h>
 #include <rin/firewall/profile_abi.h>
 
 #ifdef __cplusplus
