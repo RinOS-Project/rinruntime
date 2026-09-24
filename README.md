@@ -181,3 +181,19 @@ subset for raw and RLE blocks, with content-size, optional XXH64 checksum,
 cancellation, and failure-atomic output validation. Entropy-compressed blocks
 and external dictionaries return `Unsupported`; a private frame owner may add
 those algorithms without changing the public filesystem or service boundary.
+
+## Public API contract
+
+| Requirement | Contract |
+| --- | --- |
+| Purpose | RinRuntime provides public runtime facilities used across RinOS, including windowing and related platform-facing APIs, with interfaces under `include/rinruntime` and `include/rincompression`. |
+| Supported API | The public headers under `include/rinruntime` and `include/rincompression` define the supported interfaces. The API surface is header-specific; consult the declaration and documentation for the exact contract of each facility. |
+| Unsupported API | Internal implementation headers and undocumented behavior are not supported API. The library does not promise that every platform implements every optional facility identically. |
+| ownership | Ownership is defined per public type and function. Callers must follow the declared create/destroy, retain/release, callback, and buffer lifetime rules; do not infer ownership from pointer type alone. |
+| thread-safety | Thread-safety is defined per API. Treat mutable runtime objects and platform/window operations as thread-affine unless their public declaration explicitly permits concurrent use; synchronize shared state. |
+| limits | Limits vary by facility and are documented alongside its public declarations. Validate caller-provided sizes and handle explicit limit errors; no universal unbounded-input contract is implied. |
+| errors | Each API reports failures through its declared status/result mechanism or documented callback. Callers must check results and avoid relying on partially initialized outputs after failure. |
+| ABI stability | Public C declarations form the C ABI; C++ interfaces may depend on compiler and standard library ABI. No universal cross-version ABI guarantee is published; rebuild consumers for the matching RinOS release. |
+| security | RinRuntime APIs provide functionality, not an application sandbox. Validate untrusted input and use the OS service boundary for privileged operations; a public runtime call does not grant kernel or hardware authority. |
+| build | CMake and Meson build definitions are provided. Build as part of RinOS or use the repository's declared build targets and public include directories. |
+| test | A `tests` directory and build definitions are provided. Run the test targets exposed by the selected build configuration; there is no single configuration-independent command documented here. |
