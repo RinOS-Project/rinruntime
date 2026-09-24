@@ -24,7 +24,9 @@ option('rll_sources', type: 'array', value: [
   'src/durable_file_portal.c', 'src/file_chooser_portal.c',
   'src/file_operation_service_client.c',
   'src/accessibility_service_client.c',
-  'src/audio/rin_audio_service_client.c'],
+  'src/audio/rin_audio_service_client.c',
+  'src/firewall/rule_engine.c', 'src/firewall/profile.c',
+  'src/firewall/application.c'],
   description: 'RinRuntime C sources for the target .rll route')
 option('rll_dependencies', type: 'array', value: [],
        description: 'dependency .rll images for the target .rll route')

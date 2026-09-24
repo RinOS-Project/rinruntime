@@ -9,7 +9,10 @@ runtime_sources = files('src/portal.c', 'src/crash.c', 'src/backup_restore.c',
                         'src/known_folders.c', 'src/file_operation.c',
                         'src/safe_save.c', 'src/safe_save_posix.c',
                         'src/session_recovery.c', 'src/crash_service.c',
-                        'src/path.c', 'src/serial_portal_protocol.c')
+                        'src/path.c', 'src/serial_portal_protocol.c',
+                        'src/firewall/rule_engine.c',
+                        'src/firewall/profile.c',
+                        'src/firewall/application.c')
 if host_machine.system() != 'windows'
   runtime_sources += files('src/backup_payload.c')
   runtime_sources += files('src/platform.c')

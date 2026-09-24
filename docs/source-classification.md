@@ -27,6 +27,8 @@ not smuggled into the public include path.
 | `drag_drop.hpp` | A: public runtime | Bounded MIME payload/session lifecycle is public; paths, descriptors, compositor handles, File Portal delivery, and permission authority remain private adapters. |
 | `rin_runtime.c`, `rin_atexit_registry.c`, libc/libcxx glue | D | Process runtime and OS ABI glue remain private. |
 | audio service client | B: public service client | Uses the SDK audio wire/shared-ring contract; the audio daemon, device authority, and USB publication remain OS-Core. |
+| Firewall rule engine, application identity, profile table | A/B: public runtime model | Fixed-width Firewall ABI validation/evaluation and bounded application/profile value operations live in `src/firewall` with SDK/RinRuntime public headers. Packet hooks, factory policy, interface identity authority, conntrack state, persistence, and firewalld authorization remain OS-Core. |
+| Firewall service protocol | B: public wire contract | SDK owns stable service records; RinRuntime owns portable envelope and request validation. The socket server, peer credential acquisition, mutation authority, and Settings UI remain private OS-Core. |
 | serial device, tray, wallpaper, resolver, theme, management clients | B/D | Each still needs an SDK-owned wire contract before it can enter this public repository. |
 
 Every public header in this repository is standalone against the C/C++
