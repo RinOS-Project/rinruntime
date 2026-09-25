@@ -21,7 +21,7 @@ static int application_nonzero(const uint8_t* bytes, size_t size)
 }
 
 int rin_firewall_application_context_valid(
-    const RinFirewallApplicationContextV1* context)
+    const RinFirewallApplicationContextV2* context)
 {
     size_t index;
     if (context == NULL || context->struct_size != sizeof(*context) ||
@@ -31,8 +31,7 @@ int rin_firewall_application_context_valid(
         (context->package_generation == 0u &&
          (context->flags &
           RIN_FIREWALL_APPLICATION_FLAG_SYSTEM_PROCESS) == 0u) ||
-        context->namespace_id == 0u ||
-        context->reserved0 != 0u || !application_nonzero(
+        context->namespace_id == 0u || !application_nonzero(
             context->application_id, sizeof(context->application_id)) ||
         !application_nonzero(context->package_digest,
                              sizeof(context->package_digest)))
@@ -45,7 +44,7 @@ int rin_firewall_application_context_valid(
 
 int rin_firewall_application_context_apply(
     const RinFirewallPacketV1* packet,
-    const RinFirewallApplicationContextV1* context,
+    const RinFirewallApplicationContextV2* context,
     RinFirewallPacketV1* output)
 {
     uint32_t index;

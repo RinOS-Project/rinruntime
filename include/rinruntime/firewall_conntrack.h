@@ -27,6 +27,15 @@ int rin_firewall_conntrack_snapshot_query(
     RinFirewallConntrackEntryV1* output, uint32_t capacity,
     uint32_t* returned, uint32_t* next_cursor, uint64_t* generation);
 
+/* v2 retains the complete 64-bit network namespace identity. */
+int rin_firewall_conntrack_snapshot_query_v2(
+    const RinFirewallConntrackEntryV2 entries[
+        RIN_FIREWALL_CONNTRACK_MAX_ENTRIES],
+    uint64_t snapshot_generation,
+    const RinFirewallConntrackQueryV2* query,
+    RinFirewallConntrackEntryV2* output, uint32_t capacity,
+    uint32_t* returned, uint32_t* next_cursor, uint64_t* generation);
+
 #ifdef __cplusplus
 }
 #endif

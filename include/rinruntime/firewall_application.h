@@ -14,10 +14,10 @@ extern "C" {
 #endif
 
 int rin_firewall_application_context_valid(
-    const RinFirewallApplicationContextV1* context);
+    const RinFirewallApplicationContextV2* context);
 int rin_firewall_application_context_apply(
     const RinFirewallPacketV1* packet,
-    const RinFirewallApplicationContextV1* context,
+    const RinFirewallApplicationContextV2* context,
     RinFirewallPacketV1* output);
 
 #ifdef __cplusplus

@@ -8,7 +8,7 @@
 
 #include <rin/firewall/service_abi.h>
 
-#define RIN_FIREWALL_SERVICE_PROTOCOL_MAGIC UINT32_C(0x31504657) /* WFP1 */
+#define RIN_FIREWALL_SERVICE_PROTOCOL_MAGIC UINT32_C(0x32504657) /* WFP2 */
 #define RIN_FIREWALL_SERVICE_SOCKET_PATH "/run/rin/firewalld.sock"
 
 enum {
@@ -48,7 +48,7 @@ typedef struct RinFirewallServiceMessageHeaderV1 {
     uint32_t reserved1;
 } RinFirewallServiceMessageHeaderV1;
 
-typedef struct RinFirewallServiceRequestV1 {
+typedef struct RinFirewallServiceRequestV2 {
     RinFirewallServiceMessageHeaderV1 header;
     RinFirewallServicePeerV1 peer;
     uint64_t expected_generation;
@@ -65,7 +65,7 @@ typedef struct RinFirewallServiceRequestV1 {
     };
     uint16_t permission_action;
     uint16_t reserved_permission;
-    RinFirewallConntrackQueryV1 conntrack_query;
+    RinFirewallConntrackQueryV2 conntrack_query;
     uint32_t connection_capacity;
     uint32_t event_capacity;
     uint32_t reserved2;
@@ -75,7 +75,8 @@ typedef struct RinFirewallServiceRequestV1 {
     uint32_t application_installed;
     uint8_t profile_identity[RIN_FIREWALL_PROFILE_IDENTITY_BYTES];
     uint8_t application_id[RIN_FIREWALL_APPLICATION_ID_SIZE];
-} RinFirewallServiceRequestV1;
+} RinFirewallServiceRequestV2;
+typedef RinFirewallServiceRequestV2 RinFirewallServiceRequestV1;
 #pragma pack(pop)
 
 #define RIN_FIREWALL_SERVICE_TRANSPORT_MAX_LOG_ITEMS UINT32_C(16)
@@ -90,12 +91,14 @@ typedef struct RinFirewallServiceLogBatchV1 {
         RIN_FIREWALL_SERVICE_TRANSPORT_MAX_LOG_ITEMS];
 } RinFirewallServiceLogBatchV1;
 
-typedef struct RinFirewallServiceConnectionBatchV1 {
+typedef struct RinFirewallServiceConnectionBatchV2 {
     uint32_t returned;
     uint32_t next_cursor;
     uint64_t generation;
-    RinFirewallConntrackEntryV1 entries[RIN_FIREWALL_CONNTRACK_MAX_ENTRIES];
-} RinFirewallServiceConnectionBatchV1;
+    RinFirewallConntrackEntryV2 entries[RIN_FIREWALL_CONNTRACK_MAX_ENTRIES];
+} RinFirewallServiceConnectionBatchV2;
+typedef RinFirewallServiceConnectionBatchV2
+    RinFirewallServiceConnectionBatchV1;
 
 typedef struct RinFirewallServiceEventBatchV1 {
     uint32_t returned;
@@ -112,24 +115,26 @@ typedef struct RinFirewallServiceGenerationV1 {
     uint64_t generation;
 } RinFirewallServiceGenerationV1;
 
-typedef union RinFirewallServiceResponseBodyV1 {
+typedef union RinFirewallServiceResponseBodyV2 {
     RinFirewallServiceStatusV1 status;
     RinFirewallRuleSetV1 rule_set;
     RinFirewallDecisionV1 decision;
     RinFirewallServicePermissionResultV1 permission_result;
     RinFirewallPermissionRequestV1 permission_request;
     RinFirewallServiceLogBatchV1 log_batch;
-    RinFirewallServiceConnectionBatchV1 connection_batch;
+    RinFirewallServiceConnectionBatchV2 connection_batch;
     RinFirewallServiceEventBatchV1 event_batch;
     RinFirewallProfileTableV1 profiles;
     RinFirewallServiceWarningAckV1 warning_ack;
     RinFirewallServiceGenerationV1 generation;
-} RinFirewallServiceResponseBodyV1;
+} RinFirewallServiceResponseBodyV2;
+typedef RinFirewallServiceResponseBodyV2 RinFirewallServiceResponseBodyV1;
 
-typedef struct RinFirewallServiceResponseV1 {
+typedef struct RinFirewallServiceResponseV2 {
     RinFirewallServiceMessageHeaderV1 header;
-    RinFirewallServiceResponseBodyV1 body;
-} RinFirewallServiceResponseV1;
+    RinFirewallServiceResponseBodyV2 body;
+} RinFirewallServiceResponseV2;
+typedef RinFirewallServiceResponseV2 RinFirewallServiceResponseV1;
 #pragma pack(pop)
 
 #if defined(__cplusplus)
