@@ -19,6 +19,7 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <semaphore.h>
+#include <stdbool.h>
 
 #define RIN_RUNTIME_GUI_MAX_SURFACES 32u
 #define RIN_RUNTIME_GUI_MAX_PAYLOAD 8192u
