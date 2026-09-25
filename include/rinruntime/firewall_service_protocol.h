@@ -233,8 +233,7 @@ static inline int rin_firewall_service_request_valid(
         RIN_FIREWALL_SERVICE_OP_REPLACE_CONTAINER_RULES) {
         uint32_t index;
         if (request->reserved2 == RIN_FIREWALL_CONTAINER_OWNER_UNKNOWN ||
-            rin_firewall_rule_set_validate(&request->rule_set) !=
-                RIN_FIREWALL_OK)
+            request->rule_set.rule_count > RIN_FIREWALL_MAX_RULES)
             return 0;
         for (index = 0u; index < request->rule_set.rule_count; ++index) {
             const RinFirewallRuleV1* rule = &request->rule_set.rules[index];
