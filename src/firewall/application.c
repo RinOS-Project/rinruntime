@@ -23,7 +23,6 @@ static int application_nonzero(const uint8_t* bytes, size_t size)
 int rin_firewall_application_context_valid(
     const RinFirewallApplicationContextV2* context)
 {
-    size_t index;
     if (context == NULL || context->struct_size != sizeof(*context) ||
         context->version != RIN_FIREWALL_APPLICATION_CONTEXT_VERSION ||
         (context->flags & ~RIN_FIREWALL_APPLICATION_KNOWN_FLAGS) != 0u ||
@@ -36,9 +35,15 @@ int rin_firewall_application_context_valid(
         !application_nonzero(context->package_digest,
                              sizeof(context->package_digest)))
         return 0;
-    for (index = 0u; index < sizeof(context->reserved1) / sizeof(uint64_t);
-         ++index)
-        if (context->reserved1[index] != 0u) return 0;
+    if ((context->flags &
+         RIN_FIREWALL_APPLICATION_FLAG_USER_SESSION_IDENTITY) != 0u) {
+        if (context->owner_uid == 0u || context->session_id == 0u ||
+            context->session_cookie == 0u)
+            return 0;
+    } else if (context->owner_uid != 0u || context->session_id != 0u ||
+               context->session_cookie != 0u) {
+        return 0;
+    }
     return 1;
 }
 
@@ -65,6 +70,13 @@ int rin_firewall_application_context_apply(
     output->flags |= RIN_FIREWALL_PACKET_FLAG_PROCESS_IDENTITY;
     output->reserved[0] = context->process_id;
     output->reserved[1] = context->process_instance_cookie;
-    output->reserved[2] = 0u;
+    if ((context->flags &
+         RIN_FIREWALL_APPLICATION_FLAG_USER_SESSION_IDENTITY) != 0u) {
+        output->flags |= RIN_FIREWALL_PACKET_FLAG_USER_IDENTITY;
+        output->reserved[2] = context->owner_uid;
+    } else {
+        output->flags &= (uint16_t)~RIN_FIREWALL_PACKET_FLAG_USER_IDENTITY;
+        output->reserved[2] = 0u;
+    }
     return RIN_FIREWALL_OK;
 }

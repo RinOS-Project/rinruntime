@@ -359,12 +359,19 @@ int rin_firewall_packet_validate(const RinFirewallPacketV1* packet)
     if ((packet->flags & RIN_FIREWALL_PACKET_FLAG_PROCESS_IDENTITY) != 0u) {
         if (!firewall_process_identity_valid(packet->reserved[0],
                                              packet->reserved[1]) ||
-            packet->reserved[2] != 0u)
+            (((packet->flags & RIN_FIREWALL_PACKET_FLAG_USER_IDENTITY) != 0u) &&
+             (packet->reserved[2] == 0u ||
+              packet->reserved[2] > UINT32_MAX)) ||
+            (((packet->flags & RIN_FIREWALL_PACKET_FLAG_USER_IDENTITY) == 0u) &&
+             packet->reserved[2] != 0u))
             return RIN_FIREWALL_MALFORMED;
     } else if (!firewall_bytes_zero((const uint8_t*)packet->reserved,
                                     sizeof(packet->reserved))) {
         return RIN_FIREWALL_MALFORMED;
     }
+    if ((packet->flags & RIN_FIREWALL_PACKET_FLAG_USER_IDENTITY) != 0u &&
+        (packet->flags & RIN_FIREWALL_PACKET_FLAG_PROCESS_IDENTITY) == 0u)
+        return RIN_FIREWALL_MALFORMED;
     return RIN_FIREWALL_OK;
 }
 
@@ -400,6 +407,10 @@ static int firewall_rule_matches(const RinFirewallRuleV1* rule,
     if ((rule->flags & RIN_FIREWALL_RULE_FLAG_MATCH_PROCESS) != 0u &&
         (firewall_rule_process_id(rule) != packet->reserved[0] ||
          firewall_rule_process_cookie(rule) != packet->reserved[1]))
+        return 0;
+    if (rule->owner_uid != 0u &&
+        ((packet->flags & RIN_FIREWALL_PACKET_FLAG_USER_IDENTITY) == 0u ||
+         packet->reserved[2] != rule->owner_uid))
         return 0;
     if (rule->connection_state_mask != 0u &&
         (rule->connection_state_mask & packet->connection_state) == 0u)
