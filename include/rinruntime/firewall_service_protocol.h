@@ -31,6 +31,7 @@ enum {
     RIN_FIREWALL_SERVICE_OP_NOTIFY_APPLICATION = 17u,
     RIN_FIREWALL_SERVICE_OP_ISSUE_WARNING_ACK = 18u,
     RIN_FIREWALL_SERVICE_OP_SET_LOG_ALLOW = 19u,
+    RIN_FIREWALL_SERVICE_OP_REPLACE_CONTAINER_RULES = 20u,
 };
 
 #pragma pack(push, 1)
@@ -174,7 +175,7 @@ static inline int rin_firewall_service_peer_valid(
 static inline int rin_firewall_service_operation_valid(uint16_t operation)
 {
     return operation >= RIN_FIREWALL_SERVICE_OP_GET_STATUS &&
-           operation <= RIN_FIREWALL_SERVICE_OP_SET_LOG_ALLOW;
+           operation <= RIN_FIREWALL_SERVICE_OP_REPLACE_CONTAINER_RULES;
 }
 
 static inline void rin_firewall_service_message_initialize(
@@ -223,8 +224,27 @@ static inline int rin_firewall_service_request_valid(
         !rin_firewall_service_message_valid(
             &request->header, &request->peer,
             (uint32_t)(sizeof(*request) - sizeof(request->header))) ||
-        request->reserved2 != 0u || request->reserved_permission != 0u)
+        request->reserved_permission != 0u ||
+        (request->header.operation !=
+             RIN_FIREWALL_SERVICE_OP_REPLACE_CONTAINER_RULES &&
+         request->reserved2 != 0u))
         return 0;
+    if (request->header.operation ==
+        RIN_FIREWALL_SERVICE_OP_REPLACE_CONTAINER_RULES) {
+        uint32_t index;
+        if (request->reserved2 == RIN_FIREWALL_CONTAINER_OWNER_UNKNOWN ||
+            rin_firewall_rule_set_validate(&request->rule_set) !=
+                RIN_FIREWALL_OK)
+            return 0;
+        for (index = 0u; index < request->rule_set.rule_count; ++index) {
+            const RinFirewallRuleV1* rule = &request->rule_set.rules[index];
+            if (rule->rule_class != RIN_FIREWALL_RULE_CLASS_CONTAINER ||
+                rin_firewall_container_rule_owner_id(rule) !=
+                    request->reserved2 ||
+                (rule->flags & RIN_FIREWALL_RULE_FLAG_SYSTEM_CRITICAL) != 0u)
+                return 0;
+        }
+    }
     if (request->header.operation != RIN_FIREWALL_SERVICE_OP_REPLACE &&
         request->header.operation != RIN_FIREWALL_SERVICE_OP_SET_ENABLED &&
         request->header.operation != RIN_FIREWALL_SERVICE_OP_SET_PROFILE &&

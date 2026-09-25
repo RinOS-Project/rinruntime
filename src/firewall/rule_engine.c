@@ -247,6 +247,11 @@ int rin_firewall_rule_validate(const RinFirewallRuleV1* rule)
                 firewall_rule_process_id(rule),
                 firewall_rule_process_cookie(rule)))
             return RIN_FIREWALL_MALFORMED;
+    } else if (rule->rule_class == RIN_FIREWALL_RULE_CLASS_CONTAINER) {
+        for (index = 1u; index < 4u; ++index) {
+            if (rule->reserved[index] != 0u)
+                return RIN_FIREWALL_MALFORMED;
+        }
     } else {
         for (index = 0u; index < 4u; ++index) {
             if (rule->reserved[index] != 0u)
