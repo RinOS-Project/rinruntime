@@ -24,6 +24,8 @@
 #define RIN_RUNTIME_GUI_MAX_PAYLOAD 8192u
 #define RIN_RUNTIME_GUI_MAX_BUFFER_BYTES (64u * 1024u * 1024u)
 #define RIN_RUNTIME_GUI_REQUEST_TIMEOUT_MS 8000u
+#define RIN_RUNTIME_GUI_ASYNC_QUEUE_CAPACITY 32u
+#define RIN_RUNTIME_GUI_ASYNC_SECOND_PAYLOAD_MAX 512u
 
 #if defined(__GNUC__) || defined(__clang__)
 #define RIN_RUNTIME_OPTIONAL_WEAK __attribute__((weak))
@@ -54,14 +56,27 @@ typedef struct RinRuntimeGuiSurface {
     uint32_t cursor_type;
     uint32_t window_state;
     uint32_t workspace;
+    uint32_t pointer_capture;
+    uint32_t keyboard_grab;
+    uint32_t modal;
+    uint32_t frame_callback_enabled;
+    uint32_t frame_callback_max_inflight;
     uint32_t draw_slot;
     uint32_t front_slot;
     uint64_t frame_sequence;
     uint64_t render_target_generation;
     uint32_t render_target_acquired;
     uint32_t render_target_slot;
+    uint32_t frame_present_pending;
+    uint32_t resize_pending;
+    uint32_t input_poll_pending;
+    uint32_t input_event_ready;
+    int32_t input_error;
+    RinGuiNativeEventV1 pending_input_event;
     uint64_t acquired_generation;
     uint8_t* acquired_pixels;
+    RinRuntimeGuiCompletionCallback completion_callback;
+    void* completion_context;
     int shm_handles[RIN_COMPOSITOR_MAX_BUFFERS];
     uint8_t* pixels[RIN_COMPOSITOR_MAX_BUFFERS];
     RinTextInputStateV1 text_input;
@@ -71,11 +86,85 @@ typedef struct RinRuntimeGuiSurface {
     char shm_names[RIN_COMPOSITOR_MAX_BUFFERS][RIN_SHM_NAME_MAX];
 } RinRuntimeGuiSurface;
 
+typedef struct RinRuntimeGuiAsyncJob {
+    uint32_t type;
+    uint32_t payload_size;
+    uint32_t second_type;
+    uint32_t second_payload_size;
+    uint32_t reply_capacity;
+    uint32_t result_kind;
+    RinRuntimeGuiHandle handle;
+    uint64_t cookie;
+    uint8_t payload[RIN_RUNTIME_GUI_MAX_PAYLOAD];
+    uint8_t second_payload[RIN_RUNTIME_GUI_ASYNC_SECOND_PAYLOAD_MAX];
+    int old_shm_handles[RIN_COMPOSITOR_MAX_BUFFERS];
+    uint8_t* old_pixels[RIN_COMPOSITOR_MAX_BUFFERS];
+} RinRuntimeGuiAsyncJob;
+
+typedef enum RinRuntimeGuiAsyncStage {
+    RIN_RUNTIME_GUI_ASYNC_IDLE = 0,
+    RIN_RUNTIME_GUI_ASYNC_SEND_HEADER,
+    RIN_RUNTIME_GUI_ASYNC_SEND_PAYLOAD,
+    RIN_RUNTIME_GUI_ASYNC_RECEIVE_HEADER,
+    RIN_RUNTIME_GUI_ASYNC_RECEIVE_PAYLOAD
+} RinRuntimeGuiAsyncStage;
+
+typedef struct RinRuntimeGuiAsyncState {
+    RinRuntimeGuiAsyncJob jobs[RIN_RUNTIME_GUI_ASYNC_QUEUE_CAPACITY];
+    uint32_t head;
+    uint32_t count;
+    RinCompositorHeader request;
+    RinCompositorHeader reply;
+    uint32_t stage;
+    uint32_t operation_index;
+    uint32_t offset;
+    uint32_t reply_offset;
+    uint64_t started_ms;
+    uint8_t reply_payload[RIN_RUNTIME_GUI_COMPLETION_PAYLOAD_MAX];
+} RinRuntimeGuiAsyncState;
+
+enum {
+    RIN_RUNTIME_GUI_ASYNC_RESULT_NONE = 0u,
+    RIN_RUNTIME_GUI_ASYNC_RESULT_FRAME = 1u,
+    RIN_RUNTIME_GUI_ASYNC_RESULT_GPU_FRAME = 2u,
+    RIN_RUNTIME_GUI_ASYNC_RESULT_RESIZE = 3u,
+    RIN_RUNTIME_GUI_ASYNC_RESULT_QUERY = 4u,
+    RIN_RUNTIME_GUI_ASYNC_RESULT_INPUT = 5u
+};
+
+_Static_assert(sizeof(RinCompositorAttachBuffersV2) <=
+                   RIN_RUNTIME_GUI_ASYNC_SECOND_PAYLOAD_MAX,
+               "async resize attachment exceeds its bounded job payload");
+_Static_assert(sizeof(RinTextCompositionV1) <=
+                   RIN_RUNTIME_GUI_COMPLETION_PAYLOAD_MAX,
+               "async text composition exceeds its bounded completion payload");
+_Static_assert(sizeof(RinCompositorFrameInfoV1) <=
+                   RIN_RUNTIME_GUI_COMPLETION_PAYLOAD_MAX,
+               "async frame info exceeds its bounded completion payload");
+_Static_assert(sizeof(RinCompositorInputEventV1) <=
+                   RIN_RUNTIME_GUI_COMPLETION_PAYLOAD_MAX,
+               "async input event exceeds its bounded completion payload");
+_Static_assert(sizeof(RinCompositorOutputListV1) <=
+                   RIN_RUNTIME_GUI_COMPLETION_PAYLOAD_MAX,
+               "async output list exceeds its bounded completion payload");
+_Static_assert(sizeof(RinCompositorGpuImageV1) <=
+                   RIN_RUNTIME_GUI_COMPLETION_PAYLOAD_MAX,
+               "async GPU image exceeds its bounded completion payload");
+
 static int g_compositor_fd = -1;
 static uint32_t g_compositor_protocol_version =
     RIN_COMPOSITOR_PROTOCOL_VERSION;
 static uint64_t g_compositor_features = 0u;
 static uint32_t g_next_request_id = 1u;
+static RinRuntimeGuiAsyncState g_async_requests;
+typedef struct RinRuntimeGuiCompletionDispatch {
+    RinRuntimeGuiCompletionV1 completion;
+} RinRuntimeGuiCompletionDispatch;
+#define RIN_RUNTIME_GUI_COMPLETION_CAPACITY 64u
+static RinRuntimeGuiCompletionDispatch
+    g_async_completions[RIN_RUNTIME_GUI_COMPLETION_CAPACITY];
+static uint32_t g_async_completion_head;
+static uint32_t g_async_completion_count;
 static uint32_t g_next_name_id = 1u;
 static uint32_t g_compositor_reconnect_count = 0u;
 static uint32_t g_handle_generations[RIN_RUNTIME_GUI_MAX_SURFACES];
@@ -102,6 +191,17 @@ static int runtime_request(uint32_t type, const void* payload,
                            int32_t* status_out);
 static int runtime_attach_existing_buffers(RinRuntimeGuiSurface* surface);
 static int runtime_rebind_surfaces(void);
+static int runtime_async_enqueue(uint32_t type, const void* payload,
+                                 uint32_t payload_size,
+                                 uint32_t second_type,
+                                 const void* second_payload,
+                                 uint32_t second_payload_size,
+                                 RinRuntimeGuiHandle handle, uint64_t cookie,
+                                 uint32_t result_kind);
+static int runtime_async_pump(uint32_t timeout_ms);
+static int runtime_async_drain(void);
+static void runtime_async_abort_all(int32_t status);
+static uint32_t runtime_async_dispatch_callbacks(uint32_t maximum);
 
 static int runtime_send_icon_path(uint32_t surface_id, const char* path) {
     RinCompositorSetIconV1 request;
@@ -186,6 +286,7 @@ static void runtime_close_connection(void) {
     }
     g_compositor_fd = -1;
     g_compositor_protocol_version = RIN_COMPOSITOR_PROTOCOL_VERSION;
+    runtime_async_abort_all(RIN_RESULT_IO);
 }
 
 static int runtime_send_exact(const void* data, uint32_t size) {
@@ -268,6 +369,10 @@ static int runtime_request(uint32_t type, const void* payload,
     if (g_compositor_fd < 0 && runtime_connect() != 0) return -1;
     if (payload_size > RIN_RUNTIME_GUI_MAX_PAYLOAD ||
         (payload_size != 0u && !payload)) return -1;
+    if (g_async_requests.count != 0u) {
+        errno = EAGAIN;
+        return -1;
+    }
     request_id = g_next_request_id++;
     if (g_next_request_id == 0u) g_next_request_id = 1u;
     request_start_ms = rin_monotonic_ms();
@@ -552,7 +657,9 @@ static void runtime_release_buffers(RinRuntimeGuiSurface* surface) {
     }
 }
 
-static int runtime_make_buffers(RinRuntimeGuiSurface* surface) {
+static int runtime_attach_existing_buffers(RinRuntimeGuiSurface* surface);
+
+static int runtime_allocate_buffers(RinRuntimeGuiSurface* surface) {
     uint32_t slot;
 
     if (!surface || surface->width == 0u || surface->height == 0u ||
@@ -585,7 +692,6 @@ static int runtime_make_buffers(RinRuntimeGuiSurface* surface) {
         surface->shm_handles[slot] = handle;
         surface->pixels[slot] = pixels;
     }
-    if (runtime_attach_existing_buffers(surface) != 0) goto fail;
     if (g_next_render_target_generation == 0u)
         g_next_render_target_generation = 1u;
     surface->render_target_generation = g_next_render_target_generation++;
@@ -597,31 +703,656 @@ fail:
     return -1;
 }
 
-static int runtime_attach_existing_buffers(RinRuntimeGuiSurface* surface) {
-    RinCompositorAttachBuffersV2 attach;
+static int runtime_make_buffers(RinRuntimeGuiSurface* surface) {
+    if (runtime_allocate_buffers(surface) != 0) return -1;
+    if (runtime_attach_existing_buffers(surface) != 0) {
+        runtime_release_buffers(surface);
+        return -1;
+    }
+    return 0;
+}
+
+static int runtime_build_attach_request(
+    const RinRuntimeGuiSurface* surface,
+    RinCompositorAttachBuffersV2* attach) {
     uint32_t slot;
-    uint32_t reply_size = 0u;
-    int32_t status = -1;
     if (!surface || surface->id == 0u || surface->bytes == 0u ||
         surface->bytes > UINT32_MAX || !surface->pixels[0] ||
-        !surface->pixels[1]) return -1;
-    memset(&attach, 0, sizeof(attach));
-    attach.surface_id = surface->id;
-    attach.width = surface->width;
-    attach.height = surface->height;
-    attach.pitch = surface->pitch;
-    attach.format = 0u;
+        !surface->pixels[1] || !attach) return -1;
+    memset(attach, 0, sizeof(*attach));
+    attach->surface_id = surface->id;
+    attach->width = surface->width;
+    attach->height = surface->height;
+    attach->pitch = surface->pitch;
+    attach->format = 0u;
     for (slot = 0u; slot < RIN_COMPOSITOR_MAX_BUFFERS; ++slot) {
         if (surface->shm_handles[slot] < 0 ||
             surface->shm_names[slot][0] == '\0') return -1;
-        attach.bytes[slot] = surface->bytes;
-        strncpy(attach.shm_name[slot], surface->shm_names[slot],
+        attach->bytes[slot] = surface->bytes;
+        strncpy(attach->shm_name[slot], surface->shm_names[slot],
                 RIN_SHM_NAME_MAX - 1u);
     }
-    if (runtime_request(RIN_COMPOSITOR_ATTACH_BUFFERS_V2, &attach,
+    return 0;
+}
+
+static int runtime_attach_existing_buffers(RinRuntimeGuiSurface* surface) {
+    RinCompositorAttachBuffersV2 attach;
+    uint32_t reply_size = 0u;
+    int32_t status = -1;
+    if (runtime_build_attach_request(surface, &attach) != 0 ||
+        runtime_request(RIN_COMPOSITOR_ATTACH_BUFFERS_V2, &attach,
                         sizeof(attach), 0, 0u, &reply_size, &status) != 0 ||
         status != 0 || reply_size != 0u) return -1;
     return 0;
+}
+
+static void runtime_async_release_old_buffers(RinRuntimeGuiAsyncJob* job) {
+    uint32_t slot;
+    if (!job) return;
+    for (slot = 0u; slot < RIN_COMPOSITOR_MAX_BUFFERS; ++slot) {
+        if (job->old_shm_handles[slot] >= 0)
+            (void)rin_shm_dt(job->old_shm_handles[slot],
+                             job->old_pixels[slot]);
+        job->old_shm_handles[slot] = -1;
+        job->old_pixels[slot] = 0;
+    }
+}
+
+static void runtime_async_queue_completion(
+    const RinRuntimeGuiAsyncJob* job, int32_t status,
+    const void* payload, uint32_t payload_size) {
+    RinRuntimeGuiSurface* surface;
+    uint32_t slot;
+    RinRuntimeGuiCompletionDispatch* dispatch;
+    if (!job) return;
+    surface = runtime_surface(job->handle);
+    if (!surface || !surface->completion_callback ||
+        g_async_completion_count >= RIN_RUNTIME_GUI_COMPLETION_CAPACITY)
+        return;
+    slot = (g_async_completion_head + g_async_completion_count) %
+           RIN_RUNTIME_GUI_COMPLETION_CAPACITY;
+    dispatch = &g_async_completions[slot];
+    memset(dispatch, 0, sizeof(*dispatch));
+    dispatch->completion.struct_size = sizeof(dispatch->completion);
+    dispatch->completion.version = 1u;
+    dispatch->completion.request_type = job->type;
+    dispatch->completion.status = status;
+    dispatch->completion.handle = job->handle;
+    dispatch->completion.cookie = job->cookie;
+    if (payload_size > sizeof(dispatch->completion.payload))
+        payload_size = sizeof(dispatch->completion.payload);
+    if (payload_size != 0u && payload)
+        memcpy(dispatch->completion.payload, payload, payload_size);
+    dispatch->completion.payload_size = payload_size;
+    ++g_async_completion_count;
+}
+
+static void runtime_async_apply_completion(RinRuntimeGuiAsyncJob* job,
+                                           int32_t status,
+                                           const void* payload,
+                                           uint32_t payload_size) {
+    RinRuntimeGuiSurface* surface;
+    if (!job) return;
+    surface = runtime_surface(job->handle);
+    if (job->result_kind == RIN_RUNTIME_GUI_ASYNC_RESULT_INPUT) {
+        if (surface) {
+            surface->input_poll_pending = 0u;
+            if (status == -11 && payload_size == 0u) {
+                surface->input_error = 0;
+            } else if (status != 0) {
+                surface->input_error = status;
+            } else if (!payload ||
+                       payload_size != sizeof(RinCompositorInputEventV1)) {
+                surface->input_error = RIN_RESULT_CORRUPT_DATA;
+            } else {
+                RinCompositorInputEventV1 routed;
+                memcpy(&routed, payload, sizeof(routed));
+                if (routed.struct_size != sizeof(routed) ||
+                    routed.version != 1u || routed.flags != 0u ||
+                    routed.surface_id != surface->id ||
+                    routed.reserved[0] >= 4u || routed.reserved[1] != 0u ||
+                    routed.event.struct_size != sizeof(routed.event) ||
+                    routed.event.version != RIN_GUI_NATIVE_EVENT_VERSION) {
+                    surface->input_error = RIN_RESULT_CORRUPT_DATA;
+                } else {
+                    surface->pending_input_event = routed.event;
+                    surface->input_event_ready = 1u;
+                    surface->input_error = 0;
+                }
+            }
+        }
+        return;
+    } else if (job->result_kind == RIN_RUNTIME_GUI_ASYNC_RESULT_FRAME) {
+        if (surface) {
+            surface->frame_present_pending = 0u;
+            if (status == 0 &&
+                job->second_type == RIN_COMPOSITOR_COMMIT_V2 &&
+                job->second_payload_size == sizeof(RinCompositorCommitV2)) {
+                RinCompositorCommitV2 commit;
+                memcpy(&commit, job->second_payload, sizeof(commit));
+                if (commit.surface_id == surface->id &&
+                    commit.buffer_slot < RIN_COMPOSITOR_MAX_BUFFERS) {
+                    const uint32_t next_slot = commit.buffer_slot ^ 1u;
+                    if (next_slot < RIN_COMPOSITOR_MAX_BUFFERS &&
+                        surface->pixels[commit.buffer_slot] &&
+                        surface->pixels[next_slot]) {
+                        surface->front_slot = commit.buffer_slot;
+                        surface->draw_slot = next_slot;
+                        memcpy(surface->pixels[next_slot],
+                               surface->pixels[commit.buffer_slot],
+                               (size_t)surface->bytes);
+                    }
+                }
+            }
+        }
+    } else if (job->result_kind ==
+               RIN_RUNTIME_GUI_ASYNC_RESULT_GPU_FRAME) {
+        if (surface) {
+            surface->frame_present_pending = 0u;
+            if (status == 0 &&
+                job->payload_size == sizeof(RinCompositorGpuPresentV1)) {
+                RinCompositorGpuPresentV1 present;
+                memcpy(&present, job->payload, sizeof(present));
+                if (present.surface_id == surface->id &&
+                    present.buffer_slot < RIN_COMPOSITOR_MAX_BUFFERS) {
+                    const uint32_t next_slot = present.buffer_slot ^ 1u;
+                    if (next_slot < RIN_COMPOSITOR_MAX_BUFFERS &&
+                        surface->pixels[present.buffer_slot] &&
+                        surface->pixels[next_slot]) {
+                        surface->front_slot = present.buffer_slot;
+                        surface->draw_slot = next_slot;
+                        surface->frame_sequence = present.frame_sequence;
+                        memcpy(surface->pixels[next_slot],
+                               surface->pixels[present.buffer_slot],
+                               (size_t)surface->bytes);
+                    }
+                }
+            }
+        }
+    } else if (job->result_kind == RIN_RUNTIME_GUI_ASYNC_RESULT_RESIZE) {
+        runtime_async_release_old_buffers(job);
+        if (surface) surface->resize_pending = 0u;
+    }
+    runtime_async_queue_completion(job, status, payload, payload_size);
+}
+
+static int runtime_async_enqueue(uint32_t type, const void* payload,
+                                 uint32_t payload_size,
+                                 uint32_t second_type,
+                                 const void* second_payload,
+                                 uint32_t second_payload_size,
+                                 RinRuntimeGuiHandle handle, uint64_t cookie,
+                                 uint32_t result_kind) {
+    RinRuntimeGuiAsyncJob* job;
+    RinRuntimeGuiSurface* surface = handle != 0u ? runtime_surface(handle) : 0;
+    uint32_t slot;
+    if (g_compositor_fd < 0) return RIN_RESULT_IO;
+    if (payload_size > RIN_RUNTIME_GUI_MAX_PAYLOAD ||
+        (payload_size != 0u && !payload) ||
+        second_payload_size > RIN_RUNTIME_GUI_ASYNC_SECOND_PAYLOAD_MAX ||
+        (second_payload_size != 0u && !second_payload) ||
+        ((second_type == 0u) != (second_payload_size == 0u)))
+        return RIN_RESULT_INVALID_ARGUMENT;
+    if (g_async_requests.count >= RIN_RUNTIME_GUI_ASYNC_QUEUE_CAPACITY ||
+        g_async_completion_count + g_async_requests.count >=
+            RIN_RUNTIME_GUI_COMPLETION_CAPACITY)
+        return RIN_RESULT_BUSY;
+    slot = (g_async_requests.head + g_async_requests.count) %
+           RIN_RUNTIME_GUI_ASYNC_QUEUE_CAPACITY;
+    job = &g_async_requests.jobs[slot];
+    memset(job, 0, sizeof(*job));
+    job->type = type;
+    job->payload_size = payload_size;
+    job->second_type = second_type;
+    job->second_payload_size = second_payload_size;
+    job->result_kind = result_kind;
+    job->handle = handle;
+    job->cookie = cookie;
+    for (uint32_t index = 0u; index < RIN_COMPOSITOR_MAX_BUFFERS; ++index)
+        job->old_shm_handles[index] = -1;
+    if (payload_size != 0u) memcpy(job->payload, payload, payload_size);
+    if (second_payload_size != 0u)
+        memcpy(job->second_payload, second_payload, second_payload_size);
+    ++g_async_requests.count;
+    return RIN_RESULT_OK;
+}
+
+static int runtime_async_enqueue_query(
+    uint32_t type, const void* payload, uint32_t payload_size,
+    uint32_t reply_capacity, RinRuntimeGuiHandle handle, uint64_t cookie) {
+    RinRuntimeGuiSurface* surface = runtime_surface(handle);
+    uint32_t slot;
+    int result;
+    if (!surface) return RIN_RESULT_INVALID_HANDLE;
+    if (!surface->completion_callback) return RIN_RESULT_INVALID_ARGUMENT;
+    if (reply_capacity > RIN_RUNTIME_GUI_COMPLETION_PAYLOAD_MAX)
+        return RIN_RESULT_LIMIT_EXCEEDED;
+    result = runtime_async_enqueue(type, payload, payload_size, 0u, 0, 0u,
+        handle, cookie, RIN_RUNTIME_GUI_ASYNC_RESULT_QUERY);
+    if (result != RIN_RESULT_OK) return result;
+    slot = (g_async_requests.head + g_async_requests.count - 1u) %
+           RIN_RUNTIME_GUI_ASYNC_QUEUE_CAPACITY;
+    g_async_requests.jobs[slot].reply_capacity = reply_capacity;
+    return RIN_RESULT_OK;
+}
+
+static int runtime_async_enqueue_input_poll(
+    RinRuntimeGuiHandle handle, RinRuntimeGuiSurface* surface) {
+    RinCompositorPollInputV2 request;
+    uint32_t slot;
+    int result;
+    if (!surface || surface->input_poll_pending != 0u)
+        return RIN_RESULT_BUSY;
+    memset(&request, 0, sizeof(request));
+    request.struct_size = sizeof(request);
+    request.version = 1u;
+    request.surface_id = surface->id;
+    result = runtime_async_enqueue(RIN_COMPOSITOR_POLL_INPUT_V2, &request,
+        sizeof(request), 0u, 0, 0u, handle, 0u,
+        RIN_RUNTIME_GUI_ASYNC_RESULT_INPUT);
+    if (result != RIN_RESULT_OK) return result;
+    slot = (g_async_requests.head + g_async_requests.count - 1u) %
+           RIN_RUNTIME_GUI_ASYNC_QUEUE_CAPACITY;
+    g_async_requests.jobs[slot].reply_capacity =
+        sizeof(RinCompositorInputEventV1);
+    surface->input_poll_pending = 1u;
+    return RIN_RESULT_OK;
+}
+
+static int runtime_async_enqueue_resize(
+    RinRuntimeGuiHandle handle, RinRuntimeGuiSurface* surface,
+    uint32_t width, uint32_t height) {
+    RinRuntimeGuiSurface candidate;
+    RinCompositorSetSize resize;
+    RinCompositorAttachBuffersV2 attach;
+    RinRuntimeGuiAsyncJob* job;
+    uint32_t job_slot;
+    uint32_t index;
+    int result;
+    if (!surface || surface->resize_pending != 0u ||
+        surface->render_target_acquired != 0u)
+        return RIN_RESULT_BUSY;
+    memset(&candidate, 0, sizeof(candidate));
+    for (index = 0u; index < RIN_COMPOSITOR_MAX_BUFFERS; ++index)
+        candidate.shm_handles[index] = -1;
+    candidate.id = surface->id;
+    candidate.width = width;
+    candidate.height = height;
+    if (runtime_allocate_buffers(&candidate) != 0) return RIN_RESULT_IO;
+    if (runtime_build_attach_request(&candidate, &attach) != 0) {
+        runtime_release_buffers(&candidate);
+        return RIN_RESULT_CORRUPT_DATA;
+    }
+    memset(&resize, 0, sizeof(resize));
+    resize.surface_id = surface->id;
+    resize.width = width;
+    resize.height = height;
+    result = runtime_async_enqueue(RIN_COMPOSITOR_SET_SIZE, &resize,
+            sizeof(resize),
+            RIN_COMPOSITOR_ATTACH_BUFFERS_V2, &attach, sizeof(attach),
+            handle, 0u, RIN_RUNTIME_GUI_ASYNC_RESULT_RESIZE);
+    if (result != RIN_RESULT_OK) {
+        runtime_release_buffers(&candidate);
+        return result;
+    }
+    job_slot = (g_async_requests.head + g_async_requests.count - 1u) %
+               RIN_RUNTIME_GUI_ASYNC_QUEUE_CAPACITY;
+    job = &g_async_requests.jobs[job_slot];
+    for (index = 0u; index < RIN_COMPOSITOR_MAX_BUFFERS; ++index) {
+        job->old_shm_handles[index] = surface->shm_handles[index];
+        job->old_pixels[index] = surface->pixels[index];
+        surface->shm_handles[index] = candidate.shm_handles[index];
+        surface->pixels[index] = candidate.pixels[index];
+        memcpy(surface->shm_names[index], candidate.shm_names[index],
+               sizeof(surface->shm_names[index]));
+        candidate.shm_handles[index] = -1;
+        candidate.pixels[index] = 0;
+        candidate.shm_names[index][0] = '\0';
+    }
+    surface->width = candidate.width;
+    surface->height = candidate.height;
+    surface->pitch = candidate.pitch;
+    surface->bytes = candidate.bytes;
+    surface->render_target_generation = candidate.render_target_generation;
+    surface->draw_slot = 0u;
+    surface->front_slot = 0u;
+    surface->render_target_acquired = 0u;
+    surface->render_target_slot = 0u;
+    surface->acquired_generation = 0u;
+    surface->acquired_pixels = 0;
+    surface->resize_pending = 1u;
+    return RIN_RESULT_OK;
+}
+
+static uint32_t runtime_async_request_type(void) {
+    const RinRuntimeGuiAsyncJob* job;
+    if (g_async_requests.count == 0u) return 0u;
+    job = &g_async_requests.jobs[g_async_requests.head];
+    return g_async_requests.operation_index == 0u || job->second_type == 0u
+        ? job->type : job->second_type;
+}
+
+static const void* runtime_async_request_payload(void) {
+    const RinRuntimeGuiAsyncJob* job;
+    if (g_async_requests.count == 0u) return 0;
+    job = &g_async_requests.jobs[g_async_requests.head];
+    return g_async_requests.operation_index == 0u || job->second_type == 0u
+        ? job->payload : job->second_payload;
+}
+
+static uint32_t runtime_async_request_payload_size(void) {
+    const RinRuntimeGuiAsyncJob* job;
+    if (g_async_requests.count == 0u) return 0u;
+    job = &g_async_requests.jobs[g_async_requests.head];
+    return g_async_requests.operation_index == 0u || job->second_type == 0u
+        ? job->payload_size : job->second_payload_size;
+}
+
+static void runtime_async_begin_operation(void) {
+    memset(&g_async_requests.request, 0, sizeof(g_async_requests.request));
+    memset(&g_async_requests.reply, 0, sizeof(g_async_requests.reply));
+    g_async_requests.request.magic = RIN_COMPOSITOR_MAGIC;
+    g_async_requests.request.version = g_compositor_protocol_version;
+    g_async_requests.request.type = runtime_async_request_type();
+    g_async_requests.request.payload_size =
+        runtime_async_request_payload_size();
+    g_async_requests.request.request_id = g_next_request_id++;
+    if (g_next_request_id == 0u) g_next_request_id = 1u;
+    g_async_requests.offset = 0u;
+    g_async_requests.reply_offset = 0u;
+    g_async_requests.stage = RIN_RUNTIME_GUI_ASYNC_SEND_HEADER;
+    g_async_requests.started_ms = rin_monotonic_ms();
+}
+
+static void runtime_async_complete_head(int32_t status,
+                                        const void* payload,
+                                        uint32_t payload_size) {
+    RinRuntimeGuiAsyncJob completed;
+    uint32_t completed_slot;
+    if (g_async_requests.count == 0u) return;
+    completed_slot = g_async_requests.head;
+    completed = g_async_requests.jobs[completed_slot];
+    memset(&g_async_requests.jobs[completed_slot], 0,
+           sizeof(g_async_requests.jobs[completed_slot]));
+    g_async_requests.head = (g_async_requests.head + 1u) %
+                            RIN_RUNTIME_GUI_ASYNC_QUEUE_CAPACITY;
+    --g_async_requests.count;
+    g_async_requests.stage = RIN_RUNTIME_GUI_ASYNC_IDLE;
+    g_async_requests.operation_index = 0u;
+    g_async_requests.offset = 0u;
+    g_async_requests.reply_offset = 0u;
+    runtime_async_apply_completion(&completed, status, payload, payload_size);
+    if (completed.result_kind != RIN_RUNTIME_GUI_ASYNC_RESULT_RESIZE)
+        runtime_async_release_old_buffers(&completed);
+}
+
+static void runtime_async_abort_all(int32_t status) {
+    while (g_async_requests.count != 0u) {
+        RinRuntimeGuiAsyncJob aborted =
+            g_async_requests.jobs[g_async_requests.head];
+        memset(&g_async_requests.jobs[g_async_requests.head], 0,
+               sizeof(g_async_requests.jobs[g_async_requests.head]));
+        g_async_requests.head = (g_async_requests.head + 1u) %
+                                RIN_RUNTIME_GUI_ASYNC_QUEUE_CAPACITY;
+        --g_async_requests.count;
+        runtime_async_apply_completion(&aborted, status, 0, 0u);
+    }
+    g_async_requests.stage = RIN_RUNTIME_GUI_ASYNC_IDLE;
+    g_async_requests.operation_index = 0u;
+    g_async_requests.offset = 0u;
+    g_async_requests.reply_offset = 0u;
+}
+
+static int runtime_async_wait(short events, uint64_t deadline_ms) {
+    while (true) {
+        struct pollfd descriptor;
+        uint64_t now = rin_monotonic_ms();
+        uint64_t remaining;
+        int timeout_ms;
+        int ready;
+        if (now >= deadline_ms) return 0;
+        remaining = deadline_ms - now;
+        timeout_ms = remaining > 50u ? 50 : (int)remaining;
+        descriptor.fd = g_compositor_fd;
+        descriptor.events = events;
+        descriptor.revents = 0;
+        do { ready = poll(&descriptor, 1u, timeout_ms); }
+        while (ready < 0 && errno == EINTR);
+        if (ready == 0) continue;
+        if (ready < 0 || (descriptor.revents & (POLLERR | POLLNVAL)) != 0 ||
+            ((descriptor.revents & POLLHUP) != 0 &&
+             (descriptor.revents & events) == 0))
+            return -1;
+        if ((descriptor.revents & events) != 0) return 1;
+    }
+}
+
+static int runtime_async_pump(uint32_t timeout_ms) {
+    uint32_t completed_count = 0u;
+    int waited = 0;
+    const uint64_t wait_deadline = rin_monotonic_ms() + timeout_ms;
+    if (g_async_requests.count == 0u) return 0;
+    if (g_compositor_fd < 0) {
+        runtime_async_abort_all(RIN_RESULT_IO);
+        return -1;
+    }
+    while (completed_count < 4u && g_async_requests.count != 0u) {
+        const uint32_t type = runtime_async_request_type();
+        const uint32_t payload_size = runtime_async_request_payload_size();
+        const void* payload = runtime_async_request_payload();
+        RinRuntimeGuiAsyncJob* job =
+            &g_async_requests.jobs[g_async_requests.head];
+        if (g_async_requests.stage == RIN_RUNTIME_GUI_ASYNC_IDLE)
+            runtime_async_begin_operation();
+        if (rin_monotonic_ms() - g_async_requests.started_ms >=
+            RIN_RUNTIME_GUI_REQUEST_TIMEOUT_MS) {
+            runtime_close_connection();
+            return -1;
+        }
+        if (g_async_requests.stage == RIN_RUNTIME_GUI_ASYNC_SEND_HEADER ||
+            g_async_requests.stage == RIN_RUNTIME_GUI_ASYNC_SEND_PAYLOAD) {
+            const uint8_t* bytes;
+            uint32_t remaining;
+            uint32_t expected;
+            ssize_t sent;
+            if (g_async_requests.stage == RIN_RUNTIME_GUI_ASYNC_SEND_HEADER) {
+                bytes = (const uint8_t*)&g_async_requests.request;
+                expected = (uint32_t)sizeof(g_async_requests.request);
+            } else {
+                bytes = (const uint8_t*)payload;
+                expected = payload_size;
+            }
+            remaining = expected - g_async_requests.offset;
+            sent = send(g_compositor_fd, bytes + g_async_requests.offset,
+                        remaining, MSG_DONTWAIT | MSG_NOSIGNAL);
+            if (sent < 0 && errno == EINTR) continue;
+            if (sent < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+                int ready;
+                if (timeout_ms == 0u || waited != 0)
+                    return (int)completed_count;
+                waited = 1;
+                ready = runtime_async_wait(POLLOUT, wait_deadline);
+                if (ready > 0) continue;
+                if (ready == 0) return (int)completed_count;
+                runtime_close_connection();
+                return -1;
+            }
+            if (sent <= 0 || (uint64_t)sent > remaining) {
+                runtime_close_connection();
+                return -1;
+            }
+            g_async_requests.offset += (uint32_t)sent;
+            if (g_async_requests.offset < expected) continue;
+            g_async_requests.offset = 0u;
+            if (g_async_requests.stage == RIN_RUNTIME_GUI_ASYNC_SEND_HEADER &&
+                payload_size != 0u) {
+                g_async_requests.stage = RIN_RUNTIME_GUI_ASYNC_SEND_PAYLOAD;
+                continue;
+            }
+            g_async_requests.stage = RIN_RUNTIME_GUI_ASYNC_RECEIVE_HEADER;
+            continue;
+        }
+        if (g_async_requests.stage == RIN_RUNTIME_GUI_ASYNC_RECEIVE_HEADER) {
+            uint8_t* bytes = (uint8_t*)&g_async_requests.reply;
+            const uint32_t remaining = (uint32_t)sizeof(g_async_requests.reply) -
+                                       g_async_requests.reply_offset;
+            ssize_t received = recv(g_compositor_fd,
+                bytes + g_async_requests.reply_offset, remaining, MSG_DONTWAIT);
+            if (received < 0 && errno == EINTR) continue;
+            if (received < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+                int ready;
+                if (timeout_ms == 0u || waited != 0)
+                    return (int)completed_count;
+                waited = 1;
+                ready = runtime_async_wait(POLLIN, wait_deadline);
+                if (ready > 0) continue;
+                if (ready == 0) return (int)completed_count;
+                runtime_close_connection();
+                return -1;
+            }
+            if (received <= 0 || (uint64_t)received > remaining) {
+                runtime_close_connection();
+                return -1;
+            }
+            g_async_requests.reply_offset += (uint32_t)received;
+            if (g_async_requests.reply_offset < sizeof(g_async_requests.reply))
+                continue;
+            if (g_async_requests.reply.magic != RIN_COMPOSITOR_MAGIC ||
+                g_async_requests.reply.version != g_compositor_protocol_version ||
+                g_async_requests.reply.type != type ||
+                g_async_requests.reply.request_id !=
+                    g_async_requests.request.request_id ||
+                g_async_requests.reply.payload_size > job->reply_capacity ||
+                g_async_requests.reply.payload_size >
+                    sizeof(g_async_requests.reply_payload)) {
+                runtime_close_connection();
+                return -1;
+            }
+            {
+                const int32_t status =
+                    (int32_t)g_async_requests.reply.reserved;
+                if (g_async_requests.reply.payload_size != 0u) {
+                    g_async_requests.stage =
+                        RIN_RUNTIME_GUI_ASYNC_RECEIVE_PAYLOAD;
+                    g_async_requests.reply_offset = 0u;
+                    continue;
+                }
+                if (g_async_requests.operation_index == 0u &&
+                    job->second_type != 0u && status == 0) {
+                    g_async_requests.operation_index = 1u;
+                    runtime_async_begin_operation();
+                    continue;
+                }
+                const uint32_t result_kind = job->result_kind;
+                runtime_async_complete_head(status, 0, 0u);
+                ++completed_count;
+                if (result_kind == RIN_RUNTIME_GUI_ASYNC_RESULT_RESIZE &&
+                    status != 0) {
+                    runtime_close_connection();
+                    return -1;
+                }
+                if (result_kind == RIN_RUNTIME_GUI_ASYNC_RESULT_NONE &&
+                    status != 0) {
+                    runtime_close_connection();
+                    return -1;
+                }
+            }
+            continue;
+        }
+        if (g_async_requests.stage ==
+            RIN_RUNTIME_GUI_ASYNC_RECEIVE_PAYLOAD) {
+            const uint32_t remaining = g_async_requests.reply.payload_size -
+                                       g_async_requests.reply_offset;
+            ssize_t received = recv(g_compositor_fd,
+                g_async_requests.reply_payload +
+                    g_async_requests.reply_offset,
+                remaining, MSG_DONTWAIT);
+            if (received < 0 && errno == EINTR) continue;
+            if (received < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+                int ready;
+                if (timeout_ms == 0u || waited != 0)
+                    return (int)completed_count;
+                waited = 1;
+                ready = runtime_async_wait(POLLIN, wait_deadline);
+                if (ready > 0) continue;
+                if (ready == 0) return (int)completed_count;
+                runtime_close_connection();
+                return -1;
+            }
+            if (received <= 0 || (uint64_t)received > remaining) {
+                runtime_close_connection();
+                return -1;
+            }
+            g_async_requests.reply_offset += (uint32_t)received;
+            if (g_async_requests.reply_offset <
+                g_async_requests.reply.payload_size) continue;
+            {
+                const int32_t status =
+                    (int32_t)g_async_requests.reply.reserved;
+                const uint32_t reply_size =
+                    g_async_requests.reply.payload_size;
+                const uint32_t result_kind = job->result_kind;
+                if (g_async_requests.operation_index == 0u &&
+                    job->second_type != 0u && status == 0) {
+                    g_async_requests.operation_index = 1u;
+                    runtime_async_begin_operation();
+                    continue;
+                }
+                runtime_async_complete_head(status,
+                    g_async_requests.reply_payload, reply_size);
+                ++completed_count;
+                if ((result_kind == RIN_RUNTIME_GUI_ASYNC_RESULT_RESIZE ||
+                     result_kind == RIN_RUNTIME_GUI_ASYNC_RESULT_NONE) &&
+                    status != 0) {
+                    runtime_close_connection();
+                    return -1;
+                }
+            }
+            continue;
+        }
+        runtime_close_connection();
+        return -1;
+    }
+    return (int)completed_count;
+}
+
+static int runtime_async_drain(void) {
+    const uint64_t deadline = rin_monotonic_ms() +
+                              RIN_RUNTIME_GUI_REQUEST_TIMEOUT_MS;
+    while (g_async_requests.count != 0u) {
+        const uint64_t now = rin_monotonic_ms();
+        uint64_t remaining;
+        uint32_t wait_ms;
+        if (now >= deadline) {
+            runtime_close_connection();
+            return -1;
+        }
+        remaining = deadline - now;
+        wait_ms = remaining > 50u ? 50u : (uint32_t)remaining;
+        if (runtime_async_pump(wait_ms) < 0) return -1;
+    }
+    return 0;
+}
+
+static uint32_t runtime_async_dispatch_callbacks(uint32_t maximum) {
+    uint32_t dispatched = 0u;
+    while (g_async_completion_count != 0u && dispatched < maximum) {
+        RinRuntimeGuiCompletionDispatch completed =
+            g_async_completions[g_async_completion_head];
+        RinRuntimeGuiSurface* surface;
+        memset(&g_async_completions[g_async_completion_head], 0,
+               sizeof(g_async_completions[g_async_completion_head]));
+        g_async_completion_head = (g_async_completion_head + 1u) %
+                                  RIN_RUNTIME_GUI_COMPLETION_CAPACITY;
+        --g_async_completion_count;
+        surface = runtime_surface(completed.completion.handle);
+        if (surface && surface->completion_callback) {
+            surface->completion_callback(&completed.completion,
+                                         surface->completion_context);
+            ++dispatched;
+        }
+    }
+    return dispatched;
 }
 
 static int runtime_rebind_surface(RinRuntimeGuiSurface* surface) {
@@ -631,6 +1362,8 @@ static int runtime_rebind_surface(RinRuntimeGuiSurface* surface) {
     RinCompositorSetTitleV1 title;
     RinCompositorWindowStateV1 state;
     RinCompositorSetCursorV1 cursor;
+    RinCompositorInputPolicyV1 input_policy;
+    RinCompositorFrameCallbackV1 frame_callback;
     RinCompositorTextInputState text_input;
     RinCompositorCommitV2 commit;
     uint32_t old_id;
@@ -651,6 +1384,11 @@ static int runtime_rebind_surface(RinRuntimeGuiSurface* surface) {
         status != 0 || reply_size != sizeof(new_id) || new_id == 0u)
         return -1;
     surface->id = new_id;
+    surface->input_poll_pending = 0u;
+    surface->input_event_ready = 0u;
+    surface->input_error = 0;
+    memset(&surface->pending_input_event, 0,
+           sizeof(surface->pending_input_event));
     if (runtime_attach_existing_buffers(surface) != 0) {
         surface->id = old_id;
         return -1;
@@ -709,6 +1447,43 @@ static int runtime_rebind_surface(RinRuntimeGuiSurface* surface) {
             return -1;
     }
 cursor_rebind_done:
+    memset(&input_policy, 0, sizeof(input_policy));
+    input_policy.struct_size = sizeof(input_policy);
+    input_policy.version = 1u;
+    input_policy.surface_id = new_id;
+    if (surface->pointer_capture != 0u) {
+        input_policy.enabled = surface->pointer_capture;
+        if (runtime_request(RIN_COMPOSITOR_SET_POINTER_CAPTURE, &input_policy,
+                            sizeof(input_policy), 0, 0u, &reply_size,
+                            &status) != 0 || status != 0 || reply_size != 0u)
+            return -1;
+    }
+    if (surface->keyboard_grab != 0u) {
+        input_policy.enabled = surface->keyboard_grab;
+        if (runtime_request(RIN_COMPOSITOR_SET_KEYBOARD_GRAB, &input_policy,
+                            sizeof(input_policy), 0, 0u, &reply_size,
+                            &status) != 0 || status != 0 || reply_size != 0u)
+            return -1;
+    }
+    if (surface->modal != 0u) {
+        input_policy.enabled = surface->modal;
+        if (runtime_request(RIN_COMPOSITOR_SET_MODAL, &input_policy,
+                            sizeof(input_policy), 0, 0u, &reply_size,
+                            &status) != 0 || status != 0 || reply_size != 0u)
+            return -1;
+    }
+    if (surface->frame_callback_enabled != 0u) {
+        memset(&frame_callback, 0, sizeof(frame_callback));
+        frame_callback.struct_size = sizeof(frame_callback);
+        frame_callback.version = 1u;
+        frame_callback.surface_id = new_id;
+        frame_callback.enabled = 1u;
+        frame_callback.max_inflight = surface->frame_callback_max_inflight;
+        if (runtime_request(RIN_COMPOSITOR_SET_FRAME_CALLBACK, &frame_callback,
+                            sizeof(frame_callback), 0, 0u, &reply_size,
+                            &status) != 0 || status != 0 || reply_size != 0u)
+            return -1;
+    }
     if (surface->text_input.struct_size != 0u) {
         memset(&text_input, 0, sizeof(text_input));
         text_input.surface_id = new_id;
@@ -842,6 +1617,7 @@ RinRuntimeGuiHandle wnd_create_flags(const char* title, int x, int y, int w,
     if (w <= 0 || h <= 0 || !rin_compositor_surface_role_valid(role) ||
         (flags & ~RIN_WINDOW_FLAG_KNOWN_MASK) != 0u ||
         runtime_connect() != 0) return 0;
+    if (runtime_async_drain() != 0) return 0;
     if (title) {
         while (title_length < 127u && title[title_length] != '\0')
             ++title_length;
@@ -920,103 +1696,144 @@ RinRuntimeGuiHandle wnd_create_frameless(const char* title, int x, int y,
     return wnd_create_role(title, x, y, w, h, RIN_COMPOSITOR_ROLE_NORMAL, 1);
 }
 
-void wnd_close(RinRuntimeGuiHandle handle) {
+int wnd_close_async(RinRuntimeGuiHandle handle) {
     RinRuntimeGuiSurface* surface = runtime_surface(handle);
     uint32_t id;
-    uint32_t reply_size;
-    int32_t status;
-    if (!surface || runtime_surface_id(handle, &id) != 0) return;
-    (void)runtime_request(RIN_COMPOSITOR_DESTROY_SURFACE, &id, sizeof(id),
-                          0, 0u, &reply_size, &status);
+    int result;
+    if (!surface || runtime_surface_id(handle, &id) != 0)
+        return RIN_RESULT_INVALID_HANDLE;
+    result = runtime_async_enqueue(RIN_COMPOSITOR_DESTROY_SURFACE, &id,
+            sizeof(id),
+            0u, 0, 0u, handle, 0u,
+            RIN_RUNTIME_GUI_ASYNC_RESULT_NONE);
+    if (result != RIN_RESULT_OK) return result;
     runtime_destroy_local_surface(surface);
+    return RIN_RESULT_OK;
 }
 
-void wnd_show(RinRuntimeGuiHandle handle, int visible) {
-    RinCompositorVisibility request;
-    RinRuntimeGuiSurface* surface = runtime_surface(handle);
-    uint32_t reply_size;
-    int32_t status;
-    if (!surface) return;
-    memset(&request, 0, sizeof(request));
-    request.surface_id = surface->id;
-    request.visible = visible ? 1u : 0u;
-    if (runtime_request(RIN_COMPOSITOR_SET_VISIBLE, &request, sizeof(request),
-                        0, 0u, &reply_size, &status) == 0 && status == 0)
-    {
-        surface->visible = request.visible;
-        if (surface->visible != 0u)
-            surface->window_state &= ~RIN_COMPOSITOR_WINDOW_STATE_MINIMIZED;
+void wnd_close(RinRuntimeGuiHandle handle) {
+    RinRuntimeGuiSurface* surface;
+    if (wnd_close_async(handle) != RIN_RESULT_OK) {
+        surface = runtime_surface(handle);
+        if (!surface) return;
+        runtime_close_connection();
+        runtime_destroy_local_surface(surface);
     }
 }
 
-void wnd_title(RinRuntimeGuiHandle handle, const char* title) {
+int wnd_show_async(RinRuntimeGuiHandle handle, int visible) {
+    RinCompositorVisibility request;
+    RinRuntimeGuiSurface* surface = runtime_surface(handle);
+    int result;
+    if (!surface) return RIN_RESULT_INVALID_HANDLE;
+    memset(&request, 0, sizeof(request));
+    request.surface_id = surface->id;
+    request.visible = visible ? 1u : 0u;
+    result = runtime_async_enqueue(RIN_COMPOSITOR_SET_VISIBLE, &request,
+            sizeof(request), 0u, 0, 0u, handle, 0u,
+            RIN_RUNTIME_GUI_ASYNC_RESULT_NONE);
+    if (result != RIN_RESULT_OK) return result;
+    surface->visible = request.visible;
+    if (surface->visible != 0u)
+        surface->window_state &= ~RIN_COMPOSITOR_WINDOW_STATE_MINIMIZED;
+    return RIN_RESULT_OK;
+}
+
+void wnd_show(RinRuntimeGuiHandle handle, int visible) {
+    (void)wnd_show_async(handle, visible);
+}
+
+int wnd_title_async(RinRuntimeGuiHandle handle, const char* title) {
     RinRuntimeGuiSurface* surface = runtime_surface(handle);
     RinCompositorSetTitleV1 request;
-    uint32_t reply_size = 0u;
-    int32_t status = -1;
+    int result;
     size_t length = 0u;
-    if (!surface || !title) return;
+    if (!surface) return RIN_RESULT_INVALID_HANDLE;
+    if (!title) return RIN_RESULT_INVALID_ARGUMENT;
     while (length < sizeof(surface->title) - 1u && title[length] != '\0')
         ++length;
-    if (title[length] != '\0') return;
+    if (title[length] != '\0') return RIN_RESULT_LIMIT_EXCEEDED;
     memset(&request, 0, sizeof(request));
     request.struct_size = sizeof(request);
     request.version = 1u;
     request.surface_id = surface->id;
     memcpy(request.title, title, length);
-    if (runtime_request(RIN_COMPOSITOR_SET_TITLE, &request, sizeof(request),
-                        0, 0u, &reply_size, &status) == 0 && status == 0) {
-        memset(surface->title, 0, sizeof(surface->title));
-        memcpy(surface->title, title, length);
-    }
+    result = runtime_async_enqueue(RIN_COMPOSITOR_SET_TITLE, &request,
+            sizeof(request), 0u, 0, 0u, handle, 0u,
+            RIN_RUNTIME_GUI_ASYNC_RESULT_NONE);
+    if (result != RIN_RESULT_OK) return result;
+    memset(surface->title, 0, sizeof(surface->title));
+    memcpy(surface->title, title, length);
+    return RIN_RESULT_OK;
+}
+
+void wnd_title(RinRuntimeGuiHandle handle, const char* title) {
+    (void)wnd_title_async(handle, title);
 }
 
 int wnd_set_icon_path(RinRuntimeGuiHandle handle, const char* path) {
     RinRuntimeGuiSurface* surface = runtime_surface(handle);
-    return runtime_store_icon_path(surface, path);
+    RinCompositorSetIconV1 request;
+    int result;
+    size_t length = 0u;
+    if (!surface || !path) return RIN_RESULT_INVALID_ARGUMENT;
+    if ((g_compositor_features & RIN_COMPOSITOR_FEATURE_ICON_METADATA) == 0u)
+        return RIN_RESULT_NOT_SUPPORTED;
+    while (length < sizeof(request.executable_path) - 1u &&
+           path[length] != '\0') {
+        const unsigned char value = (unsigned char)path[length];
+        if (value < 0x20u || value == '\\')
+            return RIN_RESULT_INVALID_ARGUMENT;
+        ++length;
+    }
+    if (path[length] != '\0') return RIN_RESULT_LIMIT_EXCEEDED;
+    memset(&request, 0, sizeof(request));
+    request.struct_size = sizeof(request);
+    request.version = 1u;
+    request.surface_id = surface->id;
+    memcpy(request.executable_path, path, length);
+    result = runtime_async_enqueue(RIN_COMPOSITOR_SET_ICON, &request,
+            sizeof(request), 0u, 0, 0u, handle, 0u,
+            RIN_RUNTIME_GUI_ASYNC_RESULT_NONE);
+    if (result != RIN_RESULT_OK) return result;
+    memset(surface->icon_path, 0, sizeof(surface->icon_path));
+    memcpy(surface->icon_path, path, length);
+    return RIN_RESULT_OK;
 }
 
-void wnd_move(RinRuntimeGuiHandle handle, int x, int y) {
+int wnd_move_async(RinRuntimeGuiHandle handle, int x, int y) {
     RinCompositorPosition request;
     RinRuntimeGuiSurface* surface = runtime_surface(handle);
-    uint32_t reply_size;
-    int32_t status;
-    if (!surface) return;
+    int result;
+    if (!surface) return RIN_RESULT_INVALID_HANDLE;
     memset(&request, 0, sizeof(request));
     request.surface_id = surface->id;
     request.x = x;
     request.y = y;
-    if (runtime_request(RIN_COMPOSITOR_SET_POSITION, &request, sizeof(request),
-                        0, 0u, &reply_size, &status) == 0 && status == 0) {
-        surface->x = x;
-        surface->y = y;
-    }
+    result = runtime_async_enqueue(RIN_COMPOSITOR_SET_POSITION, &request,
+            sizeof(request), 0u, 0, 0u, handle, 0u,
+            RIN_RUNTIME_GUI_ASYNC_RESULT_NONE);
+    if (result != RIN_RESULT_OK) return result;
+    surface->x = x;
+    surface->y = y;
+    return RIN_RESULT_OK;
+}
+
+void wnd_move(RinRuntimeGuiHandle handle, int x, int y) {
+    (void)wnd_move_async(handle, x, y);
+}
+
+int wnd_resize_async(RinRuntimeGuiHandle handle, int w, int h) {
+    RinRuntimeGuiSurface* surface = runtime_surface(handle);
+    if (!surface) return RIN_RESULT_INVALID_HANDLE;
+    if (w <= 0 || h <= 0 || (uint32_t)w > UINT32_MAX / 4u)
+        return RIN_RESULT_INVALID_ARGUMENT;
+    return runtime_async_enqueue_resize(handle, surface,
+                                        (uint32_t)w, (uint32_t)h);
 }
 
 void wnd_resize(RinRuntimeGuiHandle handle, int w, int h) {
-    RinRuntimeGuiSurface* surface = runtime_surface(handle);
-    RinCompositorSetSize request;
-    uint32_t reply_size;
-    int32_t status;
-    if (!surface || w <= 0 || h <= 0 || (uint32_t)w > UINT32_MAX / 4u)
-        return;
-    memset(&request, 0, sizeof(request));
-    request.surface_id = surface->id;
-    request.width = (uint32_t)w;
-    request.height = (uint32_t)h;
-    if (runtime_request(RIN_COMPOSITOR_SET_SIZE, &request, sizeof(request),
-                        0, 0u, &reply_size, &status) != 0 || status != 0)
-        return;
-    runtime_release_buffers(surface);
-    surface->width = (uint32_t)w;
-    surface->height = (uint32_t)h;
-    surface->draw_slot = 0u;
-    surface->front_slot = 0u;
-    if (runtime_make_buffers(surface) != 0) {
-        /* The compositor has already rejected the old geometry.  Keep the
-         * handle valid but invisible until the caller retries a valid size. */
-        surface->visible = 0u;
-    }
+    (void)wnd_resize_async(handle, w, h);
 }
 
 static int runtime_ring_pop(RinCompositorInputRingEventV1* event) {
@@ -1042,12 +1859,11 @@ int wnd_poll_native(RinRuntimeGuiHandle handle, RinGuiNativeEventV1* event,
                     uint32_t* packed_out) {
     RinRuntimeGuiSurface* surface = runtime_surface(handle);
     RinGuiNativeEventV1 received;
-    RinCompositorPollInputV2 poll_request;
-    RinCompositorInputEventV1 routed;
     RinCompositorInputRingEventV1 ring_event;
-    uint32_t reply_size;
-    int32_t status;
+    int poll_result;
     if (!surface || !event || !packed_out) return -1;
+    (void)runtime_async_pump(0u);
+    runtime_async_dispatch_callbacks(8u);
     memset(event, 0, sizeof(*event));
     *packed_out = 0u;
     memset(&ring_event, 0, sizeof(ring_event));
@@ -1081,32 +1897,27 @@ int wnd_poll_native(RinRuntimeGuiHandle handle, RinGuiNativeEventV1* event,
             runtime_drop_input_ring();
         }
     }
-    memset(&poll_request, 0, sizeof(poll_request));
-    poll_request.struct_size = sizeof(poll_request);
-    poll_request.version = 1u;
-    poll_request.surface_id = surface->id;
-    memset(&routed, 0, sizeof(routed));
-    if (runtime_request(RIN_COMPOSITOR_POLL_INPUT_V2, &poll_request,
-                        sizeof(poll_request), &routed, sizeof(routed),
-                        &reply_size, &status) != 0)
+    if (surface->input_error != 0) return -1;
+    if (surface->input_event_ready != 0u) {
+        received = surface->pending_input_event;
+        memset(&surface->pending_input_event, 0,
+               sizeof(surface->pending_input_event));
+        surface->input_event_ready = 0u;
+        if (received.type == RIN_GUI_NATIVE_EVENT_POINTER_MOVE ||
+            received.type == RIN_GUI_NATIVE_EVENT_POINTER_BUTTON ||
+            received.type == RIN_GUI_NATIVE_EVENT_MOUSE_WHEEL ||
+            received.type == RIN_GUI_NATIVE_EVENT_MOUSE_HORIZONTAL_WHEEL)
+            surface->focused = 1u;
+        *event = received;
+        *packed_out = runtime_pack_legacy_event(&received);
+        return 1;
+    }
+    if (g_compositor_fd < 0) return -1;
+    poll_result = runtime_async_enqueue_input_poll(handle, surface);
+    if (poll_result == RIN_RESULT_IO) return -1;
+    if (poll_result != RIN_RESULT_OK && poll_result != RIN_RESULT_BUSY)
         return -1;
-    if (status == -11) return 0;
-    if (status != 0 || reply_size != sizeof(routed) ||
-        routed.struct_size != sizeof(routed) || routed.version != 1u ||
-        routed.flags != 0u || routed.surface_id != surface->id ||
-        routed.reserved[0] >= 4u || routed.reserved[1] != 0u ||
-        routed.event.struct_size != sizeof(routed.event) ||
-        routed.event.version != RIN_GUI_NATIVE_EVENT_VERSION)
-        return -1;
-    received = routed.event;
-    *event = received;
-    if (received.type == RIN_GUI_NATIVE_EVENT_POINTER_MOVE ||
-        received.type == RIN_GUI_NATIVE_EVENT_POINTER_BUTTON ||
-        received.type == RIN_GUI_NATIVE_EVENT_MOUSE_WHEEL ||
-        received.type == RIN_GUI_NATIVE_EVENT_MOUSE_HORIZONTAL_WHEEL)
-        surface->focused = 1u;
-    *packed_out = runtime_pack_legacy_event(&received);
-    return 1;
+    return 0;
 }
 
 int wnd_poll(RinRuntimeGuiHandle handle, void* event) {
@@ -1122,16 +1933,15 @@ int wnd_set_text_input_state(RinRuntimeGuiHandle handle,
                              const RinTextInputStateV1* state) {
     RinRuntimeGuiSurface* surface = runtime_surface(handle);
     RinCompositorTextInputState request;
-    uint32_t reply_size;
-    int32_t status;
+    int result;
     if (!surface || !state) return RIN_RESULT_INVALID_ARGUMENT;
     memset(&request, 0, sizeof(request));
     request.surface_id = surface->id;
     request.state = *state;
-    if (runtime_request(RIN_COMPOSITOR_SET_TEXT_INPUT_STATE, &request,
-                        sizeof(request), 0, 0u, &reply_size, &status) != 0)
-        return RIN_RESULT_IO;
-    if (status != 0) return (int)status;
+    result = runtime_async_enqueue(RIN_COMPOSITOR_SET_TEXT_INPUT_STATE, &request,
+            sizeof(request), 0u, 0, 0u, handle, 0u,
+            RIN_RUNTIME_GUI_ASYNC_RESULT_NONE);
+    if (result != RIN_RESULT_OK) return result;
     surface->text_input = *state;
     return RIN_RESULT_OK;
 }
@@ -1156,22 +1966,30 @@ int wnd_get_text_composition(RinRuntimeGuiHandle handle,
     return RIN_RESULT_OK;
 }
 
+int wnd_get_text_composition_async(RinRuntimeGuiHandle handle,
+                                   uint64_t cookie) {
+    RinRuntimeGuiSurface* surface = runtime_surface(handle);
+    if (!surface) return RIN_RESULT_INVALID_HANDLE;
+    return runtime_async_enqueue_query(RIN_COMPOSITOR_GET_TEXT_COMPOSITION,
+        &surface->id, sizeof(surface->id), sizeof(RinTextCompositionV1),
+        handle, cookie);
+}
+
 int wnd_set_text_composition(RinRuntimeGuiHandle handle,
                              const RinTextCompositionV1* composition) {
     RinRuntimeGuiSurface* surface = runtime_surface(handle);
     RinCompositorTextCompositionUpdateV1 request;
-    uint32_t reply_size = 0u;
-    int32_t status = -1;
+    int result;
     if (!surface || !composition) return RIN_RESULT_INVALID_ARGUMENT;
     memset(&request, 0, sizeof(request));
     request.struct_size = sizeof(request);
     request.version = 1u;
     request.surface_id = surface->id;
     request.composition = *composition;
-    if (runtime_request(RIN_COMPOSITOR_SET_TEXT_COMPOSITION, &request,
-                        sizeof(request), 0, 0u, &reply_size, &status) != 0)
-        return RIN_RESULT_IO;
-    if (status != 0) return status;
+    result = runtime_async_enqueue(RIN_COMPOSITOR_SET_TEXT_COMPOSITION, &request,
+            sizeof(request), 0u, 0, 0u, handle, 0u,
+            RIN_RUNTIME_GUI_ASYNC_RESULT_NONE);
+    if (result != RIN_RESULT_OK) return result;
     surface->text_composition = *composition;
     return RIN_RESULT_OK;
 }
@@ -1180,8 +1998,7 @@ int wnd_set_window_state(RinRuntimeGuiHandle handle, uint32_t window_state,
                          uint32_t workspace) {
     RinRuntimeGuiSurface* surface = runtime_surface(handle);
     RinCompositorWindowStateV1 request;
-    uint32_t reply_size = 0u;
-    int32_t status = -1;
+    int result;
     if (!surface || (window_state & ~RIN_COMPOSITOR_WINDOW_STATE_KNOWN_MASK) != 0u)
         return RIN_RESULT_INVALID_ARGUMENT;
     memset(&request, 0, sizeof(request));
@@ -1190,10 +2007,10 @@ int wnd_set_window_state(RinRuntimeGuiHandle handle, uint32_t window_state,
     request.surface_id = surface->id;
     request.state = window_state;
     request.workspace = workspace;
-    if (runtime_request(RIN_COMPOSITOR_SET_WINDOW_STATE, &request,
-                        sizeof(request), 0, 0u, &reply_size, &status) != 0)
-        return RIN_RESULT_IO;
-    if (status != 0) return status;
+    result = runtime_async_enqueue(RIN_COMPOSITOR_SET_WINDOW_STATE, &request,
+            sizeof(request), 0u, 0, 0u, handle, 0u,
+            RIN_RUNTIME_GUI_ASYNC_RESULT_NONE);
+    if (result != RIN_RESULT_OK) return result;
     surface->window_state = window_state;
     surface->workspace = workspace;
     surface->visible =
@@ -1205,8 +2022,6 @@ static int runtime_set_input_policy(RinRuntimeGuiHandle handle, uint32_t type,
                                     int enabled) {
     RinRuntimeGuiSurface* surface = runtime_surface(handle);
     RinCompositorInputPolicyV1 request;
-    uint32_t reply_size = 0u;
-    int32_t status = -1;
     if (!surface || (enabled != 0 && enabled != 1))
         return RIN_RESULT_INVALID_ARGUMENT;
     memset(&request, 0, sizeof(request));
@@ -1214,10 +2029,18 @@ static int runtime_set_input_policy(RinRuntimeGuiHandle handle, uint32_t type,
     request.version = 1u;
     request.surface_id = surface->id;
     request.enabled = (uint32_t)enabled;
-    if (runtime_request(type, &request, sizeof(request), 0, 0u,
-                        &reply_size, &status) != 0)
-        return RIN_RESULT_IO;
-    return status == 0 ? RIN_RESULT_OK : status;
+    {
+        int result = runtime_async_enqueue(type, &request, sizeof(request),
+            0u, 0, 0u, handle, 0u, RIN_RUNTIME_GUI_ASYNC_RESULT_NONE);
+        if (result != RIN_RESULT_OK) return result;
+        if (type == RIN_COMPOSITOR_SET_POINTER_CAPTURE)
+            surface->pointer_capture = (uint32_t)enabled;
+        else if (type == RIN_COMPOSITOR_SET_KEYBOARD_GRAB)
+            surface->keyboard_grab = (uint32_t)enabled;
+        else if (type == RIN_COMPOSITOR_SET_MODAL)
+            surface->modal = (uint32_t)enabled;
+        return RIN_RESULT_OK;
+    }
 }
 
 int wnd_set_pointer_capture(RinRuntimeGuiHandle handle, int enabled) {
@@ -1239,8 +2062,7 @@ int wnd_set_modal(RinRuntimeGuiHandle handle, int enabled) {
 int wnd_set_cursor(RinRuntimeGuiHandle handle, uint32_t cursor_type) {
     RinRuntimeGuiSurface* surface = runtime_surface(handle);
     RinCompositorSetCursorV1 request;
-    uint32_t reply_size = 0u;
-    int32_t status = -1;
+    int result;
     if (!surface || cursor_type >= RIN_CURSOR_TYPE_COUNT ||
         (surface->surface_flags & RIN_COMPOSITOR_SURFACE_FLAG_CURSOR) != 0u)
         return RIN_RESULT_INVALID_ARGUMENT;
@@ -1256,11 +2078,10 @@ int wnd_set_cursor(RinRuntimeGuiHandle handle, uint32_t cursor_type) {
     request.version = 1u;
     request.surface_id = surface->id;
     request.cursor_type = cursor_type;
-    if (runtime_request(RIN_COMPOSITOR_SET_CURSOR, &request, sizeof(request),
-                        0, 0u, &reply_size, &status) != 0)
-        return RIN_RESULT_IO;
-    if (status != 0 || reply_size != 0u)
-        return status != 0 ? status : RIN_RESULT_CORRUPT_DATA;
+    result = runtime_async_enqueue(RIN_COMPOSITOR_SET_CURSOR, &request,
+            sizeof(request), 0u, 0, 0u, handle, 0u,
+            RIN_RUNTIME_GUI_ASYNC_RESULT_NONE);
+    if (result != RIN_RESULT_OK) return result;
     surface->cursor_type = cursor_type;
     return RIN_RESULT_OK;
 }
@@ -1282,12 +2103,19 @@ int wnd_get_frame_info(RinRuntimeGuiHandle handle,
     return RIN_RESULT_OK;
 }
 
+int wnd_get_frame_info_async(RinRuntimeGuiHandle handle, uint64_t cookie) {
+    if (!runtime_surface(handle)) return RIN_RESULT_INVALID_HANDLE;
+    if ((g_compositor_features &
+         RIN_COMPOSITOR_FEATURE_PRESENT_FEEDBACK) == 0u)
+        return RIN_RESULT_NOT_SUPPORTED;
+    return runtime_async_enqueue_query(RIN_COMPOSITOR_GET_FRAME_INFO, 0, 0u,
+        sizeof(RinCompositorFrameInfoV1), handle, cookie);
+}
+
 int wnd_set_frame_callback(RinRuntimeGuiHandle handle, int enabled,
                            uint32_t max_inflight) {
     RinRuntimeGuiSurface* surface = runtime_surface(handle);
     RinCompositorFrameCallbackV1 request;
-    uint32_t reply_size = 0u;
-    int32_t status = -1;
     if (!surface || (enabled != 0 && enabled != 1) ||
         (enabled != 0 && (max_inflight == 0u || max_inflight > 4u)))
         return RIN_RESULT_INVALID_ARGUMENT;
@@ -1299,10 +2127,15 @@ int wnd_set_frame_callback(RinRuntimeGuiHandle handle, int enabled,
     request.surface_id = surface->id;
     request.enabled = enabled != 0 ? 1u : 0u;
     request.max_inflight = enabled != 0 ? max_inflight : 1u;
-    if (runtime_request(RIN_COMPOSITOR_SET_FRAME_CALLBACK, &request,
-                        sizeof(request), 0, 0u, &reply_size, &status) != 0)
-        return RIN_RESULT_IO;
-    return status != 0 ? status : RIN_RESULT_OK;
+    {
+        int result = runtime_async_enqueue(RIN_COMPOSITOR_SET_FRAME_CALLBACK,
+            &request, sizeof(request), 0u, 0, 0u, handle, 0u,
+            RIN_RUNTIME_GUI_ASYNC_RESULT_NONE);
+        if (result != RIN_RESULT_OK) return result;
+        surface->frame_callback_enabled = enabled != 0 ? 1u : 0u;
+        surface->frame_callback_max_inflight = enabled != 0 ? max_inflight : 0u;
+        return RIN_RESULT_OK;
+    }
 }
 
 int wnd_ack_frame(RinRuntimeGuiHandle handle, uint64_t frame_sequence,
@@ -1329,6 +2162,22 @@ int wnd_ack_frame(RinRuntimeGuiHandle handle, uint64_t frame_sequence,
         info.version != 1u) return RIN_RESULT_CORRUPT_DATA;
     if (next_frame_out) *next_frame_out = info;
     return RIN_RESULT_OK;
+}
+
+int wnd_ack_frame_async(RinRuntimeGuiHandle handle, uint64_t frame_sequence,
+                        uint64_t cookie) {
+    RinRuntimeGuiSurface* surface = runtime_surface(handle);
+    RinCompositorFrameAckV1 request;
+    if (!surface) return RIN_RESULT_INVALID_HANDLE;
+    if ((g_compositor_features & RIN_COMPOSITOR_FEATURE_FRAME_CALLBACK) == 0u)
+        return RIN_RESULT_NOT_SUPPORTED;
+    memset(&request, 0, sizeof(request));
+    request.struct_size = sizeof(request);
+    request.version = 1u;
+    request.surface_id = surface->id;
+    request.frame_sequence = frame_sequence;
+    return runtime_async_enqueue_query(RIN_COMPOSITOR_FRAME_ACK, &request,
+        sizeof(request), sizeof(RinCompositorFrameInfoV1), handle, cookie);
 }
 
 int rinruntime_gui_get_outputs(RinCompositorOutputListV1* outputs) {
@@ -1361,15 +2210,23 @@ int rinruntime_gui_get_outputs(RinCompositorOutputListV1* outputs) {
     return RIN_RESULT_OK;
 }
 
+int rinruntime_gui_get_outputs_async(RinRuntimeGuiHandle completion_handle,
+                                     uint64_t cookie) {
+    if (!runtime_surface(completion_handle)) return RIN_RESULT_INVALID_HANDLE;
+    return runtime_async_enqueue_query(RIN_COMPOSITOR_ENUMERATE_OUTPUTS, 0,
+        0u, sizeof(RinCompositorOutputListV1), completion_handle, cookie);
+}
+
 int wnd_present(RinRuntimeGuiHandle handle) {
     RinRuntimeGuiSurface* surface = runtime_surface(handle);
     RinCompositorDamage damage;
     RinCompositorCommitV2 commit;
-    uint32_t reply_size = 0u;
-    int32_t status = -1;
     uint32_t next_slot;
+    int result;
     if (!surface) return RIN_RESULT_INVALID_HANDLE;
     if (surface->render_target_acquired != 0u ||
+        surface->frame_present_pending != 0u ||
+        surface->resize_pending != 0u ||
         surface->draw_slot >= RIN_COMPOSITOR_MAX_BUFFERS ||
         !surface->pixels[surface->draw_slot])
         return RIN_RESULT_BUSY;
@@ -1383,20 +2240,20 @@ int wnd_present(RinRuntimeGuiHandle handle) {
     damage.y = surface->y;
     damage.w = surface->width;
     damage.h = surface->height;
-    if (runtime_request(RIN_COMPOSITOR_DAMAGE, &damage, sizeof(damage), 0,
-                        0u, &reply_size, &status) != 0 || status != 0)
-        return status != 0 ? status : RIN_RESULT_IO;
     memset(&commit, 0, sizeof(commit));
     commit.surface_id = surface->id;
     commit.buffer_slot = surface->draw_slot;
-    commit.frame_sequence = ++surface->frame_sequence;
-    if (runtime_request(RIN_COMPOSITOR_COMMIT_V2, &commit, sizeof(commit), 0,
-                        0u, &reply_size, &status) != 0 || status != 0)
-        return status != 0 ? status : RIN_RESULT_IO;
-    surface->front_slot = surface->draw_slot;
-    memcpy(surface->pixels[next_slot], surface->pixels[surface->front_slot],
-           (size_t)surface->bytes);
-    surface->draw_slot = next_slot;
+    if (surface->frame_sequence == UINT64_MAX)
+        return RIN_RESULT_LIMIT_EXCEEDED;
+    commit.frame_sequence = surface->frame_sequence + 1u;
+    result = runtime_async_enqueue(RIN_COMPOSITOR_DAMAGE, &damage,
+            sizeof(damage),
+            RIN_COMPOSITOR_COMMIT_V2, &commit, sizeof(commit), handle,
+            commit.frame_sequence,
+            RIN_RUNTIME_GUI_ASYNC_RESULT_FRAME);
+    if (result != RIN_RESULT_OK) return result;
+    surface->frame_present_pending = 1u;
+    surface->frame_sequence = commit.frame_sequence;
     return RIN_RESULT_OK;
 }
 
@@ -1427,16 +2284,33 @@ int wnd_export_gpu_image(RinRuntimeGuiHandle handle,
     return RIN_RESULT_OK;
 }
 
+int wnd_export_gpu_image_async(RinRuntimeGuiHandle handle, uint64_t cookie) {
+    RinRuntimeGuiSurface* surface = runtime_surface(handle);
+    RinCompositorGpuExportImageV1 request;
+    if (!surface) return RIN_RESULT_INVALID_HANDLE;
+    if ((g_compositor_features & RIN_COMPOSITOR_FEATURE_GPU_SURFACE_ABI) == 0u)
+        return RIN_RESULT_NOT_SUPPORTED;
+    memset(&request, 0, sizeof(request));
+    request.struct_size = sizeof(request);
+    request.version = RIN_COMPOSITOR_GPU_SURFACE_ABI_VERSION;
+    request.surface_id = surface->id;
+    request.buffer_slot = surface->draw_slot;
+    return runtime_async_enqueue_query(RIN_COMPOSITOR_EXPORT_GPU_IMAGE,
+        &request, sizeof(request), sizeof(RinCompositorGpuImageV1), handle,
+        cookie);
+}
+
 int wnd_present_gpu(RinRuntimeGuiHandle handle,
                     const RinCompositorGpuPresentV1* present) {
     RinRuntimeGuiSurface* surface = runtime_surface(handle);
     RinCompositorGpuPresentV1 request;
-    uint32_t reply_size = 0u;
-    int32_t status = -1;
+    int result;
     if (!surface || !present ||
         (g_compositor_features & RIN_COMPOSITOR_FEATURE_GPU_SURFACE_ABI) == 0u)
         return RIN_RESULT_NOT_SUPPORTED;
     if (surface->render_target_acquired != 0u ||
+        surface->frame_present_pending != 0u ||
+        surface->resize_pending != 0u ||
         present->struct_size != sizeof(*present) ||
         present->version != RIN_COMPOSITOR_GPU_SURFACE_ABI_VERSION ||
         present->reserved != 0u || present->reserved2 != 0u ||
@@ -1446,18 +2320,11 @@ int wnd_present_gpu(RinRuntimeGuiHandle handle,
         return RIN_RESULT_INVALID_ARGUMENT;
     request = *present;
     request.surface_id = surface->id;
-    if (runtime_request(RIN_COMPOSITOR_PRESENT_GPU_IMAGE, &request,
-                        sizeof(request), 0, 0u, &reply_size, &status) != 0 ||
-        status != 0 || reply_size != 0u)
-        return status != 0 ? status : RIN_RESULT_IO;
-    surface->front_slot = request.buffer_slot;
-    surface->draw_slot = request.buffer_slot ^ 1u;
-    surface->frame_sequence = request.frame_sequence;
-    if (surface->draw_slot >= RIN_COMPOSITOR_MAX_BUFFERS ||
-        !surface->pixels[surface->draw_slot])
-        return RIN_RESULT_CORRUPT_DATA;
-    memcpy(surface->pixels[surface->draw_slot],
-           surface->pixels[surface->front_slot], (size_t)surface->bytes);
+    result = runtime_async_enqueue(RIN_COMPOSITOR_PRESENT_GPU_IMAGE, &request,
+            sizeof(request), 0u, 0, 0u, handle, request.frame_sequence,
+            RIN_RUNTIME_GUI_ASYNC_RESULT_GPU_FRAME);
+    if (result != RIN_RESULT_OK) return result;
+    surface->frame_present_pending = 1u;
     return RIN_RESULT_OK;
 }
 
@@ -1468,7 +2335,9 @@ int wnd_acquire_render_target(RinRuntimeGuiHandle handle,
     if (!out_target) return RIN_RESULT_INVALID_ARGUMENT;
     memset(out_target, 0, sizeof(*out_target));
     if (!surface) return RIN_RESULT_INVALID_HANDLE;
-    if (surface->render_target_acquired != 0u) return RIN_RESULT_BUSY;
+    if (surface->render_target_acquired != 0u ||
+        surface->frame_present_pending != 0u ||
+        surface->resize_pending != 0u) return RIN_RESULT_BUSY;
     slot = surface->draw_slot;
     if (slot >= RIN_COMPOSITOR_MAX_BUFFERS || !surface->pixels[slot] ||
         surface->render_target_generation == 0u)
@@ -1553,4 +2422,32 @@ int rinruntime_gui_is_focused(RinRuntimeGuiHandle handle) {
 
 int wnd_is_focused(RinRuntimeGuiHandle handle) {
     return rinruntime_gui_is_focused(handle);
+}
+
+int wnd_set_compositor_completion_callback(
+    RinRuntimeGuiHandle handle, RinRuntimeGuiCompletionCallback callback,
+    void* context) {
+    RinRuntimeGuiSurface* surface = runtime_surface(handle);
+    if (!surface) return RIN_RESULT_INVALID_HANDLE;
+    surface->completion_callback = callback;
+    surface->completion_context = context;
+    return RIN_RESULT_OK;
+}
+
+int wnd_dispatch_compositor(uint32_t timeout_ms, uint32_t max_completions) {
+    uint32_t dispatched;
+    int pump_result;
+    if (max_completions == 0u) return RIN_RESULT_INVALID_ARGUMENT;
+    if (max_completions > RIN_RUNTIME_GUI_COMPLETION_CAPACITY)
+        max_completions = RIN_RUNTIME_GUI_COMPLETION_CAPACITY;
+    if (timeout_ms > 50u) timeout_ms = 50u;
+    pump_result = runtime_async_pump(timeout_ms);
+    dispatched = runtime_async_dispatch_callbacks(max_completions);
+    if (pump_result < 0) return RIN_RESULT_IO;
+    return (int)dispatched;
+}
+
+int wnd_reconnect_compositor(void) {
+    if (g_async_requests.count != 0u) return RIN_RESULT_BUSY;
+    return runtime_connect() == 0 ? RIN_RESULT_OK : RIN_RESULT_IO;
 }

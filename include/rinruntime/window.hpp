@@ -35,6 +35,8 @@ class Window final {
 public:
     using Handle = RinWindowHandle;
     using EventHandler = std::function<bool(const WindowEvent&)>;
+    using CompletionHandler =
+        std::function<void(const RinRuntimeGuiCompletionV1&)>;
     using PaintHandler = std::function<void(AqSurface&)>;
     using PaintHandlerNoArgs = std::function<void()>;
 
@@ -58,7 +60,10 @@ public:
         : handle_(std::exchange(other.handle_, RIN_WINDOW_HANDLE_INVALID)),
           event_handler_(std::move(other.event_handler_)),
           paint_handler_(std::move(other.paint_handler_)),
-          paint_handler_no_args_(std::move(other.paint_handler_no_args_)) {}
+          paint_handler_no_args_(std::move(other.paint_handler_no_args_)),
+          completion_handler_(std::move(other.completion_handler_)) {
+        updateCompletionCallback();
+    }
 
     Window& operator=(Window&& other) noexcept {
         if (this == &other) return *this;
@@ -67,26 +72,54 @@ public:
         event_handler_ = std::move(other.event_handler_);
         paint_handler_ = std::move(other.paint_handler_);
         paint_handler_no_args_ = std::move(other.paint_handler_no_args_);
+        completion_handler_ = std::move(other.completion_handler_);
+        updateCompletionCallback();
         return *this;
     }
 
     bool valid() const noexcept { return handle_ != RIN_WINDOW_HANDLE_INVALID; }
     Handle handle() const noexcept { return handle_; }
 
+    int requestClose() noexcept {
+        if (!valid()) return RIN_ERROR_STALE_HANDLE;
+        const int result = wnd_close_async(handle_);
+        if (result == RIN_RESULT_OK) handle_ = RIN_WINDOW_HANDLE_INVALID;
+        return result;
+    }
     void show(bool visible = true) noexcept {
-        if (valid()) wnd_show(handle_, visible ? 1 : 0);
+        (void)requestShow(visible);
+    }
+    int requestShow(bool visible = true) noexcept {
+        return valid() ? wnd_show_async(handle_, visible ? 1 : 0)
+                       : RIN_ERROR_STALE_HANDLE;
     }
     void setTitle(const char* title) noexcept {
-        if (valid()) wnd_title(handle_, title);
+        (void)requestTitle(title);
+    }
+    int requestTitle(const char* title) noexcept {
+        return valid() ? wnd_title_async(handle_, title)
+                       : RIN_ERROR_STALE_HANDLE;
     }
     void setIconPath(const char* path) noexcept {
-        if (valid()) (void)wnd_set_icon_path(handle_, path);
+        (void)requestIconPath(path);
+    }
+    int requestIconPath(const char* path) noexcept {
+        return valid() ? wnd_set_icon_path(handle_, path)
+                       : RIN_ERROR_STALE_HANDLE;
     }
     void move(std::int32_t x, std::int32_t y) noexcept {
-        if (valid()) wnd_move(handle_, x, y);
+        (void)requestMove(x, y);
+    }
+    int requestMove(std::int32_t x, std::int32_t y) noexcept {
+        return valid() ? wnd_move_async(handle_, x, y)
+                       : RIN_ERROR_STALE_HANDLE;
     }
     void resize(std::int32_t width, std::int32_t height) noexcept {
-        if (valid()) wnd_resize(handle_, width, height);
+        (void)requestResize(width, height);
+    }
+    int requestResize(std::int32_t width, std::int32_t height) noexcept {
+        return valid() ? wnd_resize_async(handle_, width, height)
+                       : RIN_ERROR_STALE_HANDLE;
     }
 
     int setWindowState(std::uint32_t state, std::uint32_t workspace = 0) noexcept {
@@ -110,6 +143,9 @@ public:
     }
     bool focused() const noexcept {
         return valid() && wnd_is_focused(handle_) != 0;
+    }
+    int reconnectCompositor() noexcept {
+        return wnd_reconnect_compositor();
     }
 
     WindowSize size() const noexcept {
@@ -142,6 +178,10 @@ public:
     }
 
     void onEvent(EventHandler handler) { event_handler_ = std::move(handler); }
+    void onCompositorCompletion(CompletionHandler handler) {
+        completion_handler_ = std::move(handler);
+        updateCompletionCallback();
+    }
     void onPaint(PaintHandler handler) {
         paint_handler_no_args_ = {};
         paint_handler_ = std::move(handler);
@@ -173,10 +213,26 @@ public:
     }
 
 private:
+    static void dispatchCompletion(
+        const RinRuntimeGuiCompletionV1* completion, void* context) {
+        auto* window = static_cast<Window*>(context);
+        if (window && completion && window->completion_handler_)
+            window->completion_handler_(*completion);
+    }
+
+    void updateCompletionCallback() noexcept {
+        if (valid()) {
+            (void)wnd_set_compositor_completion_callback(
+                handle_, completion_handler_ ? &Window::dispatchCompletion : nullptr,
+                completion_handler_ ? this : nullptr);
+        }
+    }
+
     Handle handle_ = RIN_WINDOW_HANDLE_INVALID;
     EventHandler event_handler_;
     PaintHandler paint_handler_;
     PaintHandlerNoArgs paint_handler_no_args_;
+    CompletionHandler completion_handler_;
 };
 
 } // namespace RinRuntime
