@@ -51,6 +51,9 @@ typedef struct RinFirewallServiceMessageHeaderV1 {
 
 typedef struct RinFirewallServiceRequestV2 {
     RinFirewallServiceMessageHeaderV1 header;
+    /* Transport input only: Firewalld replaces this envelope and the header
+     * session fields with its kernel-authenticated connection identity before
+     * validating or dispatching an operation. */
     RinFirewallServicePeerV1 peer;
     uint64_t expected_generation;
     uint64_t after_sequence;

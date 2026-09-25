@@ -169,6 +169,17 @@ int rin_firewall_rule_validate(const RinFirewallRuleV1* rule)
          rule->priority > RIN_FIREWALL_SYSTEM_PRIORITY_MAX) ||
         (rule->rule_class != RIN_FIREWALL_RULE_CLASS_SYSTEM &&
          rule->priority < RIN_FIREWALL_USER_PRIORITY_MIN) ||
+        ((rule->flags & RIN_FIREWALL_RULE_FLAG_POLICY_GUARD) != 0u &&
+         (rule->rule_class != RIN_FIREWALL_RULE_CLASS_CONTAINER ||
+          (rule->flags & (RIN_FIREWALL_RULE_FLAG_MATCH_PROCESS |
+                          RIN_FIREWALL_RULE_FLAG_SYSTEM_CRITICAL |
+                          RIN_FIREWALL_RULE_FLAG_POLICY_BYPASS)) != 0u ||
+          (rule->flags & RIN_FIREWALL_RULE_FLAG_MATCH_NAMESPACE) == 0u ||
+          rule->reserved[0] == RIN_FIREWALL_CONTAINER_OWNER_UNKNOWN)) ||
+        ((rule->flags & RIN_FIREWALL_RULE_FLAG_POLICY_BYPASS) != 0u &&
+         (rule->rule_class != RIN_FIREWALL_RULE_CLASS_SYSTEM ||
+          rule->action != RIN_FIREWALL_ACTION_ALLOW ||
+          (rule->flags & RIN_FIREWALL_RULE_FLAG_SYSTEM_CRITICAL) == 0u)) ||
         !firewall_direction_valid(rule->direction) ||
         !firewall_action_valid(rule->action) ||
         !firewall_family_valid(rule->family) ||
@@ -560,12 +571,24 @@ int rin_firewall_rule_set_remove(RinFirewallRuleSetV1* set,
     return RIN_FIREWALL_NOT_FOUND;
 }
 
+static int firewall_rule_precedes(const RinFirewallRuleV1* candidate,
+                                  const RinFirewallRuleV1* current)
+{
+    return candidate->priority < current->priority ||
+           (candidate->priority == current->priority &&
+            candidate->id < current->id);
+}
+
 int rin_firewall_evaluate(RinFirewallRuleSetV1* set,
                           const RinFirewallPacketV1* packet,
                           RinFirewallDecisionV1* decision)
 {
     uint32_t index;
-    uint32_t best = RIN_FIREWALL_MAX_RULES;
+    uint32_t best_bypass = RIN_FIREWALL_MAX_RULES;
+    uint32_t best_system = RIN_FIREWALL_MAX_RULES;
+    uint32_t best_guard = RIN_FIREWALL_MAX_RULES;
+    uint32_t best_regular = RIN_FIREWALL_MAX_RULES;
+    uint32_t best;
     int status;
     if (!decision) return RIN_FIREWALL_INVALID_ARGUMENT;
     firewall_decision_init(decision);
@@ -583,24 +606,53 @@ int rin_firewall_evaluate(RinFirewallRuleSetV1* set,
         decision->status = status;
         return status;
     }
-    if (set->enabled == 0u) {
+    for (index = 0u; index < set->rule_count; ++index) {
+        const RinFirewallRuleV1* candidate = &set->rules[index];
+        uint32_t* selected;
+        const RinFirewallRuleV1* current;
+        if (!firewall_rule_matches(candidate, packet)) continue;
+        if (candidate->rule_class == RIN_FIREWALL_RULE_CLASS_SYSTEM &&
+            (candidate->flags &
+             RIN_FIREWALL_RULE_FLAG_POLICY_BYPASS) != 0u)
+            selected = &best_bypass;
+        else if (candidate->rule_class == RIN_FIREWALL_RULE_CLASS_SYSTEM)
+            selected = &best_system;
+        else if ((candidate->flags &
+                  RIN_FIREWALL_RULE_FLAG_POLICY_GUARD) != 0u)
+            selected = &best_guard;
+        else
+            selected = &best_regular;
+        if (*selected == RIN_FIREWALL_MAX_RULES) {
+            *selected = index;
+            continue;
+        }
+        current = &set->rules[*selected];
+        if (firewall_rule_precedes(candidate, current)) *selected = index;
+    }
+
+    /* Authenticated infrastructure exceptions may pass container guards.
+     * Otherwise a guard denial wins before any ordinary system, user, or
+     * application ALLOW. Guard ALLOW remains subject to ordinary system and
+     * user rules, and replaces the direction default only if none match.
+     * Guard denials remain active when the desktop Firewall toggle is off. */
+    if (set->enabled != 0u && best_bypass != RIN_FIREWALL_MAX_RULES)
+        best = best_bypass;
+    else if (best_guard != RIN_FIREWALL_MAX_RULES &&
+             set->rules[best_guard].action != RIN_FIREWALL_ACTION_ALLOW)
+        best = best_guard;
+    else if (set->enabled != 0u && best_system != RIN_FIREWALL_MAX_RULES)
+        best = best_system;
+    else if (set->enabled == 0u) {
         decision->action = RIN_FIREWALL_ACTION_ALLOW;
         decision->status = RIN_FIREWALL_OK;
         return RIN_FIREWALL_OK;
-    }
-    for (index = 0u; index < set->rule_count; ++index) {
-        const RinFirewallRuleV1* candidate = &set->rules[index];
-        const RinFirewallRuleV1* current;
-        if (!firewall_rule_matches(candidate, packet)) continue;
-        if (best == RIN_FIREWALL_MAX_RULES) {
-            best = index;
-            continue;
-        }
-        current = &set->rules[best];
-        if (candidate->priority < current->priority ||
-            (candidate->priority == current->priority &&
-             candidate->id < current->id)) best = index;
-    }
+    } else if (best_regular != RIN_FIREWALL_MAX_RULES)
+        best = best_regular;
+    else if (best_guard != RIN_FIREWALL_MAX_RULES)
+        best = best_guard;
+    else
+        best = RIN_FIREWALL_MAX_RULES;
+
     if (best == RIN_FIREWALL_MAX_RULES) {
         decision->action = set->default_action[packet->direction - 1u];
     } else {
