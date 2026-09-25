@@ -1246,6 +1246,11 @@ int wnd_set_cursor(RinRuntimeGuiHandle handle, uint32_t cursor_type) {
         return RIN_RESULT_INVALID_ARGUMENT;
     if ((g_compositor_features & RIN_COMPOSITOR_FEATURE_SEMANTIC_CURSOR) == 0u)
         return RIN_RESULT_NOT_SUPPORTED;
+    /* Cursor updates are commonly emitted by pointer-move handlers.  Avoid
+     * serializing a synchronous compositor RPC when the surface already has
+     * the requested cursor; the server state is restored by rebind before a
+     * connection is exposed after reconnect. */
+    if (surface->cursor_type == cursor_type) return RIN_RESULT_OK;
     memset(&request, 0, sizeof(request));
     request.struct_size = sizeof(request);
     request.version = 1u;
