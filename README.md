@@ -189,6 +189,14 @@ and copy the snapshot before passing its records to RinRuntime. The live
 packet observer, table owner, and kernel-to-Firewalld snapshot callback remain
 private OS-Core code.
 
+`firewall_namespace_policy.h` creates bounded, namespace-scoped default
+policy guards in an ordinary Firewall ruleset. Host defaults remain in the
+ruleset's default-action fields; non-host namespaces use their own exact-ID
+rules and fall back to DROP when no namespace policy matches. Unscoped
+non-system rules are host-only, and container rules must name a non-host
+namespace. The helper owns no kernel or service authority; a private policy
+owner still authenticates and atomically publishes the resulting ruleset.
+
 `firewall_application.h` accepts a zero package generation only when the
 context carries `RIN_FIREWALL_APPLICATION_FLAG_SYSTEM_PROCESS`. RinOS uses
 generation zero for identities admitted by its immutable signed system image

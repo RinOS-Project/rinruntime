@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: MIT */
 
-#include <rin/firewall/abi.h>
+#include <rinruntime/firewall_namespace_policy.h>
 
 #include <stddef.h>
 
@@ -163,6 +163,9 @@ int rin_firewall_rule_validate(const RinFirewallRuleV1* rule)
         return RIN_FIREWALL_ABI_MISMATCH;
     if ((rule->flags & ~RIN_FIREWALL_RULE_KNOWN_FLAGS) != 0u ||
         rule->id == 0u || rule->priority == UINT32_MAX ||
+        (rule->priority >=
+             RIN_FIREWALL_NAMESPACE_POLICY_DEFAULT_PRIORITY &&
+         !rin_firewall_namespace_policy_default_rule_valid(rule)) ||
         rule->rule_class < RIN_FIREWALL_RULE_CLASS_SYSTEM ||
         rule->rule_class > RIN_FIREWALL_RULE_CLASS_CONTAINER ||
         (rule->rule_class == RIN_FIREWALL_RULE_CLASS_SYSTEM &&
@@ -180,6 +183,10 @@ int rin_firewall_rule_validate(const RinFirewallRuleV1* rule)
          (rule->rule_class != RIN_FIREWALL_RULE_CLASS_SYSTEM ||
           rule->action != RIN_FIREWALL_ACTION_ALLOW ||
           (rule->flags & RIN_FIREWALL_RULE_FLAG_SYSTEM_CRITICAL) == 0u)) ||
+        (rule->rule_class == RIN_FIREWALL_RULE_CLASS_CONTAINER &&
+         ((rule->flags & RIN_FIREWALL_RULE_FLAG_MATCH_NAMESPACE) == 0u ||
+          rule->namespace_id <=
+              RIN_FIREWALL_NAMESPACE_POLICY_HOST_ID)) ||
         !firewall_direction_valid(rule->direction) ||
         !firewall_action_valid(rule->action) ||
         !firewall_family_valid(rule->family) ||
@@ -314,6 +321,14 @@ int rin_firewall_rule_set_validate(const RinFirewallRuleSetV1* set)
         for (other = 0u; other < index; ++other) {
             if (set->rules[other].id == set->rules[index].id)
                 return RIN_FIREWALL_DUPLICATE;
+            if (rin_firewall_namespace_policy_default_rule_valid(
+                    &set->rules[index]) &&
+                rin_firewall_namespace_policy_default_rule_valid(
+                    &set->rules[other]) &&
+                set->rules[other].namespace_id ==
+                    set->rules[index].namespace_id &&
+                set->rules[other].direction == set->rules[index].direction)
+                return RIN_FIREWALL_DUPLICATE;
         }
     }
     for (; index < RIN_FIREWALL_MAX_RULES; ++index) {
@@ -395,6 +410,10 @@ static int firewall_rule_matches(const RinFirewallRuleV1* rule,
                                  const RinFirewallPacketV1* packet)
 {
     int transport;
+    if (packet->namespace_id != RIN_FIREWALL_NAMESPACE_POLICY_HOST_ID &&
+        rule->rule_class != RIN_FIREWALL_RULE_CLASS_SYSTEM &&
+        (rule->flags & RIN_FIREWALL_RULE_FLAG_MATCH_NAMESPACE) == 0u)
+        return 0;
     if ((rule->flags & RIN_FIREWALL_RULE_FLAG_ENABLED) == 0u ||
         rule->direction != packet->direction ||
         (rule->family != RIN_FIREWALL_FAMILY_ANY &&
@@ -654,7 +673,10 @@ int rin_firewall_evaluate(RinFirewallRuleSetV1* set,
         best = RIN_FIREWALL_MAX_RULES;
 
     if (best == RIN_FIREWALL_MAX_RULES) {
-        decision->action = set->default_action[packet->direction - 1u];
+        decision->action =
+            packet->namespace_id == RIN_FIREWALL_NAMESPACE_POLICY_HOST_ID
+                ? set->default_action[packet->direction - 1u]
+                : RIN_FIREWALL_ACTION_DROP;
     } else {
         RinFirewallRuleV1* rule = &set->rules[best];
         decision->action = rule->action;
