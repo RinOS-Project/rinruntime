@@ -28,7 +28,10 @@ int rin_firewall_application_context_valid(
         context->version != RIN_FIREWALL_APPLICATION_CONTEXT_VERSION ||
         (context->flags & ~RIN_FIREWALL_APPLICATION_KNOWN_FLAGS) != 0u ||
         context->process_id == 0u || context->process_instance_cookie == 0u ||
-        context->package_generation == 0u || context->namespace_id == 0u ||
+        (context->package_generation == 0u &&
+         (context->flags &
+          RIN_FIREWALL_APPLICATION_FLAG_SYSTEM_PROCESS) == 0u) ||
+        context->namespace_id == 0u ||
         context->reserved0 != 0u || !application_nonzero(
             context->application_id, sizeof(context->application_id)) ||
         !application_nonzero(context->package_digest,

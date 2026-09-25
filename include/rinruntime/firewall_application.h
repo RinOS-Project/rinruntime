@@ -1,5 +1,8 @@
 /* SPDX-License-Identifier: MIT */
-/* Authenticated package/process identity boundary for Firewall rules. */
+/* Authenticated package/process identity model for Firewall rules.
+ * package_generation may be zero only when SYSTEM_PROCESS is set. That flag
+ * describes the kernel-issued identity source; it does not authenticate an
+ * untrusted caller by itself. */
 #ifndef RIN_FIREWALL_APPLICATION_H
 #define RIN_FIREWALL_APPLICATION_H
 

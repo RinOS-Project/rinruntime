@@ -189,6 +189,14 @@ and copy the snapshot before passing its records to RinRuntime. The live
 packet observer, table owner, and kernel-to-Firewalld snapshot callback remain
 private OS-Core code.
 
+`firewall_application.h` accepts a zero package generation only when the
+context carries `RIN_FIREWALL_APPLICATION_FLAG_SYSTEM_PROCESS`. RinOS uses
+generation zero for identities admitted by its immutable signed system image
+catalog; the kernel supplies the descriptive flag when it constructs the
+context. The flag and context shape do not authenticate arbitrary userland
+input: a privileged Firewall service must still verify that the context came
+from its trusted kernel owner.
+
 ## Public API contract
 
 | Requirement | Contract |
