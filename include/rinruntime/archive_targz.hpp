@@ -16,6 +16,7 @@ enum class ArchiveTarGzipResult : int {
     Malformed = -3,
     CrcMismatch = -4,
     Cancelled = -5,
+    Deadline = -6,
 };
 
 /* Decode the complete bounded gzip member into an owned staging string and
@@ -40,6 +41,41 @@ public:
         if (tarResult == ArchiveTarResult::Limit) {
             clear();
             return ArchiveTarGzipResult::Limit;
+        }
+        if (tarResult != ArchiveTarResult::Ok) {
+            clear();
+            return ArchiveTarGzipResult::Malformed;
+        }
+        return ArchiveTarGzipResult::Ok;
+    }
+
+    ArchiveTarGzipResult parseWithDeadline(
+        const std::uint8_t* bytes, std::size_t size,
+        ArchiveDeflateDeadlineFunction deadline, void* deadlineContext)
+    {
+        clear();
+        const ArchiveGzipResult gzipResult = gzip_.decodeWithDeadline(
+            bytes, size, image_, deadline, deadlineContext);
+        if (gzipResult == ArchiveGzipResult::InvalidArgument)
+            return ArchiveTarGzipResult::InvalidArgument;
+        if (gzipResult == ArchiveGzipResult::Limit)
+            return ArchiveTarGzipResult::Limit;
+        if (gzipResult == ArchiveGzipResult::CrcMismatch)
+            return ArchiveTarGzipResult::CrcMismatch;
+        if (gzipResult == ArchiveGzipResult::Deadline)
+            return ArchiveTarGzipResult::Deadline;
+        if (gzipResult != ArchiveGzipResult::Ok)
+            return ArchiveTarGzipResult::Malformed;
+        const ArchiveTarResult tarResult = tar_.parseWithDeadline(
+            reinterpret_cast<const std::uint8_t*>(image_.data()), image_.size(),
+            deadline, deadlineContext);
+        if (tarResult == ArchiveTarResult::Limit) {
+            clear();
+            return ArchiveTarGzipResult::Limit;
+        }
+        if (tarResult == ArchiveTarResult::Deadline) {
+            clear();
+            return ArchiveTarGzipResult::Deadline;
         }
         if (tarResult != ArchiveTarResult::Ok) {
             clear();
@@ -89,6 +125,43 @@ public:
         return ArchiveTarGzipResult::Ok;
     }
 
+    ArchiveTarGzipResult parseWithDeadline(
+        const ArchiveGzipSource& source, std::uint8_t* compressedBuffer,
+        std::size_t compressedCapacity,
+        ArchiveDeflateDeadlineFunction deadline, void* deadlineContext)
+    {
+        clear();
+        const ArchiveGzipResult gzipResult = gzip_.decodeWithDeadline(
+            source, compressedBuffer, compressedCapacity, image_, deadline,
+            deadlineContext);
+        if (gzipResult == ArchiveGzipResult::InvalidArgument)
+            return ArchiveTarGzipResult::InvalidArgument;
+        if (gzipResult == ArchiveGzipResult::Limit)
+            return ArchiveTarGzipResult::Limit;
+        if (gzipResult == ArchiveGzipResult::CrcMismatch)
+            return ArchiveTarGzipResult::CrcMismatch;
+        if (gzipResult == ArchiveGzipResult::Deadline)
+            return ArchiveTarGzipResult::Deadline;
+        if (gzipResult != ArchiveGzipResult::Ok)
+            return ArchiveTarGzipResult::Malformed;
+        const ArchiveTarResult tarResult = tar_.parseWithDeadline(
+            reinterpret_cast<const std::uint8_t*>(image_.data()), image_.size(),
+            deadline, deadlineContext);
+        if (tarResult == ArchiveTarResult::Limit) {
+            clear();
+            return ArchiveTarGzipResult::Limit;
+        }
+        if (tarResult == ArchiveTarResult::Deadline) {
+            clear();
+            return ArchiveTarGzipResult::Deadline;
+        }
+        if (tarResult != ArchiveTarResult::Ok) {
+            clear();
+            return ArchiveTarGzipResult::Malformed;
+        }
+        return ArchiveTarGzipResult::Ok;
+    }
+
     void clear()
     {
         tar_.clear();
@@ -120,6 +193,23 @@ public:
             return ArchiveTarGzipResult::InvalidArgument;
         if (result == ArchiveTarResult::Limit)
             return ArchiveTarGzipResult::Limit;
+        return ArchiveTarGzipResult::Malformed;
+    }
+
+    ArchiveTarGzipResult readEntryToSinkWithDeadline(
+        std::size_t index, ArchiveTarSinkFunction sink, void* context,
+        ArchiveDeflateDeadlineFunction deadline, void* deadlineContext) const
+    {
+        const ArchiveTarResult result = tar_.readEntryToSinkWithDeadline(
+            index, sink, context, deadline, deadlineContext);
+        if (result == ArchiveTarResult::Ok)
+            return ArchiveTarGzipResult::Ok;
+        if (result == ArchiveTarResult::InvalidArgument)
+            return ArchiveTarGzipResult::InvalidArgument;
+        if (result == ArchiveTarResult::Limit)
+            return ArchiveTarGzipResult::Limit;
+        if (result == ArchiveTarResult::Deadline)
+            return ArchiveTarGzipResult::Deadline;
         return ArchiveTarGzipResult::Malformed;
     }
 

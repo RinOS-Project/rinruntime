@@ -20,6 +20,7 @@ enum class ArchiveTarResult : int {
     Limit = -2,
     Malformed = -3,
     UnsupportedType = -4,
+    Deadline = -5,
 };
 
 struct ArchiveTarEntry {
@@ -31,6 +32,7 @@ struct ArchiveTarEntry {
 
 using ArchiveTarSinkFunction = bool (*)(
     void* context, const std::uint8_t* bytes, std::size_t size);
+using ArchiveTarDeadlineFunction = bool (*)(void* context);
 
 /*
  * Parse the strict ustar subset used by RinOS archive adapters.  The reader
@@ -44,6 +46,20 @@ public:
 
     ArchiveTarResult parse(const std::uint8_t* bytes, std::size_t size)
     {
+        return parse(bytes, size, nullptr, nullptr);
+    }
+
+    ArchiveTarResult parseWithDeadline(
+        const std::uint8_t* bytes, std::size_t size,
+        ArchiveTarDeadlineFunction deadline, void* deadlineContext)
+    {
+        return parse(bytes, size, deadline, deadlineContext);
+    }
+
+    ArchiveTarResult parse(
+        const std::uint8_t* bytes, std::size_t size,
+        ArchiveTarDeadlineFunction deadline, void* deadlineContext)
+    {
         clear();
         if (bytes == nullptr || size < kBlockSize * 2u)
             return ArchiveTarResult::InvalidArgument;
@@ -51,11 +67,15 @@ public:
                        RINRUNTIME_ARCHIVE_CONTENT_LIMIT) + kBlockSize * 2u)
             return ArchiveTarResult::Limit;
         if ((size % kBlockSize) != 0u) return ArchiveTarResult::Malformed;
+        if (deadline != nullptr && deadline(deadlineContext))
+            return ArchiveTarResult::Deadline;
 
         std::uint64_t total = 0u;
         std::size_t position = 0u;
         bool ended = false;
         while (position <= size - kBlockSize) {
+            if (deadline != nullptr && deadline(deadlineContext))
+                return fail(ArchiveTarResult::Deadline);
             const std::uint8_t* header = bytes + position;
             if (isZeroBlock(header)) {
                 if (position > size - kBlockSize * 2u ||
@@ -63,6 +83,8 @@ public:
                     return fail(ArchiveTarResult::Malformed);
                 position += kBlockSize * 2u;
                 while (position < size) {
+                    if (deadline != nullptr && deadline(deadlineContext))
+                        return fail(ArchiveTarResult::Deadline);
                     if (!isZeroBlock(bytes + position))
                         return fail(ArchiveTarResult::Malformed);
                     position += kBlockSize;
@@ -74,6 +96,8 @@ public:
                 return fail(ArchiveTarResult::Limit);
             if (!headerValid(header))
                 return fail(ArchiveTarResult::Malformed);
+            if (deadline != nullptr && deadline(deadlineContext))
+                return fail(ArchiveTarResult::Deadline);
 
             const std::size_t nameSize = fieldSize(header, 100u);
             const std::size_t prefixSize = fieldSize(header + 345u, 155u);
@@ -174,6 +198,34 @@ public:
         return ArchiveTarResult::Ok;
     }
 
+    ArchiveTarResult readEntryWithDeadline(
+        std::size_t index, std::string& output,
+        ArchiveTarDeadlineFunction deadline, void* deadlineContext) const
+    {
+        output.clear();
+        if (index >= entries_.size()) return ArchiveTarResult::InvalidArgument;
+        if (deadline != nullptr && deadline(deadlineContext))
+            return ArchiveTarResult::Deadline;
+        if (entries_[index].directory) return ArchiveTarResult::Ok;
+
+        std::size_t size = 0u;
+        const std::uint8_t* bytes = data(index, &size);
+        if (bytes == nullptr) return ArchiveTarResult::Malformed;
+        std::size_t offset = 0u;
+        while (offset < size) {
+            if (deadline != nullptr && deadline(deadlineContext)) {
+                output.clear();
+                return ArchiveTarResult::Deadline;
+            }
+            const std::size_t remaining = size - offset;
+            const std::size_t chunk = remaining > 65536u
+                ? 65536u : remaining;
+            output.append(reinterpret_cast<const char*>(bytes + offset), chunk);
+            offset += chunk;
+        }
+        return ArchiveTarResult::Ok;
+    }
+
     /* Stream one validated regular-file entry into a caller-owned staging
      * sink. The sink receives at most 64 KiB per callback and must durably
      * accept every chunk. A failed callback does not constitute publication;
@@ -192,6 +244,33 @@ public:
         if (bytes == nullptr) return ArchiveTarResult::Malformed;
         std::size_t offset = 0u;
         while (offset < size) {
+            const std::size_t remaining = size - offset;
+            const std::size_t chunk = remaining > 65536u
+                ? 65536u : remaining;
+            if (!sink(context, bytes + offset, chunk))
+                return ArchiveTarResult::Malformed;
+            offset += chunk;
+        }
+        return ArchiveTarResult::Ok;
+    }
+
+    ArchiveTarResult readEntryToSinkWithDeadline(
+        std::size_t index, ArchiveTarSinkFunction sink, void* context,
+        ArchiveTarDeadlineFunction deadline, void* deadlineContext) const
+    {
+        if (index >= entries_.size() || sink == nullptr || context == nullptr)
+            return ArchiveTarResult::InvalidArgument;
+        if (deadline != nullptr && deadline(deadlineContext))
+            return ArchiveTarResult::Deadline;
+        if (entries_[index].directory) return ArchiveTarResult::Ok;
+
+        std::size_t size = 0u;
+        const std::uint8_t* bytes = data(index, &size);
+        if (bytes == nullptr) return ArchiveTarResult::Malformed;
+        std::size_t offset = 0u;
+        while (offset < size) {
+            if (deadline != nullptr && deadline(deadlineContext))
+                return ArchiveTarResult::Deadline;
             const std::size_t remaining = size - offset;
             const std::size_t chunk = remaining > 65536u
                 ? 65536u : remaining;

@@ -208,6 +208,23 @@ int main()
     std::string streamed;
     assert(tarReader.readEntryToSink(0u, &collectTar, &streamed) ==
            RinRuntime::ArchiveTarResult::Ok && streamed == "hello");
+    deadlineExpired = 1u;
+    assert(tarReader.parseWithDeadline(tar.data(), tar.size(), deadlineNow,
+                                       &deadlineExpired) ==
+           RinRuntime::ArchiveTarResult::Deadline);
+    assert(tarReader.empty());
+    assert(tarReader.parse(tar.data(), tar.size()) ==
+           RinRuntime::ArchiveTarResult::Ok);
+    output = "poison";
+    assert(tarReader.readEntryWithDeadline(0u, output, deadlineNow,
+                                           &deadlineExpired) ==
+           RinRuntime::ArchiveTarResult::Deadline);
+    assert(output.empty());
+    streamed.clear();
+    assert(tarReader.readEntryToSinkWithDeadline(
+               0u, &collectTar, &streamed, deadlineNow, &deadlineExpired) ==
+           RinRuntime::ArchiveTarResult::Deadline);
+    assert(streamed.empty());
     assert(tarReader.readEntryToSink(0u, &rejectTar, &streamed) ==
            RinRuntime::ArchiveTarResult::Malformed);
 
@@ -219,6 +236,18 @@ int main()
     streamed.clear();
     assert(tarGzipReader.readEntryToSink(0u, &collectTar, &streamed) ==
            RinRuntime::ArchiveTarGzipResult::Ok && streamed == "hello");
+    deadlineExpired = 1u;
+    assert(tarGzipReader.parseWithDeadline(tarGzip.data(), tarGzip.size(),
+                                           deadlineNow, &deadlineExpired) ==
+           RinRuntime::ArchiveTarGzipResult::Deadline);
+    assert(tarGzipReader.empty());
+    assert(tarGzipReader.parse(tarGzip.data(), tarGzip.size()) ==
+           RinRuntime::ArchiveTarGzipResult::Ok);
+    streamed.clear();
+    assert(tarGzipReader.readEntryToSinkWithDeadline(
+               0u, &collectTar, &streamed, deadlineNow, &deadlineExpired) ==
+           RinRuntime::ArchiveTarGzipResult::Deadline);
+    assert(streamed.empty());
 
     const std::vector<std::uint8_t> zip = makeStoredZip();
     RinRuntime::ArchiveZipReader zipReader;

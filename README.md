@@ -204,6 +204,8 @@ contract through header staging and raw DEFLATE decoding. The existing
 cancellation overloads remain source-compatible. `ArchiveZipReader` adds
 deadline-aware central-directory parsing plus memory and sink entry reads;
 stored-entry CRC/copy and DEFLATE entry work are checked before publication.
+`ArchiveTarReader` and `ArchiveTarGzipReader` provide the same deadline
+boundary for strict ustar parsing, GZIP-to-TAR composition, and sink delivery.
 `ArchiveTarReader::readEntryToSink()` provides the same bounded, at-most-64 KiB
 caller-owned staging path for regular TAR entries, and
 `ArchiveTarGzipReader` delegates to it after its bounded GZIP staging step. A
