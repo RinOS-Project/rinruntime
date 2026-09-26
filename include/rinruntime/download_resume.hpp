@@ -251,6 +251,55 @@ public:
     virtual bool wasCancelled() const { return false; }
 };
 
+/* Read one admitted range into caller-owned storage.  This is a convenience
+ * layer over the public transport contract, not an authentication or storage
+ * owner.  It keeps reads bounded, requires the response length to match the
+ * request, rejects early EOF and trailing bytes, and scrubs bytes written
+ * before a failure is reported. */
+inline bool readDownloadRangeToBuffer(DownloadRangeTransport& transport,
+                                      const DownloadRangeRequest& request,
+                                      std::uint8_t* output,
+                                      std::size_t capacity,
+                                      std::size_t& outputSize) {
+    outputSize = 0u;
+    if (!request.valid() || output == nullptr || capacity == 0u)
+        return false;
+    DownloadRangeResponse response;
+    if (!transport.begin(request, response) ||
+        !response.validFor(request) || response.contentLength > capacity) {
+        transport.abort();
+        return false;
+    }
+    const std::size_t expected =
+        static_cast<std::size_t>(response.contentLength);
+    while (outputSize < expected) {
+        const std::size_t remaining = expected - outputSize;
+        const std::size_t chunk = remaining > 64u * 1024u
+                                      ? 64u * 1024u : remaining;
+        std::size_t bytesRead = 0u;
+        if (!transport.read(output + outputSize, chunk, bytesRead) ||
+            bytesRead == 0u || bytesRead > chunk) {
+            for (std::size_t index = 0u; index < outputSize; ++index)
+                output[index] = 0u;
+            outputSize = 0u;
+            transport.abort();
+            return false;
+        }
+        outputSize += bytesRead;
+    }
+    std::uint8_t trailingByte = 0u;
+    std::size_t trailingBytes = 0u;
+    if (!transport.read(&trailingByte, 1u, trailingBytes) ||
+        trailingBytes != 0u) {
+        for (std::size_t index = 0u; index < outputSize; ++index)
+            output[index] = 0u;
+        outputSize = 0u;
+        transport.abort();
+        return false;
+    }
+    return true;
+}
+
 inline bool parseDownloadContentRange(const std::string& value,
                                       std::uint64_t& start,
                                       std::uint64_t& end,

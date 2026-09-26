@@ -148,6 +148,31 @@ int main() {
     assert(ordinary.read(buffer, sizeof(buffer), bytesRead) && bytesRead == 1u);
     assert(ordinary.read(buffer, sizeof(buffer), bytesRead) && bytesRead == 0u);
 
+    Owner helperOwner;
+    RinRuntime::DownloadRangeTransportOpsV1 helperOps = ordinaryOps;
+    helperOps.context = &helperOwner;
+    RinRuntime::DownloadRangeTransportAdapter helper;
+    assert(helper.bind(helperOps));
+    std::uint8_t whole[3u] = {0u, 0u, 0u};
+    std::size_t wholeSize = 0u;
+    assert(RinRuntime::readDownloadRangeToBuffer(
+        helper, request, whole, sizeof(whole), wholeSize));
+    assert(wholeSize == sizeof(whole));
+    assert(whole[0] == 0xa1u && whole[1] == 0xa2u && whole[2] == 0xb1u);
+
+    Owner shortBufferOwner;
+    RinRuntime::DownloadRangeTransportOpsV1 shortBufferOps = ordinaryOps;
+    shortBufferOps.context = &shortBufferOwner;
+    RinRuntime::DownloadRangeTransportAdapter shortBuffer;
+    assert(shortBuffer.bind(shortBufferOps));
+    std::uint8_t shortBufferBytes[2u] = {0xffu, 0xffu};
+    wholeSize = 99u;
+    assert(!RinRuntime::readDownloadRangeToBuffer(
+        shortBuffer, request, shortBufferBytes, sizeof(shortBufferBytes),
+        wholeSize));
+    assert(wholeSize == 0u);
+    assert(shortBufferBytes[0] == 0xffu && shortBufferBytes[1] == 0xffu);
+
     /* The cancellation callback was appended to the public v1 table.  An
      * owner built against the original prefix remains valid and simply has
      * no cancellation hook. */
