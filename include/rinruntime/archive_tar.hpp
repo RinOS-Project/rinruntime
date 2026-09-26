@@ -29,6 +29,9 @@ struct ArchiveTarEntry {
     bool directory = false;
 };
 
+using ArchiveTarSinkFunction = bool (*)(
+    void* context, const std::uint8_t* bytes, std::size_t size);
+
 /*
  * Parse the strict ustar subset used by RinOS archive adapters.  The reader
  * accepts regular files and directories only.  PAX/GNU extension records and
@@ -168,6 +171,34 @@ public:
         if (entries_[index].directory) return ArchiveTarResult::Ok;
         if (bytes == nullptr) return ArchiveTarResult::Malformed;
         output.assign(reinterpret_cast<const char*>(bytes), size);
+        return ArchiveTarResult::Ok;
+    }
+
+    /* Stream one validated regular-file entry into a caller-owned staging
+     * sink. The sink receives at most 64 KiB per callback and must durably
+     * accept every chunk. A failed callback does not constitute publication;
+     * the caller must discard its staging object. Directories produce no
+     * callback and are considered successful after admission. */
+    ArchiveTarResult readEntryToSink(std::size_t index,
+                                     ArchiveTarSinkFunction sink,
+                                     void* context) const
+    {
+        if (index >= entries_.size() || sink == nullptr || context == nullptr)
+            return ArchiveTarResult::InvalidArgument;
+        if (entries_[index].directory) return ArchiveTarResult::Ok;
+
+        std::size_t size = 0u;
+        const std::uint8_t* bytes = data(index, &size);
+        if (bytes == nullptr) return ArchiveTarResult::Malformed;
+        std::size_t offset = 0u;
+        while (offset < size) {
+            const std::size_t remaining = size - offset;
+            const std::size_t chunk = remaining > 65536u
+                ? 65536u : remaining;
+            if (!sink(context, bytes + offset, chunk))
+                return ArchiveTarResult::Malformed;
+            offset += chunk;
+        }
         return ArchiveTarResult::Ok;
     }
 

@@ -19,6 +19,20 @@ static bool cancelNow(void* context)
            *static_cast<const std::uint32_t*>(context) != 0u;
 }
 
+static bool collectTar(void* context, const std::uint8_t* bytes,
+                       std::size_t size)
+{
+    if (context == nullptr || bytes == nullptr || size == 0u) return false;
+    static_cast<std::string*>(context)->append(
+        reinterpret_cast<const char*>(bytes), size);
+    return true;
+}
+
+static bool rejectTar(void*, const std::uint8_t*, std::size_t)
+{
+    return false;
+}
+
 static void put16(std::vector<std::uint8_t>& bytes, std::uint16_t value)
 {
     bytes.push_back(static_cast<std::uint8_t>(value));
@@ -147,6 +161,11 @@ int main()
            RinRuntime::ArchiveTarResult::Ok);
     assert(tarReader.size() == 1u && tarReader.entries()[0].name ==
            "docs/readme.txt");
+    std::string streamed;
+    assert(tarReader.readEntryToSink(0u, &collectTar, &streamed) ==
+           RinRuntime::ArchiveTarResult::Ok && streamed == "hello");
+    assert(tarReader.readEntryToSink(0u, &rejectTar, &streamed) ==
+           RinRuntime::ArchiveTarResult::Malformed);
 
     const std::vector<std::uint8_t> tarGzip = makeGzip(tar.data(), tar.size());
     RinRuntime::ArchiveTarGzipReader tarGzipReader;
