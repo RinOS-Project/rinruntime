@@ -2,7 +2,10 @@
 #include <rinruntime/render_context.hpp>
 #include <rinruntime/window.hpp>
 
+static const AqFont* test_font_loader(void*) { return nullptr; }
+
 int main() {
+    (void)RinRuntime::setSystemUiFontLoader(test_font_loader);
     RinRuntime::WindowOptions options;
     options.width = 320;
     options.height = 240;

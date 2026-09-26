@@ -83,7 +83,7 @@ public:
     int requestClose() noexcept {
         if (!valid()) return RIN_ERROR_STALE_HANDLE;
         const int result = wnd_close_async(handle_);
-        if (result == RIN_RESULT_OK) handle_ = RIN_WINDOW_HANDLE_INVALID;
+        if (result == RIN_SUCCESS) handle_ = RIN_WINDOW_HANDLE_INVALID;
         return result;
     }
     void show(bool visible = true) noexcept {

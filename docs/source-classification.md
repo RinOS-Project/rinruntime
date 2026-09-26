@@ -24,6 +24,7 @@ not smuggled into the public include path.
 | `archive*.hpp` and `archive_policy.h` | A/C | Metadata planning, bounded DEFLATE/GZIP/TAR/TAR.GZ/ZIP codecs, and traversal/bomb policy are public; filesystem/service providers are not. |
 | `rincompression/deflate.hpp`, `rincompression/lz4.hpp` | A: public codec | Caller-owned bounded DEFLATE/LZ4 block operations are public; container frames, filesystem/service providers, and publication are not. |
 | `download_resume.hpp`, `download_range_transport.hpp` | A: public runtime | Range/resume identity, bounded body transport, and optional cancellation are public; callback context may be null. Browser HTTPS/TLS, partial storage, and portal publication remain private adapters. |
+| `render_context.hpp` / `render_context.cpp` | A/B: public runtime adapter | Frame/context APIs and the borrowed `setSystemUiFontLoader()` callback are public; locale selection, font bytes, resource paths, and filesystem ownership remain in the private application/provider adapter. |
 | `drag_drop.hpp` | A: public runtime | Bounded MIME payload/session lifecycle is public; paths, descriptors, compositor handles, File Portal delivery, and permission authority remain private adapters. |
 | `rin_runtime.c`, `rin_atexit_registry.c`, libc/libcxx glue | D | Process runtime and OS ABI glue remain private. |
 | audio service client | B: public service client | Uses the SDK audio wire/shared-ring contract; the audio daemon, device authority, and USB publication remain OS-Core. |

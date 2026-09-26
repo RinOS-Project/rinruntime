@@ -67,6 +67,13 @@ readiness (the archive service does so for its authenticated server socket).
 That composition does not publish service authority, paths, File Portal
 capabilities, or kernel wait-set implementation through the public runtime.
 
+`render_context.hpp` keeps the same boundary for fonts.  The public runtime
+offers `setSystemUiFontLoader()` as a borrowed, caller-owned callback and
+falls back to Aquamarine's built-in font when no owner is registered.  It does
+not choose a locale, open `/res/fonts`, retain a descriptor, or own a resource
+path.  Desktop registers its private locale/resource adapter; an ordinary
+application or external toolkit may register a different bounded font owner.
+
 The public runtime also provides the bounded `DownloadPartialReceipt`,
 `DownloadRangeRequest`, and `DownloadRangeTransportAdapter` contracts. Receipt
 decoding rejects non-zero reserved wire bytes and malformed identity/offset
