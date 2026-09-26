@@ -21,7 +21,7 @@ set(RINRUNTIME_RLL_TARGET "x86_64-unknown-rinos" CACHE STRING
 set(RINRUNTIME_RLL_SIGN_PROFILE "release" CACHE STRING
     "RinCompiler signing profile used by the target .rll route")
 set(RINRUNTIME_RLL_SOURCES
-    "src/portal.c;src/crash.c;src/backup_restore.c;src/known_folders.c;src/file_operation.c;src/safe_save.c;src/safe_save_posix.c;src/session_recovery.c;src/crash_service.c;src/path.c;src/serial_portal_protocol.c;src/platform.c;src/clipboard.c;src/crash_service_client.c;src/file_portal.c;src/durable_file_portal.c;src/file_chooser_portal.c;src/file_operation_service_client.c;src/accessibility_service_client.c;src/audio/rin_audio_service_client.c;src/firewall/rule_engine.c;src/firewall/namespace_policy.c;src/firewall/profile.c;src/firewall/application.c;src/firewall/conntrack_query.c"
+    "src/portal.c;src/crash.c;src/backup_restore.c;src/known_folders.c;src/file_operation.c;src/safe_save.c;src/safe_save_posix.c;src/session_recovery.c;src/crash_service.c;src/path.c;src/serial_portal_protocol.c;src/platform.c;src/service.c;src/clipboard.c;src/crash_service_client.c;src/file_portal.c;src/durable_file_portal.c;src/file_chooser_portal.c;src/file_operation_service_client.c;src/accessibility_service_client.c;src/audio/rin_audio_service_client.c;src/firewall/rule_engine.c;src/firewall/namespace_policy.c;src/firewall/profile.c;src/firewall/application.c;src/firewall/conntrack_query.c"
     CACHE STRING "semicolon-separated RinRuntime C sources for the target .rll route")
 set(RINRUNTIME_RLL_DEPENDENCIES "" CACHE STRING
     "semicolon-separated dependency .rll images for the target .rll route")
@@ -59,6 +59,7 @@ if(NOT WIN32)
     list(APPEND RINRUNTIME_SOURCES src/backup_payload.c)
     list(APPEND RINRUNTIME_RLL_SOURCES src/backup_payload.c)
     list(APPEND RINRUNTIME_SOURCES src/platform.c)
+    list(APPEND RINRUNTIME_SOURCES src/service.c)
     list(APPEND RINRUNTIME_SOURCES src/clipboard.c)
     list(APPEND RINRUNTIME_SOURCES src/rin_keyring_client.c)
     list(APPEND RINRUNTIME_RLL_SOURCES src/rin_keyring_client.c)
@@ -218,6 +219,10 @@ if(RINRUNTIME_BUILD_TESTS)
     target_link_libraries(rinruntime-serial-portal-test PRIVATE RinRuntime::RinRuntime)
     add_test(NAME rinruntime-serial-portal COMMAND rinruntime-serial-portal-test)
     if(NOT WIN32)
+        add_executable(rinruntime-service-abi-test
+                       tests/service_abi_compile_test.c)
+        target_link_libraries(rinruntime-service-abi-test PRIVATE RinRuntime::RinRuntime)
+        add_test(NAME rinruntime-service-abi COMMAND rinruntime-service-abi-test)
         add_executable(rinruntime-audio-ring-test
                        tests/audio/rin_audio_service_client_ring_test.c)
         target_link_libraries(rinruntime-audio-ring-test PRIVATE RinRuntime::RinRuntime)
