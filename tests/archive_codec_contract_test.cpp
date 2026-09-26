@@ -162,7 +162,7 @@ int main()
            RinRuntime::ArchiveDeflateResult::Deadline);
     assert(output.empty());
 
-    const std::vector<std::uint8_t> gzip = makeGzip(
+    std::vector<std::uint8_t> gzip = makeGzip(
         reinterpret_cast<const std::uint8_t*>("hello"), 5u);
     RinRuntime::ArchiveGzipReader gzipReader;
     assert(gzipReader.decode(gzip.data(), gzip.size(), output) ==
@@ -228,6 +228,20 @@ int main()
            "docs/readme.txt");
     assert(zipReader.readEntry(0u, output) ==
            RinRuntime::ArchiveZipResult::Ok && output == "hello");
+    deadlineExpired = 1u;
+    output = "poison";
+    assert(zipReader.readEntryWithDeadline(0u, output, deadlineNow,
+                                           &deadlineExpired) ==
+           RinRuntime::ArchiveZipResult::Deadline);
+    assert(output.empty());
+    streamed.clear();
+    assert(zipReader.readEntryToSinkWithDeadline(
+               0u, &collectTar, &streamed, deadlineNow, &deadlineExpired) ==
+           RinRuntime::ArchiveZipResult::Deadline);
+    assert(streamed.empty());
+    assert(zipReader.parseWithDeadline(zip.data(), zip.size(), deadlineNow,
+                                       &deadlineExpired) ==
+           RinRuntime::ArchiveZipResult::Deadline);
 
     std::vector<std::uint8_t> traversal = zip;
     const std::size_t nameOffset = 30u;

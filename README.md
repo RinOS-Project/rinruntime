@@ -201,7 +201,9 @@ sink overloads poll a caller-owned monotonic deadline predicate and return
 `ArchiveDeflateResult::Deadline` with failure-atomic output cleanup; the
 `ArchiveGzipReader` memory/source and sink overloads carry the same deadline
 contract through header staging and raw DEFLATE decoding. The existing
-cancellation overloads remain source-compatible.
+cancellation overloads remain source-compatible. `ArchiveZipReader` adds
+deadline-aware central-directory parsing plus memory and sink entry reads;
+stored-entry CRC/copy and DEFLATE entry work are checked before publication.
 `ArchiveTarReader::readEntryToSink()` provides the same bounded, at-most-64 KiB
 caller-owned staging path for regular TAR entries, and
 `ArchiveTarGzipReader` delegates to it after its bounded GZIP staging step. A

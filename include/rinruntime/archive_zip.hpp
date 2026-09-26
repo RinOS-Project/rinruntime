@@ -21,6 +21,7 @@ enum class ArchiveZipResult : int {
     Limit = -2,
     Malformed = -3,
     Cancelled = -4,
+    Deadline = -5,
 };
 
 struct ArchiveZipEntry {
@@ -47,17 +48,35 @@ public:
 
     ArchiveZipResult parse(const std::uint8_t* bytes, std::size_t size)
     {
+        return parse(bytes, size, nullptr, nullptr);
+    }
+
+    ArchiveZipResult parseWithDeadline(
+        const std::uint8_t* bytes, std::size_t size,
+        ArchiveDeflateDeadlineFunction deadline, void* deadlineContext)
+    {
+        return parse(bytes, size, deadline, deadlineContext);
+    }
+
+    ArchiveZipResult parse(
+        const std::uint8_t* bytes, std::size_t size,
+        ArchiveDeflateDeadlineFunction deadline, void* deadlineContext)
+    {
         clear();
         if (bytes == nullptr || size < 22u)
             return ArchiveZipResult::InvalidArgument;
         if (size > static_cast<std::size_t>(
                        RINRUNTIME_ARCHIVE_CONTENT_LIMIT))
             return ArchiveZipResult::Limit;
+        if (deadline != nullptr && deadline(deadlineContext))
+            return ArchiveZipResult::Deadline;
 
         std::size_t eocd = 0u;
         bool found = false;
         const std::size_t tailStart = size > 65557u ? size - 65557u : 0u;
         for (std::size_t candidate = size - 22u;; --candidate) {
+            if (deadline != nullptr && deadline(deadlineContext))
+                return ArchiveZipResult::Deadline;
             if (candidate < tailStart)
                 break;
             if (get32(bytes + candidate) == 0x06054b50u) {
@@ -98,6 +117,8 @@ public:
         std::uint64_t total = 0u;
         std::size_t position = centralOffset;
         for (std::uint16_t index = 0u; index < entryCount; ++index) {
+            if (deadline != nullptr && deadline(deadlineContext))
+                return fail(ArchiveZipResult::Deadline);
             if (position > static_cast<std::size_t>(centralOffset) +
                               centralSize ||
                 static_cast<std::size_t>(centralOffset) + centralSize -
@@ -294,6 +315,62 @@ public:
         return ArchiveZipResult::Malformed;
     }
 
+    ArchiveZipResult readEntryWithDeadline(
+        std::size_t index, std::string& output,
+        ArchiveDeflateDeadlineFunction deadline, void* deadlineContext) const
+    {
+        output.clear();
+        if (index >= entries_.size())
+            return ArchiveZipResult::InvalidArgument;
+        if (deadline != nullptr && deadline(deadlineContext))
+            return ArchiveZipResult::Deadline;
+        const ArchiveZipEntry& entry = entries_[index];
+        std::size_t compressedSize = 0u;
+        const std::uint8_t* compressed = compressedData(index, &compressedSize);
+        if (compressed == nullptr)
+            return ArchiveZipResult::Malformed;
+        if (entry.method == 0u) {
+            bool deadlineExpired = false;
+            std::uint32_t crc = 0u;
+            if (compressedSize != entry.uncompressedSize ||
+                entry.uncompressedSize > static_cast<std::uint32_t>(
+                    RINRUNTIME_ARCHIVE_CONTENT_LIMIT) ||
+                !crc32WithDeadline(compressed, compressedSize, crc, deadline,
+                                   deadlineContext, deadlineExpired))
+                return deadlineExpired ? ArchiveZipResult::Deadline
+                                       : ArchiveZipResult::Malformed;
+            if (crc != entry.crc)
+                return ArchiveZipResult::Malformed;
+            for (std::size_t offset = 0u; offset < compressedSize;) {
+                if (deadline != nullptr && deadline(deadlineContext)) {
+                    output.clear();
+                    return ArchiveZipResult::Deadline;
+                }
+                const std::size_t chunk = compressedSize - offset > 65536u
+                                              ? 65536u
+                                              : compressedSize - offset;
+                output.append(reinterpret_cast<const char*>(compressed + offset),
+                              chunk);
+                offset += chunk;
+            }
+            return ArchiveZipResult::Ok;
+        }
+        if (entry.method != 8u)
+            return ArchiveZipResult::Malformed;
+        ArchiveDeflateDecoder decoder;
+        const ArchiveDeflateResult result = decoder.decodeWithDeadline(
+            compressed, compressedSize, entry.uncompressedSize, entry.crc,
+            output, deadline, deadlineContext);
+        if (result == ArchiveDeflateResult::Ok)
+            return ArchiveZipResult::Ok;
+        if (result == ArchiveDeflateResult::Limit)
+            return ArchiveZipResult::Limit;
+        if (result == ArchiveDeflateResult::Deadline)
+            return ArchiveZipResult::Deadline;
+        output.clear();
+        return ArchiveZipResult::Malformed;
+    }
+
     /* Stream one validated entry into a caller-owned staging sink. The sink
      * receives at most 64 KiB per callback and must durably accept each
      * chunk. A non-Ok result never constitutes archive publication; callers
@@ -352,7 +429,80 @@ public:
         return ArchiveZipResult::Malformed;
     }
 
+    ArchiveZipResult readEntryToSinkWithDeadline(
+        std::size_t index, ArchiveDeflateSinkFunction sink, void* context,
+        ArchiveDeflateDeadlineFunction deadline, void* deadlineContext) const
+    {
+        if (index >= entries_.size() || sink == nullptr || context == nullptr)
+            return ArchiveZipResult::InvalidArgument;
+        if (deadline != nullptr && deadline(deadlineContext))
+            return ArchiveZipResult::Deadline;
+        const ArchiveZipEntry& entry = entries_[index];
+        std::size_t compressedSize = 0u;
+        const std::uint8_t* compressed = compressedData(index, &compressedSize);
+        if (compressed == nullptr)
+            return ArchiveZipResult::Malformed;
+        if (entry.method == 0u) {
+            bool deadlineExpired = false;
+            std::uint32_t crc = 0u;
+            if (compressedSize != entry.uncompressedSize ||
+                !crc32WithDeadline(compressed, compressedSize, crc, deadline,
+                                   deadlineContext, deadlineExpired))
+                return deadlineExpired ? ArchiveZipResult::Deadline
+                                       : ArchiveZipResult::Malformed;
+            if (crc != entry.crc)
+                return ArchiveZipResult::Malformed;
+            std::size_t offset = 0u;
+            while (offset < compressedSize) {
+                if (deadline != nullptr && deadline(deadlineContext))
+                    return ArchiveZipResult::Deadline;
+                const std::size_t chunk = compressedSize - offset > 65536u
+                                              ? 65536u
+                                              : compressedSize - offset;
+                if (!sink(context, compressed + offset, chunk))
+                    return ArchiveZipResult::Malformed;
+                offset += chunk;
+            }
+            return ArchiveZipResult::Ok;
+        }
+        if (entry.method != 8u)
+            return ArchiveZipResult::Malformed;
+        ArchiveDeflateDecoder decoder;
+        const ArchiveDeflateResult result = decoder.decodeToSinkWithDeadline(
+            compressed, compressedSize, entry.uncompressedSize, entry.crc,
+            sink, context, deadline, deadlineContext);
+        if (result == ArchiveDeflateResult::Ok)
+            return ArchiveZipResult::Ok;
+        if (result == ArchiveDeflateResult::Limit)
+            return ArchiveZipResult::Limit;
+        if (result == ArchiveDeflateResult::Deadline)
+            return ArchiveZipResult::Deadline;
+        return ArchiveZipResult::Malformed;
+    }
+
 private:
+    static bool crc32WithDeadline(
+        const std::uint8_t* bytes, std::size_t size, std::uint32_t& result,
+        ArchiveDeflateDeadlineFunction deadline, void* deadlineContext,
+        bool& deadlineExpired)
+    {
+        std::uint32_t crc = 0xffffffffu;
+        for (std::size_t index = 0u; index < size; ++index) {
+            if (deadline != nullptr && (index == 0u || (index & 4095u) == 0u) &&
+                deadline(deadlineContext)) {
+                deadlineExpired = true;
+                return false;
+            }
+            crc ^= bytes[index];
+            for (int bit = 0; bit < 8; ++bit)
+                crc = (crc >> 1u) ^ (0xedb88320u &
+                                      (0u - (crc & 1u)));
+        }
+        deadlineExpired = false;
+        result = crc ^ 0xffffffffu;
+        return true;
+    }
+
     static std::uint16_t get16(const std::uint8_t* bytes)
     {
         return static_cast<std::uint16_t>(bytes[0]) |
