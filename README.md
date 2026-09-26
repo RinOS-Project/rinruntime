@@ -61,6 +61,11 @@ syscall and IPC readiness producers. Direct adapter callers also get
 fail-closed validation for zero handles, unsupported event bits, and duplicate
 wait IDs before any wait-set items are published.
 
+Private RinOS services may compose `PollEventLoopBackend` for local POSIX fd
+readiness (the archive service does so for its authenticated server socket).
+That composition does not publish service authority, paths, File Portal
+capabilities, or kernel wait-set implementation through the public runtime.
+
 The public runtime also provides the bounded `DownloadPartialReceipt`,
 `DownloadRangeRequest`, and `DownloadRangeTransportAdapter` contracts. Receipt
 decoding rejects non-zero reserved wire bytes and malformed identity/offset
