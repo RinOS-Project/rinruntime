@@ -17,6 +17,8 @@
 
 namespace RinRuntime {
 
+class UpdateMetadataCatalogJson;
+
 /*
  * This parser only turns bounded, untrusted JSON into the backend-independent
  * UpdateMetadata model. It does not authenticate a repository, resolve a
@@ -33,6 +35,15 @@ public:
 
 private:
     using Value = rinjson::Value;
+
+    enum class DecodeResult {
+        Success,
+        FieldType,
+        Version,
+        Flags,
+        PublishedTime,
+        Validation,
+    };
 
     static const Value* field(const Value::Object& object,
                               std::string_view name) {
@@ -156,6 +167,47 @@ private:
         return true;
     }
 
+    static DecodeResult decodeValue(const Value& value,
+                                    UpdateMetadata& output) {
+        if (!value.isObject()) return DecodeResult::FieldType;
+        const Value::Object& object = value.asObject();
+        UpdateMetadata candidate = {};
+        std::string version;
+        std::uint64_t number = 0u;
+        if (!readString(field(object, "update_id"), candidate.updateId,
+                        kUpdateMetadataMaxIdBytes) ||
+            !readString(field(object, "product_id"), candidate.productId,
+                        kUpdateMetadataMaxIdBytes) ||
+            !readString(field(object, "target_version"), version,
+                        kPackageMetadataMaxVersionBytes) ||
+            !PackageVersion::parse(version, candidate.targetVersion) ||
+            !readChannel(object, candidate.channel) ||
+            !readString(field(object, "release_notes"),
+                        candidate.releaseNotes) ||
+            !readArtifacts(object, candidate.artifacts))
+            return DecodeResult::FieldType;
+        const Value* minimum = field(object, "minimum_from_version");
+        if (minimum != nullptr) {
+            candidate.hasMinimumFromVersion = true;
+            if (!readVersion(minimum, candidate.minimumFromVersion))
+                return DecodeResult::Version;
+        }
+        if (field(object, "flags") != nullptr &&
+            !readUnsigned(field(object, "flags"), kUpdateMetadataFlagsAll,
+                          number))
+            return DecodeResult::Flags;
+        candidate.flags = static_cast<std::uint32_t>(number);
+        number = 0u;
+        if (!readUnsigned(field(object, "published_at"), UINT64_MAX, number))
+            return DecodeResult::PublishedTime;
+        candidate.publishedAtUnixSeconds = number;
+        if (!candidate.valid()) return DecodeResult::Validation;
+        output = std::move(candidate);
+        return DecodeResult::Success;
+    }
+
+    friend class UpdateMetadataCatalogJson;
+
 public:
     /* output is cleared before parsing and remains empty on every failure. */
     static bool parse(std::string_view input, UpdateMetadata& output,
@@ -183,46 +235,23 @@ public:
                 error = "update metadata object";
                 return false;
             }
-            const Value::Object& object = document.asObject();
-            std::string version;
-            std::uint64_t number = 0u;
-            if (!readString(field(object, "update_id"), candidate.updateId,
-                            kUpdateMetadataMaxIdBytes) ||
-                !readString(field(object, "product_id"), candidate.productId,
-                            kUpdateMetadataMaxIdBytes) ||
-                !readString(field(object, "target_version"), version,
-                            kPackageMetadataMaxVersionBytes) ||
-                !PackageVersion::parse(version, candidate.targetVersion) ||
-                !readChannel(object, candidate.channel) ||
-                !readString(field(object, "release_notes"),
-                            candidate.releaseNotes) ||
-                !readArtifacts(object, candidate.artifacts)) {
+            const DecodeResult decodeResult = decodeValue(document, candidate);
+            switch (decodeResult) {
+            case DecodeResult::Success:
+                break;
+            case DecodeResult::FieldType:
                 error = "update metadata field type";
                 return false;
-            }
-            const Value* minimum = field(object, "minimum_from_version");
-            if (minimum != nullptr) {
-                candidate.hasMinimumFromVersion = true;
-                if (!readVersion(minimum, candidate.minimumFromVersion)) {
-                    error = "update metadata version";
-                    return false;
-                }
-            }
-            if (field(object, "flags") != nullptr &&
-                !readUnsigned(field(object, "flags"),
-                              kUpdateMetadataFlagsAll, number)) {
+            case DecodeResult::Version:
+                error = "update metadata version";
+                return false;
+            case DecodeResult::Flags:
                 error = "update metadata flags";
                 return false;
-            }
-            candidate.flags = static_cast<std::uint32_t>(number);
-            number = 0u;
-            if (!readUnsigned(field(object, "published_at"), UINT64_MAX,
-                              number)) {
+            case DecodeResult::PublishedTime:
                 error = "update metadata published time";
                 return false;
-            }
-            candidate.publishedAtUnixSeconds = number;
-            if (!candidate.valid()) {
+            case DecodeResult::Validation:
                 error = "update metadata validation";
                 return false;
             }

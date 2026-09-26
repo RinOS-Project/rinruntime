@@ -34,6 +34,8 @@
 #include "cursor.h"
 #include "update_metadata.hpp"
 #include "update_metadata_json.hpp"
+#include "update_metadata_catalog.hpp"
+#include "update_metadata_catalog_json.hpp"
 #include "timezone.hpp"
 #include "dns_transport.hpp"
 #include "accessibility.hpp"

@@ -211,6 +211,15 @@ by ordinary applications and external package tooling; repository
 authentication, HTTPS/TLS, signature verification, staging, and installation
 remain private updater owners.
 
+`update_metadata_catalog.hpp` and `update_metadata_catalog_json.hpp` (also
+exported by the `rinruntime.hpp` umbrella) provide a bounded, generation-tagged
+update snapshot for ordinary applications and external package tooling. Each
+entry reuses `UpdateMetadata` artifact/version/digest validation, and the
+catalog requires sorted-unique update IDs with failure-atomic output. It does
+not authenticate a repository, select a download URL, verify a signature,
+stage bytes, or authorize installation/reboot; those remain private updater
+owners.
+
 The archive headers are public, backend-independent codec contracts.  The
 DEFLATE, GZIP, strict ustar TAR, TAR.GZ, and ordinary ZIP readers consume
 caller-owned bytes or bounded callbacks and never open paths or publish files.
