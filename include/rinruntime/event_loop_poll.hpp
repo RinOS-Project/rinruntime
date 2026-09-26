@@ -98,7 +98,8 @@ public:
         struct pollfd descriptors[EventLoop::kWaitCapacity] = {};
         for (Size index = 0u; index < count; ++index) {
             const EventLoop::WaitRequest& request = requests[index];
-            if (request.id == 0u || request.events == 0u ||
+            if (request.id == 0u || request.nativeHandle == 0u ||
+                request.events == 0u ||
                 (request.events & ~static_cast<std::uint32_t>(
                                       EventLoop::WAIT_EVENTS_ALL)) != 0u ||
                 request.nativeHandle > static_cast<std::uint64_t>(INT_MAX))

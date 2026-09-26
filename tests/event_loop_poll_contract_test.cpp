@@ -71,6 +71,10 @@ int main() {
     assert(timeout_elapsed.count() < 500);
     assert(ready.id == 0u && ready.events == 0u);
 
+    timeout_request.nativeHandle = 0u;
+    assert(!backend.wait(&timeout_request, 1u, g_now, &ready));
+    assert(ready.id == 0u && ready.events == 0u);
+
     assert(close(pipe_fds[1]) == 0);
     const EventLoop::WaitId hangup_id = loop.watch(
         pipe_fds[0], EventLoop::WAIT_HANGUP, ready_event);
