@@ -533,16 +533,26 @@ RinSerialPortalResultV1 rin_serial_portal_wait_response_decode(
     return RIN_SERIAL_PORTAL_OK;
 }
 
-static int origin_valid(const char* origin)
+static size_t origin_length(const char* origin)
 {
     size_t index;
-    if (origin == NULL || origin[0] == '\0') return 0;
+    if (origin == NULL) return RIN_SERIAL_PORTAL_ORIGIN_MAX;
     for (index = 0u; index < RIN_SERIAL_PORTAL_ORIGIN_MAX; ++index) {
+        if (origin[index] == '\0') return index;
+    }
+    return RIN_SERIAL_PORTAL_ORIGIN_MAX;
+}
+
+static int origin_valid(const char* origin)
+{
+    const size_t length = origin_length(origin);
+    size_t index;
+    if (length == 0u || length >= RIN_SERIAL_PORTAL_ORIGIN_MAX) return 0;
+    for (index = 0u; index < length; ++index) {
         unsigned char byte = (unsigned char)origin[index];
-        if (byte == 0u) return index != 0u;
         if (byte < 0x20u || byte == 0x7fu) return 0;
     }
-    return 0;
+    return 1;
 }
 
 static int filters_valid(const RinSerialPortalFilterV1* filters, size_t count)
@@ -579,7 +589,7 @@ RinSerialPortalResultV1 rin_serial_portal_request_port_encode(
     request_out->user_activation = user_activation;
     request_out->filter_count = (uint32_t)filter_count;
     request_out->selected_object_id = selected_object_id;
-    memcpy(request_out->origin, origin, strlen(origin));
+    memcpy(request_out->origin, origin, origin_length(origin));
     if (filter_count != 0u)
         memcpy(request_out->filters, filters,
                filter_count * sizeof(request_out->filters[0]));
@@ -671,7 +681,7 @@ RinSerialPortalResultV1 rin_serial_portal_get_ports_request_encode(
         RIN_SERIAL_PORTAL_OK)
         return RIN_SERIAL_PORTAL_INVALID_ARGUMENT;
     request_out->frame.frame_size = (uint32_t)sizeof(*request_out);
-    memcpy(request_out->origin, origin, strlen(origin));
+    memcpy(request_out->origin, origin, origin_length(origin));
     return RIN_SERIAL_PORTAL_OK;
 }
 
@@ -781,4 +791,3 @@ RinSerialPortalResultV1 rin_serial_portal_event_decode(
     device_out->connected = operation == RIN_SERIAL_PORTAL_CONNECT_EVENT ? 1u : 0u;
     return RIN_SERIAL_PORTAL_OK;
 }
-
