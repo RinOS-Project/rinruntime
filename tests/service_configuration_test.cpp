@@ -30,5 +30,14 @@ int main() {
     invalid.serviceId = "service";
     invalid.displayName = "bad\nname";
     assert(!invalid.valid());
+
+    invalid.displayName = std::string("bad\xc0\x80", 5);
+    assert(!invalid.valid());
+
+    invalid.displayName = "設定サービス";
+    assert(invalid.valid());
+
+    invalid.serviceId = std::string("svc.\xc0\x80", 5);
+    assert(!invalid.valid());
     return 0;
 }

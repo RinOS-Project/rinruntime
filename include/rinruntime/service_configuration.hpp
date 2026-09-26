@@ -8,6 +8,8 @@
 #include <string>
 #include <vector>
 
+#include "unicode.h"
+
 namespace RinRuntime {
 
 static constexpr std::size_t kServiceConfigurationMaxIdBytes = 63u;
@@ -35,8 +37,16 @@ struct ServiceConfiguration {
     std::vector<std::string> dependencies;
     std::vector<std::string> optionalDependencies;
 
+    static bool validUtf8(const std::string& value) {
+        std::size_t valid = 0u;
+        return rinruntime_utf8_validate(value.data(), value.size(), &valid) !=
+                   0 &&
+               valid == value.size();
+    }
+
     static bool validIdentifier(const std::string& value) {
-        if (value.empty() || value.size() > kServiceConfigurationMaxIdBytes)
+        if (value.empty() || value.size() > kServiceConfigurationMaxIdBytes ||
+            !validUtf8(value))
             return false;
         for (const unsigned char byte : value) {
             if (byte < 0x21u || byte == 0x7fu || byte == '/' ||
@@ -58,7 +68,8 @@ struct ServiceConfiguration {
 
     bool valid() const {
         if (!validIdentifier(serviceId) || displayName.empty() ||
-            displayName.size() > 127u || maxInstances == 0u ||
+            displayName.size() > 127u || !validUtf8(displayName) ||
+            maxInstances == 0u ||
             maxInstances > kServiceConfigurationMaxInstances ||
             memoryLimitBytes > kServiceConfigurationMaxMemoryBytes ||
             startupTimeoutSeconds > kServiceConfigurationMaxTimeoutSeconds ||
