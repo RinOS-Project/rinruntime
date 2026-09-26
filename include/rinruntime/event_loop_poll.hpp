@@ -104,6 +104,8 @@ public:
                                       EventLoop::WAIT_EVENTS_ALL)) != 0u ||
                 request.nativeHandle > static_cast<std::uint64_t>(INT_MAX))
                 return false;
+            for (Size prior = 0u; prior < index; ++prior)
+                if (requests[prior].id == request.id) return false;
             descriptors[index].fd = static_cast<int>(request.nativeHandle);
             descriptors[index].events = pollEvents(request.events);
             if (descriptors[index].events == 0) return false;

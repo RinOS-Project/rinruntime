@@ -75,6 +75,15 @@ int main() {
     assert(!backend.wait(&timeout_request, 1u, g_now, &ready));
     assert(ready.id == 0u && ready.events == 0u);
 
+    EventLoop::WaitRequest duplicate_requests[2] = {};
+    duplicate_requests[0].id = 7u;
+    duplicate_requests[0].nativeHandle = static_cast<uint64_t>(pipe_fds[0]);
+    duplicate_requests[0].events = EventLoop::WAIT_READABLE;
+    duplicate_requests[1] = duplicate_requests[0];
+    ready = {99u, EventLoop::WAIT_READABLE};
+    assert(!backend.wait(duplicate_requests, 2u, g_now, &ready));
+    assert(ready.id == 0u && ready.events == 0u);
+
     assert(close(pipe_fds[1]) == 0);
     const EventLoop::WaitId hangup_id = loop.watch(
         pipe_fds[0], EventLoop::WAIT_HANGUP, ready_event);
