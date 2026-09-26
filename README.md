@@ -179,6 +179,14 @@ identifiers, strict UTF-8 display/path/MIME text, relative entry points,
 sorted categories and MIME types, while package paths, icon/resource loading,
 signatures, and installed-application publication remain private owners.
 
+`application_metadata_catalog.hpp` and
+`application_metadata_catalog_json.hpp` add a bounded, generation-tagged list
+of those descriptors for ordinary applications and external tooling. Entries
+must be valid and sorted uniquely by application ID, and failed parsing clears
+the output. The catalog generation is only an opaque snapshot value; repository
+URLs, authentication, signatures, installed roots, trust provisioning, and
+launch authority remain private repository/installer/launcher owners.
+
 `update_metadata.hpp` provides the corresponding bounded update description:
 product/update identity, target version, channel, applicability floor, release
 notes, and sorted package artifacts with exact sizes and SHA-256 digests. It has

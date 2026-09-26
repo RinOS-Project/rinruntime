@@ -17,6 +17,8 @@
 
 namespace RinRuntime {
 
+class ApplicationMetadataCatalogJson;
+
 /* This adapter decodes only a descriptor. Path, image, signature, and
  * installed-application authority remain private product owners. */
 class ApplicationMetadataJson final {
@@ -29,6 +31,12 @@ public:
 
 private:
     using Value = rinjson::Value;
+
+    enum class DecodeResult {
+        Success,
+        FieldType,
+        GuiType,
+    };
 
     static const Value* field(const Value::Object& object,
                               std::string_view name) {
@@ -76,6 +84,31 @@ private:
         return true;
     }
 
+    static DecodeResult decodeValue(const Value& value,
+                                    ApplicationMetadata& output) {
+        if (!value.isObject()) return DecodeResult::FieldType;
+        const Value::Object& object = value.asObject();
+        ApplicationMetadata candidate = {};
+        if (!readString(field(object, "application_id"),
+                        candidate.applicationId) ||
+            !readString(field(object, "display_name"),
+                        candidate.displayName) ||
+            !readString(field(object, "entry_point"),
+                        candidate.entryPoint) ||
+            !optionalString(object, "icon_id", candidate.iconId) ||
+            !optionalString(object, "description", candidate.description) ||
+            !readStringArray(object, "categories", candidate.categories) ||
+            !readStringArray(object, "mime_types", candidate.mimeTypes))
+            return DecodeResult::FieldType;
+        const Value* gui = field(object, "gui");
+        if (gui != nullptr && !readBool(gui, candidate.gui))
+            return DecodeResult::GuiType;
+        output = std::move(candidate);
+        return DecodeResult::Success;
+    }
+
+    friend class ApplicationMetadataCatalogJson;
+
 public:
     /* output is cleared before parsing and remains empty on every failure. */
     static bool parse(std::string_view input, ApplicationMetadata& output,
@@ -103,22 +136,12 @@ public:
                 error = "metadata object";
                 return false;
             }
-            const Value::Object& object = document.asObject();
-            if (!readString(field(object, "application_id"),
-                            candidate.applicationId) ||
-                !readString(field(object, "display_name"),
-                            candidate.displayName) ||
-                !readString(field(object, "entry_point"),
-                            candidate.entryPoint) ||
-                !optionalString(object, "icon_id", candidate.iconId) ||
-                !optionalString(object, "description", candidate.description) ||
-                !readStringArray(object, "categories", candidate.categories) ||
-                !readStringArray(object, "mime_types", candidate.mimeTypes)) {
+            const DecodeResult decodeResult = decodeValue(document, candidate);
+            if (decodeResult == DecodeResult::FieldType) {
                 error = "metadata field type";
                 return false;
             }
-            const Value* gui = field(object, "gui");
-            if (gui != nullptr && !readBool(gui, candidate.gui)) {
+            if (decodeResult == DecodeResult::GuiType) {
                 error = "metadata gui";
                 return false;
             }
