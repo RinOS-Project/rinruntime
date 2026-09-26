@@ -8,6 +8,8 @@
 #include <string>
 #include <vector>
 
+#include "unicode.h"
+
 namespace RinRuntime {
 
 static constexpr std::size_t kApplicationMetadataMaxIdBytes = 63u;
@@ -27,9 +29,17 @@ struct ApplicationMetadata {
     std::vector<std::string> mimeTypes;
     bool gui = false;
 
+    static bool validUtf8(const std::string& value) {
+        std::size_t valid = 0u;
+        return rinruntime_utf8_validate(value.data(), value.size(), &valid) !=
+                   0 &&
+               valid == value.size();
+    }
+
     static bool validIdentifier(const std::string& value,
                                 std::size_t maximum) {
-        if (value.empty() || value.size() > maximum) return false;
+        if (value.empty() || value.size() > maximum || !validUtf8(value))
+            return false;
         for (const unsigned char byte : value) {
             if (byte < 0x21u || byte == 0x7fu || byte == '/' ||
                 byte == '\\' || byte == ':')
@@ -40,7 +50,8 @@ struct ApplicationMetadata {
 
     static bool validText(const std::string& value, std::size_t maximum,
                           bool allowEmpty) {
-        if (value.size() > maximum || (!allowEmpty && value.empty()))
+        if (value.size() > maximum || (!allowEmpty && value.empty()) ||
+            !validUtf8(value))
             return false;
         for (const unsigned char byte : value)
             if (byte < 0x20u || byte == 0x7fu) return false;
@@ -49,7 +60,7 @@ struct ApplicationMetadata {
 
     static bool validRelativePath(const std::string& value) {
         if (value.empty() || value.size() > kApplicationMetadataMaxEntryPointBytes ||
-            value.front() == '/' || value.back() == '/')
+            value.front() == '/' || value.back() == '/' || !validUtf8(value))
             return false;
         std::size_t start = 0u;
         while (start < value.size()) {
@@ -81,7 +92,8 @@ struct ApplicationMetadata {
     }
 
     static bool validMimeType(const std::string& value) {
-        if (value.empty() || value.size() > kApplicationMetadataMaxIconIdBytes)
+        if (value.empty() || value.size() > kApplicationMetadataMaxIconIdBytes ||
+            !validUtf8(value))
             return false;
         const std::size_t slash = value.find('/');
         if (slash == 0u || slash == value.size() - 1u ||

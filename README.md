@@ -169,9 +169,9 @@ publication, and kernel admission remain private owners.
 
 `application_metadata.hpp` and `application_metadata_json.hpp` provide the
 same split for application descriptors. The public parser validates bounded
-identifiers, display text, relative entry points, sorted categories and MIME
-types, while package paths, icon/resource loading, signatures, and installed
-application publication remain private owners.
+identifiers, strict UTF-8 display/path/MIME text, relative entry points,
+sorted categories and MIME types, while package paths, icon/resource loading,
+signatures, and installed-application publication remain private owners.
 
 `update_metadata.hpp` provides the corresponding bounded update description:
 product/update identity, target version, channel, applicability floor, release
