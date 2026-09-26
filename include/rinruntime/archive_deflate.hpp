@@ -18,6 +18,7 @@ namespace RinRuntime {
 using ArchiveDeflateSinkFunction = bool (*)(
     void* context, const std::uint8_t* bytes, std::size_t size);
 using ArchiveDeflateCancellationFunction = bool (*)(void* context);
+using ArchiveDeflateDeadlineFunction = bool (*)(void* context);
 /* A bounded pull source for one exact raw-DEFLATE payload.  The callback may
  * return fewer bytes than requested, but must return false on I/O failure or
  * an end-of-input condition before source.compressedSize bytes are supplied. */
@@ -38,6 +39,7 @@ enum class ArchiveDeflateResult : int {
     Malformed = -3,
     CrcMismatch = -4,
     Cancelled = -5,
+    Deadline = -6,
 };
 
 inline std::uint32_t rinruntime_archive_crc32(const std::uint8_t* bytes,
@@ -82,7 +84,19 @@ public:
         return decodeInternal(compressed, compressedSize, expectedSize,
                               expectedCrc, &output, nullptr, nullptr,
                               cancellation, cancellationContext, nullptr,
-                              nullptr);
+                              nullptr, nullptr, nullptr);
+    }
+
+    ArchiveDeflateResult decodeWithDeadline(
+        const std::uint8_t* compressed, std::size_t compressedSize,
+        std::size_t expectedSize, std::uint32_t expectedCrc,
+        std::string& output, ArchiveDeflateDeadlineFunction deadline,
+        void* deadlineContext) const
+    {
+        return decodeInternal(compressed, compressedSize, expectedSize,
+                              expectedCrc, &output, nullptr, nullptr,
+                              nullptr, nullptr, deadline, deadlineContext,
+                              nullptr, nullptr);
     }
 
     ArchiveDeflateResult decode(
@@ -101,8 +115,19 @@ public:
     {
         return decodeInternal(nullptr, source.compressedSize, expectedSize,
                               expectedCrc, &output, nullptr, nullptr,
-                              cancellation, cancellationContext, source.read,
-                              source.context);
+                              cancellation, cancellationContext, nullptr,
+                              nullptr, source.read, source.context);
+    }
+
+    ArchiveDeflateResult decodeWithDeadline(
+        const ArchiveDeflateSource& source, std::size_t expectedSize,
+        std::uint32_t expectedCrc, std::string& output,
+        ArchiveDeflateDeadlineFunction deadline, void* deadlineContext) const
+    {
+        return decodeInternal(nullptr, source.compressedSize, expectedSize,
+                              expectedCrc, &output, nullptr, nullptr,
+                              nullptr, nullptr, deadline, deadlineContext,
+                              source.read, source.context);
     }
 
     /* Decode directly into a bounded caller-owned staging sink. The callback
@@ -128,7 +153,19 @@ public:
         return decodeInternal(compressed, compressedSize, expectedSize,
                               expectedCrc, nullptr, sink, context,
                               cancellation, cancellationContext, nullptr,
-                              nullptr);
+                              nullptr, nullptr, nullptr);
+    }
+
+    ArchiveDeflateResult decodeToSinkWithDeadline(
+        const std::uint8_t* compressed, std::size_t compressedSize,
+        std::size_t expectedSize, std::uint32_t expectedCrc,
+        ArchiveDeflateSinkFunction sink, void* context,
+        ArchiveDeflateDeadlineFunction deadline, void* deadlineContext) const
+    {
+        return decodeInternal(compressed, compressedSize, expectedSize,
+                              expectedCrc, nullptr, sink, context,
+                              nullptr, nullptr, deadline, deadlineContext,
+                              nullptr, nullptr);
     }
 
     ArchiveDeflateResult decodeToSink(
@@ -148,8 +185,20 @@ public:
     {
         return decodeInternal(nullptr, source.compressedSize, expectedSize,
                               expectedCrc, nullptr, sink, context,
-                              cancellation, cancellationContext, source.read,
-                              source.context);
+                              cancellation, cancellationContext, nullptr,
+                              nullptr, source.read, source.context);
+    }
+
+    ArchiveDeflateResult decodeToSinkWithDeadline(
+        const ArchiveDeflateSource& source, std::size_t expectedSize,
+        std::uint32_t expectedCrc, ArchiveDeflateSinkFunction sink,
+        void* context, ArchiveDeflateDeadlineFunction deadline,
+        void* deadlineContext) const
+    {
+        return decodeInternal(nullptr, source.compressedSize, expectedSize,
+                              expectedCrc, nullptr, sink, context,
+                              nullptr, nullptr, deadline, deadlineContext,
+                              source.read, source.context);
     }
 
 private:
@@ -158,10 +207,13 @@ private:
         DecodeOutput(std::string* output, ArchiveDeflateSinkFunction sink,
                      void* context, std::size_t expectedSize,
                      ArchiveDeflateCancellationFunction cancellation,
-                     void* cancellationContext)
+                     void* cancellationContext,
+                     ArchiveDeflateDeadlineFunction deadline,
+                     void* deadlineContext)
             : output_(output), sink_(sink), context_(context),
               expectedSize_(expectedSize), cancellation_(cancellation),
-              cancellationContext_(cancellationContext) {}
+              cancellationContext_(cancellationContext), deadline_(deadline),
+              deadlineContext_(deadlineContext) {}
 
         bool write(std::uint8_t value)
         {
@@ -169,6 +221,12 @@ private:
                 (size_ == 0u || (size_ & 4095u) == 0u) &&
                 cancellation_(cancellationContext_)) {
                 cancelled_ = true;
+                return false;
+            }
+            if (deadline_ != nullptr &&
+                (size_ == 0u || (size_ & 4095u) == 0u) &&
+                deadline_(deadlineContext_)) {
+                deadlineExpired_ = true;
                 return false;
             }
             if (size_ >= expectedSize_)
@@ -197,6 +255,7 @@ private:
 
         bool sinkFailed() const { return sinkFailed_; }
         bool cancelled() const { return cancelled_; }
+        bool deadlineExpired() const { return deadlineExpired_; }
 
         void clear()
         {
@@ -207,6 +266,7 @@ private:
             crc_ = 0xffffffffu;
             sinkFailed_ = false;
             cancelled_ = false;
+            deadlineExpired_ = false;
         }
 
         std::size_t size() const { return size_; }
@@ -237,6 +297,9 @@ private:
         ArchiveDeflateCancellationFunction cancellation_ = nullptr;
         void* cancellationContext_ = nullptr;
         bool cancelled_ = false;
+        ArchiveDeflateDeadlineFunction deadline_ = nullptr;
+        void* deadlineContext_ = nullptr;
+        bool deadlineExpired_ = false;
     };
 
     ArchiveDeflateResult decodeInternal(
@@ -244,7 +307,8 @@ private:
         std::size_t expectedSize, std::uint32_t expectedCrc,
         std::string* output, ArchiveDeflateSinkFunction sink,
         void* context, ArchiveDeflateCancellationFunction cancellation,
-        void* cancellationContext, ArchiveDeflateReadFunction read,
+        void* cancellationContext, ArchiveDeflateDeadlineFunction deadline,
+        void* deadlineContext, ArchiveDeflateReadFunction read,
         void* readContext) const
     {
         if (read != nullptr && compressed != nullptr)
@@ -262,9 +326,12 @@ private:
         if (output != nullptr)
             output->clear();
         DecodeOutput decoded(output, sink, context, expectedSize,
-                             cancellation, cancellationContext);
+                             cancellation, cancellationContext, deadline,
+                             deadlineContext);
         if (cancellation != nullptr && cancellation(cancellationContext))
             return fail(decoded, ArchiveDeflateResult::Cancelled);
+        if (deadline != nullptr && deadline(deadlineContext))
+            return fail(decoded, ArchiveDeflateResult::Deadline);
         Decoder reader(compressed, compressedSize, read, readContext);
         FixedDecodeEntry fixed[512];
         makeFixedDecodeTable(fixed);
@@ -276,6 +343,8 @@ private:
         bool finalBlock = false;
 
         while (!finalBlock) {
+            if (deadline != nullptr && deadline(deadlineContext))
+                return fail(decoded, ArchiveDeflateResult::Deadline);
             if (blockCount >= RINRUNTIME_ARCHIVE_DEFLATE_BLOCK_LIMIT)
                 return fail(decoded, ArchiveDeflateResult::Limit);
             ++blockCount;
@@ -347,6 +416,8 @@ private:
             }
         }
 
+        if (deadline != nullptr && deadline(deadlineContext))
+            return fail(decoded, ArchiveDeflateResult::Deadline);
         if (!reader.cleanEnd() || decoded.size() != expectedSize)
             return fail(decoded, ArchiveDeflateResult::Malformed);
         if (!decoded.finish(expectedCrc))
@@ -470,7 +541,9 @@ private:
                                      ArchiveDeflateResult result)
     {
         const bool cancelled = output.cancelled();
+        const bool deadlineExpired = output.deadlineExpired();
         output.clear();
+        if (deadlineExpired) return ArchiveDeflateResult::Deadline;
         return cancelled ? ArchiveDeflateResult::Cancelled : result;
     }
 

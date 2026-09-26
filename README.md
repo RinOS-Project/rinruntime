@@ -196,7 +196,10 @@ socket to the codec.  `ArchiveDeflateEncoder` provides the generic deterministic
 stored encoder plus bounded fixed-run and dynamic-literal authoring helpers.
 Archive DEFLATE decoding also rejects streams exceeding the public
 `RINRUNTIME_ARCHIVE_DEFLATE_BLOCK_LIMIT` of 65,536 blocks, in addition to the
-expanded-content and compression-ratio policies.
+expanded-content and compression-ratio policies. Deadline-aware decoder and
+sink overloads poll a caller-owned monotonic deadline predicate and return
+`ArchiveDeflateResult::Deadline` with failure-atomic output cleanup; the
+existing cancellation overloads remain source-compatible.
 `ArchiveTarReader::readEntryToSink()` provides the same bounded, at-most-64 KiB
 caller-owned staging path for regular TAR entries, and
 `ArchiveTarGzipReader` delegates to it after its bounded GZIP staging step. A

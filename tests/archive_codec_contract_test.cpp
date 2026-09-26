@@ -19,6 +19,12 @@ static bool cancelNow(void* context)
            *static_cast<const std::uint32_t*>(context) != 0u;
 }
 
+static bool deadlineNow(void* context)
+{
+    return context != nullptr &&
+           *static_cast<const std::uint32_t*>(context) != 0u;
+}
+
 static bool collectTar(void* context, const std::uint8_t* bytes,
                        std::size_t size)
 {
@@ -148,6 +154,13 @@ int main()
     assert(encoder.encode(reinterpret_cast<const std::uint8_t*>("hello"), 5u,
                           encoded, cancelNow, &cancellationRequested) ==
            RinRuntime::ArchiveDeflateResult::Cancelled && encoded.empty());
+    std::uint32_t deadlineExpired = 1u;
+    output = "poison";
+    assert(deflate.decodeWithDeadline(
+               stored, sizeof(stored), 5u, 0x3610a686u, output,
+               deadlineNow, &deadlineExpired) ==
+           RinRuntime::ArchiveDeflateResult::Deadline);
+    assert(output.empty());
 
     const std::vector<std::uint8_t> gzip = makeGzip(
         reinterpret_cast<const std::uint8_t*>("hello"), 5u);
