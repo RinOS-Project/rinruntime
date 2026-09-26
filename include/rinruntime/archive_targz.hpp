@@ -108,6 +108,21 @@ public:
         return tar_.data(index, sizeOut);
     }
 
+    ArchiveTarGzipResult readEntryToSink(std::size_t index,
+                                         ArchiveTarSinkFunction sink,
+                                         void* context) const
+    {
+        const ArchiveTarResult result =
+            tar_.readEntryToSink(index, sink, context);
+        if (result == ArchiveTarResult::Ok)
+            return ArchiveTarGzipResult::Ok;
+        if (result == ArchiveTarResult::InvalidArgument)
+            return ArchiveTarGzipResult::InvalidArgument;
+        if (result == ArchiveTarResult::Limit)
+            return ArchiveTarGzipResult::Limit;
+        return ArchiveTarGzipResult::Malformed;
+    }
+
 private:
     ArchiveGzipReader gzip_;
     ArchiveTarReader tar_;

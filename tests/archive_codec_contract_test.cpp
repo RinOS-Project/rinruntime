@@ -172,6 +172,9 @@ int main()
     assert(tarGzipReader.parse(tarGzip.data(), tarGzip.size()) ==
            RinRuntime::ArchiveTarGzipResult::Ok);
     assert(tarGzipReader.size() == 1u && tarGzipReader.totalContent() == 5u);
+    streamed.clear();
+    assert(tarGzipReader.readEntryToSink(0u, &collectTar, &streamed) ==
+           RinRuntime::ArchiveTarGzipResult::Ok && streamed == "hello");
 
     const std::vector<std::uint8_t> zip = makeStoredZip();
     RinRuntime::ArchiveZipReader zipReader;
