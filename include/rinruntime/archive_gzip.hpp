@@ -16,6 +16,7 @@ enum class ArchiveGzipResult : int {
     CrcMismatch = -4,
     SinkFailure = -5,
     Cancelled = -6,
+    Deadline = -7,
 };
 
 using ArchiveGzipReadFunction = bool (*)(
@@ -74,6 +75,37 @@ public:
         return ArchiveGzipResult::Ok;
     }
 
+    ArchiveGzipResult decodeWithDeadline(
+        const std::uint8_t* bytes, std::size_t size, std::string& output,
+        ArchiveDeflateDeadlineFunction deadline, void* deadlineContext) const
+    {
+        Header header;
+        output.clear();
+        const ArchiveGzipResult headerResult = parseHeader(
+            bytes, size, header, deadline, deadlineContext);
+        if (headerResult != ArchiveGzipResult::Ok)
+            return headerResult;
+        if (header.size > RINRUNTIME_ARCHIVE_CONTENT_LIMIT)
+            return failOutput(output, ArchiveGzipResult::Limit);
+        if (deadline != nullptr && deadline(deadlineContext))
+            return failOutput(output, ArchiveGzipResult::Deadline);
+        const std::size_t expectedSize = static_cast<std::size_t>(header.size);
+        const ArchiveDeflateResult result = decoder_.decodeWithDeadline(
+            bytes + header.deflateOffset, header.deflateSize, expectedSize,
+            header.crc, output, deadline, deadlineContext);
+        if (result == ArchiveDeflateResult::CrcMismatch)
+            return failOutput(output, ArchiveGzipResult::CrcMismatch);
+        if (result == ArchiveDeflateResult::Deadline)
+            return failOutput(output, ArchiveGzipResult::Deadline);
+        if (result != ArchiveDeflateResult::Ok)
+            return failOutput(output, result == ArchiveDeflateResult::Limit
+                                         ? ArchiveGzipResult::Limit
+                                         : ArchiveGzipResult::Malformed);
+        if (static_cast<std::uint32_t>(output.size()) != header.size)
+            return failOutput(output, ArchiveGzipResult::Malformed);
+        return ArchiveGzipResult::Ok;
+    }
+
     ArchiveGzipResult decode(const ArchiveGzipSource& source,
                              std::uint8_t* compressedBuffer,
                              std::size_t compressedCapacity,
@@ -92,10 +124,24 @@ public:
         output.clear();
         const ArchiveGzipResult sourceResult = stageSource(
             source, compressedBuffer, compressedCapacity, cancellation,
-            cancellationContext);
+            cancellationContext, nullptr, nullptr);
         if (sourceResult != ArchiveGzipResult::Ok) return sourceResult;
         return decode(compressedBuffer, source.compressedSize, output,
                       cancellation, cancellationContext);
+    }
+
+    ArchiveGzipResult decodeWithDeadline(
+        const ArchiveGzipSource& source, std::uint8_t* compressedBuffer,
+        std::size_t compressedCapacity, std::string& output,
+        ArchiveDeflateDeadlineFunction deadline, void* deadlineContext) const
+    {
+        output.clear();
+        const ArchiveGzipResult sourceResult = stageSource(
+            source, compressedBuffer, compressedCapacity, nullptr, nullptr,
+            deadline, deadlineContext);
+        if (sourceResult != ArchiveGzipResult::Ok) return sourceResult;
+        return decodeWithDeadline(compressedBuffer, source.compressedSize,
+                                  output, deadline, deadlineContext);
     }
 
     ArchiveGzipResult decodeToSink(
@@ -137,6 +183,38 @@ public:
                                          : ArchiveGzipResult::Malformed;
     }
 
+    ArchiveGzipResult decodeToSinkWithDeadline(
+        const std::uint8_t* bytes, std::size_t size,
+        ArchiveDeflateSinkFunction sink, void* context,
+        ArchiveDeflateDeadlineFunction deadline, void* deadlineContext) const
+    {
+        Header header;
+        SinkState state{sink, context, 0u};
+        const ArchiveGzipResult headerResult = parseHeader(
+            bytes, size, header, deadline, deadlineContext);
+        if (headerResult != ArchiveGzipResult::Ok) return headerResult;
+        if (header.size > RINRUNTIME_ARCHIVE_CONTENT_LIMIT)
+            return ArchiveGzipResult::Limit;
+        if (sink == nullptr) return ArchiveGzipResult::InvalidArgument;
+        if (deadline != nullptr && deadline(deadlineContext))
+            return ArchiveGzipResult::Deadline;
+        const ArchiveDeflateResult result = decoder_.decodeToSinkWithDeadline(
+            bytes + header.deflateOffset, header.deflateSize,
+            static_cast<std::size_t>(header.size), header.crc, forwardSink,
+            &state, deadline, deadlineContext);
+        if (result == ArchiveDeflateResult::CrcMismatch)
+            return ArchiveGzipResult::CrcMismatch;
+        if (result == ArchiveDeflateResult::Deadline)
+            return ArchiveGzipResult::Deadline;
+        if (result != ArchiveDeflateResult::Ok)
+            return state.failed ? ArchiveGzipResult::SinkFailure
+                                 : (result == ArchiveDeflateResult::Limit
+                                        ? ArchiveGzipResult::Limit
+                                        : ArchiveGzipResult::Malformed);
+        return state.size == header.size ? ArchiveGzipResult::Ok
+                                         : ArchiveGzipResult::Malformed;
+    }
+
     ArchiveGzipResult decodeToSink(
         const ArchiveGzipSource& source, std::uint8_t* compressedBuffer,
         std::size_t compressedCapacity, ArchiveDeflateSinkFunction sink,
@@ -154,10 +232,25 @@ public:
     {
         const ArchiveGzipResult sourceResult = stageSource(
             source, compressedBuffer, compressedCapacity, cancellation,
-            cancellationContext);
+            cancellationContext, nullptr, nullptr);
         if (sourceResult != ArchiveGzipResult::Ok) return sourceResult;
         return decodeToSink(compressedBuffer, source.compressedSize, sink,
                             context, cancellation, cancellationContext);
+    }
+
+    ArchiveGzipResult decodeToSinkWithDeadline(
+        const ArchiveGzipSource& source, std::uint8_t* compressedBuffer,
+        std::size_t compressedCapacity, ArchiveDeflateSinkFunction sink,
+        void* context, ArchiveDeflateDeadlineFunction deadline,
+        void* deadlineContext) const
+    {
+        const ArchiveGzipResult sourceResult = stageSource(
+            source, compressedBuffer, compressedCapacity, nullptr, nullptr,
+            deadline, deadlineContext);
+        if (sourceResult != ArchiveGzipResult::Ok) return sourceResult;
+        return decodeToSinkWithDeadline(compressedBuffer, source.compressedSize,
+                                        sink, context, deadline,
+                                        deadlineContext);
     }
 
 private:
@@ -186,7 +279,8 @@ private:
         const ArchiveGzipSource& source, std::uint8_t* compressedBuffer,
         std::size_t compressedCapacity,
         ArchiveDeflateCancellationFunction cancellation,
-        void* cancellationContext)
+        void* cancellationContext, ArchiveDeflateDeadlineFunction deadline,
+        void* deadlineContext)
     {
         std::size_t offset = 0u;
         if (source.read == nullptr || source.compressedSize == 0u ||
@@ -202,6 +296,8 @@ private:
             std::size_t bytesRead = 0u;
             if (cancellation != nullptr && cancellation(cancellationContext))
                 return ArchiveGzipResult::Cancelled;
+            if (deadline != nullptr && deadline(deadlineContext))
+                return ArchiveGzipResult::Deadline;
             if (!source.read(source.context, compressedBuffer + offset,
                              capacity, &bytesRead) || bytesRead == 0u ||
                 bytesRead > capacity)
@@ -225,15 +321,33 @@ private:
                static_cast<std::uint16_t>(bytes[1] << 8u);
     }
 
-    static std::uint16_t headerCrc16(const std::uint8_t* bytes,
-                                     std::size_t size)
+    static bool headerCrc16(const std::uint8_t* bytes, std::size_t size,
+                            std::uint16_t& result,
+                            ArchiveDeflateDeadlineFunction deadline,
+                            void* deadlineContext, bool& deadlineExpired)
     {
-        return static_cast<std::uint16_t>(
-            rinruntime_archive_crc32(bytes, size) & 0xffffu);
+        std::uint32_t crc = 0xffffffffu;
+        for (std::size_t index = 0u; index < size; ++index) {
+            if (deadline != nullptr && (index == 0u || (index & 4095u) == 0u) &&
+                deadline(deadlineContext)) {
+                deadlineExpired = true;
+                return false;
+            }
+            crc ^= bytes[index];
+            for (int bit = 0; bit < 8; ++bit)
+                crc = (crc >> 1u) ^ (0xedb88320u &
+                                      (0u - (crc & 1u)));
+        }
+        deadlineExpired = false;
+        result = static_cast<std::uint16_t>((crc ^ 0xffffffffu) & 0xffffu);
+        return true;
     }
 
     static ArchiveGzipResult parseHeader(const std::uint8_t* bytes,
-                                         std::size_t size, Header& header)
+                                         std::size_t size, Header& header,
+                                         ArchiveDeflateDeadlineFunction deadline =
+                                             nullptr,
+                                         void* deadlineContext = nullptr)
     {
         std::size_t offset = 10u;
         if (bytes == nullptr || size < 18u) return ArchiveGzipResult::InvalidArgument;
@@ -250,13 +364,26 @@ private:
         }
         for (std::uint8_t flag = 0x08u; flag <= 0x10u; flag <<= 1u) {
             if ((flags & flag) == 0u) continue;
-            while (offset < size && bytes[offset] != 0u) ++offset;
+            while (offset < size && bytes[offset] != 0u) {
+                if (deadline != nullptr && (offset == 10u ||
+                                             (offset & 4095u) == 0u) &&
+                    deadline(deadlineContext))
+                    return ArchiveGzipResult::Deadline;
+                ++offset;
+            }
             if (offset >= size) return ArchiveGzipResult::Malformed;
             ++offset;
         }
         if ((flags & 0x02u) != 0u) {
+            std::uint16_t expectedHeaderCrc = 0u;
+            bool deadlineExpired = false;
             if (offset > size - 2u ||
-                get16(bytes + offset) != headerCrc16(bytes, offset))
+                !headerCrc16(bytes, offset, expectedHeaderCrc, deadline,
+                             deadlineContext, deadlineExpired))
+                return deadlineExpired
+                           ? ArchiveGzipResult::Deadline
+                           : ArchiveGzipResult::Malformed;
+            if (get16(bytes + offset) != expectedHeaderCrc)
                 return ArchiveGzipResult::Malformed;
             offset += 2u;
         }

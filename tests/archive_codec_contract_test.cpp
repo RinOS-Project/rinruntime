@@ -167,6 +167,37 @@ int main()
     RinRuntime::ArchiveGzipReader gzipReader;
     assert(gzipReader.decode(gzip.data(), gzip.size(), output) ==
            RinRuntime::ArchiveGzipResult::Ok && output == "hello");
+    deadlineExpired = 1u;
+    output = "poison";
+    assert(gzipReader.decodeWithDeadline(
+               gzip.data(), gzip.size(), output, deadlineNow,
+               &deadlineExpired) == RinRuntime::ArchiveGzipResult::Deadline);
+    assert(output.empty());
+    std::string gzipStreamed;
+    assert(gzipReader.decodeToSinkWithDeadline(
+               gzip.data(), gzip.size(), &collectTar, &gzipStreamed,
+               deadlineNow, &deadlineExpired) ==
+           RinRuntime::ArchiveGzipResult::Deadline);
+    assert(gzipStreamed.empty());
+    std::vector<std::uint8_t> gzipCompressed(gzip.size(), 0u);
+    RinRuntime::ArchiveGzipSource gzipSource{
+        [](void* context, std::uint8_t* bytes, std::size_t capacity,
+           std::size_t* bytesRead) -> bool {
+            auto* source = static_cast<std::vector<std::uint8_t>*>(context);
+            if (source == nullptr || bytes == nullptr || bytesRead == nullptr ||
+                capacity < source->size())
+                return false;
+            std::memcpy(bytes, source->data(), source->size());
+            *bytesRead = source->size();
+            return true;
+        },
+        &gzip, gzip.size()};
+    output = "poison";
+    assert(gzipReader.decodeWithDeadline(
+               gzipSource, gzipCompressed.data(), gzipCompressed.size(),
+               output, deadlineNow, &deadlineExpired) ==
+           RinRuntime::ArchiveGzipResult::Deadline);
+    assert(output.empty());
 
     const std::vector<std::uint8_t> tar = makeTar();
     RinRuntime::ArchiveTarReader tarReader;
