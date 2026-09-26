@@ -36,6 +36,12 @@ int main()
         std::string("a") + scalar(0x1a55u) + "b";
     assert(RinRuntime::utf8GraphemeNext(generatedSpacingMark, 0u) ==
            generatedSpacingMark.size() - 1u);
+    assert(RinRuntime::utf8GraphemeSpacingMark(0x1a55u));
+    assert(RinRuntime::utf8GraphemeExtend(0x1e944u));
+    assert(RinRuntime::utf8GraphemePrepend(0x1193fu));
+    assert(RinRuntime::utf8GraphemeControl(0x061cu));
+    assert(RinRuntime::utf8GraphemeRegionalIndicator(0x1f1fau));
+    assert(RinRuntime::utf8GraphemeExtendedPictographic(0x00a9u));
 
     std::string zwj;
     appendScalar(zwj, 0x1f469u);
@@ -68,6 +74,11 @@ int main()
     appendScalar(hangul, 0x11a8u);
     hangul += "z";
     assert(RinRuntime::utf8GraphemeNext(hangul, 0u) == hangul.size() - 1u);
+    assert(RinRuntime::utf8GraphemeHangulL(0x1100u));
+    assert(RinRuntime::utf8GraphemeHangulV(0x1161u));
+    assert(RinRuntime::utf8GraphemeHangulT(0x11a8u));
+    assert(RinRuntime::utf8GraphemeHangulLV(0xac00u));
+    assert(RinRuntime::utf8GraphemeHangulLVT(0xac01u));
 
     const std::string separate = std::string("A") + scalar(0x200du) + "B";
     assert(RinRuntime::utf8GraphemeNext(separate, 0u) ==

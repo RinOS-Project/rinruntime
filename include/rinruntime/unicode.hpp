@@ -10,105 +10,67 @@ namespace RinRuntime {
 
 inline bool utf8GraphemeExtend(std::uint32_t codepoint)
 {
-    return rinruntime_unicode_combining(codepoint) ||
-           codepoint == 0x200cu || codepoint == 0x20e3u ||
-           (codepoint >= 0xfe00u && codepoint <= 0xfe0fu) ||
-           (codepoint >= 0xe0100u && codepoint <= 0xe01efu) ||
-           (codepoint >= 0x1f3fbu && codepoint <= 0x1f3ffu) ||
-           (codepoint >= 0xe0020u && codepoint <= 0xe007fu);
+    return rinruntime_unicode_grapheme_property(codepoint) ==
+           RINRUNTIME_UNICODE_GRAPHEME_EXTEND;
 }
 
 inline bool utf8GraphemeSpacingMark(std::uint32_t codepoint)
 {
-    /* Keep the table small and deterministic while covering the combining
-     * vowel signs used by the public text model.  Full Unicode property data
-     * remains a separate libunicode/i18n data delivery task. */
-    return codepoint == 0x0903u ||
-           (codepoint >= 0x093eu && codepoint <= 0x0940u) ||
-           (codepoint >= 0x0949u && codepoint <= 0x094cu) ||
-           (codepoint >= 0x0982u && codepoint <= 0x0983u) ||
-           (codepoint >= 0x09beu && codepoint <= 0x09c0u) ||
-           (codepoint >= 0x09c7u && codepoint <= 0x09ccu) ||
-           (codepoint >= 0x0abeu && codepoint <= 0x0ac0u) ||
-           codepoint == 0x0ac9u ||
-           (codepoint >= 0x0acbu && codepoint <= 0x0accu) ||
-           codepoint == 0x0b3eu || codepoint == 0x0b40u ||
-           (codepoint >= 0x0b47u && codepoint <= 0x0b48u) ||
-           (codepoint >= 0x0b4bu && codepoint <= 0x0b4cu) ||
-           (codepoint >= 0x0bbeu && codepoint <= 0x0bc2u) ||
-           (codepoint >= 0x0bc6u && codepoint <= 0x0bc8u) ||
-           (codepoint >= 0x0bcau && codepoint <= 0x0bccu) ||
-           (codepoint >= 0x0c01u && codepoint <= 0x0c03u) ||
-           (codepoint >= 0x0c41u && codepoint <= 0x0c44u) ||
-           (codepoint >= 0x0c82u && codepoint <= 0x0c83u) ||
-           codepoint == 0x0cbeu ||
-           (codepoint >= 0x0cc0u && codepoint <= 0x0cc4u) ||
-           (codepoint >= 0x0cc7u && codepoint <= 0x0cc8u) ||
-           (codepoint >= 0x0ccau && codepoint <= 0x0cccu) ||
-           (codepoint >= 0x0d3eu && codepoint <= 0x0d40u) ||
-           (codepoint >= 0x0d46u && codepoint <= 0x0d48u) ||
-           (codepoint >= 0x0d4au && codepoint <= 0x0d4cu) ||
-           (codepoint >= 0x17beu && codepoint <= 0x17c5u);
+    return rinruntime_unicode_grapheme_property(codepoint) ==
+           RINRUNTIME_UNICODE_GRAPHEME_SPACING_MARK;
 }
 
 inline bool utf8GraphemePrepend(std::uint32_t codepoint)
 {
-    return (codepoint >= 0x0600u && codepoint <= 0x0605u) ||
-           codepoint == 0x06ddu || codepoint == 0x070fu ||
-           (codepoint >= 0x0890u && codepoint <= 0x0891u) ||
-           codepoint == 0x08e2u || codepoint == 0x0d4eu ||
-           codepoint == 0x110bdu || codepoint == 0x110cdu ||
-           (codepoint >= 0x111c2u && codepoint <= 0x111c3u) ||
-           codepoint == 0x11941u || codepoint == 0x11a3au ||
-           codepoint == 0x11d46u;
+    return rinruntime_unicode_grapheme_property(codepoint) ==
+           RINRUNTIME_UNICODE_GRAPHEME_PREPEND;
 }
 
 inline bool utf8GraphemeControl(std::uint32_t codepoint)
 {
-    return codepoint == 0x000du || codepoint == 0x000au ||
-           (codepoint <= 0x001fu) ||
-           (codepoint >= 0x007fu && codepoint <= 0x009fu);
+    return rinruntime_unicode_grapheme_property(codepoint) ==
+           RINRUNTIME_UNICODE_GRAPHEME_CONTROL;
 }
 
 inline bool utf8GraphemeRegionalIndicator(std::uint32_t codepoint)
 {
-    return codepoint >= 0x1f1e6u && codepoint <= 0x1f1ffu;
+    return rinruntime_unicode_grapheme_property(codepoint) ==
+           RINRUNTIME_UNICODE_GRAPHEME_RI;
 }
 
 inline bool utf8GraphemeExtendedPictographic(std::uint32_t codepoint)
 {
-    return (codepoint >= 0x2300u && codepoint <= 0x27bfu) ||
-           (codepoint >= 0x1f000u && codepoint <= 0x1faffu);
+    return rinruntime_unicode_is_extended_pictographic(codepoint) != 0;
 }
 
 inline bool utf8GraphemeHangulL(std::uint32_t codepoint)
 {
-    return (codepoint >= 0x1100u && codepoint <= 0x115fu) ||
-           (codepoint >= 0xa960u && codepoint <= 0xa97cu);
+    return rinruntime_unicode_grapheme_property(codepoint) ==
+           RINRUNTIME_UNICODE_GRAPHEME_L;
 }
 
 inline bool utf8GraphemeHangulV(std::uint32_t codepoint)
 {
-    return (codepoint >= 0x1160u && codepoint <= 0x11a7u) ||
-           (codepoint >= 0xd7b0u && codepoint <= 0xd7c6u);
+    return rinruntime_unicode_grapheme_property(codepoint) ==
+           RINRUNTIME_UNICODE_GRAPHEME_V;
 }
 
 inline bool utf8GraphemeHangulT(std::uint32_t codepoint)
 {
-    return (codepoint >= 0x11a8u && codepoint <= 0x11ffu) ||
-           (codepoint >= 0xd7cbu && codepoint <= 0xd7fbu);
+    return rinruntime_unicode_grapheme_property(codepoint) ==
+           RINRUNTIME_UNICODE_GRAPHEME_T;
 }
 
 inline bool utf8GraphemeHangulLV(std::uint32_t codepoint)
 {
-    return codepoint >= 0xac00u && codepoint <= 0xd7a3u &&
-           ((codepoint - 0xac00u) % 28u) == 0u;
+    return rinruntime_unicode_grapheme_property(codepoint) ==
+           RINRUNTIME_UNICODE_GRAPHEME_LV;
 }
 
 inline bool utf8GraphemeHangulLVT(std::uint32_t codepoint)
 {
-    return codepoint >= 0xac00u && codepoint <= 0xd7a3u &&
-           ((codepoint - 0xac00u) % 28u) != 0u;
+    return rinruntime_unicode_grapheme_property(codepoint) ==
+           RINRUNTIME_UNICODE_GRAPHEME_LVT;
 }
 
 inline bool utf8GraphemeHangulBreakless(std::uint32_t previous,

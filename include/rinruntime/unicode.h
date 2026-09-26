@@ -64,6 +64,26 @@ extern "C" {
  * bounded forwarding entry points so its C++ text model uses the same
  * grapheme boundary contract on every host, including Windows builds where
  * Aquamarine is not linked. */
+typedef enum RinRuntimeUnicodeGraphemeProperty {
+    RINRUNTIME_UNICODE_GRAPHEME_OTHER = 0,
+    RINRUNTIME_UNICODE_GRAPHEME_CR,
+    RINRUNTIME_UNICODE_GRAPHEME_LF,
+    RINRUNTIME_UNICODE_GRAPHEME_CONTROL,
+    RINRUNTIME_UNICODE_GRAPHEME_EXTEND,
+    RINRUNTIME_UNICODE_GRAPHEME_ZWJ,
+    RINRUNTIME_UNICODE_GRAPHEME_SPACING_MARK,
+    RINRUNTIME_UNICODE_GRAPHEME_PREPEND,
+    RINRUNTIME_UNICODE_GRAPHEME_L,
+    RINRUNTIME_UNICODE_GRAPHEME_V,
+    RINRUNTIME_UNICODE_GRAPHEME_T,
+    RINRUNTIME_UNICODE_GRAPHEME_LV,
+    RINRUNTIME_UNICODE_GRAPHEME_LVT,
+    RINRUNTIME_UNICODE_GRAPHEME_RI
+} RinRuntimeUnicodeGraphemeProperty;
+
+RinRuntimeUnicodeGraphemeProperty rinruntime_unicode_grapheme_property(
+    uint32_t codepoint);
+int rinruntime_unicode_is_extended_pictographic(uint32_t codepoint);
 size_t rinruntime_unicode_grapheme_next(const char* value, size_t size,
                                         size_t offset);
 size_t rinruntime_unicode_grapheme_prev(const char* value, size_t size,
