@@ -186,7 +186,7 @@ public:
 
     WaitId watch(std::uint64_t nativeHandle, std::uint32_t events,
                  const Event& event) noexcept {
-        if (!validEvent(event) || events == 0u ||
+        if (nativeHandle == 0u || !validEvent(event) || events == 0u ||
             (events & ~static_cast<std::uint32_t>(WAIT_EVENTS_ALL)) != 0u)
             return 0u;
         for (Size index = 0u; index < kWaitCapacity; ++index) {
