@@ -630,7 +630,7 @@ static int firewall_application_id_compare(
 }
 
 static int firewall_rule_index_application_find(
-    const RinFirewallRuleIndexV1* index,
+    const RinFirewallRuleIndexV2* index,
     const uint8_t application_id[RIN_FIREWALL_APPLICATION_ID_SIZE],
     uint32_t* position_out)
 {
@@ -651,8 +651,34 @@ static int firewall_rule_index_application_find(
     return 0;
 }
 
+static int firewall_rule_index_header_valid(
+    const RinFirewallRuleSetV1* set, const RinFirewallRuleIndexV2* index)
+{
+    uint32_t direction;
+    const uint32_t direction_mask =
+        (UINT32_C(1) << RIN_FIREWALL_DIRECTION_COUNT) - 1u;
+    if (set == NULL || index == NULL ||
+        set->struct_size != sizeof(*set) ||
+        set->version != RIN_FIREWALL_ABI_VERSION ||
+        set->rule_count > RIN_FIREWALL_MAX_RULES || set->enabled > 1u ||
+        index->struct_size != sizeof(*index) ||
+        index->version != RIN_FIREWALL_RULE_INDEX_VERSION ||
+        index->reserved0 != 0u || index->reserved1 != 0u ||
+        (index->active_guard_direction_mask & ~direction_mask) != 0u ||
+        index->generation != set->generation ||
+        index->rule_count != set->rule_count ||
+        index->application_count > RIN_FIREWALL_MAX_RULES ||
+        index->application_rule_count > set->rule_count)
+        return 0;
+    for (direction = 0u; direction < RIN_FIREWALL_DIRECTION_COUNT;
+         ++direction) {
+        if (!firewall_action_valid(set->default_action[direction])) return 0;
+    }
+    return 1;
+}
+
 static int firewall_rule_index_insert(
-    RinFirewallRuleIndexBucketV1* bucket,
+    RinFirewallRuleIndexBucketV2* bucket,
     const RinFirewallRuleSetV1* set, uint16_t rule_index)
 {
     uint32_t position;
@@ -674,7 +700,7 @@ static int firewall_rule_index_insert(
 }
 
 int rin_firewall_rule_index_build(const RinFirewallRuleSetV1* set,
-                                  RinFirewallRuleIndexV1* index)
+                                  RinFirewallRuleIndexV2* index)
 {
     static const uint8_t protocols[RIN_FIREWALL_RULE_INDEX_PROTOCOL_COUNT - 1u] = {
         RIN_FIREWALL_PROTOCOL_ICMP,
@@ -698,6 +724,15 @@ int rin_firewall_rule_index_build(const RinFirewallRuleSetV1* set,
     index->version = RIN_FIREWALL_RULE_INDEX_VERSION;
     index->generation = set->generation;
     index->rule_count = set->rule_count;
+    for (rule_index = 0u; rule_index < set->rule_count; ++rule_index) {
+        const RinFirewallRuleV1* rule = &set->rules[rule_index];
+        if ((rule->flags & (RIN_FIREWALL_RULE_FLAG_ENABLED |
+                            RIN_FIREWALL_RULE_FLAG_POLICY_GUARD)) ==
+                (RIN_FIREWALL_RULE_FLAG_ENABLED |
+                 RIN_FIREWALL_RULE_FLAG_POLICY_GUARD))
+            index->active_guard_direction_mask |=
+                UINT32_C(1) << (rule->direction - 1u);
+    }
     /* Group the application-specific rules by exact package identity. The
      * table stays sorted so a packet performs a bounded binary search. */
     for (rule_index = 0u; rule_index < set->rule_count; ++rule_index) {
@@ -726,7 +761,7 @@ int rin_firewall_rule_index_build(const RinFirewallRuleSetV1* set,
     index->application_rule_count = 0u;
     for (uint32_t application_index = 0u;
          application_index < index->application_count; ++application_index) {
-        RinFirewallRuleIndexApplicationBucketV1* application =
+        RinFirewallRuleIndexApplicationBucketV2* application =
             &index->applications[application_index];
         uint32_t rule_position;
         application->first_rule = index->application_rule_count;
@@ -776,7 +811,7 @@ int rin_firewall_rule_index_build(const RinFirewallRuleSetV1* set,
                 continue;
             for (protocol_index = protocol_first;
                  protocol_index < protocol_end; ++protocol_index) {
-                RinFirewallRuleIndexBucketV1* bucket;
+                RinFirewallRuleIndexBucketV2* bucket;
                 if (protocol_index < RIN_FIREWALL_RULE_INDEX_PROTOCOL_COUNT -
                                          1u &&
                     rule->protocol != RIN_FIREWALL_PROTOCOL_ANY &&
@@ -797,33 +832,20 @@ int rin_firewall_rule_index_build(const RinFirewallRuleSetV1* set,
 }
 
 static int firewall_rule_index_valid_for_packet(
-    const RinFirewallRuleSetV1* set, const RinFirewallRuleIndexV1* index,
+    const RinFirewallRuleSetV1* set, const RinFirewallRuleIndexV2* index,
     const RinFirewallPacketV1* packet,
-    const RinFirewallRuleIndexBucketV1** bucket_out,
-    const RinFirewallRuleIndexApplicationBucketV1** application_bucket_out)
+    const RinFirewallRuleIndexBucketV2** bucket_out,
+    const RinFirewallRuleIndexApplicationBucketV2** application_bucket_out)
 {
     uint32_t family_index = firewall_rule_index_family(packet->family);
     uint32_t protocol_index = firewall_rule_index_protocol(packet->protocol);
-    const RinFirewallRuleIndexBucketV1* bucket;
-    const RinFirewallRuleIndexApplicationBucketV1* application_bucket = NULL;
+    const RinFirewallRuleIndexBucketV2* bucket;
+    const RinFirewallRuleIndexApplicationBucketV2* application_bucket = NULL;
     uint32_t item;
-    if (set->struct_size != sizeof(*set) ||
-        set->version != RIN_FIREWALL_ABI_VERSION ||
-        set->rule_count > RIN_FIREWALL_MAX_RULES || set->enabled > 1u ||
-        index->struct_size != sizeof(*index) ||
-        index->version != RIN_FIREWALL_RULE_INDEX_VERSION ||
-        index->reserved0 != 0u || index->reserved1 != 0u ||
-        index->reserved2 != 0u ||
-        index->generation != set->generation ||
-        index->rule_count != set->rule_count ||
-        index->application_count > RIN_FIREWALL_MAX_RULES ||
-        index->application_rule_count > set->rule_count ||
+    if (!firewall_rule_index_header_valid(set, index) ||
         family_index >= RIN_FIREWALL_RULE_INDEX_FAMILY_COUNT ||
         protocol_index >= RIN_FIREWALL_RULE_INDEX_PROTOCOL_COUNT)
         return 0;
-    for (item = 0u; item < RIN_FIREWALL_DIRECTION_COUNT; ++item) {
-        if (!firewall_action_valid(set->default_action[item])) return 0;
-    }
     bucket = &index->buckets[packet->direction - 1u]
                              [family_index][protocol_index];
     if (bucket->count > set->rule_count) return 0;
@@ -862,7 +884,7 @@ static int firewall_rule_index_valid_for_packet(
 }
 
 static int firewall_evaluate_internal(
-    RinFirewallRuleSetV1* set, const RinFirewallRuleIndexV1* rule_index,
+    RinFirewallRuleSetV1* set, const RinFirewallRuleIndexV2* rule_index,
     const RinFirewallPacketV1* packet, RinFirewallDecisionV1* decision)
 {
     uint32_t iteration;
@@ -872,8 +894,8 @@ static int firewall_evaluate_internal(
     uint32_t best_regular = RIN_FIREWALL_MAX_RULES;
     uint32_t best;
     uint32_t candidate_count;
-    const RinFirewallRuleIndexBucketV1* bucket = NULL;
-    const RinFirewallRuleIndexApplicationBucketV1* application_bucket = NULL;
+    const RinFirewallRuleIndexBucketV2* bucket = NULL;
+    const RinFirewallRuleIndexApplicationBucketV2* application_bucket = NULL;
     uint32_t generic_cursor = 0u;
     uint32_t application_cursor = 0u;
     int status;
@@ -887,6 +909,19 @@ static int firewall_evaluate_internal(
     if (status != RIN_FIREWALL_OK) {
         decision->status = status;
         return status;
+    }
+    if (rule_index != NULL) {
+        if (!firewall_rule_index_header_valid(set, rule_index)) {
+            decision->status = RIN_FIREWALL_MALFORMED;
+            return RIN_FIREWALL_MALFORMED;
+        }
+        if (set->enabled == 0u &&
+            (rule_index->active_guard_direction_mask &
+             (UINT32_C(1) << (packet->direction - 1u))) == 0u) {
+            decision->action = RIN_FIREWALL_ACTION_ALLOW;
+            decision->status = RIN_FIREWALL_OK;
+            return RIN_FIREWALL_OK;
+        }
     }
     if (rule_index == NULL) {
         status = rin_firewall_rule_set_validate(set);
@@ -1022,7 +1057,7 @@ int rin_firewall_evaluate(RinFirewallRuleSetV1* set,
 }
 
 int rin_firewall_evaluate_indexed(RinFirewallRuleSetV1* set,
-                                  const RinFirewallRuleIndexV1* index,
+                                  const RinFirewallRuleIndexV2* index,
                                   const RinFirewallPacketV1* packet,
                                   RinFirewallDecisionV1* decision)
 {
