@@ -14,3 +14,12 @@ size_t rinruntime_unicode_grapheme_prev(const char* value, size_t size,
 {
     return rin_unicode_grapheme_prev(value, size, offset);
 }
+
+size_t rinruntime_unicode_format_datetime(
+    char* output, size_t output_capacity,
+    const RinRuntimeUnicodeDateTime* value, char conversion)
+{
+    return rin_unicode_locale_format_datetime(
+        output, output_capacity,
+        (const rin_unicode_datetime_t*)value, conversion);
+}

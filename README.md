@@ -51,6 +51,12 @@ Unicode GraphemeBreakProperty coverage and locale-specific behavior remain
 separate `libunicode`/`libi18n` data-owner work; the public helper never loads
 a database or filesystem resource.
 
+The C Unicode adapter also forwards `RinRuntimeUnicodeDateTime` to
+`rin_unicode_locale_format_datetime`.  Applications and external toolkits can
+use the bounded `%c`/`%x`/`%X` locale formatter through the public runtime
+without including LibUnicode's internal adapter headers; locale data and
+timezone ownership remain outside the runtime.
+
 RinOS applications may opt into `RinEventLoopBackend` in
 `event_loop_rin.hpp`. It translates the same bounded requests to the public
 `rin_wait_set_*` SDK contract and keeps the wait-set handle private to the

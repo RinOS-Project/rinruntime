@@ -69,6 +69,25 @@ size_t rinruntime_unicode_grapheme_next(const char* value, size_t size,
 size_t rinruntime_unicode_grapheme_prev(const char* value, size_t size,
                                         size_t offset);
 
+/* Public runtime forwarding for LibUnicode's bounded locale formatter.  The
+ * model is caller-owned and uses the proleptic Gregorian calendar, year
+ * 0..9999, weekday 0..6 with Sunday=0.  conversion accepts c/x/X and the
+ * selected locale's documented strftime subset; failures clear output and
+ * return zero.  Locale data and timezone ownership remain outside Runtime. */
+typedef struct RinRuntimeUnicodeDateTime {
+    int32_t year;
+    int32_t month;
+    int32_t day;
+    int32_t weekday;
+    int32_t hour;
+    int32_t minute;
+    int32_t second;
+} RinRuntimeUnicodeDateTime;
+
+size_t rinruntime_unicode_format_datetime(
+    char* output, size_t output_capacity,
+    const RinRuntimeUnicodeDateTime* value, char conversion);
+
 #ifdef __cplusplus
 }
 #endif
