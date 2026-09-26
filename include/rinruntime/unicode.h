@@ -88,6 +88,22 @@ size_t rinruntime_unicode_format_datetime(
     char* output, size_t output_capacity,
     const RinRuntimeUnicodeDateTime* value, char conversion);
 
+/* Public runtime forwarding for LibUnicode's bounded locale number
+ * formatters.  The locale and number strings are borrowed caller inputs;
+ * LibUnicode applies its fixed scan bounds and failure-atomic output rules.
+ * A null locale selects the current snapshot.  These adapters do not own
+ * locale data, currency policy, authentication, or filesystem state. */
+size_t rinruntime_unicode_format_integer(
+    char* output, size_t output_capacity, int64_t value, const char* locale);
+
+size_t rinruntime_unicode_format_decimal(
+    char* output, size_t output_capacity, const char* number,
+    const char* locale);
+
+size_t rinruntime_unicode_format_currency(
+    char* output, size_t output_capacity, const char* number,
+    const char* locale);
+
 #ifdef __cplusplus
 }
 #endif

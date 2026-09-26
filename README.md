@@ -57,6 +57,11 @@ use the bounded `%c`/`%x`/`%X` locale formatter through the public runtime
 without including LibUnicode's internal adapter headers; locale data and
 timezone ownership remain outside the runtime.
 
+The same C adapter forwards the bounded integer, decimal, and currency
+formatters.  Their borrowed locale and number inputs retain LibUnicode's
+fixed scan bounds and failure-atomic output behavior, while locale data,
+currency policy, and filesystem ownership remain outside the public runtime.
+
 RinOS applications may opt into `RinEventLoopBackend` in
 `event_loop_rin.hpp`. It translates the same bounded requests to the public
 `rin_wait_set_*` SDK contract and keeps the wait-set handle private to the
