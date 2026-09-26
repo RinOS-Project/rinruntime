@@ -133,6 +133,13 @@ of capability checks, per-user ownership, generation, locale metadata, and
 the clipboard store; those private details are not required by ordinary
 applications or external toolkits.
 
+`file_portal_startup.h` provides a generic custom-app consumer for the one-shot
+fd-198 child handoff. It validates the fixed request and display label, opens
+the authenticated token through `rinruntime_file_portal_open()`, and returns
+the descriptor with an opaque document identity. The parent handshake is
+explicit; paths and launcher authority are not passed through argv or the
+environment.
+
 The public TLS client-certificate transport keeps only the bounded TLS wire
 certificate list and opaque signer capability. `reset()` and all rejected
 signature paths use an optimization-resistant clear for copied certificate,

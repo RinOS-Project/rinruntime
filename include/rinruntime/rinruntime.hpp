@@ -61,6 +61,7 @@
 #include "known_folders.h"
 #include "file_operation.h"
 #include "file_portal.h"
+#include "file_portal_startup.h"
 #include "durable_file_portal.h"
 #include "file_chooser_portal.h"
 #include "clipboard.h"

@@ -23,6 +23,7 @@ if host_machine.system() != 'windows'
   runtime_sources += files('src/clipboard.c')
   runtime_sources += files('src/crash_service_client.c',
                            'src/file_portal.c',
+                           'src/file_portal_startup.c',
                            'src/durable_file_portal.c',
                            'src/file_chooser_portal.c',
                            'src/file_operation_service_client.c',

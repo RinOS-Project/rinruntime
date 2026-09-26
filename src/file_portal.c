@@ -71,7 +71,8 @@ RinRuntimeFilePortalResult rinruntime_file_portal_open(
     call.process_fd = -1;
     result = rin_file_portal_call(&call);
     if (result == RIN_RESULT_OK && call.granted_rights == requested_rights &&
-        call.process_fd >= minimum_fd && call.file_object_id != 0u &&
+        call.process_fd >= minimum_fd &&
+        call.file_object_id == token->file_object_id &&
         call.expires_at_epoch != 0u) {
         installed = call.process_fd;
     } else if (result == RIN_RESULT_OK && call.process_fd >= minimum_fd) {
@@ -89,5 +90,4 @@ RinRuntimeFilePortalResult rinruntime_file_portal_open(
     *descriptor_out = installed;
     return RINRUNTIME_FILE_PORTAL_OK;
 }
-
 
