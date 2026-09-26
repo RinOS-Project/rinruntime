@@ -10,6 +10,7 @@ struct Owner {
     unsigned beginCalls = 0u;
     unsigned readCalls = 0u;
     unsigned abortCalls = 0u;
+    bool failAfterFirst = false;
 };
 
 static int beginRange(void* opaque,
@@ -43,6 +44,11 @@ static int readRange(void* opaque, std::uint8_t* buffer, std::size_t capacity,
         return 0;
     }
     if (owner->readCalls == 2u) {
+        if (owner->failAfterFirst) {
+            buffer[0] = 0xdeu;
+            *bytesRead = 1u;
+            return -1;
+        }
         buffer[0] = 0xb1u;
         *bytesRead = 1u;
         return 0;
@@ -172,6 +178,21 @@ int main() {
         wholeSize));
     assert(wholeSize == 0u);
     assert(shortBufferBytes[0] == 0xffu && shortBufferBytes[1] == 0xffu);
+
+    Owner failedReadOwner;
+    failedReadOwner.failAfterFirst = true;
+    RinRuntime::DownloadRangeTransportOpsV1 failedReadOps = ordinaryOps;
+    failedReadOps.context = &failedReadOwner;
+    RinRuntime::DownloadRangeTransportAdapter failedRead;
+    assert(failedRead.bind(failedReadOps));
+    std::uint8_t failedReadBytes[3u] = {0xffu, 0xffu, 0xffu};
+    wholeSize = 99u;
+    assert(!RinRuntime::readDownloadRangeToBuffer(
+        failedRead, request, failedReadBytes, sizeof(failedReadBytes),
+        wholeSize));
+    assert(wholeSize == 0u);
+    assert(failedReadBytes[0] == 0u && failedReadBytes[1] == 0u &&
+           failedReadBytes[2] == 0u);
 
     /* The cancellation callback was appended to the public v1 table.  An
      * owner built against the original prefix remains valid and simply has

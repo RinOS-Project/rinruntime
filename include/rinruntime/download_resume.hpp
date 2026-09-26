@@ -279,7 +279,7 @@ inline bool readDownloadRangeToBuffer(DownloadRangeTransport& transport,
         std::size_t bytesRead = 0u;
         if (!transport.read(output + outputSize, chunk, bytesRead) ||
             bytesRead == 0u || bytesRead > chunk) {
-            for (std::size_t index = 0u; index < outputSize; ++index)
+            for (std::size_t index = 0u; index < expected; ++index)
                 output[index] = 0u;
             outputSize = 0u;
             transport.abort();
@@ -291,7 +291,7 @@ inline bool readDownloadRangeToBuffer(DownloadRangeTransport& transport,
     std::size_t trailingBytes = 0u;
     if (!transport.read(&trailingByte, 1u, trailingBytes) ||
         trailingBytes != 0u) {
-        for (std::size_t index = 0u; index < outputSize; ++index)
+        for (std::size_t index = 0u; index < expected; ++index)
             output[index] = 0u;
         outputSize = 0u;
         transport.abort();
