@@ -29,6 +29,7 @@ enum class ZstdResult : int {
  * frame contains no filesystem, service, or publication policy. */
 static constexpr std::size_t kZstdMaximumBytes = 268435456u;
 static constexpr std::size_t kZstdMaximumBlockBytes = 128u * 1024u;
+static constexpr std::size_t kZstdMaximumBlocks = 65536u;
 
 namespace zstd_detail {
 
@@ -401,10 +402,14 @@ public:
                 ? ZstdResult::Unsupported : fail(output, headerResult);
 
         std::size_t position = header.position;
+        std::size_t blockCount = 0u;
         bool last = false;
         while (!last) {
             if (cancelled(cancellation, cancellationContext))
                 return fail(output, ZstdResult::Cancelled);
+            if (blockCount >= kZstdMaximumBlocks)
+                return fail(output, ZstdResult::Limit);
+            ++blockCount;
             if (compressedSize - position < 3u)
                 return fail(output, ZstdResult::Malformed);
             const std::uint32_t blockHeader =

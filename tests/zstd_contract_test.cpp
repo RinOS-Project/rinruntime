@@ -74,5 +74,22 @@ int main()
         0x98u, 0xe9u, 0xd8u, 0x51u};
     assert(decoder.decode(badChecksum, sizeof(badChecksum), decoded) ==
            RinCompression::ZstdResult::ChecksumMismatch && decoded.empty());
+
+    /* Empty raw blocks must not provide an unbounded CPU amplification path. */
+    const std::size_t tooManyBlockBytes =
+        6u + (RinCompression::kZstdMaximumBlocks + 1u) * 3u;
+    std::vector<std::uint8_t> tooManyBlocks(tooManyBlockBytes, 0u);
+    tooManyBlocks[0] = 0x28u;
+    tooManyBlocks[1] = 0xb5u;
+    tooManyBlocks[2] = 0x2fu;
+    tooManyBlocks[3] = 0xfdu;
+    tooManyBlocks[4] = 0x20u;
+    tooManyBlocks[5] = 0x00u;
+    const std::size_t finalBlockHeader =
+        6u + RinCompression::kZstdMaximumBlocks * 3u;
+    tooManyBlocks[finalBlockHeader] = 0x01u;
+    decoded.assign(1u, 0xa5u);
+    assert(decoder.decode(tooManyBlocks.data(), tooManyBlocks.size(), decoded) ==
+           RinCompression::ZstdResult::Limit && decoded.empty());
     return 0;
 }

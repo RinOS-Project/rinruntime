@@ -231,6 +231,9 @@ subset for raw and RLE blocks, with content-size, optional XXH64 checksum,
 cancellation, and failure-atomic output validation. Entropy-compressed blocks
 and external dictionaries return `Unsupported`; a private frame owner may add
 those algorithms without changing the public filesystem or service boundary.
+The decoder also rejects frames containing more than `kZstdMaximumBlocks`
+(65,536) blocks, including empty raw blocks, so block-count CPU amplification
+fails closed as `Limit` without changing the public/private ownership split.
 
 `firewall_conntrack.h` provides filtering and pagination for a fixed-size,
 caller-owned, immutable Firewall connection snapshot. It does not retrieve
