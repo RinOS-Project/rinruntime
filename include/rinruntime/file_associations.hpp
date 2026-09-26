@@ -126,6 +126,8 @@ public:
         if (key == "mp3" || key == "flac" || key == "ogg" || key == "opus" ||
             key == "aac" || key == "m4a" || key == "wav")
             return "/apps/music/RINMUSIC.RIN";
+        if (key == "docx" || key == "xlsx" || key == "pptx")
+            return "/apps/office/RINOFFICE.RIN";
         return {};
     }
 
