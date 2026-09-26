@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: MIT */
-/* Immutable direction/family/protocol index for bounded Firewall rulesets. */
+/* Immutable policy index for bounded Firewall rulesets. */
 #ifndef RINRUNTIME_FIREWALL_RULE_INDEX_H
 #define RINRUNTIME_FIREWALL_RULE_INDEX_H
 
@@ -18,6 +18,12 @@ typedef struct RinFirewallRuleIndexBucketV1 {
     uint16_t rule_indices[RIN_FIREWALL_MAX_RULES];
 } RinFirewallRuleIndexBucketV1;
 
+typedef struct RinFirewallRuleIndexApplicationBucketV1 {
+    uint8_t application_id[RIN_FIREWALL_APPLICATION_ID_SIZE];
+    uint16_t first_rule;
+    uint16_t rule_count;
+} RinFirewallRuleIndexApplicationBucketV1;
+
 typedef struct RinFirewallRuleIndexV1 {
     uint32_t struct_size;
     uint16_t version;
@@ -25,9 +31,19 @@ typedef struct RinFirewallRuleIndexV1 {
     uint64_t generation;
     uint32_t rule_count;
     uint32_t reserved1;
+    uint16_t application_count;
+    uint16_t application_rule_count;
+    uint32_t reserved2;
+    /* Application-specific rules are grouped by exact authenticated ID and
+     * stored in one compact, sorted index vector. Groups are ID-sorted for
+     * bounded binary lookup; generic rules remain in the policy buckets. */
+    RinFirewallRuleIndexApplicationBucketV1 applications[
+        RIN_FIREWALL_MAX_RULES];
+    uint16_t application_rule_indices[RIN_FIREWALL_MAX_RULES];
     /* [direction - INPUT][IPv4/IPv6][ICMP/TCP/UDP/ICMPv6/OTHER]. Each bucket
      * is priority/ID ordered and includes rules whose family or protocol is
-     * ANY. OTHER retains exact matching for uncommon IP protocol numbers. */
+     * ANY. Application-specific rules are excluded here; OTHER retains exact
+     * matching for uncommon IP protocol numbers. */
     RinFirewallRuleIndexBucketV1 buckets[RIN_FIREWALL_DIRECTION_COUNT]
         [RIN_FIREWALL_RULE_INDEX_FAMILY_COUNT]
         [RIN_FIREWALL_RULE_INDEX_PROTOCOL_COUNT];
