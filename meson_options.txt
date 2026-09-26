@@ -18,6 +18,7 @@ option('rll_sources', type: 'array', value: [
   'src/portal.c', 'src/crash.c', 'src/backup_restore.c',
   'src/known_folders.c', 'src/file_operation.c', 'src/safe_save.c',
   'src/safe_save_posix.c', 'src/session_recovery.c', 'src/crash_service.c',
+  'src/unicode.c', '../libunicode/core.c',
   'src/path.c', 'src/serial_portal_protocol.c', 'src/platform.c',
   'src/crash_service_client.c', 'src/file_portal.c',
   'src/backup_payload.c', 'src/rin_keyring_client.c',

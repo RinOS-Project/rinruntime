@@ -21,7 +21,7 @@ set(RINRUNTIME_RLL_TARGET "x86_64-unknown-rinos" CACHE STRING
 set(RINRUNTIME_RLL_SIGN_PROFILE "release" CACHE STRING
     "RinCompiler signing profile used by the target .rll route")
 set(RINRUNTIME_RLL_SOURCES
-    "src/portal.c;src/crash.c;src/backup_restore.c;src/known_folders.c;src/file_operation.c;src/safe_save.c;src/safe_save_posix.c;src/session_recovery.c;src/crash_service.c;src/path.c;src/serial_portal_protocol.c;src/platform.c;src/service.c;src/clipboard.c;src/crash_service_client.c;src/file_portal.c;src/durable_file_portal.c;src/file_chooser_portal.c;src/file_operation_service_client.c;src/accessibility_service_client.c;src/audio/rin_audio_service_client.c;src/firewall/rule_engine.c;src/firewall/namespace_policy.c;src/firewall/profile.c;src/firewall/application.c;src/firewall/conntrack_query.c"
+    "src/portal.c;src/crash.c;src/backup_restore.c;src/known_folders.c;src/file_operation.c;src/safe_save.c;src/safe_save_posix.c;src/session_recovery.c;src/crash_service.c;src/path.c;src/serial_portal_protocol.c;src/unicode.c;../libunicode/core.c;src/platform.c;src/service.c;src/clipboard.c;src/crash_service_client.c;src/file_portal.c;src/durable_file_portal.c;src/file_chooser_portal.c;src/file_operation_service_client.c;src/accessibility_service_client.c;src/audio/rin_audio_service_client.c;src/firewall/rule_engine.c;src/firewall/namespace_policy.c;src/firewall/profile.c;src/firewall/application.c;src/firewall/conntrack_query.c"
     CACHE STRING "semicolon-separated RinRuntime C sources for the target .rll route")
 set(RINRUNTIME_RLL_DEPENDENCIES "" CACHE STRING
     "semicolon-separated dependency .rll images for the target .rll route")
@@ -47,6 +47,8 @@ set(RINRUNTIME_SOURCES
     src/crash_service.c
     src/path.c
     src/serial_portal_protocol.c
+    src/unicode.c
+    ../libunicode/core.c
     src/firewall/rule_engine.c
     src/firewall/namespace_policy.c
     src/firewall/profile.c
@@ -98,6 +100,7 @@ target_include_directories(RinRuntime PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../rinjson/include>
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../rinpath/include>
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../aquamarine>
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../libunicode>
     $<INSTALL_INTERFACE:include>)
 if(NOT MSVC)
     target_compile_options(RinRuntime PRIVATE -Wall -Wextra -Wpedantic)

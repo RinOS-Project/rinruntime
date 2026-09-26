@@ -131,81 +131,15 @@ inline bool utf8GraphemeHangulBreakless(std::uint32_t previous,
 inline std::size_t utf8GraphemeNext(const std::string& value,
                                     std::size_t offset)
 {
-    if (offset >= value.size()) return value.size();
-    std::uint32_t codepoint = 0u;
-    std::size_t width = 0u;
-    if (!rinruntime_utf8_decode(value.data(), value.size(), offset,
-                                &codepoint, &width)) return offset;
-    std::size_t next = offset + width;
-    if (codepoint == 0x000du && next < value.size()) {
-        std::uint32_t following = 0u;
-        std::size_t followingWidth = 0u;
-        if (rinruntime_utf8_decode(value.data(), value.size(), next,
-                                   &following, &followingWidth) &&
-            following == 0x000au)
-            return next + followingWidth;
-    }
-    if (utf8GraphemeControl(codepoint)) return next;
-    std::uint32_t previousSignificant = codepoint;
-    std::size_t regionalCount =
-        utf8GraphemeRegionalIndicator(codepoint) ? 1u : 0u;
-    bool afterZwj = false;
-    while (next < value.size()) {
-        std::uint32_t following = 0u;
-        std::size_t followingWidth = 0u;
-        if (!rinruntime_utf8_decode(value.data(), value.size(), next,
-                                    &following, &followingWidth)) return next;
-        if (utf8GraphemeControl(following)) break;
-        if (afterZwj) {
-            if (!utf8GraphemeExtendedPictographic(following)) break;
-            next += followingWidth;
-            previousSignificant = following;
-            afterZwj = false;
-            continue;
-        }
-        if (utf8GraphemeExtend(following) ||
-            utf8GraphemeSpacingMark(following)) {
-            next += followingWidth;
-            continue;
-        }
-        if (following == 0x200du) {
-            next += followingWidth;
-            afterZwj = utf8GraphemeExtendedPictographic(previousSignificant);
-            continue;
-        }
-        if (utf8GraphemePrepend(previousSignificant) ||
-            utf8GraphemeHangulBreakless(previousSignificant, following)) {
-            next += followingWidth;
-            previousSignificant = following;
-            continue;
-        }
-        if (utf8GraphemeRegionalIndicator(following) &&
-            utf8GraphemeRegionalIndicator(previousSignificant) &&
-            (regionalCount & 1u) != 0u) {
-            next += followingWidth;
-            ++regionalCount;
-            previousSignificant = following;
-            continue;
-        }
-        break;
-    }
-    return next;
+    return rinruntime_unicode_grapheme_next(value.data(), value.size(),
+                                            offset);
 }
 
 inline std::size_t utf8GraphemePrev(const std::string& value,
                                     std::size_t offset)
 {
-    if (offset > value.size()) offset = value.size();
-    if (offset == 0u) return 0u;
-    std::size_t cursor = 0u;
-    std::size_t previous = 0u;
-    while (cursor < offset) {
-        previous = cursor;
-        std::size_t next = utf8GraphemeNext(value, cursor);
-        if (next <= cursor || next >= offset) break;
-        cursor = next;
-    }
-    return previous;
+    return rinruntime_unicode_grapheme_prev(value.data(), value.size(),
+                                            offset);
 }
 
 inline bool utf8Valid(const char* value, std::size_t size)

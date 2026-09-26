@@ -4,7 +4,8 @@ project('RinRuntime', ['c', 'cpp'], version: '1.0.0',
 python = import('python').find_installation(required: true)
 fs = import('fs')
 inc = include_directories('include', '../../RinOS-SDK/include',
-                          '../rinjson/include', '../rinpath/include')
+                          '../rinjson/include', '../rinpath/include',
+                          '../libunicode')
 runtime_sources = files('src/portal.c', 'src/crash.c', 'src/backup_restore.c',
                         'src/known_folders.c', 'src/file_operation.c',
                         'src/safe_save.c', 'src/safe_save_posix.c',
@@ -13,7 +14,8 @@ runtime_sources = files('src/portal.c', 'src/crash.c', 'src/backup_restore.c',
                         'src/firewall/rule_engine.c',
                         'src/firewall/namespace_policy.c',
                         'src/firewall/profile.c',
-                        'src/firewall/application.c',
+                        'src/firewall/application.c', 'src/unicode.c',
+                        '../libunicode/core.c',
                         'src/firewall/conntrack_query.c')
 if host_machine.system() != 'windows'
   runtime_sources += files('src/backup_payload.c')
@@ -32,7 +34,7 @@ if host_machine.system() != 'windows'
                      '../aquamarine/aq_draw.c', '../aquamarine/aq_gradient.c',
                      '../aquamarine/aq_path.c', '../aquamarine/aq_render3d.c',
                      '../aquamarine/aq_surface.c', '../aquamarine/aq_text.c',
-                     '../aquamarine/aq_transform.c', '../libunicode/core.c')
+                     '../aquamarine/aq_transform.c')
   aquamarine = static_library('Aquamarine', aq_sources,
                               include_directories: aq_inc)
   aquamarine_dep = declare_dependency(link_with: aquamarine,

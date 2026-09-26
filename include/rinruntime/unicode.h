@@ -56,6 +56,23 @@ static inline int rinruntime_utf8_validate(const char* value, size_t size,
     return 1;
 }
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/* Product Unicode ownership lives in libunicode.  RinRuntime exposes these
+ * bounded forwarding entry points so its C++ text model uses the same
+ * grapheme boundary contract on every host, including Windows builds where
+ * Aquamarine is not linked. */
+size_t rinruntime_unicode_grapheme_next(const char* value, size_t size,
+                                        size_t offset);
+size_t rinruntime_unicode_grapheme_prev(const char* value, size_t size,
+                                        size_t offset);
+
+#ifdef __cplusplus
+}
+#endif
+
 static inline int rinruntime_unicode_combining(uint32_t codepoint)
 {
     return (codepoint >= 0x0300u && codepoint <= 0x036fu) ||
