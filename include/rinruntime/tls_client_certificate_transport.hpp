@@ -139,10 +139,12 @@ public:
             if (signature != nullptr && signature_capacity != 0u)
                 for (std::size_t index = 0u; index < signature_capacity; ++index)
                     signature[index] = 0u;
+            clearBytes(capability_, sizeof(capability_));
             state_ = TlsClientCertificateTransportState::Failed;
             return -1;
         }
         *signature_length = written;
+        clearBytes(capability_, sizeof(capability_));
         state_ = TlsClientCertificateTransportState::Signed;
         return 0;
     }
@@ -174,6 +176,7 @@ private:
         if (signature != nullptr && signature_capacity != 0u &&
             signature_capacity <= kMaxSignatureBytes)
             clearBytes(signature, signature_capacity);
+        clearBytes(capability_, sizeof(capability_));
         state_ = TlsClientCertificateTransportState::Failed;
         return -1;
     }
