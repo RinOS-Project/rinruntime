@@ -186,6 +186,15 @@ sink failure is not publication and directories produce no data callback.
 Filesystem extraction, archive service IPC, and File Portal publication remain
 private RinOS adapters.
 
+`backup_archive.hpp` adds the public `BackupArchiveReader` consumer for the
+bounded RBK1 ZIP layout (`manifest.rbk1` plus one `payload/<item_id>` entry per
+included declaration). It keeps the manifest and payload in caller-owned
+memory, rejects missing/unknown/excluded members, and passes each payload to
+the existing identity and migration checks. It does not open backup paths,
+resolve Known Folders, authenticate package handoffs, read a File Portal
+descriptor, or publish restored bytes; those remain private archive/service
+owners.
+
 The standalone `rincompression/deflate.hpp` header provides the generic
 bounded deterministic stored-DEFLATE encoder. `rinruntime/archive_deflate.hpp`
 keeps archive-specific source and authoring adapters as a compatibility layer;
