@@ -62,6 +62,7 @@ int main() {
 
     metadata = validMetadata();
     metadata.publisherGeneration = 7u;
+    assert(!metadata.valid());
     metadata.publisherKeyId[0] = 1u;
     assert(metadata.valid());
     metadata.publisherGeneration = 0u;

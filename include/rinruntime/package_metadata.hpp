@@ -235,10 +235,10 @@ struct PackageMetadata {
             !sortedUnique(optionalDependencies, packageId) ||
             !sortedUnique(conflicts) || !sortedUnique(provides))
             return false;
-        if (publisherGeneration == 0u) {
-            for (const std::uint8_t byte : publisherKeyId)
-                if (byte != 0u) return false;
-        }
+        bool publisherKeyZero = true;
+        for (const std::uint8_t byte : publisherKeyId)
+            if (byte != 0u) publisherKeyZero = false;
+        if ((publisherGeneration == 0u) != publisherKeyZero) return false;
         for (std::size_t index = 0u; index < entryPoints.size(); ++index) {
             if (!entryPoints[index].valid() ||
                 (index != 0u && entryPoints[index - 1u].name >=
