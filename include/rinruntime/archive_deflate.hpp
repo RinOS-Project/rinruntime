@@ -272,9 +272,13 @@ private:
         if (output != nullptr)
             output->reserve(expectedSize);
         std::size_t windowPosition = 0u;
+        std::size_t blockCount = 0u;
         bool finalBlock = false;
 
         while (!finalBlock) {
+            if (blockCount >= RINRUNTIME_ARCHIVE_DEFLATE_BLOCK_LIMIT)
+                return fail(decoded, ArchiveDeflateResult::Limit);
+            ++blockCount;
             std::uint32_t finalValue = 0u;
             std::uint32_t blockType = 0u;
             if (!reader.readBits(1, finalValue) ||

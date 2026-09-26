@@ -194,6 +194,9 @@ caller-owned bytes or bounded callbacks and never open paths or publish files.
 fixed 4 KiB input window, so streaming owners do not need to expose a file or
 socket to the codec.  `ArchiveDeflateEncoder` provides the generic deterministic
 stored encoder plus bounded fixed-run and dynamic-literal authoring helpers.
+Archive DEFLATE decoding also rejects streams exceeding the public
+`RINRUNTIME_ARCHIVE_DEFLATE_BLOCK_LIMIT` of 65,536 blocks, in addition to the
+expanded-content and compression-ratio policies.
 `ArchiveTarReader::readEntryToSink()` provides the same bounded, at-most-64 KiB
 caller-owned staging path for regular TAR entries, and
 `ArchiveTarGzipReader` delegates to it after its bounded GZIP staging step. A
