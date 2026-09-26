@@ -89,6 +89,16 @@ size_t rinruntime_unicode_grapheme_next(const char* value, size_t size,
 size_t rinruntime_unicode_grapheme_prev(const char* value, size_t size,
                                         size_t offset);
 
+/* Public runtime forwarding for LibUnicode's bounded case-fold mappings.
+ * A null locale selects the default Unicode mapping; `tr`/`az` BCP-47 or
+ * POSIX names select the supported Turkic profile.  Malformed locale names,
+ * invalid scalars, and insufficiently described outputs fail closed. */
+size_t rinruntime_unicode_casefold_full(uint32_t codepoint,
+                                        uint32_t output[3]);
+size_t rinruntime_unicode_casefold_locale(uint32_t codepoint,
+                                          const char* locale,
+                                          uint32_t output[3]);
+
 /* Public runtime forwarding for LibUnicode's bounded locale formatter.  The
  * model is caller-owned and uses the proleptic Gregorian calendar, year
  * 0..9999, weekday 0..6 with Sunday=0.  conversion accepts c/x/X and the

@@ -61,6 +61,12 @@ use the bounded `%c`/`%x`/`%X` locale formatter through the public runtime
 without including LibUnicode's internal adapter headers; locale data and
 timezone ownership remain outside the runtime.
 
+The adapter also forwards the bounded full and locale-aware case-fold
+functions.  The default Unicode 13.0.0 mapping is shared with LibUnicode,
+while the supported `tr`/`az` BCP-47 and POSIX names select the Turkic
+U+0049/U+0130 mapping.  Locale data ownership and the remaining
+SpecialCasing profiles stay outside this public runtime contract.
+
 The same C adapter forwards the bounded integer, decimal, and currency
 formatters.  Their borrowed locale and number inputs retain LibUnicode's
 fixed scan bounds and failure-atomic output behavior, while locale data,
