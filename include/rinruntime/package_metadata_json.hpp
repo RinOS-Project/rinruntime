@@ -17,6 +17,8 @@
 
 namespace RinRuntime {
 
+class PackageMetadataCatalogJson;
+
 /* JSON decoding is separate from repository transport, signature
  * verification, installed-root publication, and kernel admission. */
 class PackageMetadataJson final {
@@ -30,6 +32,16 @@ public:
 
 private:
     using Value = rinjson::Value;
+
+    enum class DecodeResult {
+        Success,
+        FieldType,
+        Flags,
+        Publisher,
+        Size,
+        Files,
+        Validation,
+    };
 
     static const Value* field(const Value::Object& object,
                               std::string_view name) {
@@ -205,6 +217,72 @@ private:
         return true;
     }
 
+    static DecodeResult decodeValue(const Value& value,
+                                    PackageMetadata& output) {
+        if (!value.isObject()) return DecodeResult::FieldType;
+        const Value::Object& object = value.asObject();
+        PackageMetadata candidate = {};
+        std::uint64_t number = 0u;
+        std::string version;
+        if (!readString(field(object, "package_id"), candidate.packageId) ||
+            !readString(field(object, "display_name"), candidate.displayName) ||
+            !readString(field(object, "version"), version) ||
+            !PackageVersion::parse(version, candidate.version) ||
+            !readString(field(object, "license"), candidate.license) ||
+            !optionalString(object, "description", candidate.description) ||
+            !optionalString(object, "homepage", candidate.homepage) ||
+            !readArchitecture(object, candidate.architecture) ||
+            !readClass(object, candidate.packageClass) ||
+            !readDigest(object, candidate.publisherKeyId) ||
+            !readVersion(object, "minimum_rin_version",
+                         candidate.hasMinimumRinVersion,
+                         candidate.minimumRinVersion) ||
+            !readVersion(object, "maximum_rin_version",
+                         candidate.hasMaximumRinVersion,
+                         candidate.maximumRinVersion) ||
+            !readDependencies(object, "dependencies",
+                              kPackageMetadataMaxDependencies,
+                              candidate.dependencies) ||
+            !readDependencies(object, "optional_dependencies",
+                              kPackageMetadataMaxDependencies,
+                              candidate.optionalDependencies) ||
+            !readStringArray(object, "conflicts",
+                             kPackageMetadataMaxDependencies,
+                             candidate.conflicts) ||
+            !readStringArray(object, "provides", kPackageMetadataMaxProvides,
+                             candidate.provides) ||
+            !readEntryPoints(object, candidate.entryPoints))
+            return DecodeResult::FieldType;
+        if (field(object, "flags") != nullptr &&
+            !readUnsigned(field(object, "flags"), kPackageMetadataFlagsAll,
+                          number))
+            return DecodeResult::Flags;
+        candidate.flags = static_cast<std::uint32_t>(number);
+        number = 0u;
+        if (field(object, "publisher_generation") != nullptr &&
+            !readUnsigned(field(object, "publisher_generation"), UINT32_MAX,
+                          number))
+            return DecodeResult::Publisher;
+        candidate.publisherGeneration = static_cast<std::uint32_t>(number);
+        number = 0u;
+        if (field(object, "installed_size") != nullptr &&
+            !readUnsigned(field(object, "installed_size"), UINT64_MAX,
+                          number))
+            return DecodeResult::Size;
+        candidate.installedSize = number;
+        number = 0u;
+        if (field(object, "ordinary_file_count") != nullptr &&
+            !readUnsigned(field(object, "ordinary_file_count"),
+                          kPackageMetadataMaxFiles, number))
+            return DecodeResult::Files;
+        candidate.ordinaryFileCount = static_cast<std::uint32_t>(number);
+        if (!candidate.valid()) return DecodeResult::Validation;
+        output = std::move(candidate);
+        return DecodeResult::Success;
+    }
+
+    friend class PackageMetadataCatalogJson;
+
 public:
     /* output is cleared before parsing and remains empty on every failure. */
     static bool parse(std::string_view input, PackageMetadata& output,
@@ -232,72 +310,26 @@ public:
                 error = "package metadata object";
                 return false;
             }
-            const Value::Object& object = document.asObject();
-            std::uint64_t number = 0u;
-            std::string version;
-            if (!readString(field(object, "package_id"), candidate.packageId) ||
-                !readString(field(object, "display_name"), candidate.displayName) ||
-                !readString(field(object, "version"), version) ||
-                !PackageVersion::parse(version, candidate.version) ||
-                !readString(field(object, "license"), candidate.license) ||
-                !optionalString(object, "description", candidate.description) ||
-                !optionalString(object, "homepage", candidate.homepage) ||
-                !readArchitecture(object, candidate.architecture) ||
-                !readClass(object, candidate.packageClass) ||
-                !readDigest(object, candidate.publisherKeyId) ||
-                !readVersion(object, "minimum_rin_version",
-                             candidate.hasMinimumRinVersion,
-                             candidate.minimumRinVersion) ||
-                !readVersion(object, "maximum_rin_version",
-                             candidate.hasMaximumRinVersion,
-                             candidate.maximumRinVersion) ||
-                !readDependencies(object, "dependencies",
-                                  kPackageMetadataMaxDependencies,
-                                  candidate.dependencies) ||
-                !readDependencies(object, "optional_dependencies",
-                                  kPackageMetadataMaxDependencies,
-                                  candidate.optionalDependencies) ||
-                !readStringArray(object, "conflicts",
-                                 kPackageMetadataMaxDependencies,
-                                 candidate.conflicts) ||
-                !readStringArray(object, "provides", kPackageMetadataMaxProvides,
-                                 candidate.provides) ||
-                !readEntryPoints(object, candidate.entryPoints)) {
+            const DecodeResult decodeResult = decodeValue(document, candidate);
+            switch (decodeResult) {
+            case DecodeResult::Success:
+                break;
+            case DecodeResult::FieldType:
                 error = "package metadata field type";
                 return false;
-            }
-            if (field(object, "flags") != nullptr &&
-                !readUnsigned(field(object, "flags"),
-                              kPackageMetadataFlagsAll, number)) {
+            case DecodeResult::Flags:
                 error = "package metadata flags";
                 return false;
-            }
-            candidate.flags = static_cast<std::uint32_t>(number);
-            number = 0u;
-            if (field(object, "publisher_generation") != nullptr &&
-                !readUnsigned(field(object, "publisher_generation"),
-                              UINT32_MAX, number)) {
+            case DecodeResult::Publisher:
                 error = "package metadata publisher";
                 return false;
-            }
-            candidate.publisherGeneration = static_cast<std::uint32_t>(number);
-            number = 0u;
-            if (field(object, "installed_size") != nullptr &&
-                !readUnsigned(field(object, "installed_size"), UINT64_MAX,
-                              number)) {
+            case DecodeResult::Size:
                 error = "package metadata size";
                 return false;
-            }
-            candidate.installedSize = number;
-            number = 0u;
-            if (field(object, "ordinary_file_count") != nullptr &&
-                !readUnsigned(field(object, "ordinary_file_count"),
-                              kPackageMetadataMaxFiles, number)) {
+            case DecodeResult::Files:
                 error = "package metadata files";
                 return false;
-            }
-            candidate.ordinaryFileCount = static_cast<std::uint32_t>(number);
-            if (!candidate.valid()) {
+            case DecodeResult::Validation:
                 error = "package metadata validation";
                 return false;
             }

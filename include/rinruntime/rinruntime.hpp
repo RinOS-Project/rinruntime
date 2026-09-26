@@ -22,6 +22,8 @@
 #include "device_manifest_json.hpp"
 #include "package_metadata.hpp"
 #include "package_metadata_json.hpp"
+#include "package_metadata_catalog.hpp"
+#include "package_metadata_catalog_json.hpp"
 #include "service_configuration.hpp"
 #include "application_metadata.hpp"
 #include "application_metadata_json.hpp"

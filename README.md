@@ -173,6 +173,15 @@ entry points, publisher generation, and size fields failure-atomically into the
 public model. Repository authentication, signatures, installed-root
 publication, and kernel admission remain private owners.
 
+`package_metadata_catalog.hpp` and `package_metadata_catalog_json.hpp` (also
+exported by the `rinruntime.hpp` umbrella) provide a bounded, generation-tagged
+package listing for ordinary applications and external package tooling. Entries
+must be valid and sorted uniquely by package ID, and malformed or unordered
+snapshots clear the output. The catalog is repository-neutral: URLs,
+authentication, signatures, trust provisioning, artifact selection, installed
+roots, and install/launch authority remain private repository and installer
+owners.
+
 `application_metadata.hpp` and `application_metadata_json.hpp` provide the
 same split for application descriptors. The public parser validates bounded
 identifiers, strict UTF-8 display/path/MIME text, relative entry points,
