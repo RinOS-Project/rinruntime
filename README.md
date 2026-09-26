@@ -166,9 +166,11 @@ fixed 4 KiB input window, so streaming owners do not need to expose a file or
 socket to the codec.  `ArchiveDeflateEncoder` provides the generic deterministic
 stored encoder plus bounded fixed-run and dynamic-literal authoring helpers.
 `ArchiveTarReader::readEntryToSink()` provides the same bounded, at-most-64 KiB
-caller-owned staging path for regular TAR entries; a sink failure is not
-publication and directories produce no data callback.  Filesystem extraction,
-archive service IPC, and File Portal publication remain private RinOS adapters.
+caller-owned staging path for regular TAR entries, and
+`ArchiveTarGzipReader` delegates to it after its bounded GZIP staging step. A
+sink failure is not publication and directories produce no data callback.
+Filesystem extraction, archive service IPC, and File Portal publication remain
+private RinOS adapters.
 
 The standalone `rincompression/deflate.hpp` header provides the generic
 bounded deterministic stored-DEFLATE encoder. `rinruntime/archive_deflate.hpp`
