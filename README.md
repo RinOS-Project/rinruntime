@@ -180,8 +180,9 @@ sorted categories and MIME types, while package paths, icon/resource loading,
 signatures, and installed-application publication remain private owners.
 
 `application_metadata_catalog.hpp` and
-`application_metadata_catalog_json.hpp` add a bounded, generation-tagged list
-of those descriptors for ordinary applications and external tooling. Entries
+`application_metadata_catalog_json.hpp` (also exported by the
+`rinruntime.hpp` umbrella) add a bounded, generation-tagged list of those
+descriptors for ordinary applications and external tooling. Entries
 must be valid and sorted uniquely by application ID, and failed parsing clears
 the output. The catalog generation is only an opaque snapshot value; repository
 URLs, authentication, signatures, installed roots, trust provisioning, and

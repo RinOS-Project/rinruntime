@@ -25,6 +25,8 @@
 #include "service_configuration.hpp"
 #include "application_metadata.hpp"
 #include "application_metadata_json.hpp"
+#include "application_metadata_catalog.hpp"
+#include "application_metadata_catalog_json.hpp"
 #include "theme.hpp"
 #include "theme_json.hpp"
 #include "cursor.h"
