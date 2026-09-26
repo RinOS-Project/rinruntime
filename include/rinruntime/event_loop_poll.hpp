@@ -37,11 +37,9 @@ private:
         if ((events & EventLoop::WAIT_READABLE) != 0u) result |= POLLIN;
         if ((events & EventLoop::WAIT_WRITABLE) != 0u) result |= POLLOUT;
         /* poll reports error/hangup independently of the requested normal
-         * events.  POLLIN is therefore a harmless wake source for a watch
-         * interested only in WAIT_ERROR/WAIT_HANGUP. */
-        if (result == 0 &&
-            (events & (EventLoop::WAIT_ERROR | EventLoop::WAIT_HANGUP)) != 0u)
-            result = POLLIN;
+         * events.  Keep events at zero for an error/hangup-only watch: using
+         * POLLIN as a wake source would turn ordinary readable data into an
+         * immediate false result instead of waiting for the requested event. */
         return result;
     }
 
@@ -108,7 +106,10 @@ public:
                 if (requests[prior].id == request.id) return false;
             descriptors[index].fd = static_cast<int>(request.nativeHandle);
             descriptors[index].events = pollEvents(request.events);
-            if (descriptors[index].events == 0) return false;
+            if (descriptors[index].events == 0 &&
+                (request.events & (EventLoop::WAIT_ERROR |
+                                   EventLoop::WAIT_HANGUP)) == 0u)
+                return false;
         }
 
         int timeout = 0;

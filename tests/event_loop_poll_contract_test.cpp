@@ -54,6 +54,28 @@ int main() {
     assert(output.type == EventType::Close);
     assert(loop.unwatch(writable_id));
 
+    const EventLoop::WaitId pending_hangup_id = loop.watch(
+        pipe_fds[0], EventLoop::WAIT_HANGUP, ready_event);
+    assert(pending_hangup_id != 0u);
+    assert(write(pipe_fds[1], &byte, sizeof(byte)) == 1);
+    EventLoop::WaitRequest pending_hangup_request = {};
+    pending_hangup_request.id = 1u;
+    pending_hangup_request.nativeHandle = pipe_fds[0];
+    pending_hangup_request.events = EventLoop::WAIT_HANGUP;
+    EventLoop::WaitResult pending_hangup_ready = {
+        99u, EventLoop::WAIT_HANGUP};
+    const auto pending_hangup_start = std::chrono::steady_clock::now();
+    assert(!backend.wait(&pending_hangup_request, 1u,
+                         g_now + 20000000u, &pending_hangup_ready));
+    const auto pending_hangup_elapsed = std::chrono::duration_cast<
+        std::chrono::milliseconds>(std::chrono::steady_clock::now() -
+                                   pending_hangup_start);
+    assert(pending_hangup_elapsed.count() >= 5);
+    assert(pending_hangup_ready.id == 0u &&
+           pending_hangup_ready.events == 0u);
+    assert(loop.unwatch(pending_hangup_id));
+    assert(read(pipe_fds[0], &byte, sizeof(byte)) == 1);
+
     EventLoop::WaitRequest timeout_request = {};
     timeout_request.id = 1u;
     timeout_request.nativeHandle = pipe_fds[0];
