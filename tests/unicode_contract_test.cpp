@@ -29,6 +29,14 @@ int main()
     assert(RinRuntime::utf8GraphemeNext(combining, combining.size() - 1u) ==
            combining.size());
 
+    /* U+1A55 is a Unicode Mc spacing mark outside the former hand-written
+     * C++ subset.  The public text model must follow libunicode's generated
+     * property snapshot rather than silently splitting this cluster. */
+    const std::string generatedSpacingMark =
+        std::string("a") + scalar(0x1a55u) + "b";
+    assert(RinRuntime::utf8GraphemeNext(generatedSpacingMark, 0u) ==
+           generatedSpacingMark.size() - 1u);
+
     std::string zwj;
     appendScalar(zwj, 0x1f469u);
     appendScalar(zwj, 0x200du);
