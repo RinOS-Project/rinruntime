@@ -98,6 +98,17 @@ static RinRuntime::DownloadRangeRequest makeRequest() {
 }
 
 int main() {
+    std::uint64_t rangeStart = 41u;
+    std::uint64_t rangeEnd = 42u;
+    std::uint64_t rangeTotal = 43u;
+    assert(!RinRuntime::parseDownloadContentRange(
+        "bytes 2-4/5 trailing", rangeStart, rangeEnd, rangeTotal));
+    assert(rangeStart == 0u && rangeEnd == 0u && rangeTotal == 0u);
+
+    std::uint64_t contentLength = 41u;
+    assert(!RinRuntime::parseDownloadContentLength("12x", contentLength));
+    assert(contentLength == 0u);
+
     RinRuntime::DownloadPartialReceipt receipt;
     receipt.requestId = 9u;
     receipt.totalBytes = 5u;

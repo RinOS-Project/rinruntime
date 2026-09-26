@@ -293,6 +293,9 @@ inline bool parseDownloadContentRange(const std::string& value,
     start = 0u;
     end = 0u;
     total = 0u;
+    std::uint64_t parsedStart = 0u;
+    std::uint64_t parsedEnd = 0u;
+    std::uint64_t parsedTotal = 0u;
     const std::string prefix = "bytes ";
     if (value.size() <= prefix.size() ||
         value.compare(0u, prefix.size(), prefix) != 0)
@@ -315,7 +318,7 @@ inline bool parseDownloadContentRange(const std::string& value,
         ++index;
         return true;
     };
-    if (!parse(start, '-') || !parse(end, '/')) return false;
+    if (!parse(parsedStart, '-') || !parse(parsedEnd, '/')) return false;
     if (index >= value.size() || value[index] < '0' ||
         value[index] > '9')
         return false;
@@ -323,26 +326,35 @@ inline bool parseDownloadContentRange(const std::string& value,
            value[index] <= '9') {
         const std::uint64_t digit =
             static_cast<std::uint64_t>(value[index] - '0');
-        if (total > (UINT64_MAX - digit) / 10u) return false;
-        total = total * 10u + digit;
+        if (parsedTotal > (UINT64_MAX - digit) / 10u) return false;
+        parsedTotal = parsedTotal * 10u + digit;
         ++index;
     }
-    return index == value.size() && start <= end && total != 0u &&
-           end < total;
+    if (index != value.size() || parsedStart > parsedEnd ||
+        parsedTotal == 0u || parsedEnd >= parsedTotal)
+        return false;
+    start = parsedStart;
+    end = parsedEnd;
+    total = parsedTotal;
+    return true;
 }
 
 inline bool parseDownloadContentLength(const std::string& value,
                                        std::uint64_t& length) {
     length = 0u;
     if (value.empty()) return false;
+    std::uint64_t parsedLength = 0u;
     for (char character : value) {
         if (character < '0' || character > '9') return false;
         const std::uint64_t digit =
             static_cast<std::uint64_t>(character - '0');
-        if (length > (UINT64_MAX - digit) / 10u) return false;
-        length = length * 10u + digit;
+        if (parsedLength > (UINT64_MAX - digit) / 10u) return false;
+        parsedLength = parsedLength * 10u + digit;
     }
-    return length != 0u && length <= DownloadPartialReceipt::kMaxBytes;
+    if (parsedLength == 0u || parsedLength > DownloadPartialReceipt::kMaxBytes)
+        return false;
+    length = parsedLength;
+    return true;
 }
 
 } // namespace RinRuntime
