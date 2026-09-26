@@ -41,6 +41,16 @@ int main() {
     manifest.devices.front().id = "bad/id";
     assert(!manifest.valid());
 
+    manifest.devices.front().id = "usb.001";
+    manifest.devices.front().displayName = std::string("bad\xc0\x80", 5);
+    assert(!manifest.valid());
+
+    manifest.devices.front().displayName = "キーボード";
+    assert(manifest.valid());
+
+    manifest.devices.front().capabilities = {std::string("input.\xc0\x80", 8)};
+    assert(!manifest.valid());
+
     DeviceManifest parentAfterChild;
     parentAfterChild.versionMajor = 1u;
     parentAfterChild.manifestId = "desktop.devices";

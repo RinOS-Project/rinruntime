@@ -8,6 +8,8 @@
 #include <string>
 #include <vector>
 
+#include "unicode.h"
+
 namespace RinRuntime {
 
 static constexpr std::size_t kDeviceManifestMaxIdBytes = 95u;
@@ -56,9 +58,17 @@ struct DeviceManifestDevice {
     bool present = false;
     std::vector<std::string> capabilities;
 
+    static bool validUtf8(const std::string& value) {
+        std::size_t valid = 0u;
+        return rinruntime_utf8_validate(value.data(), value.size(), &valid) !=
+                   0 &&
+               valid == value.size();
+    }
+
     static bool validIdentifier(const std::string& value,
                                 std::size_t maximum) {
-        if (value.empty() || value.size() > maximum) return false;
+        if (value.empty() || value.size() > maximum || !validUtf8(value))
+            return false;
         for (const unsigned char byte : value) {
             if (byte < 0x21u || byte == 0x7fu || byte == '/' ||
                 byte == '\\')
@@ -69,7 +79,8 @@ struct DeviceManifestDevice {
 
     static bool validText(const std::string& value, std::size_t maximum,
                           bool allowEmpty) {
-        if (value.size() > maximum || (!allowEmpty && value.empty()))
+        if (value.size() > maximum || (!allowEmpty && value.empty()) ||
+            !validUtf8(value))
             return false;
         for (const unsigned char byte : value)
             if (byte < 0x20u || byte == 0x7fu) return false;
