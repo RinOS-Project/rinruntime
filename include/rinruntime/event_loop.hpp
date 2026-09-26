@@ -74,6 +74,7 @@ private:
     Size eventHead_ = 0u;
     Size eventCount_ = 0u;
     std::uint32_t nextGeneration_ = 1u;
+    bool generationExhausted_ = false;
     bool wakePending_ = false;
 
     static bool validEvent(const Event& event) noexcept {
@@ -116,10 +117,17 @@ private:
     }
 
     std::uint32_t allocateGeneration() noexcept {
+        if (generationExhausted_) return 0u;
         const std::uint32_t result = nextGeneration_;
-        ++nextGeneration_;
-        if (nextGeneration_ == 0u) nextGeneration_ = 1u;
-        return result == 0u ? 1u : result;
+        if (result == UINT32_MAX) {
+            /* Do not wrap into a generation that may still be referenced by
+             * a stale timer/watch ID.  The loop remains usable for existing
+             * entries, but no new generation-bound entry is accepted. */
+            generationExhausted_ = true;
+        } else {
+            ++nextGeneration_;
+        }
+        return result;
     }
 
     bool takeDueTimer(std::uint64_t now, Event* output) noexcept {
@@ -164,9 +172,11 @@ public:
         for (Size index = 0u; index < kTimerCapacity; ++index) {
             Timer& timer = timers_[index];
             if (timer.active) continue;
+            const std::uint32_t generation = allocateGeneration();
+            if (generation == 0u) return 0u;
             timer.deadline = deadline;
             timer.event = event;
-            timer.generation = allocateGeneration();
+            timer.generation = generation;
             timer.active = true;
             wakePending_ = true;
             return makeTimerId(index, timer.generation);
@@ -182,10 +192,12 @@ public:
         for (Size index = 0u; index < kWaitCapacity; ++index) {
             Watch& candidate = watches_[index];
             if (candidate.active) continue;
+            const std::uint32_t generation = allocateGeneration();
+            if (generation == 0u) return 0u;
             candidate.nativeHandle = nativeHandle;
             candidate.events = events;
             candidate.event = event;
-            candidate.generation = allocateGeneration();
+            candidate.generation = generation;
             candidate.active = true;
             wakePending_ = true;
             return makeWaitId(index, candidate.generation);

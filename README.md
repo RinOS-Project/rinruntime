@@ -42,6 +42,10 @@ The public C++ runtime also provides the backend-independent bounded
 `PollEventLoopBackend` adapter in `event_loop_poll.hpp`; it owns only the
 userspace `poll(2)` translation, while RinOS wait syscalls and production IPC
 owners remain target-side adapters through `EventLoop::WaitFunction`.
+Timer and wait IDs carry a non-zero generation.  The generation allocator is
+failure-closed at `UINT32_MAX` instead of wrapping, and `clear()` never resets
+that lifetime state, so a stale ID cannot become valid again after a long-lived
+loop has recycled a slot.
 
 `unicode.hpp` supplies the text model's bounded UTF-8 grapheme stepping. Its
 thin C adapter delegates to the public `libunicode` snapshot, so C++ editing,
