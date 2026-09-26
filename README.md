@@ -91,6 +91,12 @@ and the extended table containing the optional cancellation callback. Older
 owners therefore remain usable without inventing a cancellation context; a
 future incompatible table must use a new ABI version.
 
+`readDownloadRangeToBuffer()` is the optional caller-owned convenience helper
+for this same public transport. It revalidates the admitted response length,
+reads in at most 64 KiB chunks, rejects early EOF and trailing bytes, and
+scrubs the accepted range on failure before returning. It does not authenticate
+the source, persist partial bytes, or publish a File Portal object.
+
 `drag_drop.hpp` provides the public `DragDropSession` model for ordinary
 applications and external toolkits. It copies only bounded MIME payloads and
 labels, tracks a generation-bound session lifecycle, and requires an explicit
