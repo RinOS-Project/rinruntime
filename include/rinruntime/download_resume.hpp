@@ -286,7 +286,11 @@ inline bool readDownloadRangeToBuffer(DownloadRangeTransport& transport,
             for (std::size_t index = 0u; index < expected; ++index)
                 output[index] = 0u;
             outputSize = 0u;
-            transport.abort();
+            /* A public transport may already have transitioned to its
+             * terminal cancellation state and performed the upstream abort.
+             * Preserve that state so callers can distinguish cancellation
+             * from an ordinary read failure via wasCancelled(). */
+            if (!transport.wasCancelled()) transport.abort();
             return false;
         }
         outputSize += bytesRead;
@@ -298,7 +302,7 @@ inline bool readDownloadRangeToBuffer(DownloadRangeTransport& transport,
         for (std::size_t index = 0u; index < expected; ++index)
             output[index] = 0u;
         outputSize = 0u;
-        transport.abort();
+        if (!transport.wasCancelled()) transport.abort();
         return false;
     }
     return true;

@@ -93,6 +93,10 @@ static int cancelAfterBegin(void* opaque) {
     return static_cast<Owner*>(opaque)->beginCalls == 0u ? 0 : 1;
 }
 
+static int cancelAfterRead(void* opaque) {
+    return static_cast<Owner*>(opaque)->readCalls == 0u ? 0 : 1;
+}
+
 static RinRuntime::DownloadRangeRequest makeRequest() {
     RinRuntime::DownloadRangeRequest request;
     request.requestId = 9u;
@@ -265,5 +269,24 @@ int main() {
     assert(cancelledOutputSize == 0u);
     assert(helperCancelled.wasCancelled());
     assert(helperCancelledOwner.abortCalls == 1u);
+
+    /* A cancellation reported after the owner has produced a partial read is
+     * already terminal in the public adapter.  The convenience helper must
+     * scrub the caller buffer without resetting that observable state. */
+    Owner readCancelledOwner;
+    RinRuntime::DownloadRangeTransportOpsV1 readCancelledOps = ordinaryOps;
+    readCancelledOps.context = &readCancelledOwner;
+    readCancelledOps.cancelled = cancelAfterRead;
+    RinRuntime::DownloadRangeTransportAdapter readCancelled;
+    assert(readCancelled.bind(readCancelledOps));
+    std::uint8_t readCancelledOutput[3u] = {0xffu, 0xffu, 0xffu};
+    std::size_t readCancelledSize = 99u;
+    assert(!RinRuntime::readDownloadRangeToBuffer(
+        readCancelled, request, readCancelledOutput,
+        sizeof(readCancelledOutput), readCancelledSize));
+    assert(readCancelledSize == 0u);
+    for (const std::uint8_t byte : readCancelledOutput) assert(byte == 0u);
+    assert(readCancelled.wasCancelled());
+    assert(readCancelledOwner.abortCalls == 1u);
     return 0;
 }
