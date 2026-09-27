@@ -165,8 +165,12 @@ the same bounded ARGB contract.
 
 `abi_policy.hpp` provides the backend-independent part of the library ABI
 policy: same-major/minor-floor compatibility and append-only struct-prefix
-checks. SONAME, symbol export/versioning, deprecation/removal, signatures,
-and loader admission remain private packaging/loader responsibilities.
+checks. `abi_symbol_policy.hpp` adds a bounded, sorted lifecycle manifest for
+stable, optional, deprecated, and removed public symbols; it is reusable by
+ordinary applications and external tooling without exposing symbol addresses
+or loader authority. SONAME, linker export/versioning, lifecycle enforcement,
+signatures, and loader admission remain private packaging/loader
+responsibilities.
 
 `package_metadata.hpp` provides the same bounded package identity, numeric
 version, dependency ordering, and entry-point validation to ordinary
