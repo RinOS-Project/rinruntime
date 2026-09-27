@@ -141,9 +141,11 @@ explicit; paths and launcher authority are not passed through argv or the
 environment.
 
 The public TLS client-certificate transport keeps only the bounded TLS wire
-certificate list and opaque signer capability. `reset()` and all rejected
-signature paths use an optimization-resistant clear for copied certificate,
-capability, and caller signature bytes. Private keys, certificate stores,
+certificate list and opaque signer capability. It volatile-clears the
+one-shot capability after a signing callback returns, whether signing succeeds
+or fails. Failed or rejected signing also clears the declared signature output
+when its capacity is within the 512-byte transport bound; `reset()` clears the
+copied certificate and capability. Private keys, certificate stores,
 keyrings, and HTTPS socket ownership remain outside this public signer
 transport.
 
