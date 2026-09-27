@@ -40,6 +40,20 @@ size_t rinruntime_unicode_casefold_locale(uint32_t codepoint,
     return rin_unicode_casefold_locale(codepoint, locale, output);
 }
 
+size_t rinruntime_unicode_normalize_utf8(
+    char* output, size_t output_capacity, const char* input, int form)
+{
+    return rin_unicode_normalize_utf8(output, output_capacity, input, form);
+}
+
+size_t rinruntime_unicode_normalize_utf32(
+    uint32_t* output, size_t output_capacity, const uint32_t* input,
+    size_t input_length, int form)
+{
+    return rin_unicode_normalize_utf32(output, output_capacity, input,
+                                       input_length, form);
+}
+
 size_t rinruntime_unicode_format_datetime(
     char* output, size_t output_capacity,
     const RinRuntimeUnicodeDateTime* value, char conversion)

@@ -84,6 +84,28 @@ int main()
     assert(RinRuntime::utf8GraphemeNext(separate, 0u) ==
            1u + scalar(0x200du).size());
 
+    const std::uint32_t syllable[] = {0xac01u, 0u};
+    const std::uint32_t jamo[] = {0x1100u, 0x1161u, 0x11a8u, 0u};
+    std::uint32_t normalizedWide[4] = {0xfeedu, 0xfeedu, 0xfeedu, 0u};
+    char normalizedUtf8[16] = {};
+    assert(rinruntime_unicode_normalize_utf32(
+               normalizedWide, 4u, syllable, static_cast<std::size_t>(-1),
+               RINRUNTIME_UNICODE_NORMALIZE_NFD) == 3u);
+    assert(normalizedWide[0] == 0x1100u && normalizedWide[1] == 0x1161u &&
+           normalizedWide[2] == 0x11a8u && normalizedWide[3] == 0u);
+    assert(rinruntime_unicode_normalize_utf32(
+               normalizedWide, 4u, jamo, static_cast<std::size_t>(-1),
+               RINRUNTIME_UNICODE_NORMALIZE_NFC) == 1u);
+    assert(normalizedWide[0] == 0xac01u && normalizedWide[1] == 0u);
+    assert(rinruntime_unicode_normalize_utf8(
+               normalizedUtf8, sizeof(normalizedUtf8), "\xE1\x84\x80"
+               "\xE1\x85\xA1\xE1\x86\xA8",
+               RINRUNTIME_UNICODE_NORMALIZE_NFC) == 3u);
+    assert(static_cast<unsigned char>(normalizedUtf8[0]) == 0xeau &&
+           static_cast<unsigned char>(normalizedUtf8[1]) == 0xb0u &&
+           static_cast<unsigned char>(normalizedUtf8[2]) == 0x81u &&
+           normalizedUtf8[3] == '\0');
+
     encodeWritten = 99u;
     assert(!RinRuntime::utf8Encode(encodeBytes, 1u, 0x20acu,
                                    &encodeWritten));

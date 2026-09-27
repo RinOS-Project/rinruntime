@@ -99,6 +99,25 @@ size_t rinruntime_unicode_casefold_locale(uint32_t codepoint,
                                           const char* locale,
                                           uint32_t output[3]);
 
+/* Public runtime forwarding for LibUnicode's bounded normalization entry
+ * points.  The UTF-8 form accepts a NUL-terminated caller string under
+ * LibUnicode's fixed scan bound; UTF-32 accepts an explicit length or
+ * (size_t)-1 for a bounded NUL-terminated sequence.  Invalid forms or
+ * malformed input clear the first destination element and return
+ * (size_t)-1. */
+enum {
+    RINRUNTIME_UNICODE_NORMALIZE_NFD = 0,
+    RINRUNTIME_UNICODE_NORMALIZE_NFC = 1,
+    RINRUNTIME_UNICODE_NORMALIZE_NFKD = 2,
+    RINRUNTIME_UNICODE_NORMALIZE_NFKC = 3
+};
+
+size_t rinruntime_unicode_normalize_utf8(
+    char* output, size_t output_capacity, const char* input, int form);
+size_t rinruntime_unicode_normalize_utf32(
+    uint32_t* output, size_t output_capacity, const uint32_t* input,
+    size_t input_length, int form);
+
 /* Public runtime forwarding for LibUnicode's bounded locale formatter.  The
  * model is caller-owned and uses the proleptic Gregorian calendar, year
  * 0..9999, weekday 0..6 with Sunday=0.  conversion accepts c/x/X and the
