@@ -258,8 +258,9 @@ public:
      * loop; it must not manufacture a readiness result in that case. */
     bool wait(std::uint64_t now, WaitFunction backend, void* context,
               Event* output) noexcept {
-        if (backend == nullptr || output == nullptr) return false;
+        if (output == nullptr) return false;
         *output = {};
+        if (backend == nullptr) return false;
         if (runOne(now, output)) return true;
 
         WaitRequest requests[kWaitCapacity] = {};
