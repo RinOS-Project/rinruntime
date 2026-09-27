@@ -170,6 +170,72 @@ static std::vector<std::uint8_t> make7zStructure()
     return bytes;
 }
 
+static void put7zUInt64(std::vector<std::uint8_t>& bytes,
+                        std::uint64_t value)
+{
+    if (value < 0x80u) {
+        bytes.push_back(static_cast<std::uint8_t>(value));
+        return;
+    }
+    /* The contract fixture only needs the two-byte form. */
+    assert(value < 0x4000u);
+    bytes.push_back(static_cast<std::uint8_t>(0x80u | (value >> 8u)));
+    bytes.push_back(static_cast<std::uint8_t>(value));
+}
+
+static std::vector<std::uint8_t> make7zStored()
+{
+    const std::uint8_t signature[] = {
+        0x37u, 0x7au, 0xbcu, 0xafu, 0x27u, 0x1cu};
+    const std::uint8_t payload[] = {'h', 'e', 'l', 'l', 'o'};
+    std::vector<std::uint8_t> header;
+    header.push_back(0x01u); /* Header */
+    header.push_back(0x04u); /* MainStreamsInfo */
+    header.push_back(0x06u); /* PackInfo */
+    put7zUInt64(header, 0u); /* PackPos */
+    put7zUInt64(header, 1u); /* NumPackStreams */
+    header.push_back(0x09u); /* Size */
+    put7zUInt64(header, sizeof(payload));
+    header.push_back(0x0au); /* Pack CRC */
+    header.push_back(1u); /* all defined */
+    put32(header, RinRuntime::rinruntime_archive_crc32(
+                        payload, sizeof(payload)));
+    header.push_back(0x00u); /* PackInfo end */
+    header.push_back(0x07u); /* UnPackInfo */
+    header.push_back(0x0bu); /* Folder */
+    put7zUInt64(header, 1u); /* NumFolders */
+    header.push_back(0u); /* folders are in this header */
+    put7zUInt64(header, 1u); /* NumCoders */
+    header.push_back(0x01u); /* one-byte method ID, no properties */
+    header.push_back(0x00u); /* Copy coder */
+    header.push_back(0x0cu); /* CodersUnpackSize */
+    put7zUInt64(header, sizeof(payload));
+    header.push_back(0x0au); /* Folder CRC */
+    header.push_back(1u); /* all defined */
+    put32(header, RinRuntime::rinruntime_archive_crc32(
+                        payload, sizeof(payload)));
+    header.push_back(0x00u); /* UnPackInfo end */
+    header.push_back(0x00u); /* MainStreamsInfo end */
+    header.push_back(0x05u); /* FilesInfo */
+    put7zUInt64(header, 1u); /* NumFiles */
+    header.push_back(0x00u); /* FilesInfo properties end */
+    header.push_back(0x00u); /* Header end */
+
+    std::vector<std::uint8_t> bytes(32u + sizeof(payload) + header.size(), 0u);
+    std::memcpy(bytes.data(), signature, sizeof(signature));
+    bytes[7u] = 4u;
+    std::memcpy(bytes.data() + 32u, payload, sizeof(payload));
+    const std::size_t header_offset = 32u + sizeof(payload);
+    std::memcpy(bytes.data() + header_offset, header.data(), header.size());
+    writeLe64(bytes, 12u, sizeof(payload));
+    writeLe64(bytes, 20u, header.size());
+    writeLe32(bytes, 28u, RinRuntime::rinruntime_archive_crc32(
+                              bytes.data() + header_offset, header.size()));
+    writeLe32(bytes, 8u, RinRuntime::rinruntime_archive_crc32(
+                             bytes.data() + 12u, 20u));
+    return bytes;
+}
+
 static std::vector<std::uint8_t> makeXzStructure()
 {
     /* One bounded block with an LZMA2 filter.  The public inspector validates
@@ -488,5 +554,21 @@ int main()
            RinRuntime::Archive7zResult::InvalidArgument);
     assert(sevenZipReader.inspect(sevenZip.data(), 31u, sevenZipSummary) ==
            RinRuntime::Archive7zResult::Malformed);
+
+    const std::vector<std::uint8_t> storedSevenZip = make7zStored();
+    std::string sevenZipOutput = "poison";
+    assert(sevenZipReader.decodeStored(storedSevenZip.data(),
+                                       storedSevenZip.size(),
+                                       sevenZipOutput) ==
+           RinRuntime::Archive7zResult::Ok);
+    assert(sevenZipOutput == "hello");
+    std::vector<std::uint8_t> badStoredSevenZip = storedSevenZip;
+    badStoredSevenZip[32u] ^= 0x01u;
+    sevenZipOutput = "poison";
+    assert(sevenZipReader.decodeStored(badStoredSevenZip.data(),
+                                       badStoredSevenZip.size(),
+                                       sevenZipOutput) ==
+           RinRuntime::Archive7zResult::CrcMismatch);
+    assert(sevenZipOutput == "poison");
     return 0;
 }

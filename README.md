@@ -271,11 +271,12 @@ range-coded chunks and CRC64/non-zero unsupported check types return
 filesystem extraction, archive service IPC, and File Portal publication remain
 private owners.
 
-`archive_7z.hpp` provides the public `Archive7zReader` envelope inspector. It
-checks the 7z signature, version, Start Header CRC, bounded Next Header range,
-and Next Header CRC without interpreting coder chains or materializing entries.
-7z payload decoding, decryption, filesystem extraction, archive service IPC,
-and File Portal publication remain private owners.
+`archive_7z.hpp` provides the public `Archive7zReader` envelope inspector and
+the explicitly bounded `decodeStored()` subset.  The decoder accepts one
+non-empty packed stream, one Copy coder (`0x00`), and optional single-file
+metadata/CRC records into failure-atomic caller-owned output.  LZMA/other
+coder chains, encryption, multiple streams, filesystem extraction, archive
+service IPC, and File Portal publication remain private or `Unsupported`.
 
 `backup_archive.hpp` adds the public `BackupArchiveReader` consumer for the
 bounded RBK1 ZIP layout (`manifest.rbk1` plus one `payload/<item_id>` entry per
