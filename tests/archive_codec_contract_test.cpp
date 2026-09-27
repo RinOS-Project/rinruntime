@@ -210,6 +210,50 @@ static std::vector<std::uint8_t> makeXzStructure()
     return bytes;
 }
 
+static std::vector<std::uint8_t> makeXzStoredLzma2()
+{
+    const char payload[] = "hello";
+    std::vector<std::uint8_t> bytes(56u, 0u);
+    const std::uint8_t magic[] = {0xfdu, 0x37u, 0x7au, 0x58u, 0x5au, 0x00u};
+    std::memcpy(bytes.data(), magic, sizeof(magic));
+    writeLe32(bytes, 8u, RinRuntime::rinruntime_archive_crc32(bytes.data() + 6u,
+                                                               2u));
+
+    const std::size_t block = 12u;
+    bytes[block] = 0x02u;
+    bytes[block + 1u] = 0xc0u;
+    bytes[block + 2u] = 0x09u;
+    bytes[block + 3u] = 0x05u;
+    bytes[block + 4u] = 0x21u;
+    bytes[block + 5u] = 0x01u;
+    bytes[block + 6u] = 0x00u;
+    writeLe32(bytes, block + 8u,
+              RinRuntime::rinruntime_archive_crc32(bytes.data() + block, 8u));
+
+    bytes[24u] = 0x01u;
+    bytes[25u] = 0x04u;
+    bytes[26u] = 0x00u;
+    std::memcpy(bytes.data() + 27u, payload, 5u);
+    bytes[32u] = 0x00u;
+
+    const std::size_t index = 36u;
+    bytes[index] = 0x00u;
+    bytes[index + 1u] = 0x01u;
+    bytes[index + 2u] = 0x15u;
+    bytes[index + 3u] = 0x05u;
+    writeLe32(bytes, index + 4u,
+              RinRuntime::rinruntime_archive_crc32(bytes.data() + index, 4u));
+
+    const std::size_t footer = 44u;
+    bytes[footer + 4u] = 0x01u;
+    bytes[footer + 10u] = static_cast<std::uint8_t>('Y');
+    bytes[footer + 11u] = static_cast<std::uint8_t>('Z');
+    writeLe32(bytes, footer,
+              RinRuntime::rinruntime_archive_crc32(bytes.data() + footer + 4u,
+                                                   6u));
+    return bytes;
+}
+
 int main()
 {
     const std::uint8_t stored[] = {
@@ -382,6 +426,19 @@ int main()
            RinRuntime::ArchiveXzResult::InvalidArgument);
     assert(xzReader.inspect(xz.data(), 23u, xzSummary) ==
            RinRuntime::ArchiveXzResult::Malformed);
+
+    const std::vector<std::uint8_t> storedXz = makeXzStoredLzma2();
+    std::string xzOutput = "poison";
+    assert(xzReader.decodeStoredLzma2(storedXz.data(), storedXz.size(),
+                                      xzOutput) == RinRuntime::ArchiveXzResult::Ok);
+    assert(xzOutput == "hello");
+    std::vector<std::uint8_t> compressedXz = storedXz;
+    compressedXz[24u] = 0x80u;
+    xzOutput = "poison";
+    assert(xzReader.decodeStoredLzma2(compressedXz.data(), compressedXz.size(),
+                                      xzOutput) ==
+           RinRuntime::ArchiveXzResult::Unsupported);
+    assert(xzOutput == "poison");
 
     const std::vector<std::uint8_t> sevenZip = make7zStructure();
     RinRuntime::Archive7zReader sevenZipReader;

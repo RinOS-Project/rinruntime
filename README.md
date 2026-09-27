@@ -263,10 +263,12 @@ private RinOS adapters.
 `archive_xz.hpp` provides the public `ArchiveXzReader` structural inspector.
 It verifies the bounded XZ stream header/footer/index, block-header CRCs,
 filter-property bounds, block padding, record sizes, and expanded-size limits
-without decoding payload bytes or opening a path.  Unsupported check types and
-blocks without a bounded compressed-size field return `Unsupported`; XZ
-payload decoding, filesystem extraction, archive service IPC, and File Portal
-publication remain private owners.
+without decoding payload bytes or opening a path.  `decodeStoredLzma2()` adds a
+failure-atomic, caller-owned output path for check type 0 blocks containing
+LZMA2 stored chunks (`0x01`/`0x02`) and the end marker; range-coded chunks and
+non-zero check types return `Unsupported`.  Full LZMA2 payload decoding,
+filesystem extraction, archive service IPC, and File Portal publication remain
+private owners.
 
 `archive_7z.hpp` provides the public `Archive7zReader` envelope inspector. It
 checks the 7z signature, version, Start Header CRC, bounded Next Header range,

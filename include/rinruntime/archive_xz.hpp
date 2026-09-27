@@ -9,6 +9,8 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <string>
+#include <utility>
 
 namespace RinRuntime {
 
@@ -224,6 +226,94 @@ public:
         output.compressedSize = totalCompressed;
         output.blockCount = static_cast<std::uint32_t>(blockCount);
         output.checkType = checkType;
+        return ArchiveXzResult::Ok;
+    }
+
+    /* Decode the bounded, uncompressed LZMA2 subset.  Stored chunks are
+     * useful for producers that intentionally avoid range coding, while
+     * compressed chunks remain explicit Unsupported rather than being
+     * mistaken for a complete LZMA2 decoder.  Output is failure-atomic. */
+    ArchiveXzResult decodeStoredLzma2(const std::uint8_t* bytes,
+                                      std::size_t size,
+                                      std::string& output) const
+    {
+        ArchiveXzSummary summary;
+        ArchiveXzResult result = inspect(bytes, size, summary);
+        if (result != ArchiveXzResult::Ok) return result;
+        if (summary.checkType != 0u) return ArchiveXzResult::Unsupported;
+
+        std::string decoded;
+        std::size_t blockOffset = kHeaderSize;
+        while (blockOffset < summary.indexOffset) {
+            const std::size_t blockHeaderSize =
+                (static_cast<std::size_t>(bytes[blockOffset]) + 1u) * 4u;
+            const std::size_t headerEnd = blockOffset + blockHeaderSize;
+            const std::size_t headerDataEnd = headerEnd - 4u;
+            const std::uint8_t blockFlags = bytes[blockOffset + 1u];
+            if ((blockFlags & 0x03u) != 0u)
+                return ArchiveXzResult::Unsupported;
+
+            std::size_t headerCursor = blockOffset + 2u;
+            std::uint64_t compressedSize = 0u;
+            std::uint64_t ignoredUncompressedSize = 0u;
+            if ((blockFlags & 0x40u) == 0u ||
+                !readVli(bytes, headerDataEnd, headerCursor, compressedSize))
+                return ArchiveXzResult::Malformed;
+            if ((blockFlags & 0x80u) != 0u &&
+                !readVli(bytes, headerDataEnd, headerCursor,
+                         ignoredUncompressedSize))
+                return ArchiveXzResult::Malformed;
+
+            std::uint64_t filterId = 0u;
+            std::uint64_t propertySize = 0u;
+            if (!readVli(bytes, headerDataEnd, headerCursor, filterId) ||
+                !readVli(bytes, headerDataEnd, headerCursor, propertySize) ||
+                filterId != 0x21u || propertySize != 1u ||
+                headerCursor >= headerDataEnd || bytes[headerCursor++] != 0u)
+                return ArchiveXzResult::Unsupported;
+            while (headerCursor < headerDataEnd) {
+                if (bytes[headerCursor++] != 0u)
+                    return ArchiveXzResult::Malformed;
+            }
+
+            const std::size_t payloadOffset = headerEnd;
+            const std::size_t payloadEnd =
+                payloadOffset + static_cast<std::size_t>(compressedSize);
+            std::size_t cursor = payloadOffset;
+            bool streamEnded = false;
+            while (cursor < payloadEnd) {
+                const std::uint8_t control = bytes[cursor++];
+                if (control == 0u) {
+                    streamEnded = true;
+                    if (cursor != payloadEnd) return ArchiveXzResult::Malformed;
+                    break;
+                }
+                if (control >= 0x80u)
+                    return ArchiveXzResult::Unsupported;
+                if (control != 0x01u && control != 0x02u)
+                    return ArchiveXzResult::Malformed;
+                if (payloadEnd - cursor < 2u) return ArchiveXzResult::Malformed;
+
+                const std::size_t chunkSize =
+                    static_cast<std::size_t>(bytes[cursor]) |
+                    (static_cast<std::size_t>(bytes[cursor + 1u]) << 8u);
+                cursor += 2u;
+                const std::size_t chunkBytes = chunkSize + 1u;
+                if (chunkBytes > payloadEnd - cursor)
+                    return ArchiveXzResult::Malformed;
+                if (chunkBytes > kMaxStreamBytes - decoded.size())
+                    return ArchiveXzResult::Limit;
+                decoded.append(reinterpret_cast<const char*>(bytes + cursor),
+                               chunkBytes);
+                cursor += chunkBytes;
+            }
+            if (!streamEnded) return ArchiveXzResult::Malformed;
+            blockOffset = (payloadEnd + 3u) & ~std::size_t(3u);
+        }
+
+        if (decoded.size() != summary.uncompressedSize)
+            return ArchiveXzResult::Malformed;
+        output = std::move(decoded);
         return ArchiveXzResult::Ok;
     }
 
