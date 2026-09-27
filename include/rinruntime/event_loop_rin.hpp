@@ -114,12 +114,13 @@ public:
     bool wait(const EventLoop::WaitRequest* requests, Size count,
               std::uint64_t deadline,
               EventLoop::WaitResult* ready) noexcept {
-        if (ready == nullptr || waitSet_ == RIN_HANDLE_INVALID ||
+        if (ready == nullptr) return false;
+        ready->id = 0u;
+        ready->events = 0u;
+        if (waitSet_ == RIN_HANDLE_INVALID ||
             count > EventLoop::kWaitCapacity || !requestsValid(requests, count) ||
             (count == 0u && deadline == UINT64_MAX))
             return false;
-        ready->id = 0u;
-        ready->events = 0u;
 
         for (Size index = 0u; index < count; ++index) {
             const EventLoop::WaitRequest& request = requests[index];
