@@ -240,7 +240,8 @@ public:
         ArchiveXzSummary summary;
         ArchiveXzResult result = inspect(bytes, size, summary);
         if (result != ArchiveXzResult::Ok) return result;
-        if (summary.checkType != 0u) return ArchiveXzResult::Unsupported;
+        if (summary.checkType != 0u && summary.checkType != 1u)
+            return ArchiveXzResult::Unsupported;
 
         std::string decoded;
         std::size_t blockOffset = kHeaderSize;
@@ -279,6 +280,7 @@ public:
             const std::size_t payloadOffset = headerEnd;
             const std::size_t payloadEnd =
                 payloadOffset + static_cast<std::size_t>(compressedSize);
+            const std::size_t blockOutputStart = decoded.size();
             std::size_t cursor = payloadOffset;
             bool streamEnded = false;
             while (cursor < payloadEnd) {
@@ -308,7 +310,19 @@ public:
                 cursor += chunkBytes;
             }
             if (!streamEnded) return ArchiveXzResult::Malformed;
-            blockOffset = (payloadEnd + 3u) & ~std::size_t(3u);
+            if ((blockFlags & 0x80u) != 0u &&
+                decoded.size() - blockOutputStart != ignoredUncompressedSize)
+                return ArchiveXzResult::Malformed;
+            if (summary.checkType == 1u &&
+                readLe32(bytes + payloadEnd) !=
+                    rinruntime_archive_crc32(
+                        reinterpret_cast<const std::uint8_t*>(
+                            decoded.data() + blockOutputStart),
+                        decoded.size() - blockOutputStart))
+                return ArchiveXzResult::CrcMismatch;
+            const std::size_t afterCheck =
+                payloadEnd + checkSizeFor(summary.checkType);
+            blockOffset = (afterCheck + 3u) & ~std::size_t(3u);
         }
 
         if (decoded.size() != summary.uncompressedSize)

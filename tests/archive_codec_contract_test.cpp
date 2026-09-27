@@ -210,12 +210,14 @@ static std::vector<std::uint8_t> makeXzStructure()
     return bytes;
 }
 
-static std::vector<std::uint8_t> makeXzStoredLzma2()
+static std::vector<std::uint8_t> makeXzStoredLzma2(std::uint8_t checkType)
 {
     const char payload[] = "hello";
-    std::vector<std::uint8_t> bytes(56u, 0u);
+    const std::size_t checkSize = checkType == 0u ? 0u : 4u;
+    std::vector<std::uint8_t> bytes(56u + checkSize, 0u);
     const std::uint8_t magic[] = {0xfdu, 0x37u, 0x7au, 0x58u, 0x5au, 0x00u};
     std::memcpy(bytes.data(), magic, sizeof(magic));
+    bytes[7u] = checkType;
     writeLe32(bytes, 8u, RinRuntime::rinruntime_archive_crc32(bytes.data() + 6u,
                                                                2u));
 
@@ -235,22 +237,27 @@ static std::vector<std::uint8_t> makeXzStoredLzma2()
     bytes[26u] = 0x00u;
     std::memcpy(bytes.data() + 27u, payload, 5u);
     bytes[32u] = 0x00u;
+    if (checkType == 1u)
+        writeLe32(bytes, 33u,
+                  RinRuntime::rinruntime_archive_crc32(
+                      bytes.data() + 27u, 5u));
 
-    const std::size_t index = 36u;
+    const std::size_t index = 36u + checkSize;
     bytes[index] = 0x00u;
     bytes[index + 1u] = 0x01u;
-    bytes[index + 2u] = 0x15u;
+    bytes[index + 2u] = static_cast<std::uint8_t>(0x15u + checkSize);
     bytes[index + 3u] = 0x05u;
     writeLe32(bytes, index + 4u,
               RinRuntime::rinruntime_archive_crc32(bytes.data() + index, 4u));
 
-    const std::size_t footer = 44u;
-    bytes[footer + 4u] = 0x01u;
-    bytes[footer + 10u] = static_cast<std::uint8_t>('Y');
-    bytes[footer + 11u] = static_cast<std::uint8_t>('Z');
-    writeLe32(bytes, footer,
-              RinRuntime::rinruntime_archive_crc32(bytes.data() + footer + 4u,
-                                                   6u));
+    const std::size_t actualFooter = index + 8u;
+    bytes[actualFooter + 4u] = 0x01u;
+    bytes[actualFooter + 9u] = checkType;
+    bytes[actualFooter + 10u] = static_cast<std::uint8_t>('Y');
+    bytes[actualFooter + 11u] = static_cast<std::uint8_t>('Z');
+    writeLe32(bytes, actualFooter,
+              RinRuntime::rinruntime_archive_crc32(
+                  bytes.data() + actualFooter + 4u, 6u));
     return bytes;
 }
 
@@ -427,7 +434,7 @@ int main()
     assert(xzReader.inspect(xz.data(), 23u, xzSummary) ==
            RinRuntime::ArchiveXzResult::Malformed);
 
-    const std::vector<std::uint8_t> storedXz = makeXzStoredLzma2();
+    const std::vector<std::uint8_t> storedXz = makeXzStoredLzma2(0u);
     std::string xzOutput = "poison";
     assert(xzReader.decodeStoredLzma2(storedXz.data(), storedXz.size(),
                                       xzOutput) == RinRuntime::ArchiveXzResult::Ok);
@@ -438,6 +445,18 @@ int main()
     assert(xzReader.decodeStoredLzma2(compressedXz.data(), compressedXz.size(),
                                       xzOutput) ==
            RinRuntime::ArchiveXzResult::Unsupported);
+    assert(xzOutput == "poison");
+    const std::vector<std::uint8_t> crcXz = makeXzStoredLzma2(1u);
+    xzOutput = "poison";
+    assert(xzReader.decodeStoredLzma2(crcXz.data(), crcXz.size(), xzOutput) ==
+           RinRuntime::ArchiveXzResult::Ok);
+    assert(xzOutput == "hello");
+    std::vector<std::uint8_t> badCrcXz = crcXz;
+    badCrcXz[33u] ^= 0x01u;
+    xzOutput = "poison";
+    assert(xzReader.decodeStoredLzma2(badCrcXz.data(), badCrcXz.size(),
+                                      xzOutput) ==
+           RinRuntime::ArchiveXzResult::CrcMismatch);
     assert(xzOutput == "poison");
 
     const std::vector<std::uint8_t> sevenZip = make7zStructure();
