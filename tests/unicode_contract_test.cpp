@@ -116,6 +116,13 @@ int main()
            static_cast<unsigned char>(normalizedUtf8[2]) == 0x81u &&
            normalizedUtf8[3] == '\0');
 
+    assert(rinruntime_unicode_compare_utf8("A", "a") == 0);
+    assert(rinruntime_unicode_compare_utf8("\x80", "\xEF\xBF\xBD") == 0);
+    const std::uint32_t invalidScalar[] = {0xd800u, 0u};
+    const std::uint32_t validScalar[] = {0xfffdu, 0u};
+    assert(rinruntime_unicode_compare_utf32(invalidScalar, validScalar) == 1);
+    assert(rinruntime_unicode_compare_utf32(validScalar, invalidScalar) == -1);
+
     encodeWritten = 99u;
     assert(!RinRuntime::utf8Encode(encodeBytes, 1u, 0x20acu,
                                    &encodeWritten));

@@ -132,6 +132,13 @@ size_t rinruntime_unicode_normalize_utf32(
     uint32_t* output, size_t output_capacity, const uint32_t* input,
     size_t input_length, int form);
 
+/* Public runtime forwarding for LibUnicode's bounded comparison/key path.
+ * The comparison uses the documented NFKD/full-case-fold and canonical-class
+ * ordering subset; invalid or unbounded input sorts after valid input. */
+int rinruntime_unicode_compare_utf8(const char* left, const char* right);
+int rinruntime_unicode_compare_utf32(const uint32_t* left,
+                                     const uint32_t* right);
+
 /* Public runtime forwarding for LibUnicode's bounded locale formatter.  The
  * model is caller-owned and uses the proleptic Gregorian calendar, year
  * 0..9999, weekday 0..6 with Sunday=0.  conversion accepts c/x/X and the

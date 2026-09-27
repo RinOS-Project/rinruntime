@@ -66,6 +66,17 @@ size_t rinruntime_unicode_normalize_utf32(
                                        input_length, form);
 }
 
+int rinruntime_unicode_compare_utf8(const char* left, const char* right)
+{
+    return rin_unicode_compare_utf8(left, right);
+}
+
+int rinruntime_unicode_compare_utf32(const uint32_t* left,
+                                     const uint32_t* right)
+{
+    return rin_unicode_compare_utf32(left, right);
+}
+
 size_t rinruntime_unicode_format_datetime(
     char* output, size_t output_capacity,
     const RinRuntimeUnicodeDateTime* value, char conversion)

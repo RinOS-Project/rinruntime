@@ -67,6 +67,13 @@ while the supported `tr`/`az` BCP-47 and POSIX names select the Turkic
 U+0049/U+0130 mapping.  Locale data ownership and the remaining
 SpecialCasing profiles stay outside this public runtime contract.
 
+The C Unicode adapter also forwards the bounded LibUnicode comparison path.
+UTF-8 inputs use lossy replacement for ill-formed sequences, while UTF-32
+inputs are validated before comparison; invalid or unbounded input sorts after
+valid input.  The public subset applies NFKD decomposition, full case-fold,
+and canonical combining-class ordering.  Full UCA and locale weighting remain
+outside this public runtime contract.
+
 The same C adapter forwards the bounded integer, decimal, and currency
 formatters.  Their borrowed locale and number inputs retain LibUnicode's
 fixed scan bounds and failure-atomic output behavior, while locale data,
