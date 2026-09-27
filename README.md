@@ -257,6 +257,14 @@ sink failure is not publication and directories produce no data callback.
 Filesystem extraction, archive service IPC, and File Portal publication remain
 private RinOS adapters.
 
+`archive_xz.hpp` provides the public `ArchiveXzReader` structural inspector.
+It verifies the bounded XZ stream header/footer/index, block-header CRCs,
+filter-property bounds, block padding, record sizes, and expanded-size limits
+without decoding payload bytes or opening a path.  Unsupported check types and
+blocks without a bounded compressed-size field return `Unsupported`; XZ
+payload decoding, filesystem extraction, archive service IPC, and File Portal
+publication remain private owners.
+
 `backup_archive.hpp` adds the public `BackupArchiveReader` consumer for the
 bounded RBK1 ZIP layout (`manifest.rbk1` plus one `payload/<item_id>` entry per
 included declaration). It keeps the manifest and payload in caller-owned
