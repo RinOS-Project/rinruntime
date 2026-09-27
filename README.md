@@ -268,9 +268,9 @@ private RinOS adapters.
 It verifies the bounded XZ stream header/footer/index, block-header CRCs,
 filter-property bounds, block padding, record sizes, and expanded-size limits
 without decoding payload bytes or opening a path.  `decodeStoredLzma2()` adds a
-failure-atomic, caller-owned output path for check type 0 or CRC32 (type 1)
-blocks containing LZMA2 stored chunks (`0x01`/`0x02`) and the end marker;
-range-coded chunks and CRC64/non-zero unsupported check types return
+failure-atomic, caller-owned output path for check type 0, CRC32 (type 1), or
+CRC64 (type 4) blocks containing LZMA2 stored chunks (`0x01`/`0x02`) and the
+end marker; range-coded chunks and other unsupported check types return
 `Unsupported`.  Full LZMA2 payload decoding,
 filesystem extraction, archive service IPC, and File Portal publication remain
 private owners.

@@ -240,7 +240,8 @@ public:
         ArchiveXzSummary summary;
         ArchiveXzResult result = inspect(bytes, size, summary);
         if (result != ArchiveXzResult::Ok) return result;
-        if (summary.checkType != 0u && summary.checkType != 1u)
+        if (summary.checkType != 0u && summary.checkType != 1u &&
+            summary.checkType != 4u)
             return ArchiveXzResult::Unsupported;
 
         std::string decoded;
@@ -313,12 +314,18 @@ public:
             if ((blockFlags & 0x80u) != 0u &&
                 decoded.size() - blockOutputStart != ignoredUncompressedSize)
                 return ArchiveXzResult::Malformed;
+            const std::uint8_t* blockOutput =
+                reinterpret_cast<const std::uint8_t*>(
+                    decoded.data() + blockOutputStart);
+            const std::size_t blockOutputSize =
+                decoded.size() - blockOutputStart;
             if (summary.checkType == 1u &&
                 readLe32(bytes + payloadEnd) !=
-                    rinruntime_archive_crc32(
-                        reinterpret_cast<const std::uint8_t*>(
-                            decoded.data() + blockOutputStart),
-                        decoded.size() - blockOutputStart))
+                    rinruntime_archive_crc32(blockOutput, blockOutputSize))
+                return ArchiveXzResult::CrcMismatch;
+            if (summary.checkType == 4u &&
+                readLe64(bytes + payloadEnd) !=
+                    crc64Xz(blockOutput, blockOutputSize))
                 return ArchiveXzResult::CrcMismatch;
             const std::size_t afterCheck =
                 payloadEnd + checkSizeFor(summary.checkType);
@@ -342,6 +349,27 @@ private:
                static_cast<std::uint32_t>(bytes[1]) << 8u |
                static_cast<std::uint32_t>(bytes[2]) << 16u |
                static_cast<std::uint32_t>(bytes[3]) << 24u;
+    }
+
+    static std::uint64_t readLe64(const std::uint8_t* bytes)
+    {
+        std::uint64_t value = 0u;
+        for (unsigned index = 0u; index != 8u; ++index)
+            value |= static_cast<std::uint64_t>(bytes[index]) << (index * 8u);
+        return value;
+    }
+
+    static std::uint64_t crc64Xz(const std::uint8_t* bytes, std::size_t size)
+    {
+        constexpr std::uint64_t polynomial = UINT64_C(0xc96c5795d7870f42);
+        std::uint64_t crc = UINT64_MAX;
+        for (std::size_t index = 0u; index != size; ++index) {
+            crc ^= static_cast<std::uint64_t>(bytes[index]);
+            for (unsigned bit = 0u; bit != 8u; ++bit)
+                crc = (crc & 1u) != 0u ? (crc >> 1u) ^ polynomial
+                                       : crc >> 1u;
+        }
+        return ~crc;
     }
 
     static bool checkTypeSupported(std::uint8_t checkType)

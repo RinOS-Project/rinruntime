@@ -150,6 +150,19 @@ static void writeLe64(std::vector<std::uint8_t>& bytes, std::size_t offset,
             static_cast<std::uint8_t>(value >> (index * 8u));
 }
 
+static std::uint64_t xzCrc64(const std::uint8_t* bytes, std::size_t size)
+{
+    constexpr std::uint64_t polynomial = UINT64_C(0xc96c5795d7870f42);
+    std::uint64_t crc = UINT64_MAX;
+    for (std::size_t index = 0u; index != size; ++index) {
+        crc ^= static_cast<std::uint64_t>(bytes[index]);
+        for (unsigned bit = 0u; bit != 8u; ++bit)
+            crc = (crc & 1u) != 0u ? (crc >> 1u) ^ polynomial
+                                   : crc >> 1u;
+    }
+    return ~crc;
+}
+
 static std::vector<std::uint8_t> make7zStructure()
 {
     const std::uint8_t signature[] = {
@@ -279,7 +292,8 @@ static std::vector<std::uint8_t> makeXzStructure()
 static std::vector<std::uint8_t> makeXzStoredLzma2(std::uint8_t checkType)
 {
     const char payload[] = "hello";
-    const std::size_t checkSize = checkType == 0u ? 0u : 4u;
+    const std::size_t checkSize =
+        checkType == 0u ? 0u : (checkType == 1u ? 4u : 8u);
     std::vector<std::uint8_t> bytes(56u + checkSize, 0u);
     const std::uint8_t magic[] = {0xfdu, 0x37u, 0x7au, 0x58u, 0x5au, 0x00u};
     std::memcpy(bytes.data(), magic, sizeof(magic));
@@ -307,6 +321,8 @@ static std::vector<std::uint8_t> makeXzStoredLzma2(std::uint8_t checkType)
         writeLe32(bytes, 33u,
                   RinRuntime::rinruntime_archive_crc32(
                       bytes.data() + 27u, 5u));
+    else if (checkType == 4u)
+        writeLe64(bytes, 33u, xzCrc64(bytes.data() + 27u, 5u));
 
     const std::size_t index = 36u + checkSize;
     bytes[index] = 0x00u;
@@ -517,6 +533,21 @@ int main()
     assert(xzReader.decodeStoredLzma2(crcXz.data(), crcXz.size(), xzOutput) ==
            RinRuntime::ArchiveXzResult::Ok);
     assert(xzOutput == "hello");
+    const std::vector<std::uint8_t> crc64Xz = makeXzStoredLzma2(4u);
+    assert(xzCrc64(reinterpret_cast<const std::uint8_t*>("hello"), 5u) ==
+           UINT64_C(0x9b1edae5dbb937b1));
+    xzOutput = "poison";
+    assert(xzReader.decodeStoredLzma2(crc64Xz.data(), crc64Xz.size(),
+                                      xzOutput) ==
+           RinRuntime::ArchiveXzResult::Ok);
+    assert(xzOutput == "hello");
+    std::vector<std::uint8_t> badCrc64Xz = crc64Xz;
+    badCrc64Xz[33u] ^= 0x01u;
+    xzOutput = "poison";
+    assert(xzReader.decodeStoredLzma2(badCrc64Xz.data(), badCrc64Xz.size(),
+                                      xzOutput) ==
+           RinRuntime::ArchiveXzResult::CrcMismatch);
+    assert(xzOutput == "poison");
     std::vector<std::uint8_t> badCrcXz = crcXz;
     badCrcXz[33u] ^= 0x01u;
     xzOutput = "poison";
