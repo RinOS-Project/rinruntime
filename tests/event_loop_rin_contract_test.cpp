@@ -122,6 +122,19 @@ int main() {
     assert(ready.id == 0u && ready.events == 0u);
 
     assert(loop.unwatch(watch));
+
+    /* Cancellation must wake a caller that already consumed the scheduling
+     * notification; otherwise a backend can sleep until a stale deadline. */
+    RinRuntime::EventLoop wake_loop;
+    const RinRuntime::EventLoop::TimerId wake_timer =
+        wake_loop.scheduleAt(g_now + 1000000000u, event);
+    assert(wake_timer != 0u);
+    assert(wake_loop.consumeWake());
+    assert(!wake_loop.consumeWake());
+    assert(wake_loop.cancelTimer(wake_timer));
+    assert(wake_loop.consumeWake());
+    assert(!wake_loop.consumeWake());
+
     assert(backend.reset() == RIN_SUCCESS);
     assert(!backend.initialized());
     return 0;

@@ -118,5 +118,18 @@ int main() {
 
     timeout_request.nativeHandle = static_cast<uint64_t>(INT32_MAX) + 1u;
     assert(!backend.wait(&timeout_request, 1u, g_now, &ready));
+
+    /* Cancelling a deadline after its scheduling wake was consumed must
+     * publish a second wake so an adapter does not sleep on a stale deadline. */
+    EventLoop wake_loop;
+    const EventLoop::TimerId wake_timer =
+        wake_loop.scheduleAt(g_now + 1000000000u, ready_event);
+    assert(wake_timer != 0u);
+    assert(wake_loop.consumeWake());
+    assert(!wake_loop.consumeWake());
+    assert(wake_loop.cancelTimer(wake_timer));
+    assert(wake_loop.consumeWake());
+    assert(!wake_loop.consumeWake());
+
     return 0;
 }

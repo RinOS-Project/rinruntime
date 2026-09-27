@@ -212,6 +212,11 @@ public:
         Timer& timer = timers_[index];
         if (!timer.active || timer.generation != generation) return false;
         timer.active = false;
+        /* Cancelling a timer changes the deadline observed by an adapter.
+         * Preserve the same wake contract as unwatch(): a caller that has
+         * already consumed the notification from scheduleAt() must still be
+         * able to observe this cancellation before it blocks again. */
+        wakePending_ = true;
         return true;
     }
 
