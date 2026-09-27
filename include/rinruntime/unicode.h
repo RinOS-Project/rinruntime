@@ -139,6 +139,12 @@ int rinruntime_unicode_compare_utf8(const char* left, const char* right);
 int rinruntime_unicode_compare_utf32(const uint32_t* left,
                                      const uint32_t* right);
 
+/* Public runtime forwarding for the bounded locale-name resolver.  The
+ * catalog remains owned by LibUnicode; the caller owns the output buffer and
+ * receives an empty string on failure. */
+int rinruntime_unicode_locale_canonicalize(const char* locale, char* output,
+                                          size_t output_capacity);
+
 /* Public runtime forwarding for LibUnicode's bounded locale formatter.  The
  * model is caller-owned and uses the proleptic Gregorian calendar, year
  * 0..9999, weekday 0..6 with Sunday=0.  conversion accepts c/x/X and the

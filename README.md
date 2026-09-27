@@ -74,6 +74,12 @@ valid input.  The public subset applies NFKD decomposition, full case-fold,
 and canonical combining-class ordering.  Full UCA and locale weighting remain
 outside this public runtime contract.
 
+The adapter also forwards bounded locale-name canonicalization.  POSIX and
+BCP-47 spellings, `C`/`POSIX`, and the supported `-u-nu-*` numbering-system
+extension are resolved to an immutable catalog ID without exposing the
+catalog owner.  Unknown names, malformed extensions, and insufficient output
+capacity clear the caller-owned buffer and fail closed.
+
 The same C adapter forwards the bounded integer, decimal, and currency
 formatters.  Their borrowed locale and number inputs retain LibUnicode's
 fixed scan bounds and failure-atomic output behavior, while locale data,

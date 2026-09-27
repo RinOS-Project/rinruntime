@@ -123,6 +123,20 @@ int main()
     assert(rinruntime_unicode_compare_utf32(invalidScalar, validScalar) == 1);
     assert(rinruntime_unicode_compare_utf32(validScalar, invalidScalar) == -1);
 
+    char localeName[16];
+    assert(rinruntime_unicode_locale_canonicalize(
+               "EN_us.UTF-8", localeName, sizeof(localeName)) == 1);
+    assert(std::string(localeName) == "en-US");
+    assert(rinruntime_unicode_locale_canonicalize(
+               "en-US-u-nu-arab", localeName, sizeof(localeName)) == 1);
+    assert(std::string(localeName) == "en-US");
+    assert(rinruntime_unicode_locale_canonicalize(
+               "xx_YY.UTF-8", localeName, sizeof(localeName)) == 0);
+    assert(localeName[0] == '\0');
+    assert(rinruntime_unicode_locale_canonicalize(
+               "en_US.UTF-8", localeName, 4u) == 0);
+    assert(localeName[0] == '\0');
+
     encodeWritten = 99u;
     assert(!RinRuntime::utf8Encode(encodeBytes, 1u, 0x20acu,
                                    &encodeWritten));

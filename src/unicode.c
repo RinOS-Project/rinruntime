@@ -77,6 +77,12 @@ int rinruntime_unicode_compare_utf32(const uint32_t* left,
     return rin_unicode_compare_utf32(left, right);
 }
 
+int rinruntime_unicode_locale_canonicalize(const char* locale, char* output,
+                                           size_t output_capacity)
+{
+    return rin_unicode_locale_canonicalize(locale, output, output_capacity);
+}
+
 size_t rinruntime_unicode_format_datetime(
     char* output, size_t output_capacity,
     const RinRuntimeUnicodeDateTime* value, char conversion)
