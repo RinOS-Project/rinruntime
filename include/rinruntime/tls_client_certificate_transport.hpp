@@ -91,6 +91,8 @@ public:
              index < RINRUNTIME_TLS_CLIENT_CERTIFICATE_CAPABILITY_BYTES;
              ++index)
             capability_[index] = request.signer_capability[index];
+        request_.signer_capability = capability_;
+        request_.signer_capability_size = sizeof(capability_);
         signer_ = signer;
         signer_context_ = signer_context;
         state_ = TlsClientCertificateTransportState::Bound;

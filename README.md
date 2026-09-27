@@ -141,13 +141,14 @@ explicit; paths and launcher authority are not passed through argv or the
 environment.
 
 The public TLS client-certificate transport keeps only the bounded TLS wire
-certificate list and opaque signer capability. It volatile-clears the
-one-shot capability after a signing callback returns, whether signing succeeds
-or fails. Failed or rejected signing also clears the declared signature output
-when its capacity is within the 512-byte transport bound; `reset()` clears the
-copied certificate and capability. Private keys, certificate stores,
-keyrings, and HTTPS socket ownership remain outside this public signer
-transport.
+certificate list and opaque signer capability. `bind()` copies both into
+transport-owned storage, so the request retains no pointers into the caller's
+temporary response. It volatile-clears the one-shot capability after a signing
+callback returns, whether signing succeeds or fails. Failed or rejected
+signing also clears the declared signature output when its capacity is within
+the 512-byte transport bound; `reset()` clears the copied certificate and
+capability. Private keys, certificate stores, keyrings, and HTTPS socket
+ownership remain outside this public signer transport.
 
 `timezone.hpp` provides the backend-independent `ClockReading`,
 `TimeZoneSnapshot`, and `TimeZoneTransition` models. Snapshots validate bounded
