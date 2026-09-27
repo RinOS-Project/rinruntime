@@ -3,6 +3,7 @@
  * ownership remain in the private kernel/service-manager implementation. */
 
 #include <rin/service.h>
+#include <rin/contract_abi.h>
 
 #include "../../libc/sys/syscall.h"
 
@@ -128,7 +129,8 @@ int rin_service_find_system_slot(const char* service_id, uint32_t* slot_id)
         /* A system endpoint is trusted only when the kernel-published record
          * is unique, live, root-owned, and explicitly system-scoped. */
         if (found_slot != 0u || info.slot_id == 0u || info.pid == 0u ||
-            info.owner_uid != 0u || info.scope != RIN_SERVICE_SCOPE_SYSTEM)
+            info.owner_uid != 0u || info.scope != RIN_SERVICE_SCOPE_SYSTEM ||
+            info.state != RIN_MANAGEMENT_SERVICE_STATE_RUNNING)
             return -1;
         found_slot = info.slot_id;
     }
