@@ -230,7 +230,7 @@ public:
                     cursor + static_cast<std::size_t>(property_size);
                 if (property == 0x0eu) {
                     const std::size_t bitmap_size = 1u;
-                    if (property_size < bitmap_size ||
+                    if (property_size != bitmap_size ||
                         bytes[cursor] != 0u)
                         return Archive7zResult::Unsupported;
                 } else if (property == 0x0fu || property == 0x10u) {
@@ -244,6 +244,11 @@ public:
         if (!takeByte(bytes, end, cursor, 0x00u) || cursor != end)
             return Archive7zResult::Malformed;
         if (pack_size != unpack_size)
+            return Archive7zResult::Unsupported;
+        /* The public subset deliberately exposes non-empty resources only;
+         * keep an empty 7z file on the private archive-owner path instead of
+         * silently treating it as a successful decode. */
+        if (pack_size == 0u)
             return Archive7zResult::Unsupported;
         if (pack_position > static_cast<std::uint64_t>(size -
                                                         kSignatureHeaderSize))

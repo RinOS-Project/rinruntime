@@ -277,6 +277,8 @@ non-empty packed stream, one Copy coder (`0x00`), and optional single-file
 metadata/CRC records into failure-atomic caller-owned output.  LZMA/other
 coder chains, encryption, multiple streams, filesystem extraction, archive
 service IPC, and File Portal publication remain private or `Unsupported`.
+Empty streams and malformed multi-byte `EmptyStream` bitmaps are also rejected
+as `Unsupported`; they remain private archive-owner cases.
 
 `backup_archive.hpp` adds the public `BackupArchiveReader` consumer for the
 bounded RBK1 ZIP layout (`manifest.rbk1` plus one `payload/<item_id>` entry per
