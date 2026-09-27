@@ -443,7 +443,8 @@ RinRuntimeBackupResult rinruntime_backup_restore_item(
     if (!rinruntime_backup_identity_valid(target_identity) ||
         restored_size_out == NULL || target_schema_version == 0u ||
         (archived_size != 0u && archived_bytes == NULL) ||
-        (archived_size != 0u && restored_out == NULL))
+        (archived_size != 0u && restored_out == NULL) ||
+        (restored_capacity != 0u && restored_out == NULL))
         goto invalid_argument;
     item_result = rinruntime_backup_manifest_inspect(
         source_manifest_bytes, source_manifest_size, &source_manifest);
