@@ -194,6 +194,27 @@ int main() {
     assert(failedReadBytes[0] == 0u && failedReadBytes[1] == 0u &&
            failedReadBytes[2] == 0u);
 
+    Owner directFailedOwner;
+    directFailedOwner.failAfterFirst = true;
+    RinRuntime::DownloadRangeTransportOpsV1 directFailedOps = ordinaryOps;
+    directFailedOps.context = &directFailedOwner;
+    RinRuntime::DownloadRangeTransportAdapter directFailed;
+    assert(directFailed.bind(directFailedOps));
+    assert(directFailed.begin(request, response));
+    std::uint8_t directFailedBytes[4u] = {0xffu, 0xffu, 0xffu, 0xffu};
+    assert(directFailed.read(directFailedBytes, sizeof(directFailedBytes),
+                             bytesRead) &&
+           bytesRead == 2u);
+    directFailedBytes[0] = 0xffu;
+    directFailedBytes[1] = 0xffu;
+    directFailedBytes[2] = 0xffu;
+    directFailedBytes[3] = 0xffu;
+    assert(!directFailed.read(directFailedBytes, sizeof(directFailedBytes),
+                              bytesRead) &&
+           bytesRead == 0u);
+    for (const std::uint8_t byte : directFailedBytes)
+        assert(byte == 0u);
+
     /* The cancellation callback was appended to the public v1 table.  An
      * owner built against the original prefix remains valid and simply has
      * no cancellation hook. */

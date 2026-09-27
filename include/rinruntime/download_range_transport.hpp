@@ -62,6 +62,14 @@ private:
     bool rangeExhausted_ = false;
     State state_ = State::Idle;
 
+    static void scrubBuffer(std::uint8_t* buffer, std::size_t capacity) {
+        if (buffer == nullptr || capacity == 0u ||
+            capacity > kMaxChunkBytes)
+            return;
+        for (std::size_t index = 0u; index != capacity; ++index)
+            buffer[index] = 0u;
+    }
+
     static bool requestEquivalent(const DownloadRangeRequest& first,
                                   const DownloadRangeRequest& second) {
         return first.requestId == second.requestId &&
@@ -192,10 +200,12 @@ public:
         if (state_ != State::Streaming) return false;
         const int beforeRead = cancellationStatus();
         if (beforeRead == 1) {
+            scrubBuffer(buffer, capacity);
             cancelAndAbort();
             return false;
         }
         if (beforeRead != 0) {
+            scrubBuffer(buffer, capacity);
             failAndAbort();
             return false;
         }
@@ -209,16 +219,19 @@ public:
                                          &candidate);
         const int afterRead = cancellationStatus();
         if (afterRead == 1) {
+            scrubBuffer(buffer, capacity);
             cancelAndAbort();
             return false;
         }
         if (afterRead != 0) {
+            scrubBuffer(buffer, capacity);
             failAndAbort();
             return false;
         }
         if (readResult == 0) {
             if (candidate == 0u) {
                 if (!rangeExhausted_) {
+                    scrubBuffer(buffer, capacity);
                     failAndAbort();
                     return false;
                 }
@@ -230,6 +243,7 @@ public:
             }
             if (candidate > capacity ||
                 static_cast<std::uint64_t>(candidate) > remaining_) {
+                scrubBuffer(buffer, capacity);
                 failAndAbort();
                 return false;
             }
@@ -238,6 +252,7 @@ public:
             bytesRead = candidate;
             return true;
         }
+        scrubBuffer(buffer, capacity);
         failAndAbort();
         return false;
     }
