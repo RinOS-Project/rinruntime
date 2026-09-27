@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: MIT */
 
 #include "../include/rinruntime/archive_deflate.hpp"
+#include "../include/rinruntime/archive_7z.hpp"
 #include "../include/rinruntime/archive_gzip.hpp"
 #include "../include/rinruntime/archive_tar.hpp"
 #include "../include/rinruntime/archive_targz.hpp"
@@ -139,6 +140,34 @@ static void writeLe32(std::vector<std::uint8_t>& bytes, std::size_t offset,
     for (unsigned index = 0u; index != 4u; ++index)
         bytes[offset + index] =
             static_cast<std::uint8_t>(value >> (index * 8u));
+}
+
+static void writeLe64(std::vector<std::uint8_t>& bytes, std::size_t offset,
+                      std::uint64_t value)
+{
+    for (unsigned index = 0u; index != 8u; ++index)
+        bytes[offset + index] =
+            static_cast<std::uint8_t>(value >> (index * 8u));
+}
+
+static std::vector<std::uint8_t> make7zStructure()
+{
+    const std::uint8_t signature[] = {
+        0x37u, 0x7au, 0xbcu, 0xafu, 0x27u, 0x1cu};
+    const std::uint8_t nextHeader[] = {0x01u, 0x02u, 0x00u, 0x00u};
+    std::vector<std::uint8_t> bytes(32u + sizeof(nextHeader), 0u);
+    std::memcpy(bytes.data(), signature, sizeof(signature));
+    bytes[6u] = 0u;
+    bytes[7u] = 4u;
+    writeLe64(bytes, 12u, 0u);
+    writeLe64(bytes, 20u, sizeof(nextHeader));
+    std::memcpy(bytes.data() + 32u, nextHeader, sizeof(nextHeader));
+    writeLe32(bytes, 28u,
+              RinRuntime::rinruntime_archive_crc32(bytes.data() + 32u,
+                                                   sizeof(nextHeader)));
+    writeLe32(bytes, 8u,
+              RinRuntime::rinruntime_archive_crc32(bytes.data() + 12u, 20u));
+    return bytes;
 }
 
 static std::vector<std::uint8_t> makeXzStructure()
@@ -349,5 +378,31 @@ int main()
               RinRuntime::rinruntime_archive_crc32(badXz.data() + 6u, 2u));
     assert(xzReader.inspect(badXz.data(), badXz.size(), xzSummary) ==
            RinRuntime::ArchiveXzResult::Unsupported);
+
+    const std::vector<std::uint8_t> sevenZip = make7zStructure();
+    RinRuntime::Archive7zReader sevenZipReader;
+    RinRuntime::Archive7zSummary sevenZipSummary;
+    assert(sevenZipReader.inspect(sevenZip.data(), sevenZip.size(),
+                                  sevenZipSummary) ==
+           RinRuntime::Archive7zResult::Ok);
+    assert(sevenZipSummary.streamSize == sevenZip.size() &&
+           sevenZipSummary.nextHeaderOffset == 32u &&
+           sevenZipSummary.nextHeaderSize == 4u &&
+           sevenZipSummary.majorVersion == 0u &&
+           sevenZipSummary.minorVersion == 4u);
+    std::vector<std::uint8_t> badSevenZip = sevenZip;
+    badSevenZip[8u] ^= 0x01u;
+    assert(sevenZipReader.inspect(badSevenZip.data(), badSevenZip.size(),
+                                  sevenZipSummary) ==
+           RinRuntime::Archive7zResult::CrcMismatch &&
+           sevenZipSummary.streamSize == 0u);
+    badSevenZip = sevenZip;
+    badSevenZip[6u] = 1u;
+    writeLe32(badSevenZip, 8u,
+              RinRuntime::rinruntime_archive_crc32(badSevenZip.data() + 12u,
+                                                   20u));
+    assert(sevenZipReader.inspect(badSevenZip.data(), badSevenZip.size(),
+                                  sevenZipSummary) ==
+           RinRuntime::Archive7zResult::Unsupported);
     return 0;
 }
