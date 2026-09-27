@@ -230,6 +230,7 @@ public:
 
     bool runOne(std::uint64_t now, Event* output) noexcept {
         if (output == nullptr) return false;
+        *output = {};
         if (takeDueTimer(now, output)) return true;
         if (eventCount_ == 0u) return false;
         *output = events_[eventHead_];
@@ -241,6 +242,8 @@ public:
     bool runOneCancellable(std::uint64_t now, Event* output,
                            RinRuntimeCancellationFunction cancellation,
                            void* cancellationContext) noexcept {
+        if (output == nullptr) return false;
+        *output = {};
         if (cancellation != nullptr && cancellation(cancellationContext))
             return false;
         return runOne(now, output);
@@ -256,6 +259,7 @@ public:
     bool wait(std::uint64_t now, WaitFunction backend, void* context,
               Event* output) noexcept {
         if (backend == nullptr || output == nullptr) return false;
+        *output = {};
         if (runOne(now, output)) return true;
 
         WaitRequest requests[kWaitCapacity] = {};
