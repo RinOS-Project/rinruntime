@@ -72,6 +72,12 @@ formatters.  Their borrowed locale and number inputs retain LibUnicode's
 fixed scan bounds and failure-atomic output behavior, while locale data,
 currency policy, and filesystem ownership remain outside the public runtime.
 
+The public LibUnicode normalization entry points treat a null source as an
+empty input only after validating the requested NFD/NFC/NFKD/NFKC form.  An
+unsupported form therefore fails closed and clears the caller's destination
+even when the source pointer is null; the same rule applies to UTF-8 and
+UTF-32 callers.
+
 RinOS applications may opt into `RinEventLoopBackend` in
 `event_loop_rin.hpp`. It translates the same bounded requests to the public
 `rin_wait_set_*` SDK contract and keeps the wait-set handle private to the
