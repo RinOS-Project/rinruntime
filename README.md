@@ -119,7 +119,8 @@ scrubs the accepted range on failure before returning. The adapter also scrubs
 the caller-owned read buffer after a direct callback failure or cancellation,
 so a failed direct `read()` cannot leave partial transfer bytes behind. It does
 not authenticate the source, persist partial bytes, or publish a File Portal
-object.
+object. A failed `begin()` is not followed by a second abort, so the adapter's
+distinct cancellation state remains observable to the caller.
 
 `drag_drop.hpp` provides the public `DragDropSession` model for ordinary
 applications and external toolkits. It copies only bounded MIME payloads and

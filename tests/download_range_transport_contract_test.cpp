@@ -250,5 +250,20 @@ int main() {
     assert(!cancellable.begin(request, response));
     assert(cancellable.wasCancelled());
     assert(cancellableOwner.abortCalls == 1u);
+
+    Owner helperCancelledOwner;
+    RinRuntime::DownloadRangeTransportOpsV1 helperCancelledOps = ordinaryOps;
+    helperCancelledOps.context = &helperCancelledOwner;
+    helperCancelledOps.cancelled = cancelAfterBegin;
+    RinRuntime::DownloadRangeTransportAdapter helperCancelled;
+    assert(helperCancelled.bind(helperCancelledOps));
+    std::uint8_t cancelledOutput[5u] = {0xffu, 0xffu, 0xffu, 0xffu, 0xffu};
+    std::size_t cancelledOutputSize = 99u;
+    assert(!RinRuntime::readDownloadRangeToBuffer(
+        helperCancelled, request, cancelledOutput, sizeof(cancelledOutput),
+        cancelledOutputSize));
+    assert(cancelledOutputSize == 0u);
+    assert(helperCancelled.wasCancelled());
+    assert(helperCancelledOwner.abortCalls == 1u);
     return 0;
 }

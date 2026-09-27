@@ -265,8 +265,12 @@ inline bool readDownloadRangeToBuffer(DownloadRangeTransport& transport,
     if (!request.valid() || output == nullptr || capacity == 0u)
         return false;
     DownloadRangeResponse response;
-    if (!transport.begin(request, response) ||
-        !response.validFor(request) || response.contentLength > capacity) {
+    /* A failed begin() is already terminal for the transport.  In
+     * particular, do not call abort() here: a public adapter may preserve a
+     * distinct cancellation state for the caller to inspect. */
+    if (!transport.begin(request, response))
+        return false;
+    if (!response.validFor(request) || response.contentLength > capacity) {
         transport.abort();
         return false;
     }
