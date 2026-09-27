@@ -84,6 +84,16 @@ int main()
     assert(RinRuntime::utf8GraphemeNext(separate, 0u) ==
            1u + scalar(0x200du).size());
 
+    const std::string words = "a b";
+    assert(rinruntime_unicode_line_break_opportunity(
+               words.data(), words.size(), 1u) ==
+           RINRUNTIME_UNICODE_LINE_BREAK_PROHIBITED);
+    assert(rinruntime_unicode_line_break_opportunity(
+               words.data(), words.size(), 2u) ==
+           RINRUNTIME_UNICODE_LINE_BREAK_ALLOWED);
+    assert(rinruntime_unicode_line_break_next(words.data(), words.size(), 0u) ==
+           2u);
+
     const std::uint32_t syllable[] = {0xac01u, 0u};
     const std::uint32_t jamo[] = {0x1100u, 0x1161u, 0x11a8u, 0u};
     std::uint32_t normalizedWide[4] = {0xfeedu, 0xfeedu, 0xfeedu, 0u};

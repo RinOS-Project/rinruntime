@@ -89,6 +89,20 @@ size_t rinruntime_unicode_grapheme_next(const char* value, size_t size,
 size_t rinruntime_unicode_grapheme_prev(const char* value, size_t size,
                                         size_t offset);
 
+/* Public runtime forwarding for LibUnicode's bounded UAX #14 line-break
+ * subset.  The opportunity is queried at a UTF-8 grapheme boundary; the
+ * implementation does not own line layout, locale data, or text storage. */
+enum {
+    RINRUNTIME_UNICODE_LINE_BREAK_PROHIBITED = 0,
+    RINRUNTIME_UNICODE_LINE_BREAK_ALLOWED = 1,
+    RINRUNTIME_UNICODE_LINE_BREAK_MANDATORY = 2
+};
+
+int rinruntime_unicode_line_break_opportunity(const char* value, size_t size,
+                                              size_t offset);
+size_t rinruntime_unicode_line_break_next(const char* value, size_t size,
+                                          size_t offset);
+
 /* Public runtime forwarding for LibUnicode's bounded case-fold mappings.
  * A null locale selects the default Unicode mapping; `tr`/`az` BCP-47 or
  * POSIX names select the supported Turkic profile.  Malformed locale names,

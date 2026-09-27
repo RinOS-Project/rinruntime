@@ -27,6 +27,18 @@ size_t rinruntime_unicode_grapheme_prev(const char* value, size_t size,
     return rin_unicode_grapheme_prev(value, size, offset);
 }
 
+int rinruntime_unicode_line_break_opportunity(const char* value, size_t size,
+                                              size_t offset)
+{
+    return rin_unicode_line_break_opportunity(value, size, offset);
+}
+
+size_t rinruntime_unicode_line_break_next(const char* value, size_t size,
+                                          size_t offset)
+{
+    return rin_unicode_line_break_next(value, size, offset);
+}
+
 size_t rinruntime_unicode_casefold_full(uint32_t codepoint,
                                         uint32_t output[3])
 {
