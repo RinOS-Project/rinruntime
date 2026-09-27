@@ -49,11 +49,10 @@ public:
                             ArchiveXzSummary& output) const
     {
         output = {};
-        if (bytes == nullptr || size < kHeaderSize + kFooterSize ||
-            size > kMaxStreamBytes)
-            return bytes == nullptr || size < kHeaderSize + kFooterSize
-                       ? ArchiveXzResult::InvalidArgument
-                       : ArchiveXzResult::Limit;
+        if (bytes == nullptr) return ArchiveXzResult::InvalidArgument;
+        if (size < kHeaderSize + kFooterSize)
+            return ArchiveXzResult::Malformed;
+        if (size > kMaxStreamBytes) return ArchiveXzResult::Limit;
 
         if (bytes[0] != 0xfdu || bytes[1] != 0x37u || bytes[2] != 0x7au ||
             bytes[3] != 0x58u || bytes[4] != 0x5au || bytes[5] != 0x00u)

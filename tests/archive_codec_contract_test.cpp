@@ -378,6 +378,10 @@ int main()
               RinRuntime::rinruntime_archive_crc32(badXz.data() + 6u, 2u));
     assert(xzReader.inspect(badXz.data(), badXz.size(), xzSummary) ==
            RinRuntime::ArchiveXzResult::Unsupported);
+    assert(xzReader.inspect(nullptr, xz.size(), xzSummary) ==
+           RinRuntime::ArchiveXzResult::InvalidArgument);
+    assert(xzReader.inspect(xz.data(), 23u, xzSummary) ==
+           RinRuntime::ArchiveXzResult::Malformed);
 
     const std::vector<std::uint8_t> sevenZip = make7zStructure();
     RinRuntime::Archive7zReader sevenZipReader;
@@ -404,5 +408,9 @@ int main()
     assert(sevenZipReader.inspect(badSevenZip.data(), badSevenZip.size(),
                                   sevenZipSummary) ==
            RinRuntime::Archive7zResult::Unsupported);
+    assert(sevenZipReader.inspect(nullptr, sevenZip.size(), sevenZipSummary) ==
+           RinRuntime::Archive7zResult::InvalidArgument);
+    assert(sevenZipReader.inspect(sevenZip.data(), 31u, sevenZipSummary) ==
+           RinRuntime::Archive7zResult::Malformed);
     return 0;
 }

@@ -44,8 +44,8 @@ public:
                             Archive7zSummary& output) const
     {
         output = {};
-        if (bytes == nullptr || size < kSignatureHeaderSize)
-            return Archive7zResult::InvalidArgument;
+        if (bytes == nullptr) return Archive7zResult::InvalidArgument;
+        if (size < kSignatureHeaderSize) return Archive7zResult::Malformed;
         if (size > kMaxStreamBytes) return Archive7zResult::Limit;
         static constexpr std::uint8_t kSignature[6] = {
             0x37u, 0x7au, 0xbcu, 0xafu, 0x27u, 0x1cu};
