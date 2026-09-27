@@ -364,6 +364,16 @@ if(RINRUNTIME_BUILD_TESTS)
                           CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES)
     add_test(NAME rinruntime-archive-codec
              COMMAND rinruntime-archive-codec-test)
+    add_executable(rinruntime-archive-container-test
+                   tests/archive_container_contract_test.cpp)
+    target_link_libraries(rinruntime-archive-container-test
+                          PRIVATE RinRuntime::RinRuntime)
+    target_include_directories(rinruntime-archive-container-test
+                               PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    set_target_properties(rinruntime-archive-container-test PROPERTIES
+                          CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES)
+    add_test(NAME rinruntime-archive-container
+             COMMAND rinruntime-archive-container-test)
     add_executable(rinruntime-backup-archive-test
                    tests/backup_archive_contract_test.cpp)
     target_link_libraries(rinruntime-backup-archive-test

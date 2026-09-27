@@ -58,6 +58,7 @@
 #include "window_layout.hpp"
 #include "archive_policy.h"
 #include "archive.hpp"
+#include "archive_container.hpp"
 #include "backup_restore.h"
 #include "known_folders.h"
 #include "file_operation.h"
