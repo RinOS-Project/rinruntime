@@ -393,7 +393,12 @@ private:
             const std::uint64_t payload = value & 0x7fu;
             if (shift == 63u && payload > 1u) return false;
             output |= payload << shift;
-            if ((value & 0x80u) == 0u) return true;
+            if ((value & 0x80u) == 0u) {
+                /* XZ VLI uses the minimum number of bytes.  A terminating
+                 * zero payload after a continuation would be a second
+                 * encoding of the same value and is invalid on the wire. */
+                return count == 0u || payload != 0u;
+            }
             shift += 7u;
         }
         return false;

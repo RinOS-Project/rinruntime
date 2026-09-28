@@ -289,6 +289,47 @@ static std::vector<std::uint8_t> makeXzStructure()
     return bytes;
 }
 
+static std::vector<std::uint8_t> makeXzNonCanonicalVli()
+{
+    /* The compressed-size VLI encodes 1 as 0x81 0x00 instead of the
+     * required one-byte 0x01 representation. */
+    std::vector<std::uint8_t> bytes(52u, 0u);
+    const std::uint8_t magic[] = {0xfdu, 0x37u, 0x7au, 0x58u, 0x5au, 0x00u};
+    std::memcpy(bytes.data(), magic, sizeof(magic));
+    writeLe32(bytes, 8u, RinRuntime::rinruntime_archive_crc32(bytes.data() + 6u,
+                                                               2u));
+
+    const std::size_t block = 12u;
+    bytes[block] = 0x03u;     /* sixteen-byte block header */
+    bytes[block + 1u] = 0xc0u; /* compressed and uncompressed sizes present */
+    bytes[block + 2u] = 0x81u;
+    bytes[block + 3u] = 0x00u;
+    bytes[block + 4u] = 0x00u; /* uncompressed size */
+    bytes[block + 5u] = 0x21u; /* LZMA2 filter ID */
+    bytes[block + 6u] = 0x01u;
+    bytes[block + 7u] = 0x00u;
+    writeLe32(bytes, block + 12u,
+              RinRuntime::rinruntime_archive_crc32(bytes.data() + block, 12u));
+    bytes[28u] = 0x00u; /* opaque payload byte */
+
+    const std::size_t index = 32u;
+    bytes[index] = 0x00u;
+    bytes[index + 1u] = 0x01u; /* one record */
+    bytes[index + 2u] = 0x1du; /* unpadded block size: 28 + 1 */
+    bytes[index + 3u] = 0x00u; /* uncompressed size */
+    writeLe32(bytes, index + 4u,
+              RinRuntime::rinruntime_archive_crc32(bytes.data() + index, 4u));
+
+    const std::size_t footer = 40u;
+    bytes[footer + 4u] = 0x01u; /* backward size: 8 / 4 - 1 */
+    bytes[footer + 10u] = static_cast<std::uint8_t>('Y');
+    bytes[footer + 11u] = static_cast<std::uint8_t>('Z');
+    writeLe32(bytes, footer,
+              RinRuntime::rinruntime_archive_crc32(bytes.data() + footer + 4u,
+                                                   6u));
+    return bytes;
+}
+
 static std::vector<std::uint8_t> makeXzStoredLzma2(std::uint8_t checkType)
 {
     const char payload[] = "hello";
@@ -515,6 +556,9 @@ int main()
            RinRuntime::ArchiveXzResult::InvalidArgument);
     assert(xzReader.inspect(xz.data(), 23u, xzSummary) ==
            RinRuntime::ArchiveXzResult::Malformed);
+    const std::vector<std::uint8_t> nonCanonicalXz = makeXzNonCanonicalVli();
+    assert(xzReader.inspect(nonCanonicalXz.data(), nonCanonicalXz.size(),
+                            xzSummary) == RinRuntime::ArchiveXzResult::Malformed);
 
     const std::vector<std::uint8_t> storedXz = makeXzStoredLzma2(0u);
     std::string xzOutput = "poison";

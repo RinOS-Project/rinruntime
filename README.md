@@ -377,3 +377,8 @@ from its trusted kernel owner.
 | security | RinRuntime APIs provide functionality, not an application sandbox. Validate untrusted input and use the OS service boundary for privileged operations; a public runtime call does not grant kernel or hardware authority. |
 | build | CMake and Meson build definitions are provided. Build as part of RinOS or use the repository's declared build targets and public include directories. |
 | test | A `tests` directory and build definitions are provided. Run the test targets exposed by the selected build configuration; there is no single configuration-independent command documented here. |
+
+The public `ArchiveXzReader` rejects non-minimal XZ VLI encodings as malformed
+input. XZ VLI values are required to use the minimum number of bytes; this
+check is part of the bounded envelope inspector and does not add a decoder or
+private archive owner to the public runtime.
