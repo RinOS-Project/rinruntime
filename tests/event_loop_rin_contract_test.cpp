@@ -132,6 +132,20 @@ int main() {
 
     assert(loop.unwatch(watch));
 
+    /* Reset must retire the previous wait-set session's clock sample.  A
+     * reconnected target may start its adapter clock at a lower value, which
+     * must not be mistaken for a rollback within the same session. */
+    g_now = 1000u;
+    assert(backend.wait(&valid, 1u, 1001u, &ready));
+    assert(backend.reset() == RIN_SUCCESS);
+    assert(!backend.initialized());
+    g_now = 10u;
+    assert(backend.initialize() == RIN_SUCCESS);
+    ready = {99u, RinRuntime::EventLoop::WAIT_READABLE};
+    assert(backend.wait(&valid, 1u, 11u, &ready));
+    assert(ready.id == valid.id &&
+           ready.events == RinRuntime::EventLoop::WAIT_READABLE);
+
     /* Cancellation must wake a caller that already consumed the scheduling
      * notification; otherwise a backend can sleep until a stale deadline. */
     RinRuntime::EventLoop wake_loop;

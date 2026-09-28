@@ -11,6 +11,7 @@
 #ifndef RINRUNTIME_EVENT_LOOP_RIN_HPP
 #define RINRUNTIME_EVENT_LOOP_RIN_HPP
 
+#include <cstring>
 #include <cstdint>
 
 #include <rin/abi.h>
@@ -108,7 +109,17 @@ public:
         if (waitSet_ == RIN_HANDLE_INVALID) return RIN_SUCCESS;
         const RinResult result = rin_object_close_v1(
             static_cast<RinObject>(waitSet_));
-        if (result == RIN_SUCCESS) waitSet_ = RIN_HANDLE_INVALID;
+        if (result == RIN_SUCCESS) {
+            waitSet_ = RIN_HANDLE_INVALID;
+            /* A reset starts a new wait-set session.  Do not carry the
+             * previous session's item bytes or monotonic-clock sample into
+             * the first wait after reinitialization.  In particular, a
+             * restarted target may expose a fresh clock owner whose epoch is
+             * lower than the retired session's last sample. */
+            std::memset(items_, 0, sizeof(items_));
+            lastNow_ = 0u;
+            haveLastNow_ = false;
+        }
         return result;
     }
 
