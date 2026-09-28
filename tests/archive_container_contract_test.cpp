@@ -343,9 +343,9 @@ int main()
     assert(output.empty());
 
     std::vector<std::uint8_t> unsupportedXz = xz;
-    unsupportedXz[24u] = 0x80u; /* range-coded LZMA2, outside public subset */
+    unsupportedXz[24u] = 0x80u; /* truncated range-coded control */
     assert(reader.parse(unsupportedXz.data(), unsupportedXz.size()) ==
-           RinRuntime::ArchiveContainerResult::Unsupported);
+           RinRuntime::ArchiveContainerResult::Malformed);
     assert(reader.empty() && reader.kind() ==
            RinRuntime::ArchiveContainerKind::Unknown);
     return 0;
