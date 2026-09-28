@@ -200,7 +200,8 @@ private:
         const bool complex_coder = (coder_flags & 0x10u) != 0u;
         const bool has_properties = (coder_flags & 0x20u) != 0u;
         if (method_size == 0u || method_size > 8u ||
-            (coder_flags & 0xc0u) != 0u || cursor > end - method_size)
+            (coder_flags & 0xc0u) != 0u || cursor > end ||
+            method_size > end - cursor)
             return Archive7zResult::Unsupported;
         for (unsigned index = 0u; index != method_size; ++index)
             coder_method |= static_cast<std::uint64_t>(bytes[cursor++])
