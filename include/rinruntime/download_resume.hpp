@@ -73,7 +73,11 @@ struct DownloadPartialReceipt {
     bool encode(std::uint8_t* output, std::size_t capacity,
                 std::size_t& outputSize) const {
         outputSize = 0u;
-        if (output == nullptr || capacity < kWireSize || !valid()) return false;
+        if (output == nullptr || capacity < kWireSize || !valid()) {
+            if (output != nullptr && capacity != 0u)
+                ::memset(output, 0, capacity < kWireSize ? capacity : kWireSize);
+            return false;
+        }
         ::memset(output, 0, kWireSize);
         put32(output + 0u, kMagic);
         put16(output + 4u, kVersion);

@@ -136,6 +136,10 @@ source, or another bounded byte provider. Authentication, authorization,
 HTTPS/TLS, partial-byte storage, and Browser File Portal publication remain
 outside this generic public transport contract.
 
+`DownloadPartialReceipt::encode()` also clears the caller-owned output range
+on failure, bounded to the receipt wire size. This prevents stale durable
+receipt bytes from being reused after an invalid or undersized encode.
+
 The public v1 transport callback table accepts both the original fixed prefix
 and the extended table containing the optional cancellation callback. Older
 owners therefore remain usable without inventing a cancellation context; a
