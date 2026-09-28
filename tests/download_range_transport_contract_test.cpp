@@ -254,6 +254,13 @@ int main() {
     assert(!cancellable.begin(request, response));
     assert(cancellable.wasCancelled());
     assert(cancellableOwner.abortCalls == 1u);
+    std::uint8_t afterCancellation[4u] = {0xffu, 0xffu, 0xffu, 0xffu};
+    assert(!cancellable.read(afterCancellation, sizeof(afterCancellation),
+                             bytesRead) &&
+           bytesRead == 0u);
+    for (const std::uint8_t byte : afterCancellation)
+        assert(byte == 0u);
+    cancellable.abort();
 
     Owner helperCancelledOwner;
     RinRuntime::DownloadRangeTransportOpsV1 helperCancelledOps = ordinaryOps;

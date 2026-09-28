@@ -197,7 +197,13 @@ public:
     bool read(std::uint8_t* buffer, std::size_t capacity,
               std::size_t& bytesRead) override {
         bytesRead = 0u;
-        if (state_ != State::Streaming) return false;
+        if (state_ != State::Streaming) {
+            /* A caller may reuse a buffer after a terminal read, cancellation,
+             * or explicit abort.  Do not leave bytes from the previous range
+             * visible through that direct read path. */
+            scrubBuffer(buffer, capacity);
+            return false;
+        }
         const int beforeRead = cancellationStatus();
         if (beforeRead == 1) {
             scrubBuffer(buffer, capacity);
