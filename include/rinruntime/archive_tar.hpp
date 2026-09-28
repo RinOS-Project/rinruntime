@@ -21,6 +21,7 @@ enum class ArchiveTarResult : int {
     Malformed = -3,
     UnsupportedType = -4,
     Deadline = -5,
+    Cancelled = -6,
 };
 
 struct ArchiveTarEntry {
@@ -32,6 +33,7 @@ struct ArchiveTarEntry {
 
 using ArchiveTarSinkFunction = bool (*)(
     void* context, const std::uint8_t* bytes, std::size_t size);
+using ArchiveTarCancellationFunction = bool (*)(void* context);
 using ArchiveTarDeadlineFunction = bool (*)(void* context);
 
 /*
@@ -188,13 +190,34 @@ public:
 
     ArchiveTarResult readEntry(std::size_t index, std::string& output) const
     {
+        return readEntry(index, output, nullptr, nullptr);
+    }
+
+    ArchiveTarResult readEntry(
+        std::size_t index, std::string& output,
+        ArchiveTarCancellationFunction cancellation,
+        void* cancellationContext) const
+    {
         std::size_t size = 0u;
         const std::uint8_t* bytes = data(index, &size);
         output.clear();
         if (index >= entries_.size()) return ArchiveTarResult::InvalidArgument;
+        if (cancellation != nullptr && cancellation(cancellationContext))
+            return ArchiveTarResult::Cancelled;
         if (entries_[index].directory) return ArchiveTarResult::Ok;
         if (bytes == nullptr) return ArchiveTarResult::Malformed;
-        output.assign(reinterpret_cast<const char*>(bytes), size);
+        std::size_t offset = 0u;
+        while (offset < size) {
+            if (cancellation != nullptr && cancellation(cancellationContext)) {
+                output.clear();
+                return ArchiveTarResult::Cancelled;
+            }
+            const std::size_t remaining = size - offset;
+            const std::size_t chunk = remaining > 65536u
+                ? 65536u : remaining;
+            output.append(reinterpret_cast<const char*>(bytes + offset), chunk);
+            offset += chunk;
+        }
         return ArchiveTarResult::Ok;
     }
 

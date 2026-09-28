@@ -48,6 +48,21 @@ static void putOctal(std::uint8_t* field, std::size_t size,
     }
 }
 
+static bool stopImmediately(void*) { return true; }
+
+struct DeadlineOnce {
+    bool fired = false;
+};
+
+static bool stopOnce(void* context)
+{
+    auto* state = static_cast<DeadlineOnce*>(context);
+    if (state == nullptr || state->fired)
+        return false;
+    state->fired = true;
+    return true;
+}
+
 static std::vector<std::uint8_t> makeTar()
 {
     std::vector<std::uint8_t> bytes(2048u, 0u);
@@ -244,6 +259,11 @@ int main()
            reader.size() == 1u && reader.entries()[0].name == "a.txt");
     assert(reader.readEntry(0u, output) ==
            RinRuntime::ArchiveContainerResult::Ok && output == "hello");
+    output = "poison";
+    assert(reader.readEntryWithCancellation(0u, output, stopImmediately,
+                                            nullptr) ==
+           RinRuntime::ArchiveContainerResult::Cancelled);
+    assert(output.empty());
 
     const std::vector<std::uint8_t> tar = makeTar();
     assert(reader.parse(tar.data(), tar.size()) ==
@@ -251,6 +271,11 @@ int main()
     assert(reader.kind() == RinRuntime::ArchiveContainerKind::Tar &&
            reader.readEntry(0u, output) ==
                RinRuntime::ArchiveContainerResult::Ok && output == "hello");
+    output = "poison";
+    assert(reader.readEntryWithCancellation(0u, output, stopImmediately,
+                                            nullptr) ==
+           RinRuntime::ArchiveContainerResult::Cancelled);
+    assert(output.empty());
 
     const std::vector<std::uint8_t> targz = makeGzip(tar.data(), tar.size());
     assert(reader.parse(targz.data(), targz.size()) ==
@@ -258,6 +283,12 @@ int main()
     assert(reader.kind() == RinRuntime::ArchiveContainerKind::TarGzip &&
            reader.readEntry(0u, output) ==
                RinRuntime::ArchiveContainerResult::Ok && output == "hello");
+    DeadlineOnce deadlineOnce{};
+    assert(reader.parseWithDeadline(targz.data(), targz.size(), stopOnce,
+                                    &deadlineOnce) ==
+           RinRuntime::ArchiveContainerResult::Deadline);
+    assert(reader.empty() && reader.kind() ==
+           RinRuntime::ArchiveContainerKind::Unknown);
 
     const std::uint8_t streamPayload[] = {'s', 't', 'r', 'e', 'a', 'm'};
     const std::vector<std::uint8_t> gzip = makeGzip(
@@ -269,6 +300,11 @@ int main()
            reader.entries()[0].size == sizeof(streamPayload));
     assert(reader.readEntry(0u, output) ==
            RinRuntime::ArchiveContainerResult::Ok && output == "stream");
+    output = "poison";
+    assert(reader.readEntryWithCancellation(0u, output, stopImmediately,
+                                            nullptr) ==
+           RinRuntime::ArchiveContainerResult::Cancelled);
+    assert(output.empty());
 
     const std::uint8_t unknown[] = {'x'};
     assert(reader.parse(unknown, sizeof(unknown)) ==
@@ -286,6 +322,11 @@ int main()
            reader.entries()[0].size == 5u);
     assert(reader.readEntry(0u, output) ==
            RinRuntime::ArchiveContainerResult::Ok && output == "hello");
+    output = "poison";
+    assert(reader.readEntryWithCancellation(0u, output, stopImmediately,
+                                            nullptr) ==
+           RinRuntime::ArchiveContainerResult::Cancelled);
+    assert(output.empty());
 
     const std::vector<std::uint8_t> xz = makeXzStoredLzma2();
     assert(reader.parse(xz.data(), xz.size()) ==
@@ -295,6 +336,11 @@ int main()
            reader.entries()[0].size == 5u);
     assert(reader.readEntry(0u, output) ==
            RinRuntime::ArchiveContainerResult::Ok && output == "hello");
+    output = "poison";
+    assert(reader.readEntryWithCancellation(0u, output, stopImmediately,
+                                            nullptr) ==
+           RinRuntime::ArchiveContainerResult::Cancelled);
+    assert(output.empty());
 
     std::vector<std::uint8_t> unsupportedXz = xz;
     unsupportedXz[24u] = 0x80u; /* range-coded LZMA2, outside public subset */

@@ -96,6 +96,10 @@ public:
                 result = map(std::get<ArchiveTarGzipReader>(reader_)
                                  .parseWithDeadline(bytes, size, deadline,
                                                     deadlineContext));
+                if (result == ArchiveContainerResult::Deadline) {
+                    clear();
+                    return result;
+                }
                 if (result != ArchiveContainerResult::Ok) {
                     ArchiveGzipReader gzipReader;
                     std::string gzipOutput;
@@ -155,6 +159,56 @@ public:
                                      std::string& output) const
     {
         return readEntryWithDeadline(index, output, nullptr, nullptr);
+    }
+
+    ArchiveContainerResult readEntryWithCancellation(
+        std::size_t index, std::string& output,
+        ArchiveDeflateCancellationFunction cancellation,
+        void* cancellationContext) const
+    {
+        output.clear();
+        if (index >= entries_.size())
+            return ArchiveContainerResult::InvalidArgument;
+        if (cancellation != nullptr && cancellation(cancellationContext))
+            return ArchiveContainerResult::Cancelled;
+#if defined(__cpp_exceptions) || defined(_CPPUNWIND)
+        try {
+#endif
+            switch (kind_) {
+            case ArchiveContainerKind::Zip:
+                return map(std::get<ArchiveZipReader>(reader_)
+                               .readEntry(index, output, cancellation,
+                                          cancellationContext));
+            case ArchiveContainerKind::Tar:
+                return map(std::get<ArchiveTarReader>(reader_)
+                               .readEntry(index, output,
+                                          cancellation, cancellationContext));
+            case ArchiveContainerKind::TarGzip: {
+                if (entries_[index].directory)
+                    return ArchiveContainerResult::Ok;
+                std::size_t size = 0u;
+                const std::uint8_t* bytes =
+                    std::get<ArchiveTarGzipReader>(reader_).data(index, &size);
+                if (bytes == nullptr)
+                    return ArchiveContainerResult::Malformed;
+                return copyWithCancellation(bytes, size, output,
+                                            cancellation, cancellationContext);
+            }
+            case ArchiveContainerKind::SevenZip:
+            case ArchiveContainerKind::Xz:
+            case ArchiveContainerKind::Gzip:
+                return copyWithCancellation(
+                    reinterpret_cast<const std::uint8_t*>(stream_.data()),
+                    stream_.size(), output, cancellation, cancellationContext);
+            default:
+                return ArchiveContainerResult::Unsupported;
+            }
+#if defined(__cpp_exceptions) || defined(_CPPUNWIND)
+        } catch (const std::bad_alloc&) {
+            output.clear();
+            return ArchiveContainerResult::Limit;
+        }
+#endif
     }
 
     ArchiveContainerResult readEntryWithDeadline(
@@ -227,6 +281,25 @@ public:
     }
 
 private:
+    static ArchiveContainerResult copyWithCancellation(
+        const std::uint8_t* bytes, std::size_t size, std::string& output,
+        ArchiveDeflateCancellationFunction cancellation,
+        void* cancellationContext)
+    {
+        std::size_t copied = 0u;
+        while (copied < size) {
+            if (cancellation != nullptr && cancellation(cancellationContext)) {
+                output.clear();
+                return ArchiveContainerResult::Cancelled;
+            }
+            const std::size_t part =
+                (size - copied) > 65536u ? 65536u : size - copied;
+            output.append(reinterpret_cast<const char*>(bytes + copied), part);
+            copied += part;
+        }
+        return ArchiveContainerResult::Ok;
+    }
+
     static ArchiveContainerResult copyWithDeadline(
         const std::uint8_t* bytes, std::size_t size, std::string& output,
         ArchiveDeflateDeadlineFunction deadline, void* deadlineContext)
@@ -298,6 +371,8 @@ private:
         case ArchiveTarResult::InvalidArgument:
             return ArchiveContainerResult::InvalidArgument;
         case ArchiveTarResult::Limit: return ArchiveContainerResult::Limit;
+        case ArchiveTarResult::Cancelled:
+            return ArchiveContainerResult::Cancelled;
         case ArchiveTarResult::Deadline:
             return ArchiveContainerResult::Deadline;
         default: return ArchiveContainerResult::Malformed;
