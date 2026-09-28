@@ -660,6 +660,39 @@ static void runtime_release_buffers(RinRuntimeGuiSurface* surface) {
 
 static int runtime_attach_existing_buffers(RinRuntimeGuiSurface* surface);
 
+static int runtime_render_target_generation_in_use(uint64_t generation) {
+    uint32_t index;
+    if (generation == 0u) return 1;
+    for (index = 0u; index < RIN_RUNTIME_GUI_MAX_SURFACES; ++index) {
+        if (g_surfaces[index].active != 0u &&
+            g_surfaces[index].render_target_generation == generation)
+            return 1;
+    }
+    return 0;
+}
+
+static int runtime_reserve_render_target_generation(
+    RinRuntimeGuiSurface* surface) {
+    uint64_t candidate;
+    uint32_t probes;
+    if (surface == NULL) return -1;
+    candidate = g_next_render_target_generation;
+    if (candidate == 0u) candidate = 1u;
+    /* At most MAX_SURFACES generations can be live.  The extra probe either
+     * finds the first free value after a contiguous run or proves that the
+     * bounded live set has no available candidate. */
+    for (probes = 0u; probes <= RIN_RUNTIME_GUI_MAX_SURFACES; ++probes) {
+        if (!runtime_render_target_generation_in_use(candidate)) {
+            surface->render_target_generation = candidate;
+            g_next_render_target_generation = candidate == UINT64_MAX
+                ? 1u : candidate + 1u;
+            return 0;
+        }
+        candidate = candidate == UINT64_MAX ? 1u : candidate + 1u;
+    }
+    return -1;
+}
+
 static int runtime_allocate_buffers(RinRuntimeGuiSurface* surface) {
     uint32_t slot;
 
@@ -693,11 +726,7 @@ static int runtime_allocate_buffers(RinRuntimeGuiSurface* surface) {
         surface->shm_handles[slot] = handle;
         surface->pixels[slot] = pixels;
     }
-    if (g_next_render_target_generation == 0u)
-        g_next_render_target_generation = 1u;
-    surface->render_target_generation = g_next_render_target_generation++;
-    if (g_next_render_target_generation == 0u)
-        g_next_render_target_generation = 1u;
+    if (runtime_reserve_render_target_generation(surface) != 0) goto fail;
     return 0;
 fail:
     runtime_release_buffers(surface);
