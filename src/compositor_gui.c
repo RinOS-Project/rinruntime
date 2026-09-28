@@ -1152,6 +1152,7 @@ static int runtime_async_wait(short events, uint64_t deadline_ms) {
         uint64_t remaining;
         int timeout_ms;
         int ready;
+        if (now == 0u) return -1;
         if (now >= deadline_ms) return 0;
         remaining = deadline_ms - now;
         timeout_ms = remaining > 50u ? 50 : (int)remaining;
@@ -1191,10 +1192,15 @@ static int runtime_async_pump(uint32_t timeout_ms) {
             &g_async_requests.jobs[g_async_requests.head];
         if (g_async_requests.stage == RIN_RUNTIME_GUI_ASYNC_IDLE)
             runtime_async_begin_operation();
-        if (rin_monotonic_ms() - g_async_requests.started_ms >=
-            RIN_RUNTIME_GUI_REQUEST_TIMEOUT_MS) {
-            runtime_close_connection();
-            return -1;
+        {
+            const uint64_t now_ms = rin_monotonic_ms();
+            if (now_ms == 0u || g_async_requests.started_ms == 0u ||
+                now_ms < g_async_requests.started_ms ||
+                now_ms - g_async_requests.started_ms >=
+                    RIN_RUNTIME_GUI_REQUEST_TIMEOUT_MS) {
+                runtime_close_connection();
+                return -1;
+            }
         }
         if (g_async_requests.stage == RIN_RUNTIME_GUI_ASYNC_SEND_HEADER ||
             g_async_requests.stage == RIN_RUNTIME_GUI_ASYNC_SEND_PAYLOAD) {
@@ -1375,6 +1381,10 @@ static int runtime_async_drain(void) {
         const uint64_t now = rin_monotonic_ms();
         uint64_t remaining;
         uint32_t wait_ms;
+        if (now == 0u) {
+            runtime_close_connection();
+            return -1;
+        }
         if (now >= deadline) {
             runtime_close_connection();
             return -1;
