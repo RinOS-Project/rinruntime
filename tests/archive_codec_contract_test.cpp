@@ -417,6 +417,50 @@ static std::vector<std::uint8_t> makeXzStoredLzma2(std::uint8_t checkType)
     return bytes;
 }
 
+static std::vector<std::uint8_t> makeXzDeltaStoredLzma2()
+{
+    std::vector<std::uint8_t> bytes(60u, 0u);
+    const std::uint8_t magic[] = {
+        0xfdu, 0x37u, 0x7au, 0x58u, 0x5au, 0x00u};
+    std::memcpy(bytes.data(), magic, sizeof(magic));
+    writeLe32(bytes, 8u,
+              RinRuntime::rinruntime_archive_crc32(bytes.data() + 6u, 2u));
+
+    bytes[12u] = 0x03u;
+    bytes[13u] = 0xc1u;
+    bytes[14u] = 0x09u;
+    bytes[15u] = 0x05u;
+    bytes[16u] = 0x03u;
+    bytes[17u] = 0x01u;
+    bytes[18u] = 0x00u;
+    bytes[19u] = 0x21u;
+    bytes[20u] = 0x01u;
+    bytes[21u] = 0x00u;
+    writeLe32(bytes, 24u,
+              RinRuntime::rinruntime_archive_crc32(bytes.data() + 12u, 12u));
+
+    bytes[28u] = 0x01u;
+    bytes[29u] = 0x04u;
+    bytes[30u] = 0x00u;
+    const std::uint8_t deltaPayload[] = {
+        static_cast<std::uint8_t>('h'), 0xfdu, 0x07u, 0x00u, 0x03u};
+    std::memcpy(bytes.data() + 31u, deltaPayload, sizeof(deltaPayload));
+    bytes[36u] = 0x00u;
+
+    bytes[40u] = 0x00u;
+    bytes[41u] = 0x01u;
+    bytes[42u] = 0x19u;
+    bytes[43u] = 0x05u;
+    writeLe32(bytes, 44u,
+              RinRuntime::rinruntime_archive_crc32(bytes.data() + 40u, 4u));
+    bytes[52u] = 0x01u;
+    bytes[58u] = static_cast<std::uint8_t>('Y');
+    bytes[59u] = static_cast<std::uint8_t>('Z');
+    writeLe32(bytes, 48u,
+              RinRuntime::rinruntime_archive_crc32(bytes.data() + 52u, 6u));
+    return bytes;
+}
+
 int main()
 {
     const std::uint8_t stored[] = {
@@ -615,6 +659,12 @@ int main()
            UINT64_C(0x9b1edae5dbb937b1));
     xzOutput = "poison";
     assert(xzReader.decodeStoredLzma2(crc64Xz.data(), crc64Xz.size(),
+                                      xzOutput) ==
+           RinRuntime::ArchiveXzResult::Ok);
+    assert(xzOutput == "hello");
+    const std::vector<std::uint8_t> deltaXz = makeXzDeltaStoredLzma2();
+    xzOutput = "poison";
+    assert(xzReader.decodeStoredLzma2(deltaXz.data(), deltaXz.size(),
                                       xzOutput) ==
            RinRuntime::ArchiveXzResult::Ok);
     assert(xzOutput == "hello");

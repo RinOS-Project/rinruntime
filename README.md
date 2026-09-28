@@ -313,11 +313,14 @@ filter-property bounds, block padding, record sizes, and expanded-size limits
 without opening a path.  `decodeStoredLzma2()` adds a failure-atomic,
 caller-owned output path for check type 0, CRC32 (type 1), or CRC64 (type 4)
 blocks containing both LZMA2 stored chunks (`0x01`/`0x02`) and range-coded
-chunks, including the standard block-padding/check ordering.  Range-coded
+chunks, or one bounded Delta filter (`0x03`, distance 1..256) plus one LZMA2
+filter (`0x21`), including the standard block-padding/check ordering.  Delta
+output is applied per block before the block check is verified.  Range-coded
 state, dictionary references, cancellation, and deadline checks stay bounded
-by the public content limit; unsupported filters and check types remain
-explicit `Unsupported` results.  Filesystem extraction, archive service IPC,
-and File Portal publication remain private owners.
+by the public content limit; unsupported, duplicate, or incomplete filter
+chains and check types remain explicit `Unsupported` results.  Filesystem
+extraction, archive service IPC, and File Portal publication remain private
+owners.
 
 `archive_7z.hpp` provides the public `Archive7zReader` envelope inspector and
 the explicitly bounded `decodeStored()` subset.  The decoder accepts one

@@ -839,8 +839,6 @@ private:
             const std::size_t headerEnd = blockOffset + blockHeaderSize;
             const std::size_t headerDataEnd = headerEnd - 4u;
             const std::uint8_t blockFlags = bytes[blockOffset + 1u];
-            if ((blockFlags & 0x03u) != 0u)
-                return ArchiveXzResult::Unsupported;
 
             std::size_t headerCursor = blockOffset + 2u;
             std::uint64_t compressedSize = 0u;
@@ -854,14 +852,36 @@ private:
                          ignoredUncompressedSize))
                 return ArchiveXzResult::Malformed;
 
-            std::uint64_t filterId = 0u;
-            std::uint64_t propertySize = 0u;
-            if (!readVli(bytes, headerDataEnd, headerCursor, filterId) ||
-                !readVli(bytes, headerDataEnd, headerCursor, propertySize) ||
-                filterId != 0x21u || propertySize != 1u ||
-                headerCursor >= headerDataEnd)
-                return ArchiveXzResult::Unsupported;
-            const std::uint8_t dictionaryProperty = bytes[headerCursor++];
+            const std::size_t filterCount =
+                static_cast<std::size_t>((blockFlags & 0x03u) + 1u);
+            if (filterCount > 2u) return ArchiveXzResult::Unsupported;
+            bool lzmaFilterPresent = false;
+            std::uint8_t dictionaryProperty = 0u;
+            std::size_t deltaDistance = 0u;
+            for (std::size_t filter = 0u; filter < filterCount; ++filter) {
+                std::uint64_t filterId = 0u;
+                std::uint64_t propertySize = 0u;
+                if (!readVli(bytes, headerDataEnd, headerCursor, filterId) ||
+                    !readVli(bytes, headerDataEnd, headerCursor, propertySize) ||
+                    propertySize > headerDataEnd - headerCursor)
+                    return ArchiveXzResult::Malformed;
+                if (filterId == 0x21u) {
+                    if (lzmaFilterPresent || propertySize != 1u ||
+                        headerCursor >= headerDataEnd)
+                        return ArchiveXzResult::Unsupported;
+                    dictionaryProperty = bytes[headerCursor++];
+                    lzmaFilterPresent = true;
+                } else if (filterId == 0x03u) {
+                    if (deltaDistance != 0u || propertySize != 1u ||
+                        headerCursor >= headerDataEnd)
+                        return ArchiveXzResult::Unsupported;
+                    deltaDistance = static_cast<std::size_t>(
+                        bytes[headerCursor++]) + 1u;
+                } else {
+                    return ArchiveXzResult::Unsupported;
+                }
+            }
+            if (!lzmaFilterPresent) return ArchiveXzResult::Unsupported;
             if (dictionaryProperty > 40u) return ArchiveXzResult::Malformed;
             const std::uint64_t requestedDictionary =
                 dictionaryProperty == 40u
@@ -1000,6 +1020,23 @@ private:
                     decoded.data() + blockOutputStart);
             const std::size_t blockOutputSize =
                 decoded.size() - blockOutputStart;
+            if (deltaDistance != 0u) {
+                for (std::size_t index = 0u; index < blockOutputSize; ++index) {
+                    if (deadline != nullptr && deadline(deadlineContext))
+                        return ArchiveXzResult::Deadline;
+                    if (cancellation != nullptr &&
+                        cancellation(cancellationContext))
+                        return ArchiveXzResult::Cancelled;
+                    const std::size_t absolute = blockOutputStart + index;
+                    std::uint8_t value = static_cast<std::uint8_t>(
+                        decoded[absolute]);
+                    if (index >= deltaDistance)
+                        value = static_cast<std::uint8_t>(
+                            value + static_cast<std::uint8_t>(
+                                        decoded[absolute - deltaDistance]));
+                    decoded[absolute] = static_cast<char>(value);
+                }
+            }
             const std::size_t checkOffset =
                 (payloadEnd + 3u) & ~std::size_t(3u);
             if (checkOffset < payloadEnd ||
