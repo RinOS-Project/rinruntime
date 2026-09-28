@@ -4,9 +4,11 @@
 #ifndef RINRUNTIME_ARCHIVE_CONTAINER_HPP
 #define RINRUNTIME_ARCHIVE_CONTAINER_HPP
 
+#include "archive_7z.hpp"
 #include "archive_targz.hpp"
 #include "archive_tar.hpp"
 #include "archive_zip.hpp"
+#include "archive_xz.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -23,6 +25,8 @@ enum class ArchiveContainerKind : std::uint8_t {
     Zip = 1,
     Tar = 2,
     TarGzip = 3,
+    SevenZip = 4,
+    Xz = 5,
 };
 
 enum class ArchiveContainerResult : int {
@@ -81,6 +85,16 @@ public:
                 result = map(std::get<ArchiveTarGzipReader>(reader_).parse(
                     bytes, size));
                 break;
+            case ArchiveContainerKind::SevenZip:
+                reader_.emplace<Archive7zReader>();
+                result = map(std::get<Archive7zReader>(reader_).decodeStored(
+                    bytes, size, stream_));
+                break;
+            case ArchiveContainerKind::Xz:
+                reader_.emplace<ArchiveXzReader>();
+                result = map(std::get<ArchiveXzReader>(reader_)
+                                 .decodeStoredLzma2(bytes, size, stream_));
+                break;
             default:
                 result = ArchiveContainerResult::Unsupported;
                 break;
@@ -121,6 +135,10 @@ public:
                 output.assign(reinterpret_cast<const char*>(bytes), size);
                 return ArchiveContainerResult::Ok;
             }
+            case ArchiveContainerKind::SevenZip:
+            case ArchiveContainerKind::Xz:
+                output = stream_;
+                return ArchiveContainerResult::Ok;
             default:
                 return ArchiveContainerResult::Unsupported;
             }
@@ -134,6 +152,7 @@ public:
     {
         kind_ = ArchiveContainerKind::Unknown;
         reader_.emplace<std::monostate>();
+        stream_.clear();
         entries_.clear();
     }
 
@@ -176,7 +195,11 @@ private:
                          sizeof(seven_zip_signature)) == 0) ||
             (size >= sizeof(xz_signature) &&
              std::memcmp(bytes, xz_signature, sizeof(xz_signature)) == 0))
-            return ArchiveContainerKind::Unknown;
+            return size >= sizeof(seven_zip_signature) &&
+                           std::memcmp(bytes, seven_zip_signature,
+                                       sizeof(seven_zip_signature)) == 0
+                       ? ArchiveContainerKind::SevenZip
+                       : ArchiveContainerKind::Xz;
         return ArchiveContainerKind::Unknown;
     }
 
@@ -225,6 +248,36 @@ private:
         }
     }
 
+    static ArchiveContainerResult map(Archive7zResult result)
+    {
+        switch (result) {
+        case Archive7zResult::Ok: return ArchiveContainerResult::Ok;
+        case Archive7zResult::InvalidArgument:
+            return ArchiveContainerResult::InvalidArgument;
+        case Archive7zResult::Limit: return ArchiveContainerResult::Limit;
+        case Archive7zResult::Unsupported:
+            return ArchiveContainerResult::Unsupported;
+        case Archive7zResult::CrcMismatch:
+        case Archive7zResult::Malformed:
+        default: return ArchiveContainerResult::Malformed;
+        }
+    }
+
+    static ArchiveContainerResult map(ArchiveXzResult result)
+    {
+        switch (result) {
+        case ArchiveXzResult::Ok: return ArchiveContainerResult::Ok;
+        case ArchiveXzResult::InvalidArgument:
+            return ArchiveContainerResult::InvalidArgument;
+        case ArchiveXzResult::Limit: return ArchiveContainerResult::Limit;
+        case ArchiveXzResult::Unsupported:
+            return ArchiveContainerResult::Unsupported;
+        case ArchiveXzResult::CrcMismatch:
+        case ArchiveXzResult::Malformed:
+        default: return ArchiveContainerResult::Malformed;
+        }
+    }
+
     void rebuildEntries()
     {
         entries_.clear();
@@ -250,6 +303,12 @@ private:
                                     entry.directory});
             }
             break;
+        case ArchiveContainerKind::SevenZip:
+        case ArchiveContainerKind::Xz:
+            entries_.push_back({"<stream>",
+                                static_cast<std::uint64_t>(stream_.size()),
+                                0u, false});
+            break;
         default:
             break;
         }
@@ -257,8 +316,9 @@ private:
 
     ArchiveContainerKind kind_ = ArchiveContainerKind::Unknown;
     std::variant<std::monostate, ArchiveZipReader, ArchiveTarReader,
-                 ArchiveTarGzipReader>
+                 ArchiveTarGzipReader, Archive7zReader, ArchiveXzReader>
         reader_;
+    std::string stream_;
     std::vector<ArchiveContainerEntry> entries_;
 };
 
