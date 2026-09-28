@@ -241,6 +241,7 @@ public:
                     failAndAbort();
                     return false;
                 }
+                scrubBuffer(buffer, capacity);
                 request_.clear();
                 remaining_ = 0u;
                 rangeExhausted_ = false;

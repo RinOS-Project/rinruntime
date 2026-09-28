@@ -156,7 +156,10 @@ int main() {
     std::size_t bytesRead = 0u;
     assert(ordinary.read(buffer, sizeof(buffer), bytesRead) && bytesRead == 2u);
     assert(ordinary.read(buffer, sizeof(buffer), bytesRead) && bytesRead == 1u);
-    assert(ordinary.read(buffer, sizeof(buffer), bytesRead) && bytesRead == 0u);
+    std::uint8_t ordinaryEof[4u] = {0xffu, 0xffu, 0xffu, 0xffu};
+    assert(ordinary.read(ordinaryEof, sizeof(ordinaryEof), bytesRead) &&
+           bytesRead == 0u);
+    for (const std::uint8_t byte : ordinaryEof) assert(byte == 0u);
 
     Owner helperOwner;
     RinRuntime::DownloadRangeTransportOpsV1 helperOps = ordinaryOps;
