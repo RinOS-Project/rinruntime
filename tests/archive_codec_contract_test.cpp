@@ -598,6 +598,62 @@ static std::vector<std::uint8_t> makeXzArmThumbStoredLzma2()
     return bytes;
 }
 
+static std::vector<std::uint8_t> makeXzArm64StoredLzma2()
+{
+    /* The second block starts at stream offset four.  Its filtered ARM64 BL
+     * immediate is one; subtracting PC/4 restores the zero immediate. */
+    std::vector<std::uint8_t> bytes(84u, 0u);
+    const std::uint8_t magic[] = {
+        0xfdu, 0x37u, 0x7au, 0x58u, 0x5au, 0x00u};
+    std::memcpy(bytes.data(), magic, sizeof(magic));
+    writeLe32(bytes, 8u,
+              RinRuntime::rinruntime_archive_crc32(bytes.data() + 6u, 2u));
+
+    for (std::size_t block = 12u; block <= 36u; block += 24u) {
+        bytes[block] = 0x03u;
+        bytes[block + 1u] = 0xc1u;
+        bytes[block + 2u] = 0x08u;
+        bytes[block + 3u] = 0x04u;
+        bytes[block + 4u] = 0x0au; /* ARM64 BCJ */
+        bytes[block + 5u] = 0x00u;
+        bytes[block + 6u] = 0x21u; /* LZMA2 */
+        bytes[block + 7u] = 0x01u;
+        bytes[block + 8u] = 0x00u;
+        writeLe32(bytes, block + 12u,
+                  RinRuntime::rinruntime_archive_crc32(bytes.data() + block,
+                                                        12u));
+    }
+
+    bytes[28u] = 0x01u;
+    bytes[29u] = 0x03u;
+    bytes[30u] = 0x00u;
+    const std::uint8_t firstBlock[] = {0x00u, 0x00u, 0x00u, 0x00u};
+    std::memcpy(bytes.data() + 31u, firstBlock, sizeof(firstBlock));
+    bytes[35u] = 0x00u;
+
+    bytes[52u] = 0x01u;
+    bytes[53u] = 0x03u;
+    bytes[54u] = 0x00u;
+    const std::uint8_t filteredBranch[] = {0x01u, 0x00u, 0x00u, 0x94u};
+    std::memcpy(bytes.data() + 55u, filteredBranch, sizeof(filteredBranch));
+    bytes[59u] = 0x00u;
+
+    bytes[60u] = 0x00u;
+    bytes[61u] = 0x02u;
+    bytes[62u] = 0x18u;
+    bytes[63u] = 0x04u;
+    bytes[64u] = 0x18u;
+    bytes[65u] = 0x04u;
+    writeLe32(bytes, 68u,
+              RinRuntime::rinruntime_archive_crc32(bytes.data() + 60u, 8u));
+    bytes[76u] = 0x02u;
+    bytes[82u] = static_cast<std::uint8_t>('Y');
+    bytes[83u] = static_cast<std::uint8_t>('Z');
+    writeLe32(bytes, 72u,
+              RinRuntime::rinruntime_archive_crc32(bytes.data() + 76u, 6u));
+    return bytes;
+}
+
 int main()
 {
     const std::uint8_t stored[] = {
@@ -825,6 +881,12 @@ int main()
            RinRuntime::ArchiveXzResult::Ok);
     assert(xzOutput == std::string({'\0', static_cast<char>(0xf0), '\0',
                                     static_cast<char>(0xf8)}));
+    const std::vector<std::uint8_t> arm64Xz = makeXzArm64StoredLzma2();
+    xzOutput = "poison";
+    assert(xzReader.decodeStoredLzma2(arm64Xz.data(), arm64Xz.size(), xzOutput) ==
+           RinRuntime::ArchiveXzResult::Ok);
+    assert(xzOutput == std::string({'\0', '\0', '\0', '\0', '\0', '\0',
+                                    '\0', static_cast<char>(0x94)}));
     std::vector<std::uint8_t> unknownFilterXz = deltaXz;
     unknownFilterXz[16u] = 0x04u;
     writeLe32(unknownFilterXz, 24u,

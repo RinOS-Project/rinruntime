@@ -315,10 +315,11 @@ caller-owned output path for check type 0, CRC32 (type 1), or CRC64 (type 4)
 blocks containing both LZMA2 stored chunks (`0x01`/`0x02`) and range-coded
 chunks, or one bounded Delta filter (`0x03`, distance 1..256), x86 BCJ
 filter (`0x04`, four-byte start offset), ARM BCJ filter (`0x07`, no
-properties), or ARM Thumb BCJ filter (`0x08`, no properties) plus one LZMA2
-filter (`0x21`), including the standard block-padding/check ordering.  Delta,
-x86 BCJ, ARM BCJ, and ARM Thumb BCJ output is applied per block before the
-block check is verified.  Range-coded
+properties), ARM Thumb BCJ filter (`0x08`, no properties), or ARM64 BCJ
+filter (`0x0a`, no properties) plus one LZMA2 filter (`0x21`), including the
+standard block-padding/check ordering.  Delta, x86 BCJ, ARM BCJ, ARM Thumb
+BCJ, and ARM64 BCJ output is applied per block before the block check is
+verified.  Range-coded
 state, dictionary references, cancellation, and deadline checks stay bounded
 by the public content limit; unsupported, duplicate, or incomplete filter
 chains and check types remain explicit `Unsupported` results.  Filesystem

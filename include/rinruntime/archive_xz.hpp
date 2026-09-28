@@ -862,6 +862,7 @@ private:
             std::uint32_t x86StartOffset = 0u;
             bool armFilterPresent = false;
             bool armThumbFilterPresent = false;
+            bool arm64FilterPresent = false;
             for (std::size_t filter = 0u; filter < filterCount; ++filter) {
                 std::uint64_t filterId = 0u;
                 std::uint64_t propertySize = 0u;
@@ -896,6 +897,10 @@ private:
                     if (armThumbFilterPresent || propertySize != 0u)
                         return ArchiveXzResult::Unsupported;
                     armThumbFilterPresent = true;
+                } else if (filterId == 0x0au) {
+                    if (arm64FilterPresent || propertySize != 0u)
+                        return ArchiveXzResult::Unsupported;
+                    arm64FilterPresent = true;
                 } else {
                     return ArchiveXzResult::Unsupported;
                 }
@@ -1074,6 +1079,14 @@ private:
             }
             if (armThumbFilterPresent) {
                 const ArchiveXzResult filterResult = applyArmThumbBcj(
+                    decoded, blockOutputStart, blockOutputSize,
+                    cancellation, cancellationContext, deadline,
+                    deadlineContext);
+                if (filterResult != ArchiveXzResult::Ok)
+                    return filterResult;
+            }
+            if (arm64FilterPresent) {
+                const ArchiveXzResult filterResult = applyArm64Bcj(
                     decoded, blockOutputStart, blockOutputSize,
                     cancellation, cancellationContext, deadline,
                     deadlineContext);
@@ -1319,6 +1332,60 @@ private:
                 0xf8u | ((destination >> 8u) & 7u));
             buffer[position + 2u] = static_cast<std::uint8_t>(destination);
             position += 2u;
+        }
+        return ArchiveXzResult::Ok;
+    }
+
+    static ArchiveXzResult applyArm64Bcj(
+        std::string& decoded, std::size_t absoluteOffset, std::size_t size,
+        ArchiveDeflateCancellationFunction cancellation,
+        void* cancellationContext, ArchiveDeflateDeadlineFunction deadline,
+        void* deadlineContext)
+    {
+        size &= ~std::size_t(3u);
+        auto* buffer = reinterpret_cast<std::uint8_t*>(decoded.data()) +
+                       absoluteOffset;
+        const std::uint32_t nowPosition =
+            static_cast<std::uint32_t>(absoluteOffset);
+        for (std::size_t position = 0u; position < size; position += 4u) {
+            if (deadline != nullptr && deadline(deadlineContext))
+                return ArchiveXzResult::Deadline;
+            if (cancellation != nullptr && cancellation(cancellationContext))
+                return ArchiveXzResult::Cancelled;
+
+            const std::uint32_t source = readLe32(buffer + position);
+            std::uint32_t instruction = source;
+            std::uint32_t programCounter =
+                nowPosition + static_cast<std::uint32_t>(position);
+            if ((source >> 26u) == 0x25u) {
+                /* BL: the immediate is a signed 26-bit word offset. */
+                instruction = 0x94000000u;
+                programCounter >>= 2u;
+                instruction |= (source - programCounter) & 0x03ffffffu;
+            } else if ((source & 0x9f000000u) == 0x90000000u) {
+                /* ADRP: accept only the bounded +/-512 MiB range used by the
+                 * simple filter to avoid rewriting arbitrary data. */
+                const std::uint32_t immediate =
+                    ((source >> 29u) & 3u) | ((source >> 3u) & 0x001ffffcu);
+                if ((immediate + 0x00020000u) & 0x001c0000u) continue;
+                instruction &= 0x9000001fu;
+                programCounter >>= 12u;
+                const std::uint32_t destination = immediate - programCounter;
+                instruction |= (destination & 3u) << 29u;
+                instruction |= (destination & 0x0003fffcu) << 3u;
+                instruction |= (0u - (destination & 0x00020000u)) &
+                               0x00e00000u;
+            } else {
+                continue;
+            }
+
+            buffer[position] = static_cast<std::uint8_t>(instruction);
+            buffer[position + 1u] =
+                static_cast<std::uint8_t>(instruction >> 8u);
+            buffer[position + 2u] =
+                static_cast<std::uint8_t>(instruction >> 16u);
+            buffer[position + 3u] =
+                static_cast<std::uint8_t>(instruction >> 24u);
         }
         return ArchiveXzResult::Ok;
     }
