@@ -637,6 +637,24 @@ int main()
                                        sevenZipOutput) ==
            RinRuntime::Archive7zResult::Ok);
     assert(sevenZipOutput == "hello");
+    std::vector<std::uint8_t> nonCanonicalSevenZip = storedSevenZip;
+    nonCanonicalSevenZip.insert(nonCanonicalSevenZip.begin() + 41u, 0u);
+    nonCanonicalSevenZip[40u] = 0x80u; /* PackPos 0 encoded with two bytes */
+    writeLe64(nonCanonicalSevenZip, 20u,
+              nonCanonicalSevenZip.size() - 37u);
+    writeLe32(nonCanonicalSevenZip, 28u,
+              RinRuntime::rinruntime_archive_crc32(
+                  nonCanonicalSevenZip.data() + 37u,
+                  nonCanonicalSevenZip.size() - 37u));
+    writeLe32(nonCanonicalSevenZip, 8u,
+              RinRuntime::rinruntime_archive_crc32(
+                  nonCanonicalSevenZip.data() + 12u, 20u));
+    sevenZipOutput = "poison";
+    assert(sevenZipReader.decodeStored(nonCanonicalSevenZip.data(),
+                                       nonCanonicalSevenZip.size(),
+                                       sevenZipOutput) ==
+           RinRuntime::Archive7zResult::Malformed);
+    assert(sevenZipOutput == "poison");
     std::vector<std::uint8_t> emptyStoredSevenZip = storedSevenZip;
     emptyStoredSevenZip.erase(emptyStoredSevenZip.begin() + 32u,
                               emptyStoredSevenZip.begin() + 37u);
