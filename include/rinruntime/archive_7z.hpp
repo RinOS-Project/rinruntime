@@ -94,12 +94,12 @@ public:
         return Archive7zResult::Ok;
     }
 
-    /* Decode a single non-empty stream using one 7z Copy coder (method 0x00)
-     * or one LZMA coder (method bytes 03 01 01).  This bounded subset is
-     * useful for caller-owned test/resource bytes and intentionally has no
-     * path, filename, filesystem, or service authority.  Other coder chains,
-     * encryption, multiple folders/streams, and external headers remain
-     * explicit Unsupported results. */
+    /* Decode one 7z Copy coder (method 0x00) or one LZMA coder (method bytes
+     * 03 01 01), plus a single empty regular file with no packed stream.  This
+     * bounded subset is useful for caller-owned test/resource bytes and
+     * intentionally has no path, filename, filesystem, or service authority.
+     * Other coder chains, encryption, multiple folders/streams, directories,
+     * and external headers remain explicit Unsupported results. */
     Archive7zResult decodeStored(const std::uint8_t* bytes, std::size_t size,
                                  std::string& output) const
     {
@@ -153,153 +153,163 @@ private:
         std::array<std::uint8_t, 5u> lzma_properties{};
         std::size_t lzma_dictionary_size = 0u;
         bool lzma_coder = false;
+        bool stream_info_present = false;
+        bool empty_stream = false;
+        bool empty_file = false;
 
         if (!takeByte(bytes, end, cursor, 0x01u))
             return Archive7zResult::Malformed;
         if (!takeByte(bytes, end, cursor, 0x04u))
             return Archive7zResult::Unsupported;
 
-        if (!takeByte(bytes, end, cursor, 0x06u) ||
-            !readEncodedUInt64(bytes, end, cursor, pack_position))
-            return Archive7zResult::Malformed;
-        std::uint64_t pack_stream_count = 0u;
-        if (!readEncodedUInt64(bytes, end, cursor, pack_stream_count))
-            return Archive7zResult::Malformed;
-        if (pack_stream_count != 1u)
-            return Archive7zResult::Unsupported;
-        if (!takeByte(bytes, end, cursor, 0x09u) ||
-            !readEncodedUInt64(bytes, end, cursor, pack_size))
-            return Archive7zResult::Malformed;
-        if (pack_size > static_cast<std::uint64_t>(kMaxStreamBytes))
-            return Archive7zResult::Limit;
-        if (cursor < end && bytes[cursor] == 0x0au) {
-            ++cursor;
-            if (!readCrc(bytes, end, cursor, pack_crc_defined, pack_crc))
-                return Archive7zResult::Malformed;
-        }
-        if (!takeByte(bytes, end, cursor, 0x00u))
-            return Archive7zResult::Malformed;
-
-        if (!takeByte(bytes, end, cursor, 0x07u) ||
-            !takeByte(bytes, end, cursor, 0x0bu))
-            return Archive7zResult::Unsupported;
-        std::uint64_t folder_count = 0u;
-        if (!readEncodedUInt64(bytes, end, cursor, folder_count))
-            return Archive7zResult::Malformed;
-        if (folder_count != 1u) return Archive7zResult::Unsupported;
         if (cursor >= end) return Archive7zResult::Malformed;
-        if (bytes[cursor++] != 0u) return Archive7zResult::Unsupported;
-
-        std::uint64_t coder_count = 0u;
-        if (!readEncodedUInt64(bytes, end, cursor, coder_count))
-            return Archive7zResult::Malformed;
-        if (coder_count != 1u || cursor >= end)
-            return Archive7zResult::Unsupported;
-        const std::uint8_t coder_flags = bytes[cursor++];
-        const unsigned method_size = coder_flags & 0x0fu;
-        const bool complex_coder = (coder_flags & 0x10u) != 0u;
-        const bool has_properties = (coder_flags & 0x20u) != 0u;
-        if (method_size == 0u || method_size > 8u ||
-            (coder_flags & 0xc0u) != 0u || cursor > end ||
-            method_size > end - cursor)
-            return Archive7zResult::Unsupported;
-        for (unsigned index = 0u; index != method_size; ++index)
-            coder_method |= static_cast<std::uint64_t>(bytes[cursor++])
-                            << (index * 8u);
-        if (complex_coder) {
-            std::uint64_t input_streams = 0u;
-            std::uint64_t output_streams = 0u;
-            if (!readEncodedUInt64(bytes, end, cursor, input_streams) ||
-                !readEncodedUInt64(bytes, end, cursor, output_streams) ||
-                input_streams != 1u || output_streams != 1u)
-                return Archive7zResult::Unsupported;
-        }
-        if (has_properties) {
-            std::uint64_t property_size = 0u;
-            if (!readEncodedUInt64(bytes, end, cursor, property_size) ||
-                property_size > static_cast<std::uint64_t>(end - cursor))
-                return Archive7zResult::Malformed;
-            if (coder_method != UINT64_C(0x010103) || property_size != 5u)
-                return Archive7zResult::Unsupported;
-            for (std::size_t index = 0u; index != 5u; ++index)
-                lzma_properties[index] = bytes[cursor + index];
-            const std::uint32_t dictionary =
-                static_cast<std::uint32_t>(lzma_properties[1u]) |
-                static_cast<std::uint32_t>(lzma_properties[2u]) << 8u |
-                static_cast<std::uint32_t>(lzma_properties[3u]) << 16u |
-                static_cast<std::uint32_t>(lzma_properties[4u]) << 24u;
-            if (dictionary == 0u) return Archive7zResult::Malformed;
-            if (dictionary > kMaxStreamBytes) return Archive7zResult::Limit;
-            lzma_dictionary_size = static_cast<std::size_t>(dictionary);
-            lzma_coder = true;
-            cursor += 5u;
-        } else if (coder_method != 0u || complex_coder) {
-            return Archive7zResult::Unsupported;
-        }
-        if (coder_method != 0u && !lzma_coder)
-            return Archive7zResult::Unsupported;
-
-        if (!takeByte(bytes, end, cursor, 0x0cu) ||
-            !readEncodedUInt64(bytes, end, cursor, unpack_size))
-            return Archive7zResult::Malformed;
-        if (unpack_size > static_cast<std::uint64_t>(kMaxStreamBytes))
-            return Archive7zResult::Limit;
-        if (cursor < end && bytes[cursor] == 0x0au) {
+        if (bytes[cursor] == 0x00u) {
             ++cursor;
-            if (!readCrc(bytes, end, cursor, folder_crc_defined, folder_crc))
+        } else {
+            stream_info_present = true;
+            if (!takeByte(bytes, end, cursor, 0x06u) ||
+                !readEncodedUInt64(bytes, end, cursor, pack_position))
                 return Archive7zResult::Malformed;
-        }
-        if (!takeByte(bytes, end, cursor, 0x00u))
-            return Archive7zResult::Malformed;
+            std::uint64_t pack_stream_count = 0u;
+            if (!readEncodedUInt64(bytes, end, cursor, pack_stream_count))
+                return Archive7zResult::Malformed;
+            if (pack_stream_count != 1u)
+                return Archive7zResult::Unsupported;
+            if (!takeByte(bytes, end, cursor, 0x09u) ||
+                !readEncodedUInt64(bytes, end, cursor, pack_size))
+                return Archive7zResult::Malformed;
+            if (pack_size > static_cast<std::uint64_t>(kMaxStreamBytes))
+                return Archive7zResult::Limit;
+            if (cursor < end && bytes[cursor] == 0x0au) {
+                ++cursor;
+                if (!readCrc(bytes, end, cursor, pack_crc_defined, pack_crc))
+                    return Archive7zResult::Malformed;
+            }
+            if (!takeByte(bytes, end, cursor, 0x00u))
+                return Archive7zResult::Malformed;
 
-        /* A one-folder/one-stream archive has no need for SubStreamsInfo. */
-        if (cursor >= end) return Archive7zResult::Malformed;
-        if (bytes[cursor] == 0x08u) {
-            ++cursor;
-            std::uint64_t substream_count = 1u;
-            while (cursor < end && bytes[cursor] != 0u) {
-                if (deadline != nullptr && deadline(deadlineContext))
-                    return Archive7zResult::Deadline;
-                if (cancellation != nullptr &&
-                    cancellation(cancellationContext))
-                    return Archive7zResult::Cancelled;
-                const std::uint8_t property = bytes[cursor++];
-                if (property == 0x0du) {
-                    if (!readEncodedUInt64(bytes, end, cursor,
-                                           substream_count))
-                        return Archive7zResult::Malformed;
-                    if (substream_count != 1u)
-                        return Archive7zResult::Unsupported;
-                } else if (property == 0x09u) {
-                    std::uint64_t substream_size = 0u;
-                    if (!readEncodedUInt64(bytes, end, cursor,
-                                           substream_size))
-                        return Archive7zResult::Malformed;
-                    if (substream_size != unpack_size)
-                        return Archive7zResult::Malformed;
-                } else if (property == 0x0au) {
-                    bool defined = false;
-                    std::uint32_t crc = 0u;
-                    if (!readCrc(bytes, end, cursor, defined, crc))
-                        return Archive7zResult::Malformed;
-                    if (defined && folder_crc_defined && crc != folder_crc)
-                        return Archive7zResult::CrcMismatch;
-                    if (defined && !folder_crc_defined) {
-                        folder_crc = crc;
-                        folder_crc_defined = true;
-                    }
-                } else {
+            if (!takeByte(bytes, end, cursor, 0x07u) ||
+                !takeByte(bytes, end, cursor, 0x0bu))
+                return Archive7zResult::Unsupported;
+            std::uint64_t folder_count = 0u;
+            if (!readEncodedUInt64(bytes, end, cursor, folder_count))
+                return Archive7zResult::Malformed;
+            if (folder_count != 1u) return Archive7zResult::Unsupported;
+            if (cursor >= end) return Archive7zResult::Malformed;
+            if (bytes[cursor++] != 0u) return Archive7zResult::Unsupported;
+
+            std::uint64_t coder_count = 0u;
+            if (!readEncodedUInt64(bytes, end, cursor, coder_count))
+                return Archive7zResult::Malformed;
+            if (coder_count != 1u || cursor >= end)
+                return Archive7zResult::Unsupported;
+            const std::uint8_t coder_flags = bytes[cursor++];
+            const unsigned method_size = coder_flags & 0x0fu;
+            const bool complex_coder = (coder_flags & 0x10u) != 0u;
+            const bool has_properties = (coder_flags & 0x20u) != 0u;
+            if (method_size == 0u || method_size > 8u ||
+                (coder_flags & 0xc0u) != 0u || cursor > end ||
+                method_size > end - cursor)
+                return Archive7zResult::Unsupported;
+            for (unsigned index = 0u; index != method_size; ++index)
+                coder_method |= static_cast<std::uint64_t>(bytes[cursor++])
+                                << (index * 8u);
+            if (complex_coder) {
+                std::uint64_t input_streams = 0u;
+                std::uint64_t output_streams = 0u;
+                if (!readEncodedUInt64(bytes, end, cursor, input_streams) ||
+                    !readEncodedUInt64(bytes, end, cursor, output_streams) ||
+                    input_streams != 1u || output_streams != 1u)
                     return Archive7zResult::Unsupported;
+            }
+            if (has_properties) {
+                std::uint64_t property_size = 0u;
+                if (!readEncodedUInt64(bytes, end, cursor, property_size) ||
+                    property_size > static_cast<std::uint64_t>(end - cursor))
+                    return Archive7zResult::Malformed;
+                if (coder_method != UINT64_C(0x010103) || property_size != 5u)
+                    return Archive7zResult::Unsupported;
+                for (std::size_t index = 0u; index != 5u; ++index)
+                    lzma_properties[index] = bytes[cursor + index];
+                const std::uint32_t dictionary =
+                    static_cast<std::uint32_t>(lzma_properties[1u]) |
+                    static_cast<std::uint32_t>(lzma_properties[2u]) << 8u |
+                    static_cast<std::uint32_t>(lzma_properties[3u]) << 16u |
+                    static_cast<std::uint32_t>(lzma_properties[4u]) << 24u;
+                if (dictionary == 0u) return Archive7zResult::Malformed;
+                if (dictionary > kMaxStreamBytes) return Archive7zResult::Limit;
+                lzma_dictionary_size = static_cast<std::size_t>(dictionary);
+                lzma_coder = true;
+                cursor += 5u;
+            } else if (coder_method != 0u || complex_coder) {
+                return Archive7zResult::Unsupported;
+            }
+            if (coder_method != 0u && !lzma_coder)
+                return Archive7zResult::Unsupported;
+
+            if (!takeByte(bytes, end, cursor, 0x0cu) ||
+                !readEncodedUInt64(bytes, end, cursor, unpack_size))
+                return Archive7zResult::Malformed;
+            if (unpack_size > static_cast<std::uint64_t>(kMaxStreamBytes))
+                return Archive7zResult::Limit;
+            if (cursor < end && bytes[cursor] == 0x0au) {
+                ++cursor;
+                if (!readCrc(bytes, end, cursor, folder_crc_defined, folder_crc))
+                    return Archive7zResult::Malformed;
+            }
+            if (!takeByte(bytes, end, cursor, 0x00u))
+                return Archive7zResult::Malformed;
+
+            /* A one-folder/one-stream archive has no need for SubStreamsInfo. */
+            if (cursor >= end) return Archive7zResult::Malformed;
+            if (bytes[cursor] == 0x08u) {
+                ++cursor;
+                std::uint64_t substream_count = 1u;
+                while (cursor < end && bytes[cursor] != 0u) {
+                    if (deadline != nullptr && deadline(deadlineContext))
+                        return Archive7zResult::Deadline;
+                    if (cancellation != nullptr &&
+                        cancellation(cancellationContext))
+                        return Archive7zResult::Cancelled;
+                    const std::uint8_t property = bytes[cursor++];
+                    if (property == 0x0du) {
+                        if (!readEncodedUInt64(bytes, end, cursor,
+                                               substream_count))
+                            return Archive7zResult::Malformed;
+                        if (substream_count != 1u)
+                            return Archive7zResult::Unsupported;
+                    } else if (property == 0x09u) {
+                        std::uint64_t substream_size = 0u;
+                        if (!readEncodedUInt64(bytes, end, cursor,
+                                               substream_size))
+                            return Archive7zResult::Malformed;
+                        if (substream_size != unpack_size)
+                            return Archive7zResult::Malformed;
+                    } else if (property == 0x0au) {
+                        bool defined = false;
+                        std::uint32_t crc = 0u;
+                        if (!readCrc(bytes, end, cursor, defined, crc))
+                            return Archive7zResult::Malformed;
+                        if (defined && folder_crc_defined && crc != folder_crc)
+                            return Archive7zResult::CrcMismatch;
+                        if (defined && !folder_crc_defined) {
+                            folder_crc = crc;
+                            folder_crc_defined = true;
+                        }
+                    } else {
+                        return Archive7zResult::Unsupported;
+                    }
                 }
+                if (!takeByte(bytes, end, cursor, 0x00u))
+                    return Archive7zResult::Malformed;
             }
             if (!takeByte(bytes, end, cursor, 0x00u))
                 return Archive7zResult::Malformed;
         }
-        if (!takeByte(bytes, end, cursor, 0x00u))
-            return Archive7zResult::Malformed;
 
         /* FilesInfo is parsed only far enough to prove that this is one
-         * non-empty file.  Names and other metadata are not public output. */
+         * non-empty file or one empty regular file.  Names and other metadata
+         * are not public output. */
         if (cursor < end && bytes[cursor] == 0x05u) {
             ++cursor;
             std::uint64_t file_count = 0u;
@@ -322,9 +332,16 @@ private:
                 if (property == 0x0eu) {
                     const std::size_t bitmap_size = 1u;
                     if (property_size != bitmap_size ||
-                        bytes[cursor] != 0u)
+                        bytes[cursor] != 1u)
                         return Archive7zResult::Unsupported;
-                } else if (property == 0x0fu || property == 0x10u) {
+                    empty_stream = true;
+                } else if (property == 0x0fu) {
+                    const std::size_t bitmap_size = 1u;
+                    if (property_size != bitmap_size ||
+                        bytes[cursor] != 1u)
+                        return Archive7zResult::Unsupported;
+                    empty_file = true;
+                } else if (property == 0x10u) {
                     return Archive7zResult::Unsupported;
                 }
                 cursor = property_end;
@@ -334,11 +351,17 @@ private:
         }
         if (!takeByte(bytes, end, cursor, 0x00u) || cursor != end)
             return Archive7zResult::Malformed;
+        if (!stream_info_present) {
+            if (!empty_stream || !empty_file || pack_size != 0u ||
+                unpack_size != 0u)
+                return Archive7zResult::Unsupported;
+            output.clear();
+            return Archive7zResult::Ok;
+        }
+        if (empty_stream || empty_file)
+            return Archive7zResult::Malformed;
         if (!lzma_coder && pack_size != unpack_size)
             return Archive7zResult::Unsupported;
-        /* The public subset deliberately exposes non-empty resources only;
-         * keep an empty 7z file on the private archive-owner path instead of
-         * silently treating it as a successful decode. */
         if (pack_size == 0u)
             return Archive7zResult::Unsupported;
         if (pack_position > static_cast<std::uint64_t>(size -

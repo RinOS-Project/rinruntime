@@ -249,6 +249,38 @@ static std::vector<std::uint8_t> make7zStored()
     return bytes;
 }
 
+static std::vector<std::uint8_t> make7zEmpty()
+{
+    const std::uint8_t signature[] = {
+        0x37u, 0x7au, 0xbcu, 0xafu, 0x27u, 0x1cu};
+    std::vector<std::uint8_t> header;
+    header.push_back(0x01u); /* Header */
+    header.push_back(0x04u); /* MainStreamsInfo */
+    header.push_back(0x00u); /* no packed streams */
+    header.push_back(0x05u); /* FilesInfo */
+    put7zUInt64(header, 1u); /* NumFiles */
+    header.push_back(0x0eu); /* EmptyStream */
+    put7zUInt64(header, 1u);
+    header.push_back(0x01u); /* file 0 has no packed stream */
+    header.push_back(0x0fu); /* EmptyFile */
+    put7zUInt64(header, 1u);
+    header.push_back(0x01u); /* file 0 is a regular empty file */
+    header.push_back(0x00u); /* FilesInfo end */
+    header.push_back(0x00u); /* Header end */
+
+    std::vector<std::uint8_t> bytes(32u + header.size(), 0u);
+    std::memcpy(bytes.data(), signature, sizeof(signature));
+    bytes[7u] = 4u;
+    std::memcpy(bytes.data() + 32u, header.data(), header.size());
+    writeLe64(bytes, 12u, 0u);
+    writeLe64(bytes, 20u, header.size());
+    writeLe32(bytes, 28u, RinRuntime::rinruntime_archive_crc32(
+                              bytes.data() + 32u, header.size()));
+    writeLe32(bytes, 8u, RinRuntime::rinruntime_archive_crc32(
+                             bytes.data() + 12u, 20u));
+    return bytes;
+}
+
 static std::vector<std::uint8_t> makeXzStructure()
 {
     /* One bounded block with an LZMA2 filter.  The public inspector validates
@@ -660,6 +692,31 @@ int main()
                                        sevenZipOutput) ==
            RinRuntime::Archive7zResult::Ok);
     assert(sevenZipOutput == "hello");
+    const std::vector<std::uint8_t> emptySevenZip = make7zEmpty();
+    sevenZipOutput = "poison";
+    assert(sevenZipReader.decodeStored(emptySevenZip.data(),
+                                       emptySevenZip.size(),
+                                       sevenZipOutput) ==
+           RinRuntime::Archive7zResult::Ok);
+    assert(sevenZipOutput.empty());
+    std::vector<std::uint8_t> malformedEmptySevenZip = emptySevenZip;
+    malformedEmptySevenZip[38u] = 0x02u; /* multi-byte EmptyStream bitmap */
+    malformedEmptySevenZip.insert(malformedEmptySevenZip.begin() + 40u, 0u);
+    writeLe64(malformedEmptySevenZip, 20u,
+              malformedEmptySevenZip.size() - 32u);
+    writeLe32(malformedEmptySevenZip, 28u,
+              RinRuntime::rinruntime_archive_crc32(
+                  malformedEmptySevenZip.data() + 32u,
+                  malformedEmptySevenZip.size() - 32u));
+    writeLe32(malformedEmptySevenZip, 8u,
+              RinRuntime::rinruntime_archive_crc32(
+                  malformedEmptySevenZip.data() + 12u, 20u));
+    sevenZipOutput = "poison";
+    assert(sevenZipReader.decodeStored(malformedEmptySevenZip.data(),
+                                       malformedEmptySevenZip.size(),
+                                       sevenZipOutput) ==
+           RinRuntime::Archive7zResult::Unsupported);
+    assert(sevenZipOutput == "poison");
     std::vector<std::uint8_t> nonCanonicalSevenZip = storedSevenZip;
     nonCanonicalSevenZip.insert(nonCanonicalSevenZip.begin() + 41u, 0u);
     nonCanonicalSevenZip[40u] = 0x80u; /* PackPos 0 encoded with two bytes */

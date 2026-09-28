@@ -321,15 +321,16 @@ and File Portal publication remain private owners.
 
 `archive_7z.hpp` provides the public `Archive7zReader` envelope inspector and
 the explicitly bounded `decodeStored()` subset.  The decoder accepts one
-non-empty packed stream, one Copy coder (`0x00`), or one LZMA coder
+non-empty packed stream, or one empty regular file with no packed stream, and
+uses one Copy coder (`0x00`) or one LZMA coder
 (`03 01 01` with its five-byte properties) and optional single-file
 metadata/CRC records into failure-atomic caller-owned output.  The shared
 `ArchiveXzReader::decodeRawLzma()` helper owns only the bounded raw range-coded
 codec; it does not parse 7z headers or publish bytes.  Other coder chains,
 encryption, multiple streams, filesystem extraction, archive service IPC, and
 File Portal publication remain private or `Unsupported`.
-Empty streams and malformed multi-byte `EmptyStream` bitmaps are also rejected
-as `Unsupported`; they remain private archive-owner cases.  Its 7z VLI reader
+Multiple-bit `EmptyStream` bitmaps, empty directories, and malformed empty
+stream metadata remain explicit `Unsupported` results.  Its 7z VLI reader
 also rejects non-minimal encodings such as a zero value encoded with an extra
 byte, so malformed header values do not reach the stored-copy path.
 
