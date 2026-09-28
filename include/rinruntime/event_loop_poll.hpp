@@ -31,6 +31,8 @@ public:
 private:
     ClockFunction clock_ = nullptr;
     void* clockContext_ = nullptr;
+    std::uint64_t lastNow_ = 0u;
+    bool haveLastNow_ = false;
 
     static short pollEvents(std::uint32_t events) noexcept {
         short result = 0;
@@ -52,8 +54,7 @@ private:
         return result;
     }
 
-    bool timeoutMilliseconds(std::uint64_t deadline, int* timeout) const
-        noexcept {
+    bool timeoutMilliseconds(std::uint64_t deadline, int* timeout) noexcept {
         if (timeout == nullptr || clock_ == nullptr) return false;
         if (deadline == UINT64_MAX) {
             *timeout = -1;
@@ -61,6 +62,9 @@ private:
         }
 
         const std::uint64_t now = clock_(clockContext_);
+        if (haveLastNow_ && now < lastNow_) return false;
+        lastNow_ = now;
+        haveLastNow_ = true;
         if (now >= deadline) {
             *timeout = 0;
             return true;

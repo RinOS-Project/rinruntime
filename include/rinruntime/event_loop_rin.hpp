@@ -47,6 +47,8 @@ private:
     void* clockContext_ = nullptr;
     RinWaitSet waitSet_ = RIN_HANDLE_INVALID;
     RinWaitItemV1 items_[EventLoop::kWaitCapacity] = {};
+    std::uint64_t lastNow_ = 0u;
+    bool haveLastNow_ = false;
 
     static bool requestsValid(const EventLoop::WaitRequest* requests,
                               Size count) noexcept {
@@ -65,13 +67,16 @@ private:
     }
 
     bool timeoutNanoseconds(std::uint64_t deadline,
-                            std::uint64_t* timeout) const noexcept {
+                            std::uint64_t* timeout) noexcept {
         if (timeout == nullptr || clock_ == nullptr) return false;
         if (deadline == UINT64_MAX) {
             *timeout = RIN_SDK_INFINITE;
             return true;
         }
         const std::uint64_t now = clock_(clockContext_);
+        if (haveLastNow_ && now < lastNow_) return false;
+        lastNow_ = now;
+        haveLastNow_ = true;
         *timeout = now >= deadline ? 0u : deadline - now;
         return true;
     }

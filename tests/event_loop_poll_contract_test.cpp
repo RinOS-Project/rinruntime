@@ -119,6 +119,15 @@ int main() {
     timeout_request.nativeHandle = static_cast<uint64_t>(INT32_MAX) + 1u;
     assert(!backend.wait(&timeout_request, 1u, g_now, &ready));
 
+    /* A deadline adapter must not turn a clock rollback into a new long
+     * sleep after an interrupted or repeated wait. */
+    g_now = 99u;
+    timeout_request.nativeHandle = static_cast<uint64_t>(pipe_fds[0]);
+    ready = {99u, EventLoop::WAIT_READABLE};
+    assert(!backend.wait(&timeout_request, 1u, 100u, &ready));
+    assert(ready.id == 0u && ready.events == 0u);
+    g_now = 100u;
+
     /* Cancelling a deadline after its scheduling wake was consumed must
      * publish a second wake so an adapter does not sleep on a stale deadline. */
     EventLoop wake_loop;

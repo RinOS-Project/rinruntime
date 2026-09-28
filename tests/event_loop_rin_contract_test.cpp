@@ -121,6 +121,14 @@ int main() {
     assert(!backend.wait(duplicate, 2u, g_now, &ready));
     assert(ready.id == 0u && ready.events == 0u);
 
+    /* A clock rollback must fail before the SDK wait receives a new timeout;
+     * otherwise a stale deadline can become an unbounded sleep. */
+    g_now = 99u;
+    ready = {99u, RinRuntime::EventLoop::WAIT_READABLE};
+    assert(!backend.wait(&valid, 1u, 100u, &ready));
+    assert(ready.id == 0u && ready.events == 0u);
+    g_now = 100u;
+
     assert(loop.unwatch(watch));
 
     /* Cancellation must wake a caller that already consumed the scheduling

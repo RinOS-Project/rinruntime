@@ -100,7 +100,9 @@ cannot silently drift into different masks. The EventLoop model and both
 userspace adapters are public runtime; the kernel owns only the wait-set
 syscall and IPC readiness producers. Direct adapter callers also get
 fail-closed validation for zero handles, unsupported event bits, and duplicate
-wait IDs before any wait-set items are published.
+wait IDs before any wait-set items are published. Both deadline adapters also
+reject a monotonic-clock rollback before recomputing a timeout, so a stale
+deadline cannot become an unbounded sleep after a repeated or interrupted wait.
 
 Private RinOS services may compose `PollEventLoopBackend` for local POSIX fd
 readiness (the archive service does so for its authenticated server socket).
