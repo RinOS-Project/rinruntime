@@ -40,7 +40,6 @@
 #include "timezone.hpp"
 #include "dns_transport.hpp"
 #include "accessibility.hpp"
-#include "accessibility_bridge.hpp"
 #include "accessibility_wire.hpp"
 #include "event.hpp"
 #include "event_loop.hpp"
