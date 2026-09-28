@@ -33,7 +33,12 @@ static void put64(std::vector<std::uint8_t>& bytes, std::size_t offset,
 static void put7zUInt64(std::vector<std::uint8_t>& bytes,
                         std::uint64_t value)
 {
-    assert(value < 0x80u);
+    if (value < 0x80u) {
+        bytes.push_back(static_cast<std::uint8_t>(value));
+        return;
+    }
+    assert(value < 0x4000u);
+    bytes.push_back(static_cast<std::uint8_t>(0x80u | (value >> 8u)));
     bytes.push_back(static_cast<std::uint8_t>(value));
 }
 
@@ -201,6 +206,80 @@ static std::vector<std::uint8_t> make7zStored()
     return bytes;
 }
 
+static std::vector<std::uint8_t> make7zLzma(std::string& expected)
+{
+    const std::uint8_t signature[] = {
+        0x37u, 0x7au, 0xbcu, 0xafu, 0x27u, 0x1cu};
+    const std::uint8_t properties[] = {
+        0x5du, 0x00u, 0x00u, 0x04u, 0x00u};
+    const std::uint8_t packed[] = {
+        0x00u, 0x34u, 0x19u, 0x49u, 0xdbu, 0x85u, 0x5cu, 0x63u,
+        0xadu, 0x3eu, 0xf9u, 0x63u, 0x73u, 0xe5u, 0x4fu, 0x1cu,
+        0x74u, 0x7bu, 0xd4u, 0x27u, 0xaeu, 0x92u, 0xc5u, 0xf4u,
+        0x54u, 0x43u, 0xdcu, 0xffu, 0xffu, 0xf2u, 0xcbu, 0x80u,
+        0x00u};
+    expected.clear();
+    for (unsigned index = 0u; index != 100u; ++index)
+        expected += "hello world! ";
+
+    std::vector<std::uint8_t> header;
+    header.push_back(0x01u); /* Header */
+    header.push_back(0x04u); /* MainStreamsInfo */
+    header.push_back(0x06u); /* PackInfo */
+    put7zUInt64(header, 0u); /* PackPos */
+    put7zUInt64(header, 1u); /* NumPackStreams */
+    header.push_back(0x09u); /* Size */
+    put7zUInt64(header, sizeof(packed));
+    header.push_back(0x0au); /* Pack CRC */
+    header.push_back(1u);
+    header.resize(header.size() + 4u);
+    put32(header, header.size() - 4u,
+          RinRuntime::rinruntime_archive_crc32(packed, sizeof(packed)));
+    header.push_back(0x00u); /* PackInfo end */
+    header.push_back(0x07u); /* UnPackInfo */
+    header.push_back(0x0bu); /* Folder */
+    put7zUInt64(header, 1u); /* NumFolders */
+    header.push_back(0u); /* folders are in this header */
+    put7zUInt64(header, 1u); /* NumCoders */
+    header.push_back(0x23u); /* 3-byte LZMA method ID + properties */
+    header.push_back(0x03u);
+    header.push_back(0x01u);
+    header.push_back(0x01u);
+    header.push_back(0x05u); /* LZMA properties size */
+    header.insert(header.end(), properties,
+                  properties + sizeof(properties));
+    header.push_back(0x0cu); /* CodersUnpackSize */
+    put7zUInt64(header, expected.size());
+    header.push_back(0x0au); /* Folder CRC */
+    header.push_back(1u);
+    header.resize(header.size() + 4u);
+    put32(header, header.size() - 4u,
+          RinRuntime::rinruntime_archive_crc32(
+              reinterpret_cast<const std::uint8_t*>(expected.data()),
+              expected.size()));
+    header.push_back(0x00u); /* UnPackInfo end */
+    header.push_back(0x00u); /* MainStreamsInfo end */
+    header.push_back(0x05u); /* FilesInfo */
+    put7zUInt64(header, 1u); /* NumFiles */
+    header.push_back(0x00u); /* properties end */
+    header.push_back(0x00u); /* Header end */
+
+    const std::size_t headerOffset = 32u + sizeof(packed);
+    std::vector<std::uint8_t> bytes(headerOffset + header.size(), 0u);
+    std::memcpy(bytes.data(), signature, sizeof(signature));
+    bytes[7u] = 4u;
+    std::memcpy(bytes.data() + 32u, packed, sizeof(packed));
+    std::memcpy(bytes.data() + headerOffset, header.data(), header.size());
+    put64(bytes, 12u, sizeof(packed));
+    put64(bytes, 20u, header.size());
+    put32(bytes, 28u,
+          RinRuntime::rinruntime_archive_crc32(bytes.data() + headerOffset,
+                                                header.size()));
+    put32(bytes, 8u,
+          RinRuntime::rinruntime_archive_crc32(bytes.data() + 12u, 20u));
+    return bytes;
+}
+
 static std::vector<std::uint8_t> makeXzStoredLzma2()
 {
     const char payload[] = "hello";
@@ -322,6 +401,22 @@ int main()
            reader.entries()[0].size == 5u);
     assert(reader.readEntry(0u, output) ==
            RinRuntime::ArchiveContainerResult::Ok && output == "hello");
+    output = "poison";
+    assert(reader.readEntryWithCancellation(0u, output, stopImmediately,
+                                            nullptr) ==
+           RinRuntime::ArchiveContainerResult::Cancelled);
+    assert(output.empty());
+
+    std::string lzmaExpected;
+    const std::vector<std::uint8_t> lzma = make7zLzma(lzmaExpected);
+    assert(reader.parse(lzma.data(), lzma.size()) ==
+           RinRuntime::ArchiveContainerResult::Ok);
+    assert(reader.kind() == RinRuntime::ArchiveContainerKind::SevenZip &&
+           reader.size() == 1u &&
+           reader.entries()[0].size == lzmaExpected.size());
+    assert(reader.readEntry(0u, output) ==
+           RinRuntime::ArchiveContainerResult::Ok &&
+           output == lzmaExpected);
     output = "poison";
     assert(reader.readEntryWithCancellation(0u, output, stopImmediately,
                                             nullptr) ==
