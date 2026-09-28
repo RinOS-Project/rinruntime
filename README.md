@@ -316,10 +316,12 @@ blocks containing both LZMA2 stored chunks (`0x01`/`0x02`) and range-coded
 chunks, or one bounded Delta filter (`0x03`, distance 1..256), x86 BCJ
 filter (`0x04`, four-byte start offset), PowerPC BCJ filter (`0x05`, no
 properties), ARM BCJ filter (`0x07`, no properties), ARM Thumb BCJ filter
-(`0x08`, no properties), or ARM64 BCJ filter (`0x0a`, no properties) plus one
-LZMA2 filter (`0x21`), including the
+(`0x08`, no properties), ARM64 BCJ filter (`0x0a`, no properties), or SPARC
+BCJ filter (`0x09`, no properties) plus one LZMA2 filter (`0x21`), including
+the
 standard block-padding/check ordering.  Delta, x86 BCJ, PowerPC BCJ, ARM BCJ,
-ARM Thumb BCJ, and ARM64 BCJ output is applied per block before the block check is
+ARM Thumb BCJ, ARM64 BCJ, and SPARC BCJ output is applied per block before the
+block check is
 verified.  Range-coded
 state, dictionary references, cancellation, and deadline checks stay bounded
 by the public content limit; unsupported, duplicate, or incomplete filter
