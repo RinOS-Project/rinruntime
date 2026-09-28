@@ -858,6 +858,8 @@ private:
             bool lzmaFilterPresent = false;
             std::uint8_t dictionaryProperty = 0u;
             std::size_t deltaDistance = 0u;
+            bool x86FilterPresent = false;
+            std::uint32_t x86StartOffset = 0u;
             for (std::size_t filter = 0u; filter < filterCount; ++filter) {
                 std::uint64_t filterId = 0u;
                 std::uint64_t propertySize = 0u;
@@ -877,6 +879,13 @@ private:
                         return ArchiveXzResult::Unsupported;
                     deltaDistance = static_cast<std::size_t>(
                         bytes[headerCursor++]) + 1u;
+                } else if (filterId == 0x04u) {
+                    if (x86FilterPresent || propertySize != 4u ||
+                        propertySize > headerDataEnd - headerCursor)
+                        return ArchiveXzResult::Unsupported;
+                    x86StartOffset = readLe32(bytes + headerCursor);
+                    headerCursor += 4u;
+                    x86FilterPresent = true;
                 } else {
                     return ArchiveXzResult::Unsupported;
                 }
@@ -1037,6 +1046,14 @@ private:
                     decoded[absolute] = static_cast<char>(value);
                 }
             }
+            if (x86FilterPresent) {
+                const ArchiveXzResult filterResult = applyX86Bcj(
+                    decoded, blockOutputStart, blockOutputSize,
+                    x86StartOffset, cancellation, cancellationContext,
+                    deadline, deadlineContext);
+                if (filterResult != ArchiveXzResult::Ok)
+                    return filterResult;
+            }
             const std::size_t checkOffset =
                 (payloadEnd + 3u) & ~std::size_t(3u);
             if (checkOffset < payloadEnd ||
@@ -1110,6 +1127,98 @@ private:
     }
 
 private:
+    static bool isX86MsByte(std::uint8_t value)
+    {
+        return value == 0u || value == 0xffu;
+    }
+
+    static ArchiveXzResult applyX86Bcj(
+        std::string& decoded, std::size_t absoluteOffset, std::size_t size,
+        std::uint32_t startOffset,
+        ArchiveDeflateCancellationFunction cancellation,
+        void* cancellationContext, ArchiveDeflateDeadlineFunction deadline,
+        void* deadlineContext)
+    {
+        static constexpr std::uint32_t kMaskToBitNumber[5] = {0u, 1u, 2u,
+                                                                2u, 3u};
+        if (size < 5u) return ArchiveXzResult::Ok;
+
+        auto* buffer = reinterpret_cast<std::uint8_t*>(decoded.data()) +
+                       absoluteOffset;
+        const std::uint32_t nowPosition =
+            startOffset + static_cast<std::uint32_t>(absoluteOffset);
+        std::uint32_t previousMask = 0u;
+        std::uint32_t previousPosition = UINT32_MAX - 4u;
+        const std::size_t limit = size - 5u;
+        std::size_t bufferPosition = 0u;
+
+        while (bufferPosition <= limit) {
+            if (deadline != nullptr && deadline(deadlineContext))
+                return ArchiveXzResult::Deadline;
+            if (cancellation != nullptr && cancellation(cancellationContext))
+                return ArchiveXzResult::Cancelled;
+
+            std::uint8_t byte = buffer[bufferPosition];
+            if (byte != 0xe8u && byte != 0xe9u) {
+                ++bufferPosition;
+                continue;
+            }
+
+            const std::uint32_t instructionPosition =
+                nowPosition + static_cast<std::uint32_t>(bufferPosition);
+            const std::uint32_t offset = instructionPosition - previousPosition;
+            previousPosition = instructionPosition;
+            if (offset > 5u) {
+                previousMask = 0u;
+            } else {
+                for (std::uint32_t index = 0u; index < offset; ++index) {
+                    previousMask &= 0x77u;
+                    previousMask <<= 1u;
+                }
+            }
+
+            byte = buffer[bufferPosition + 4u];
+            if (isX86MsByte(byte) && (previousMask >> 1u) <= 4u &&
+                (previousMask >> 1u) != 3u) {
+                std::uint32_t source =
+                    (static_cast<std::uint32_t>(byte) << 24u) |
+                    (static_cast<std::uint32_t>(buffer[bufferPosition + 3u])
+                     << 16u) |
+                    (static_cast<std::uint32_t>(buffer[bufferPosition + 2u])
+                     << 8u) |
+                    static_cast<std::uint32_t>(buffer[bufferPosition + 1u]);
+                std::uint32_t destination = 0u;
+                for (;;) {
+                    destination = source - instructionPosition - 5u;
+                    if (previousMask == 0u) break;
+                    const std::uint32_t index =
+                        kMaskToBitNumber[previousMask >> 1u];
+                    byte = static_cast<std::uint8_t>(
+                        destination >> (24u - index * 8u));
+                    if (!isX86MsByte(byte)) break;
+                    source = destination ^
+                             ((UINT32_C(1) << (32u - index * 8u)) - 1u);
+                }
+
+                buffer[bufferPosition + 4u] = static_cast<std::uint8_t>(
+                    ~(((destination >> 24u) & 1u) - 1u));
+                buffer[bufferPosition + 3u] =
+                    static_cast<std::uint8_t>(destination >> 16u);
+                buffer[bufferPosition + 2u] =
+                    static_cast<std::uint8_t>(destination >> 8u);
+                buffer[bufferPosition + 1u] =
+                    static_cast<std::uint8_t>(destination);
+                bufferPosition += 5u;
+                previousMask = 0u;
+            } else {
+                ++bufferPosition;
+                previousMask |= 1u;
+                if (isX86MsByte(byte)) previousMask |= 0x10u;
+            }
+        }
+        return ArchiveXzResult::Ok;
+    }
+
     static constexpr std::size_t kHeaderSize = 12u;
     static constexpr std::size_t kFooterSize = 12u;
     static constexpr std::size_t kMinimumIndexSize = 8u;
