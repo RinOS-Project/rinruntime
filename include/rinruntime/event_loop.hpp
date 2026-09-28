@@ -168,7 +168,10 @@ public:
     }
 
     TimerId scheduleAt(std::uint64_t deadline, const Event& event) noexcept {
-        if (!validEvent(event)) return 0u;
+        /* UINT64_MAX is the wait-adapter sentinel for "no timer".  It must
+         * not be admitted as a real deadline because that timer could never
+         * become due and would be indistinguishable from an idle loop. */
+        if (deadline == UINT64_MAX || !validEvent(event)) return 0u;
         for (Size index = 0u; index < kTimerCapacity; ++index) {
             Timer& timer = timers_[index];
             if (timer.active) continue;

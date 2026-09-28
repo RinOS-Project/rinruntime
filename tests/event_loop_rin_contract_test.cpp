@@ -81,6 +81,7 @@ int main() {
     RinRuntime::EventLoop loop;
     RinRuntime::Event event = {};
     event.type = RinRuntime::EventType::Close;
+    assert(loop.scheduleAt(UINT64_MAX, event) == 0u);
     const uint64_t opaque_handle = UINT64_C(0xfeedface01234567);
     const RinRuntime::EventLoop::WaitId watch = loop.watch(
         opaque_handle, RinRuntime::EventLoop::WAIT_READABLE, event);

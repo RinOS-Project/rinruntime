@@ -25,6 +25,7 @@ int main() {
     Event ready_event = {};
     ready_event.type = EventType::Close;
 
+    assert(loop.scheduleAt(UINT64_MAX, ready_event) == 0u);
     assert(loop.scheduleAt(g_now + 1u, ready_event) != 0u);
     Event output = {};
     assert(!loop.wait(g_now, PollEventLoopBackend::waitFunction, &backend,
