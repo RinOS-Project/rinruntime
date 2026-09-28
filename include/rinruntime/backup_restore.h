@@ -149,7 +149,9 @@ int rinruntime_backup_identity_valid(const RinRuntimeBackupIdentityV1* identity)
 int rinruntime_backup_item_is_eligible(const RinRuntimeBackupItemV1* item);
 
 /* The canonical encoder accepts a sorted declaration list only. This makes
- * manifests deterministic, bounds item count, and rejects path-like IDs. */
+ * manifests deterministic, bounds item count, and rejects path-like IDs.
+ * bytes_size_out is zeroed before validation; on failure the caller-owned
+ * output span is cleared up to the bounded manifest storage limit. */
 RinRuntimeBackupResult rinruntime_backup_manifest_encode(
     const RinRuntimeBackupManifestV1* manifest, uint8_t* bytes_out,
     size_t bytes_capacity, size_t* bytes_size_out);

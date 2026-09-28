@@ -63,6 +63,15 @@ static uint32_t backup_integrity(const RinRuntimeBackupWireHeaderV1* header,
     return value ^ UINT32_C(0xffffffff);
 }
 
+static void backup_manifest_clear_output(uint8_t* bytes, size_t capacity)
+{
+    if (bytes != NULL && capacity != 0u) {
+        if (capacity > RINRUNTIME_BACKUP_MANIFEST_STORAGE_MAX)
+            capacity = RINRUNTIME_BACKUP_MANIFEST_STORAGE_MAX;
+        memset(bytes, 0, capacity);
+    }
+}
+
 static int backup_storage_class_valid(uint16_t storage_class)
 {
     return storage_class >= RINRUNTIME_BACKUP_STORAGE_CONFIG &&
@@ -224,6 +233,7 @@ RinRuntimeBackupResult rinruntime_backup_manifest_encode(
     size_t total_size;
     uint32_t index;
     if (bytes_size_out != NULL) *bytes_size_out = 0u;
+    backup_manifest_clear_output(bytes_out, bytes_capacity);
     result = backup_manifest_validate(manifest);
     if (result != RINRUNTIME_BACKUP_OK || bytes_out == NULL ||
         bytes_size_out == NULL)

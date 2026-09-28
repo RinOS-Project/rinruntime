@@ -333,6 +333,11 @@ resolve Known Folders, authenticate package handoffs, read a File Portal
 descriptor, or publish restored bytes; those remain private archive/service
 owners.
 
+The C RBK1 manifest encoder clears `bytes_size_out` and the caller-owned
+manifest output span on validation or capacity failure (bounded by
+`RINRUNTIME_BACKUP_MANIFEST_STORAGE_MAX`), so a rejected replacement cannot
+leave a previous manifest available to a caller.
+
 The standalone `rincompression/deflate.hpp` header provides the generic
 bounded deterministic stored-DEFLATE encoder. `rinruntime/archive_deflate.hpp`
 keeps archive-specific source and authoring adapters as a compatibility layer;
