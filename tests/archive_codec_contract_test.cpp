@@ -766,6 +766,63 @@ static std::vector<std::uint8_t> makeXzSparcStoredLzma2()
     return bytes;
 }
 
+static std::vector<std::uint8_t> makeXzIa64StoredLzma2()
+{
+    /* The second 16-byte IA64 bundle contains a slot-2 branch whose filtered
+     * absolute target is the bundle PC.  Decoding restores a zero offset. */
+    std::vector<std::uint8_t> bytes(108u, 0u);
+    const std::uint8_t magic[] = {
+        0xfdu, 0x37u, 0x7au, 0x58u, 0x5au, 0x00u};
+    std::memcpy(bytes.data(), magic, sizeof(magic));
+    writeLe32(bytes, 8u,
+              RinRuntime::rinruntime_archive_crc32(bytes.data() + 6u, 2u));
+
+    for (std::size_t block = 12u; block <= 48u; block += 36u) {
+        bytes[block] = 0x03u;
+        bytes[block + 1u] = 0xc1u;
+        bytes[block + 2u] = 0x14u; /* twenty-byte stored payload */
+        bytes[block + 3u] = 0x10u; /* sixteen-byte decoded bundle */
+        bytes[block + 4u] = 0x06u; /* IA64 BCJ */
+        bytes[block + 5u] = 0x00u;
+        bytes[block + 6u] = 0x21u;
+        bytes[block + 7u] = 0x01u;
+        bytes[block + 8u] = 0x00u;
+        writeLe32(bytes, block + 12u,
+                  RinRuntime::rinruntime_archive_crc32(bytes.data() + block,
+                                                        12u));
+    }
+
+    bytes[28u] = 0x01u;
+    bytes[29u] = 0x0fu;
+    bytes[30u] = 0x00u;
+    bytes[35u] = 0x00u;
+
+    bytes[64u] = 0x01u;
+    bytes[65u] = 0x0fu;
+    bytes[66u] = 0x00u;
+    bytes[67u] = 0x10u; /* bundle template 0x10: slot 2 is a branch */
+    bytes[77u] = 0x00u;
+    bytes[78u] = 0x00u;
+    bytes[79u] = 0x10u;
+    bytes[82u] = 0x50u;
+    bytes[83u] = 0x00u;
+
+    bytes[84u] = 0x00u;
+    bytes[85u] = 0x02u;
+    bytes[86u] = 0x24u;
+    bytes[87u] = 0x10u;
+    bytes[88u] = 0x24u;
+    bytes[89u] = 0x10u;
+    writeLe32(bytes, 92u,
+              RinRuntime::rinruntime_archive_crc32(bytes.data() + 84u, 8u));
+    bytes[100u] = 0x02u;
+    bytes[106u] = static_cast<std::uint8_t>('Y');
+    bytes[107u] = static_cast<std::uint8_t>('Z');
+    writeLe32(bytes, 96u,
+              RinRuntime::rinruntime_archive_crc32(bytes.data() + 100u, 6u));
+    return bytes;
+}
+
 int main()
 {
     const std::uint8_t stored[] = {
@@ -1014,6 +1071,15 @@ int main()
            RinRuntime::ArchiveXzResult::Ok);
     assert(xzOutput == std::string({'\0', '\0', '\0', '\0',
                                     static_cast<char>(0x40), '\0', '\0', '\0'}));
+    const std::vector<std::uint8_t> ia64Xz = makeXzIa64StoredLzma2();
+    xzOutput = "poison";
+    assert(xzReader.decodeStoredLzma2(ia64Xz.data(), ia64Xz.size(),
+                                      xzOutput) ==
+           RinRuntime::ArchiveXzResult::Ok);
+    std::string ia64Expected(32u, '\0');
+    ia64Expected[16u] = static_cast<char>(0x10u);
+    ia64Expected[31u] = static_cast<char>(0x50u);
+    assert(xzOutput == ia64Expected);
     std::vector<std::uint8_t> unknownFilterXz = deltaXz;
     unknownFilterXz[16u] = 0x04u;
     writeLe32(unknownFilterXz, 24u,
