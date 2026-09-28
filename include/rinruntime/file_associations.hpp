@@ -49,7 +49,8 @@ private:
             value.back() == '/' || value.find('\\') != std::string::npos)
             return false;
         for (unsigned char byte : value) {
-            if (byte < 0x20u || byte == 0x7fu || byte == '\0') return false;
+            if (byte < 0x20u || byte == 0x7fu || byte == '\0' ||
+                byte == ':') return false;
         }
         return true;
     }
