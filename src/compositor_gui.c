@@ -1400,6 +1400,7 @@ static int runtime_rebind_surface(RinRuntimeGuiSurface* surface) {
     uint32_t reply_size = 0u;
     int32_t status = -1;
     if (!surface || !surface->active) return 0;
+    if (surface->frame_sequence == UINT64_MAX) return -1;
     old_id = surface->id;
     memset(&create, 0, sizeof(create));
     create.width = surface->width;
