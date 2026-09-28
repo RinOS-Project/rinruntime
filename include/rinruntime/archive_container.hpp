@@ -61,6 +61,13 @@ public:
 
     ArchiveContainerResult parse(const std::uint8_t* bytes, std::size_t size)
     {
+        return parseWithDeadline(bytes, size, nullptr, nullptr);
+    }
+
+    ArchiveContainerResult parseWithDeadline(
+        const std::uint8_t* bytes, std::size_t size,
+        ArchiveDeflateDeadlineFunction deadline, void* deadlineContext)
+    {
         clear();
         if (bytes == nullptr || size == 0u)
             return ArchiveContainerResult::InvalidArgument;
@@ -76,23 +83,26 @@ public:
             switch (kind_) {
             case ArchiveContainerKind::Zip:
                 reader_.emplace<ArchiveZipReader>();
-                result = map(std::get<ArchiveZipReader>(reader_).parse(
-                    bytes, size));
+                result = map(std::get<ArchiveZipReader>(reader_).parseWithDeadline(
+                    bytes, size, deadline, deadlineContext));
                 break;
             case ArchiveContainerKind::Tar:
                 reader_.emplace<ArchiveTarReader>();
-                result = map(std::get<ArchiveTarReader>(reader_).parse(
-                    bytes, size));
+                result = map(std::get<ArchiveTarReader>(reader_).parseWithDeadline(
+                    bytes, size, deadline, deadlineContext));
                 break;
             case ArchiveContainerKind::TarGzip:
                 reader_.emplace<ArchiveTarGzipReader>();
-                result = map(std::get<ArchiveTarGzipReader>(reader_).parse(
-                    bytes, size));
+                result = map(std::get<ArchiveTarGzipReader>(reader_)
+                                 .parseWithDeadline(bytes, size, deadline,
+                                                    deadlineContext));
                 if (result != ArchiveContainerResult::Ok) {
                     ArchiveGzipReader gzipReader;
                     std::string gzipOutput;
                     const ArchiveContainerResult gzipResult = map(
-                        gzipReader.decode(bytes, size, gzipOutput));
+                        gzipReader.decodeWithDeadline(
+                            bytes, size, gzipOutput, deadline,
+                            deadlineContext));
                     if (gzipResult == ArchiveContainerResult::Ok) {
                         reader_.emplace<ArchiveGzipReader>();
                         stream_.swap(gzipOutput);
@@ -105,18 +115,23 @@ public:
                 break;
             case ArchiveContainerKind::Gzip:
                 reader_.emplace<ArchiveGzipReader>();
-                result = map(std::get<ArchiveGzipReader>(reader_).decode(
-                    bytes, size, stream_));
+                result = map(std::get<ArchiveGzipReader>(reader_)
+                                 .decodeWithDeadline(bytes, size, stream_,
+                                                     deadline, deadlineContext));
                 break;
             case ArchiveContainerKind::SevenZip:
                 reader_.emplace<Archive7zReader>();
-                result = map(std::get<Archive7zReader>(reader_).decodeStored(
-                    bytes, size, stream_));
+                result = map(std::get<Archive7zReader>(reader_)
+                                 .decodeStoredWithDeadline(
+                                     bytes, size, stream_, deadline,
+                                     deadlineContext));
                 break;
             case ArchiveContainerKind::Xz:
                 reader_.emplace<ArchiveXzReader>();
                 result = map(std::get<ArchiveXzReader>(reader_)
-                                 .decodeStoredLzma2(bytes, size, stream_));
+                                 .decodeStoredLzma2WithDeadline(
+                                     bytes, size, stream_, deadline,
+                                     deadlineContext));
                 break;
             default:
                 result = ArchiveContainerResult::Unsupported;
@@ -139,6 +154,13 @@ public:
     ArchiveContainerResult readEntry(std::size_t index,
                                      std::string& output) const
     {
+        return readEntryWithDeadline(index, output, nullptr, nullptr);
+    }
+
+    ArchiveContainerResult readEntryWithDeadline(
+        std::size_t index, std::string& output,
+        ArchiveDeflateDeadlineFunction deadline, void* deadlineContext) const
+    {
         output.clear();
         if (index >= entries_.size())
             return ArchiveContainerResult::InvalidArgument;
@@ -147,11 +169,13 @@ public:
 #endif
             switch (kind_) {
             case ArchiveContainerKind::Zip:
-                return map(std::get<ArchiveZipReader>(reader_).readEntry(
-                    index, output));
+                return map(std::get<ArchiveZipReader>(reader_)
+                               .readEntryWithDeadline(index, output, deadline,
+                                                      deadlineContext));
             case ArchiveContainerKind::Tar:
-                return map(std::get<ArchiveTarReader>(reader_).readEntry(
-                    index, output));
+                return map(std::get<ArchiveTarReader>(reader_)
+                               .readEntryWithDeadline(index, output, deadline,
+                                                      deadlineContext));
             case ArchiveContainerKind::TarGzip: {
                 if (entries_[index].directory) return ArchiveContainerResult::Ok;
                 std::size_t size = 0u;
@@ -159,14 +183,15 @@ public:
                     std::get<ArchiveTarGzipReader>(reader_).data(index, &size);
                 if (bytes == nullptr)
                     return ArchiveContainerResult::Malformed;
-                output.assign(reinterpret_cast<const char*>(bytes), size);
-                return ArchiveContainerResult::Ok;
+                return copyWithDeadline(bytes, size, output, deadline,
+                                        deadlineContext);
             }
             case ArchiveContainerKind::SevenZip:
             case ArchiveContainerKind::Xz:
             case ArchiveContainerKind::Gzip:
-                output = stream_;
-                return ArchiveContainerResult::Ok;
+                return copyWithDeadline(
+                    reinterpret_cast<const std::uint8_t*>(stream_.data()),
+                    stream_.size(), output, deadline, deadlineContext);
             default:
                 return ArchiveContainerResult::Unsupported;
             }
@@ -202,6 +227,24 @@ public:
     }
 
 private:
+    static ArchiveContainerResult copyWithDeadline(
+        const std::uint8_t* bytes, std::size_t size, std::string& output,
+        ArchiveDeflateDeadlineFunction deadline, void* deadlineContext)
+    {
+        std::size_t copied = 0u;
+        while (copied < size) {
+            if (deadline != nullptr && deadline(deadlineContext)) {
+                output.clear();
+                return ArchiveContainerResult::Deadline;
+            }
+            const std::size_t part =
+                (size - copied) > 65536u ? 65536u : size - copied;
+            output.append(reinterpret_cast<const char*>(bytes + copied), part);
+            copied += part;
+        }
+        return ArchiveContainerResult::Ok;
+    }
+
     static ArchiveContainerKind detect(const std::uint8_t* bytes,
                                        std::size_t size)
     {
@@ -287,6 +330,10 @@ private:
         case Archive7zResult::Limit: return ArchiveContainerResult::Limit;
         case Archive7zResult::Unsupported:
             return ArchiveContainerResult::Unsupported;
+        case Archive7zResult::Cancelled:
+            return ArchiveContainerResult::Cancelled;
+        case Archive7zResult::Deadline:
+            return ArchiveContainerResult::Deadline;
         case Archive7zResult::CrcMismatch:
         case Archive7zResult::Malformed:
         default: return ArchiveContainerResult::Malformed;
@@ -317,6 +364,10 @@ private:
         case ArchiveXzResult::Limit: return ArchiveContainerResult::Limit;
         case ArchiveXzResult::Unsupported:
             return ArchiveContainerResult::Unsupported;
+        case ArchiveXzResult::Cancelled:
+            return ArchiveContainerResult::Cancelled;
+        case ArchiveXzResult::Deadline:
+            return ArchiveContainerResult::Deadline;
         case ArchiveXzResult::CrcMismatch:
         case ArchiveXzResult::Malformed:
         default: return ArchiveContainerResult::Malformed;

@@ -19,6 +19,8 @@ enum class Archive7zResult : int {
     Malformed = -3,
     CrcMismatch = -4,
     Unsupported = -5,
+    Cancelled = -6,
+    Deadline = -7,
 };
 
 struct Archive7zSummary {
@@ -98,6 +100,38 @@ public:
     Archive7zResult decodeStored(const std::uint8_t* bytes, std::size_t size,
                                  std::string& output) const
     {
+        return decodeStored(bytes, size, output, nullptr, nullptr, nullptr,
+                            nullptr);
+    }
+
+    Archive7zResult decodeStored(
+        const std::uint8_t* bytes, std::size_t size, std::string& output,
+        ArchiveDeflateCancellationFunction cancellation,
+        void* cancellationContext) const
+    {
+        return decodeStored(bytes, size, output, cancellation,
+                            cancellationContext, nullptr, nullptr);
+    }
+
+    Archive7zResult decodeStoredWithDeadline(
+        const std::uint8_t* bytes, std::size_t size, std::string& output,
+        ArchiveDeflateDeadlineFunction deadline, void* deadlineContext) const
+    {
+        return decodeStored(bytes, size, output, nullptr, nullptr, deadline,
+                            deadlineContext);
+    }
+
+private:
+    Archive7zResult decodeStored(
+        const std::uint8_t* bytes, std::size_t size, std::string& output,
+        ArchiveDeflateCancellationFunction cancellation,
+        void* cancellationContext, ArchiveDeflateDeadlineFunction deadline,
+        void* deadlineContext) const
+    {
+        if (deadline != nullptr && deadline(deadlineContext))
+            return Archive7zResult::Deadline;
+        if (cancellation != nullptr && cancellation(cancellationContext))
+            return Archive7zResult::Cancelled;
         Archive7zSummary summary;
         Archive7zResult result = inspect(bytes, size, summary);
         if (result != Archive7zResult::Ok) return result;
@@ -177,6 +211,11 @@ public:
             ++cursor;
             std::uint64_t substream_count = 1u;
             while (cursor < end && bytes[cursor] != 0u) {
+                if (deadline != nullptr && deadline(deadlineContext))
+                    return Archive7zResult::Deadline;
+                if (cancellation != nullptr &&
+                    cancellation(cancellationContext))
+                    return Archive7zResult::Cancelled;
                 const std::uint8_t property = bytes[cursor++];
                 if (property == 0x0du) {
                     if (!readEncodedUInt64(bytes, end, cursor,
@@ -221,6 +260,11 @@ public:
                 return Archive7zResult::Malformed;
             if (file_count != 1u) return Archive7zResult::Unsupported;
             while (cursor < end && bytes[cursor] != 0u) {
+                if (deadline != nullptr && deadline(deadlineContext))
+                    return Archive7zResult::Deadline;
+                if (cancellation != nullptr &&
+                    cancellation(cancellationContext))
+                    return Archive7zResult::Cancelled;
                 const std::uint8_t property = bytes[cursor++];
                 std::uint64_t property_size = 0u;
                 if (!readEncodedUInt64(bytes, end, cursor, property_size) ||
@@ -261,14 +305,41 @@ public:
             return Archive7zResult::Malformed;
         const std::size_t pack_start = static_cast<std::size_t>(pack_start64);
         const std::size_t decoded_size = static_cast<std::size_t>(pack_size);
-        const std::uint32_t actual_crc =
-            rinruntime_archive_crc32(bytes + pack_start, decoded_size);
+        std::uint32_t actual_crc = 0xffffffffu;
+        for (std::size_t index = 0u; index < decoded_size; ++index) {
+            if ((index & 4095u) == 0u) {
+                if (deadline != nullptr && deadline(deadlineContext))
+                    return Archive7zResult::Deadline;
+                if (cancellation != nullptr &&
+                    cancellation(cancellationContext))
+                    return Archive7zResult::Cancelled;
+            }
+            actual_crc ^= bytes[pack_start + index];
+            for (int bit = 0; bit < 8; ++bit)
+                actual_crc = (actual_crc >> 1u) ^
+                             (0xedb88320u & (0u - (actual_crc & 1u)));
+        }
+        actual_crc ^= 0xffffffffu;
         if ((pack_crc_defined && actual_crc != pack_crc) ||
             (folder_crc_defined && actual_crc != folder_crc))
             return Archive7zResult::CrcMismatch;
 
-        std::string decoded(reinterpret_cast<const char*>(bytes + pack_start),
-                            decoded_size);
+        std::string decoded;
+        std::size_t copied = 0u;
+        while (copied < decoded_size) {
+            if (deadline != nullptr && deadline(deadlineContext))
+                return Archive7zResult::Deadline;
+            if (cancellation != nullptr && cancellation(cancellationContext))
+                return Archive7zResult::Cancelled;
+            const std::size_t part =
+                (decoded_size - copied) > 65536u
+                    ? 65536u
+                    : decoded_size - copied;
+            decoded.append(reinterpret_cast<const char*>(bytes + pack_start +
+                                                         copied),
+                           part);
+            copied += part;
+        }
         output = decoded;
         return Archive7zResult::Ok;
     }

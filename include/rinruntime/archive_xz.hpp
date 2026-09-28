@@ -21,6 +21,8 @@ enum class ArchiveXzResult : int {
     Malformed = -3,
     CrcMismatch = -4,
     Unsupported = -5,
+    Cancelled = -6,
+    Deadline = -7,
 };
 
 struct ArchiveXzSummary {
@@ -237,6 +239,38 @@ public:
                                       std::size_t size,
                                       std::string& output) const
     {
+        return decodeStoredLzma2(bytes, size, output, nullptr, nullptr,
+                                 nullptr, nullptr);
+    }
+
+    ArchiveXzResult decodeStoredLzma2(
+        const std::uint8_t* bytes, std::size_t size, std::string& output,
+        ArchiveDeflateCancellationFunction cancellation,
+        void* cancellationContext) const
+    {
+        return decodeStoredLzma2(bytes, size, output, cancellation,
+                                 cancellationContext, nullptr, nullptr);
+    }
+
+    ArchiveXzResult decodeStoredLzma2WithDeadline(
+        const std::uint8_t* bytes, std::size_t size, std::string& output,
+        ArchiveDeflateDeadlineFunction deadline, void* deadlineContext) const
+    {
+        return decodeStoredLzma2(bytes, size, output, nullptr, nullptr,
+                                 deadline, deadlineContext);
+    }
+
+private:
+    ArchiveXzResult decodeStoredLzma2(
+        const std::uint8_t* bytes, std::size_t size, std::string& output,
+        ArchiveDeflateCancellationFunction cancellation,
+        void* cancellationContext, ArchiveDeflateDeadlineFunction deadline,
+        void* deadlineContext) const
+    {
+        if (deadline != nullptr && deadline(deadlineContext))
+            return ArchiveXzResult::Deadline;
+        if (cancellation != nullptr && cancellation(cancellationContext))
+            return ArchiveXzResult::Cancelled;
         ArchiveXzSummary summary;
         ArchiveXzResult result = inspect(bytes, size, summary);
         if (result != ArchiveXzResult::Ok) return result;
@@ -247,6 +281,10 @@ public:
         std::string decoded;
         std::size_t blockOffset = kHeaderSize;
         while (blockOffset < summary.indexOffset) {
+            if (deadline != nullptr && deadline(deadlineContext))
+                return ArchiveXzResult::Deadline;
+            if (cancellation != nullptr && cancellation(cancellationContext))
+                return ArchiveXzResult::Cancelled;
             const std::size_t blockHeaderSize =
                 (static_cast<std::size_t>(bytes[blockOffset]) + 1u) * 4u;
             const std::size_t headerEnd = blockOffset + blockHeaderSize;
@@ -285,6 +323,11 @@ public:
             std::size_t cursor = payloadOffset;
             bool streamEnded = false;
             while (cursor < payloadEnd) {
+                if (deadline != nullptr && deadline(deadlineContext))
+                    return ArchiveXzResult::Deadline;
+                if (cancellation != nullptr &&
+                    cancellation(cancellationContext))
+                    return ArchiveXzResult::Cancelled;
                 const std::uint8_t control = bytes[cursor++];
                 if (control == 0u) {
                     streamEnded = true;
@@ -306,8 +349,22 @@ public:
                     return ArchiveXzResult::Malformed;
                 if (chunkBytes > kMaxStreamBytes - decoded.size())
                     return ArchiveXzResult::Limit;
-                decoded.append(reinterpret_cast<const char*>(bytes + cursor),
-                               chunkBytes);
+                std::size_t copied = 0u;
+                while (copied < chunkBytes) {
+                    if (deadline != nullptr && deadline(deadlineContext))
+                        return ArchiveXzResult::Deadline;
+                    if (cancellation != nullptr &&
+                        cancellation(cancellationContext))
+                        return ArchiveXzResult::Cancelled;
+                    const std::size_t part =
+                        (chunkBytes - copied) > 65536u
+                            ? 65536u
+                            : chunkBytes - copied;
+                    decoded.append(
+                        reinterpret_cast<const char*>(bytes + cursor + copied),
+                        part);
+                    copied += part;
+                }
                 cursor += chunkBytes;
             }
             if (!streamEnded) return ArchiveXzResult::Malformed;
