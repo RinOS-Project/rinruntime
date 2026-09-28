@@ -11,7 +11,6 @@
 #ifndef RINRUNTIME_EVENT_LOOP_RIN_HPP
 #define RINRUNTIME_EVENT_LOOP_RIN_HPP
 
-#include <cstring>
 #include <cstdint>
 
 #include <rin/abi.h>
@@ -116,7 +115,7 @@ public:
              * the first wait after reinitialization.  In particular, a
              * restarted target may expose a fresh clock owner whose epoch is
              * lower than the retired session's last sample. */
-            std::memset(items_, 0, sizeof(items_));
+            for (RinWaitItemV1& item : items_) item = {};
             lastNow_ = 0u;
             haveLastNow_ = false;
         }
