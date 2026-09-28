@@ -668,6 +668,36 @@ int main()
                                       xzOutput) ==
            RinRuntime::ArchiveXzResult::Ok);
     assert(xzOutput == "hello");
+    std::vector<std::uint8_t> unknownFilterXz = deltaXz;
+    unknownFilterXz[16u] = 0x04u;
+    writeLe32(unknownFilterXz, 24u,
+              RinRuntime::rinruntime_archive_crc32(
+                  unknownFilterXz.data() + 12u, 12u));
+    xzOutput = "poison";
+    assert(xzReader.decodeStoredLzma2(unknownFilterXz.data(),
+                                      unknownFilterXz.size(), xzOutput) ==
+           RinRuntime::ArchiveXzResult::Unsupported);
+    assert(xzOutput == "poison");
+    std::vector<std::uint8_t> duplicateDeltaXz = deltaXz;
+    duplicateDeltaXz[19u] = 0x03u;
+    writeLe32(duplicateDeltaXz, 24u,
+              RinRuntime::rinruntime_archive_crc32(
+                  duplicateDeltaXz.data() + 12u, 12u));
+    xzOutput = "poison";
+    assert(xzReader.decodeStoredLzma2(duplicateDeltaXz.data(),
+                                      duplicateDeltaXz.size(), xzOutput) ==
+           RinRuntime::ArchiveXzResult::Unsupported);
+    assert(xzOutput == "poison");
+    std::vector<std::uint8_t> wrongPropertySizeXz = deltaXz;
+    wrongPropertySizeXz[17u] = 0u;
+    writeLe32(wrongPropertySizeXz, 24u,
+              RinRuntime::rinruntime_archive_crc32(
+                  wrongPropertySizeXz.data() + 12u, 12u));
+    xzOutput = "poison";
+    assert(xzReader.decodeStoredLzma2(wrongPropertySizeXz.data(),
+                                      wrongPropertySizeXz.size(), xzOutput) ==
+           RinRuntime::ArchiveXzResult::Malformed);
+    assert(xzOutput == "poison");
     std::vector<std::uint8_t> badCrc64Xz = crc64Xz;
     badCrc64Xz[36u] ^= 0x01u;
     xzOutput = "poison";
