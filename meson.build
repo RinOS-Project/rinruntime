@@ -15,7 +15,7 @@ runtime_sources = files('src/portal.c', 'src/crash.c', 'src/backup_restore.c',
                         'src/firewall/namespace_policy.c',
                         'src/firewall/profile.c',
                         'src/firewall/application.c', 'src/unicode.c',
-                        '../libunicode/core.c',
+                        '../libunicode/core.c', '../libunicode/locale_adapter.c',
                         'src/firewall/conntrack_query.c')
 if host_machine.system() != 'windows'
   runtime_sources += files('src/backup_payload.c')

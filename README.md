@@ -89,9 +89,9 @@ The same C adapter forwards the bounded integer, decimal, and currency
 formatters.  Their borrowed locale and number inputs retain LibUnicode's
 fixed scan bounds and failure-atomic output behavior, while locale data,
 currency policy, and filesystem ownership remain outside the public runtime.
-The CMake and target `.rll` source graphs include LibUnicode's locale adapter
-alongside `core.c`, so these public forwarding symbols are linked rather than
-left as source-only declarations.
+The CMake, Meson, and target `.rll` source graphs include LibUnicode's locale
+adapter alongside `core.c`, so these public forwarding symbols are linked
+rather than left as source-only declarations.
 
 The public LibUnicode normalization entry points treat a null source as an
 empty input only after validating the requested NFD/NFC/NFKD/NFKC form.  An
