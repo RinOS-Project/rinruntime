@@ -21,7 +21,10 @@ static inline int rinruntime_utf8_decode(const char* value, size_t size,
     else if (first >= 0xe0u && first <= 0xefu) { cp = first & 0x0fu; count = 3u; }
     else if (first >= 0xf0u && first <= 0xf4u) { cp = first & 0x07u; count = 4u; }
     else return 0;
-    if (offset > size - count) return 0;
+    /* Check the remaining span before indexing continuation bytes.  Testing
+     * offset > size - count underflows when a truncated sequence has
+     * size < count and can turn malformed input into an out-of-bounds read. */
+    if (count > size - offset) return 0;
     for (index = 1u; index < count; ++index) {
         unsigned char byte = (unsigned char)value[offset + index];
         if ((byte & 0xc0u) != 0x80u) return 0;

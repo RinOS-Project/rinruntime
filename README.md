@@ -55,6 +55,11 @@ Unicode GraphemeBreakProperty coverage and locale-specific behavior remain
 separate `libunicode`/`libi18n` data-owner work; the public helper never loads
 a database or filesystem resource.
 
+The inline UTF-8 validator checks the remaining byte span before reading
+continuation bytes. Truncated 2-, 3-, and 4-byte sequences therefore fail
+closed without a size_t-underflow out-of-bounds read; callers still own the
+input and no replacement character is silently inserted by this validator.
+
 The C Unicode adapter also forwards `RinRuntimeUnicodeDateTime` to
 `rin_unicode_locale_format_datetime`.  Applications and external toolkits can
 use the bounded `%c`/`%x`/`%X` locale formatter through the public runtime
@@ -84,6 +89,9 @@ The same C adapter forwards the bounded integer, decimal, and currency
 formatters.  Their borrowed locale and number inputs retain LibUnicode's
 fixed scan bounds and failure-atomic output behavior, while locale data,
 currency policy, and filesystem ownership remain outside the public runtime.
+The CMake and target `.rll` source graphs include LibUnicode's locale adapter
+alongside `core.c`, so these public forwarding symbols are linked rather than
+left as source-only declarations.
 
 The public LibUnicode normalization entry points treat a null source as an
 empty input only after validating the requested NFD/NFC/NFKD/NFKC form.  An

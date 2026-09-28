@@ -137,6 +137,15 @@ int main()
                "en_US.UTF-8", localeName, 4u) == 0);
     assert(localeName[0] == '\0');
 
+    const char truncatedTwo[] = "\xc2";
+    const char truncatedThree[] = "\xe1\x84";
+    const char truncatedFour[] = "\xf0\x9f\x92";
+    assert(!RinRuntime::utf8Valid(truncatedTwo, sizeof(truncatedTwo) - 1u));
+    assert(!RinRuntime::utf8Valid(truncatedThree,
+                                  sizeof(truncatedThree) - 1u));
+    assert(!RinRuntime::utf8Valid(truncatedFour,
+                                  sizeof(truncatedFour) - 1u));
+
     encodeWritten = 99u;
     assert(!RinRuntime::utf8Encode(encodeBytes, 1u, 0x20acu,
                                    &encodeWritten));
