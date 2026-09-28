@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <string>
 #include <utility>
+#include <vector>
 
 namespace RinRuntime {
 
@@ -182,8 +183,15 @@ public:
                 rinruntime_archive_crc32(bytes + blockOffset,
                                          blockHeaderSize - 4u))
                 return ArchiveXzResult::CrcMismatch;
-            if (!hasCompressedSize)
-                return ArchiveXzResult::Unsupported;
+            if (!hasCompressedSize) {
+                const std::uint64_t indexedSize = indexedUnpadded[blockCount];
+                const std::uint64_t fixedSize =
+                    static_cast<std::uint64_t>(blockHeaderSize) +
+                    static_cast<std::uint64_t>(checkSizeFor(checkType));
+                if (indexedSize < fixedSize)
+                    return ArchiveXzResult::Malformed;
+                compressedSize = indexedSize - fixedSize;
+            }
             if (compressedSize > RINRUNTIME_ARCHIVE_CONTENT_LIMIT ||
                 totalCompressed >
                     RINRUNTIME_ARCHIVE_CONTENT_LIMIT - compressedSize)
@@ -198,24 +206,26 @@ public:
             const std::size_t compressed =
                 static_cast<std::size_t>(compressedSize);
             const std::size_t checkSize = checkSizeFor(checkType);
-            const std::size_t afterCheck = payloadOffset + compressed + checkSize;
-            if (afterCheck < payloadOffset || afterCheck > indexOffset)
+            const std::size_t payloadEnd = payloadOffset + compressed;
+            const std::size_t checkOffset =
+                (payloadEnd + 3u) & ~std::size_t(3u);
+            const std::size_t afterCheck = checkOffset + checkSize;
+            if (payloadEnd < payloadOffset || checkOffset < payloadEnd ||
+                afterCheck < checkOffset || afterCheck > indexOffset)
                 return ArchiveXzResult::Malformed;
-            const std::size_t nextBlock = (afterCheck + 3u) & ~std::size_t(3u);
-            if (nextBlock < afterCheck || nextBlock > indexOffset)
-                return ArchiveXzResult::Malformed;
-            for (std::size_t padding = afterCheck; padding < nextBlock;
+            for (std::size_t padding = payloadEnd; padding < checkOffset;
                  ++padding) {
                 if (bytes[padding] != 0u) return ArchiveXzResult::Malformed;
             }
             const std::uint64_t unpaddedSize =
-                static_cast<std::uint64_t>(afterCheck - blockStart);
+                static_cast<std::uint64_t>(payloadEnd - blockStart) +
+                static_cast<std::uint64_t>(checkSize);
             if (indexedUnpadded[blockCount] != unpaddedSize ||
                 (hasUncompressedSize &&
                  indexedUncompressed[blockCount] != uncompressedSize))
                 return ArchiveXzResult::Malformed;
             totalCompressed += compressedSize;
-            blockOffset = nextBlock;
+            blockOffset = afterCheck;
             ++blockCount;
         }
         if (blockOffset != indexOffset || blockCount != recordCount)
@@ -231,10 +241,10 @@ public:
         return ArchiveXzResult::Ok;
     }
 
-    /* Decode the bounded, uncompressed LZMA2 subset.  Stored chunks are
-     * useful for producers that intentionally avoid range coding, while
-     * compressed chunks remain explicit Unsupported rather than being
-     * mistaken for a complete LZMA2 decoder.  Output is failure-atomic. */
+    /* Decode bounded LZMA2 chunks.  Stored chunks remain supported for
+     * deterministic producers, while range-coded chunks use the same
+     * caller-owned output, deadline, and cancellation boundary.  The public
+     * reader still does not open paths or publish files. */
     ArchiveXzResult decodeStoredLzma2(const std::uint8_t* bytes,
                                       std::size_t size,
                                       std::string& output) const
@@ -261,6 +271,486 @@ public:
     }
 
 private:
+    enum class LzmaStatus : int {
+        Ok = 0,
+        Malformed = -1,
+        Limit = -2,
+        Cancelled = -3,
+        Deadline = -4,
+    };
+
+    struct LzmaRangeDecoder {
+        const std::uint8_t* bytes = nullptr;
+        std::size_t end = 0u;
+        std::size_t cursor = 0u;
+        std::uint32_t range = 0xffffffffu;
+        std::uint32_t code = 0u;
+        bool valid = true;
+
+        bool initialize(const std::uint8_t* input, std::size_t inputSize)
+        {
+            bytes = input;
+            end = inputSize;
+            cursor = 0u;
+            range = 0xffffffffu;
+            code = 0u;
+            valid = input != nullptr && inputSize >= 5u;
+            if (!valid) return false;
+            for (unsigned index = 0u; index != 5u; ++index)
+                code = (code << 8u) | bytes[cursor++];
+            return true;
+        }
+
+        bool normalize()
+        {
+            while (range < UINT32_C(0x01000000)) {
+                if (cursor >= end) {
+                    valid = false;
+                    return false;
+                }
+                range <<= 8u;
+                code = (code << 8u) | bytes[cursor++];
+            }
+            return true;
+        }
+
+        bool decodeBit(std::uint16_t& probability, unsigned& bit)
+        {
+            if (!normalize()) return false;
+            const std::uint32_t bound =
+                (range >> 11u) * static_cast<std::uint32_t>(probability);
+            if (code < bound) {
+                range = bound;
+                probability = static_cast<std::uint16_t>(
+                    probability + ((UINT16_C(2048) - probability) >> 5u));
+                bit = 0u;
+            } else {
+                range -= bound;
+                code -= bound;
+                probability = static_cast<std::uint16_t>(
+                    probability - (probability >> 5u));
+                bit = 1u;
+            }
+            return true;
+        }
+
+        bool decodeDirect(unsigned count, std::uint32_t& value)
+        {
+            value = 0u;
+            for (unsigned index = 0u; index != count; ++index) {
+                if (!normalize()) return false;
+                range >>= 1u;
+                if (code >= range) {
+                    code -= range;
+                    value = (value << 1u) | 1u;
+                } else {
+                    value <<= 1u;
+                }
+            }
+            return true;
+        }
+    };
+
+    struct LzmaDecoder {
+        static constexpr unsigned kNumStates = 12u;
+        static constexpr unsigned kNumPosBitsMax = 4u;
+        static constexpr unsigned kNumPosStatesMax = 1u << kNumPosBitsMax;
+        static constexpr unsigned kNumLenToPosStates = 4u;
+        static constexpr unsigned kNumAlignBits = 4u;
+        static constexpr unsigned kStartPosModelIndex = 4u;
+        static constexpr unsigned kEndPosModelIndex = 14u;
+        static constexpr unsigned kNumFullDistances =
+            1u << (kEndPosModelIndex >> 1u);
+        static constexpr unsigned kNumLowLenSymbols = 1u << 3u;
+        static constexpr unsigned kNumMidLenSymbols = 1u << 3u;
+        static constexpr unsigned kNumHighLenSymbols = 1u << 8u;
+
+        std::array<std::uint16_t, kNumStates * kNumPosStatesMax> isMatch{};
+        std::array<std::uint16_t, kNumStates> isRep{};
+        std::array<std::uint16_t, kNumStates> isRepG0{};
+        std::array<std::uint16_t, kNumStates> isRepG1{};
+        std::array<std::uint16_t, kNumStates> isRepG2{};
+        std::array<std::uint16_t, kNumStates * kNumPosStatesMax>
+            isRep0Long{};
+        std::array<std::uint16_t, kNumLenToPosStates * 64u> posSlot{};
+        /* The canonical model uses 114 entries, but the last reverse tree
+         * reaches one shared sentinel index on malformed paths.  Keeping the
+         * full 128-entry bounded table makes that path memory-safe while the
+         * valid model still uses only the canonical prefix. */
+        std::array<std::uint16_t, kNumFullDistances> specPos{};
+        std::array<std::uint16_t, 1u << kNumAlignBits> align{};
+        std::array<std::uint16_t, 2u> lenChoice{};
+        std::array<std::uint16_t, kNumPosStatesMax * kNumLowLenSymbols>
+            lenLow{};
+        std::array<std::uint16_t, kNumPosStatesMax * kNumMidLenSymbols>
+            lenMid{};
+        std::array<std::uint16_t, kNumHighLenSymbols> lenHigh{};
+        std::array<std::uint16_t, 2u> repLenChoice{};
+        std::array<std::uint16_t, kNumPosStatesMax * kNumLowLenSymbols>
+            repLenLow{};
+        std::array<std::uint16_t, kNumPosStatesMax * kNumMidLenSymbols>
+            repLenMid{};
+        std::array<std::uint16_t, kNumHighLenSymbols> repLenHigh{};
+        std::vector<std::uint16_t> literal{};
+        unsigned literalContextBits = 0u;
+        unsigned literalPositionBits = 0u;
+        unsigned positionBits = 0u;
+        unsigned state = 0u;
+        std::uint32_t reps[4] = {0u, 0u, 0u, 0u};
+        bool initialized = false;
+
+        static void initializeProbabilities(std::uint16_t* values,
+                                            std::size_t count)
+        {
+            for (std::size_t index = 0u; index != count; ++index)
+                values[index] = UINT16_C(1024);
+        }
+
+        void resetState()
+        {
+            initializeProbabilities(isMatch.data(), isMatch.size());
+            initializeProbabilities(isRep.data(), isRep.size());
+            initializeProbabilities(isRepG0.data(), isRepG0.size());
+            initializeProbabilities(isRepG1.data(), isRepG1.size());
+            initializeProbabilities(isRepG2.data(), isRepG2.size());
+            initializeProbabilities(isRep0Long.data(), isRep0Long.size());
+            initializeProbabilities(posSlot.data(), posSlot.size());
+            initializeProbabilities(specPos.data(), specPos.size());
+            initializeProbabilities(align.data(), align.size());
+            initializeProbabilities(lenChoice.data(), lenChoice.size());
+            initializeProbabilities(lenLow.data(), lenLow.size());
+            initializeProbabilities(lenMid.data(), lenMid.size());
+            initializeProbabilities(lenHigh.data(), lenHigh.size());
+            initializeProbabilities(repLenChoice.data(), repLenChoice.size());
+            initializeProbabilities(repLenLow.data(), repLenLow.size());
+            initializeProbabilities(repLenMid.data(), repLenMid.size());
+            initializeProbabilities(repLenHigh.data(), repLenHigh.size());
+            initializeProbabilities(literal.data(), literal.size());
+            state = 0u;
+            reps[0] = reps[1] = reps[2] = reps[3] = 0u;
+        }
+
+        LzmaStatus setProperties(std::uint8_t properties)
+        {
+            if (properties > 224u) return LzmaStatus::Malformed;
+            unsigned remainder = properties;
+            literalContextBits = remainder % 9u;
+            remainder /= 9u;
+            literalPositionBits = remainder % 5u;
+            positionBits = remainder / 5u;
+            if (literalContextBits > 8u || literalPositionBits > 4u ||
+                positionBits > 4u)
+                return LzmaStatus::Malformed;
+            const std::size_t contexts =
+                std::size_t(1u) << (literalContextBits + literalPositionBits);
+            if (contexts > (static_cast<std::size_t>(-1) / 0x300u))
+                return LzmaStatus::Limit;
+            literal.assign(contexts * 0x300u, UINT16_C(1024));
+            resetState();
+            initialized = true;
+            return LzmaStatus::Ok;
+        }
+
+        static unsigned lenToPosState(unsigned length)
+        {
+            const unsigned value = length - 2u;
+            return value < (kNumLenToPosStates * 2u)
+                       ? value >> 1u
+                       : kNumLenToPosStates - 1u;
+        }
+
+        static void updateLiteralState(unsigned& value)
+        {
+            value = value < 4u ? 0u : (value < 10u ? value - 3u : value - 6u);
+        }
+
+        static void updateMatchState(unsigned& value)
+        {
+            value = value < 7u ? 7u : 10u;
+        }
+
+        static void updateRepState(unsigned& value)
+        {
+            value = value < 7u ? 8u : 11u;
+        }
+
+        static void updateShortRepState(unsigned& value)
+        {
+            value = value < 7u ? 9u : 11u;
+        }
+
+        static bool decodeBitTree(LzmaRangeDecoder& range,
+                                  std::uint16_t* probabilities,
+                                  unsigned bits, unsigned& value)
+        {
+            unsigned symbol = 1u;
+            for (unsigned index = 0u; index != bits; ++index) {
+                unsigned bit = 0u;
+                if (!range.decodeBit(probabilities[symbol], bit)) return false;
+                symbol = (symbol << 1u) | bit;
+            }
+            value = symbol - (1u << bits);
+            return true;
+        }
+
+        static bool decodeReverseBitTree(LzmaRangeDecoder& range,
+                                         std::uint16_t* probabilities,
+                                         unsigned bits, unsigned& value)
+        {
+            unsigned symbol = 1u;
+            value = 0u;
+            for (unsigned index = 0u; index != bits; ++index) {
+                unsigned bit = 0u;
+                if (!range.decodeBit(probabilities[symbol], bit)) return false;
+                symbol = (symbol << 1u) | bit;
+                value |= bit << index;
+            }
+            return true;
+        }
+
+        static bool decodeLength(LzmaRangeDecoder& range, unsigned posState,
+                                 std::array<std::uint16_t, 2u>& choice,
+                                 std::array<std::uint16_t,
+                                            kNumPosStatesMax *
+                                                kNumLowLenSymbols>& low,
+                                 std::array<std::uint16_t,
+                                            kNumPosStatesMax *
+                                                kNumMidLenSymbols>& mid,
+                                 std::array<std::uint16_t,
+                                            kNumHighLenSymbols>& high,
+                                 unsigned& length)
+        {
+            unsigned bit = 0u;
+            if (!range.decodeBit(choice[0], bit)) return false;
+            if (bit == 0u) {
+                unsigned value = 0u;
+                if (!decodeBitTree(range, low.data() +
+                                             posState * kNumLowLenSymbols,
+                                   3u, value))
+                    return false;
+                length = value + 2u;
+                return true;
+            }
+            if (!range.decodeBit(choice[1], bit)) return false;
+            if (bit == 0u) {
+                unsigned value = 0u;
+                if (!decodeBitTree(range, mid.data() +
+                                             posState * kNumMidLenSymbols,
+                                   3u, value))
+                    return false;
+                length = value + 2u + kNumLowLenSymbols;
+                return true;
+            }
+            unsigned value = 0u;
+            if (!decodeBitTree(range, high.data(), 8u, value)) return false;
+            length = value + 2u + kNumLowLenSymbols + kNumMidLenSymbols;
+            return true;
+        }
+
+        bool decodeLiteral(LzmaRangeDecoder& range, std::string& output,
+                           std::size_t historyStart)
+        {
+            if (!initialized || output.size() < historyStart) return false;
+            const std::size_t position = output.size() - historyStart;
+            const std::uint8_t previous = output.empty()
+                                               ? 0u
+                                               : static_cast<std::uint8_t>(
+                                                     output.back());
+            const unsigned context =
+                ((static_cast<unsigned>(position) &
+                  ((1u << literalPositionBits) - 1u)) <<
+                 literalContextBits) |
+                (static_cast<unsigned>(previous) >>
+                 (8u - literalContextBits));
+            std::uint16_t* probabilities = literal.data() + context * 0x300u;
+            unsigned symbol = 1u;
+            if (state < 7u) {
+                while (symbol < 0x100u) {
+                    unsigned bit = 0u;
+                    if (!range.decodeBit(probabilities[symbol], bit))
+                        return false;
+                    symbol = (symbol << 1u) | bit;
+                }
+            } else {
+                if (reps[0] >= output.size() - historyStart) return false;
+                std::uint8_t match = static_cast<std::uint8_t>(
+                    output[output.size() - reps[0] - 1u]);
+                do {
+                    const unsigned matchBit = (match >> 7u) & 1u;
+                    match = static_cast<std::uint8_t>(match << 1u);
+                    unsigned bit = 0u;
+                    if (!range.decodeBit(
+                            probabilities[((1u + matchBit) << 8u) + symbol],
+                            bit))
+                        return false;
+                    symbol = (symbol << 1u) | bit;
+                    if (matchBit != bit) {
+                        while (symbol < 0x100u) {
+                            if (!range.decodeBit(probabilities[symbol], bit))
+                                return false;
+                            symbol = (symbol << 1u) | bit;
+                        }
+                        break;
+                    }
+                } while (symbol < 0x100u);
+            }
+            output.push_back(static_cast<char>(symbol));
+            updateLiteralState(state);
+            return true;
+        }
+
+        bool decodeDistance(LzmaRangeDecoder& range, unsigned length,
+                            std::uint32_t& distance)
+        {
+            const unsigned stateIndex = lenToPosState(length);
+            unsigned slot = 0u;
+            if (!decodeBitTree(range, posSlot.data() + stateIndex * 64u, 6u,
+                               slot))
+                return false;
+            if (slot < kStartPosModelIndex) {
+                distance = slot;
+                return true;
+            }
+            const unsigned directBits = (slot >> 1u) - 1u;
+            distance = (2u | (slot & 1u)) << directBits;
+            if (slot < kEndPosModelIndex) {
+                const unsigned index = distance - slot;
+                unsigned value = 0u;
+                if (!decodeReverseBitTree(range, specPos.data() + index,
+                                          directBits, value))
+                    return false;
+                distance += value;
+                return true;
+            }
+            std::uint32_t direct = 0u;
+            if (!range.decodeDirect(directBits - kNumAlignBits, direct))
+                return false;
+            distance += direct << kNumAlignBits;
+            unsigned aligned = 0u;
+            if (!decodeReverseBitTree(range, align.data(), kNumAlignBits,
+                                      aligned))
+                return false;
+            distance += aligned;
+            return true;
+        }
+
+        LzmaStatus decodeChunk(const std::uint8_t* compressed,
+                               std::size_t compressedSize,
+                               std::size_t targetSize, std::string& output,
+                               std::size_t historyStart,
+                               std::size_t dictionarySize,
+                               ArchiveDeflateCancellationFunction cancellation,
+                               void* cancellationContext,
+                               ArchiveDeflateDeadlineFunction deadline,
+                               void* deadlineContext) {
+            if (!initialized || compressed == nullptr || compressedSize < 5u)
+                return LzmaStatus::Malformed;
+            if (targetSize > kMaxStreamBytes - output.size())
+                return LzmaStatus::Limit;
+            LzmaRangeDecoder range;
+            if (!range.initialize(compressed, compressedSize))
+                return LzmaStatus::Malformed;
+            const std::size_t targetEnd = output.size() + targetSize;
+            while (output.size() < targetEnd) {
+                if ((output.size() & 4095u) == 0u) {
+                    if (deadline != nullptr && deadline(deadlineContext))
+                        return LzmaStatus::Deadline;
+                    if (cancellation != nullptr &&
+                        cancellation(cancellationContext))
+                        return LzmaStatus::Cancelled;
+                }
+                const unsigned positionState =
+                    static_cast<unsigned>((output.size() - historyStart) &
+                                          ((1u << positionBits) - 1u));
+                unsigned bit = 0u;
+                if (!range.decodeBit(
+                        isMatch[state * kNumPosStatesMax + positionState],
+                        bit))
+                    return LzmaStatus::Malformed;
+                if (bit == 0u) {
+                    if (!decodeLiteral(range, output, historyStart))
+                        return LzmaStatus::Malformed;
+                    continue;
+                }
+
+                if (!range.decodeBit(isRep[state], bit))
+                    return LzmaStatus::Malformed;
+                unsigned length = 0u;
+                std::uint32_t distance = 0u;
+                if (bit != 0u) {
+                    if (!range.decodeBit(isRepG0[state], bit))
+                        return LzmaStatus::Malformed;
+                    if (bit == 0u) {
+                        if (!range.decodeBit(
+                                isRep0Long[state * kNumPosStatesMax +
+                                           positionState],
+                                bit))
+                                return LzmaStatus::Malformed;
+                        distance = reps[0];
+                        if (bit == 0u) {
+                            updateShortRepState(state);
+                            length = 1u;
+                        } else {
+                            updateRepState(state);
+                            if (!decodeLength(range, positionState,
+                                             repLenChoice, repLenLow,
+                                             repLenMid, repLenHigh, length))
+                                return LzmaStatus::Malformed;
+                        }
+                    } else {
+                        if (!range.decodeBit(isRepG1[state], bit))
+                            return LzmaStatus::Malformed;
+                        if (bit == 0u) {
+                            distance = reps[1];
+                        } else {
+                            if (!range.decodeBit(isRepG2[state], bit))
+                                return LzmaStatus::Malformed;
+                            if (bit == 0u) {
+                                distance = reps[2];
+                            } else {
+                                distance = reps[3];
+                                reps[3] = reps[2];
+                            }
+                            reps[2] = reps[1];
+                        }
+                        reps[1] = reps[0];
+                        reps[0] = distance;
+                        updateRepState(state);
+                        if (!decodeLength(range, positionState, repLenChoice,
+                                         repLenLow, repLenMid, repLenHigh,
+                                         length))
+                            return LzmaStatus::Malformed;
+                    }
+                } else {
+                    reps[3] = reps[2];
+                    reps[2] = reps[1];
+                    reps[1] = reps[0];
+                    updateMatchState(state);
+                    if (!decodeLength(range, positionState, lenChoice, lenLow,
+                                     lenMid, lenHigh, length) ||
+                        !decodeDistance(range, length, distance))
+                        return LzmaStatus::Malformed;
+                    reps[0] = distance;
+                }
+                if (length > targetEnd - output.size())
+                    return LzmaStatus::Malformed;
+                const std::size_t available = output.size() - historyStart;
+                const std::uint64_t distanceBytes =
+                    static_cast<std::uint64_t>(distance) + 1u;
+                if (distanceBytes > available ||
+                    distanceBytes > dictionarySize)
+                    return LzmaStatus::Malformed;
+                for (unsigned copy = 0u; copy != length; ++copy) {
+                    const std::size_t source = output.size() -
+                                               static_cast<std::size_t>(
+                                                   distanceBytes);
+                    output.push_back(output[source]);
+                }
+            }
+            return range.valid ? LzmaStatus::Ok : LzmaStatus::Malformed;
+        }
+    };
+
     ArchiveXzResult decodeStoredLzma2(
         const std::uint8_t* bytes, std::size_t size, std::string& output,
         ArchiveDeflateCancellationFunction cancellation,
@@ -279,7 +769,25 @@ private:
             return ArchiveXzResult::Unsupported;
 
         std::string decoded;
+        std::array<std::uint64_t, RINRUNTIME_ARCHIVE_ENTRY_LIMIT>
+            indexedUnpadded{};
+        const std::size_t footerOffset = size - kFooterSize;
+        const std::size_t indexDataEnd = footerOffset - 4u;
+        std::size_t indexCursor = summary.indexOffset + 1u;
+        std::uint64_t recordCount = 0u;
+        if (!readVli(bytes, indexDataEnd, indexCursor, recordCount) ||
+            recordCount != summary.blockCount)
+            return ArchiveXzResult::Malformed;
+        for (std::size_t index = 0u; index != recordCount; ++index) {
+            std::uint64_t ignoredUncompressed = 0u;
+            if (!readVli(bytes, indexDataEnd, indexCursor,
+                         indexedUnpadded[index]) ||
+                !readVli(bytes, indexDataEnd, indexCursor,
+                         ignoredUncompressed))
+                return ArchiveXzResult::Malformed;
+        }
         std::size_t blockOffset = kHeaderSize;
+        std::size_t blockIndex = 0u;
         while (blockOffset < summary.indexOffset) {
             if (deadline != nullptr && deadline(deadlineContext))
                 return ArchiveXzResult::Deadline;
@@ -296,7 +804,8 @@ private:
             std::size_t headerCursor = blockOffset + 2u;
             std::uint64_t compressedSize = 0u;
             std::uint64_t ignoredUncompressedSize = 0u;
-            if ((blockFlags & 0x40u) == 0u ||
+            const bool hasCompressedSize = (blockFlags & 0x40u) != 0u;
+            if (hasCompressedSize &&
                 !readVli(bytes, headerDataEnd, headerCursor, compressedSize))
                 return ArchiveXzResult::Malformed;
             if ((blockFlags & 0x80u) != 0u &&
@@ -309,18 +818,41 @@ private:
             if (!readVli(bytes, headerDataEnd, headerCursor, filterId) ||
                 !readVli(bytes, headerDataEnd, headerCursor, propertySize) ||
                 filterId != 0x21u || propertySize != 1u ||
-                headerCursor >= headerDataEnd || bytes[headerCursor++] != 0u)
+                headerCursor >= headerDataEnd)
                 return ArchiveXzResult::Unsupported;
+            const std::uint8_t dictionaryProperty = bytes[headerCursor++];
+            if (dictionaryProperty > 40u) return ArchiveXzResult::Malformed;
+            const std::uint64_t requestedDictionary =
+                dictionaryProperty == 40u
+                    ? static_cast<std::uint64_t>(kMaxStreamBytes)
+                    : (static_cast<std::uint64_t>(2u) |
+                       static_cast<std::uint64_t>(dictionaryProperty & 1u))
+                          << (dictionaryProperty / 2u + 11u);
+            const std::size_t dictionarySize =
+                requestedDictionary > kMaxStreamBytes
+                    ? kMaxStreamBytes
+                    : static_cast<std::size_t>(requestedDictionary);
             while (headerCursor < headerDataEnd) {
                 if (bytes[headerCursor++] != 0u)
                     return ArchiveXzResult::Malformed;
             }
 
             const std::size_t payloadOffset = headerEnd;
+            if (!hasCompressedSize) {
+                const std::uint64_t fixedSize =
+                    static_cast<std::uint64_t>(blockHeaderSize) +
+                    static_cast<std::uint64_t>(checkSizeFor(summary.checkType));
+                if (blockIndex >= recordCount ||
+                    indexedUnpadded[blockIndex] < fixedSize)
+                    return ArchiveXzResult::Malformed;
+                compressedSize = indexedUnpadded[blockIndex] - fixedSize;
+            }
             const std::size_t payloadEnd =
                 payloadOffset + static_cast<std::size_t>(compressedSize);
             const std::size_t blockOutputStart = decoded.size();
             std::size_t cursor = payloadOffset;
+            std::size_t historyStart = blockOutputStart;
+            LzmaDecoder lzma;
             bool streamEnded = false;
             while (cursor < payloadEnd) {
                 if (deadline != nullptr && deadline(deadlineContext))
@@ -334,38 +866,89 @@ private:
                     if (cursor != payloadEnd) return ArchiveXzResult::Malformed;
                     break;
                 }
-                if (control >= 0x80u)
-                    return ArchiveXzResult::Unsupported;
-                if (control != 0x01u && control != 0x02u)
-                    return ArchiveXzResult::Malformed;
-                if (payloadEnd - cursor < 2u) return ArchiveXzResult::Malformed;
-
-                const std::size_t chunkSize =
-                    static_cast<std::size_t>(bytes[cursor]) |
-                    (static_cast<std::size_t>(bytes[cursor + 1u]) << 8u);
-                cursor += 2u;
-                const std::size_t chunkBytes = chunkSize + 1u;
-                if (chunkBytes > payloadEnd - cursor)
-                    return ArchiveXzResult::Malformed;
-                if (chunkBytes > kMaxStreamBytes - decoded.size())
-                    return ArchiveXzResult::Limit;
-                std::size_t copied = 0u;
-                while (copied < chunkBytes) {
-                    if (deadline != nullptr && deadline(deadlineContext))
-                        return ArchiveXzResult::Deadline;
-                    if (cancellation != nullptr &&
-                        cancellation(cancellationContext))
-                        return ArchiveXzResult::Cancelled;
-                    const std::size_t part =
-                        (chunkBytes - copied) > 65536u
-                            ? 65536u
-                            : chunkBytes - copied;
-                    decoded.append(
-                        reinterpret_cast<const char*>(bytes + cursor + copied),
-                        part);
-                    copied += part;
+                if (control == 0x01u || control == 0x02u) {
+                    if (payloadEnd - cursor < 2u)
+                        return ArchiveXzResult::Malformed;
+                    const std::size_t chunkSize =
+                        static_cast<std::size_t>(bytes[cursor]) |
+                        (static_cast<std::size_t>(bytes[cursor + 1u]) << 8u);
+                    cursor += 2u;
+                    const std::size_t chunkBytes = chunkSize + 1u;
+                    if (chunkBytes > payloadEnd - cursor)
+                        return ArchiveXzResult::Malformed;
+                    if (decoded.size() > kMaxStreamBytes ||
+                        chunkBytes > kMaxStreamBytes - decoded.size())
+                        return ArchiveXzResult::Limit;
+                    if (control == 0x01u) {
+                        historyStart = decoded.size();
+                        lzma.resetState();
+                    }
+                    std::size_t copied = 0u;
+                    while (copied < chunkBytes) {
+                        if (deadline != nullptr && deadline(deadlineContext))
+                            return ArchiveXzResult::Deadline;
+                        if (cancellation != nullptr &&
+                            cancellation(cancellationContext))
+                            return ArchiveXzResult::Cancelled;
+                        const std::size_t part =
+                            (chunkBytes - copied) > 65536u
+                                ? 65536u
+                                : chunkBytes - copied;
+                        decoded.append(reinterpret_cast<const char*>(
+                                           bytes + cursor + copied),
+                                       part);
+                        copied += part;
+                    }
+                    cursor += chunkBytes;
+                    continue;
                 }
-                cursor += chunkBytes;
+                if (control < 0x80u) return ArchiveXzResult::Malformed;
+                if (payloadEnd - cursor < 4u)
+                    return ArchiveXzResult::Malformed;
+                const std::size_t uncompressedSize =
+                    (static_cast<std::size_t>(control & 0x1fu) << 16u) |
+                    (static_cast<std::size_t>(bytes[cursor]) << 8u) |
+                    static_cast<std::size_t>(bytes[cursor + 1u]);
+                cursor += 2u;
+                const std::size_t compressedSize =
+                    (static_cast<std::size_t>(bytes[cursor]) << 8u) |
+                    static_cast<std::size_t>(bytes[cursor + 1u]);
+                cursor += 2u;
+                const std::size_t chunkUncompressedSize =
+                    uncompressedSize +
+                    1u;
+                const std::size_t compressedBytes = compressedSize + 1u;
+                if (compressedBytes > payloadEnd - cursor)
+                    return ArchiveXzResult::Malformed;
+                if (control >= 0xc0u) {
+                    if (cursor >= payloadEnd) return ArchiveXzResult::Malformed;
+                    const LzmaStatus propertyResult =
+                        lzma.setProperties(bytes[cursor++]);
+                    if (propertyResult != LzmaStatus::Ok)
+                        return propertyResult == LzmaStatus::Limit
+                                   ? ArchiveXzResult::Limit
+                                   : ArchiveXzResult::Malformed;
+                } else if (!lzma.initialized) {
+                    return ArchiveXzResult::Malformed;
+                } else if (control >= 0xa0u) {
+                    lzma.resetState();
+                }
+                if (control >= 0xe0u) historyStart = decoded.size();
+                const LzmaStatus decodeResult = lzma.decodeChunk(
+                    bytes + cursor, compressedBytes, chunkUncompressedSize,
+                    decoded,
+                    historyStart, dictionarySize, cancellation,
+                    cancellationContext, deadline, deadlineContext);
+                if (decodeResult != LzmaStatus::Ok) {
+                    if (decodeResult == LzmaStatus::Limit)
+                        return ArchiveXzResult::Limit;
+                    if (decodeResult == LzmaStatus::Cancelled)
+                        return ArchiveXzResult::Cancelled;
+                    if (decodeResult == LzmaStatus::Deadline)
+                        return ArchiveXzResult::Deadline;
+                    return ArchiveXzResult::Malformed;
+                }
+                cursor += compressedBytes;
             }
             if (!streamEnded) return ArchiveXzResult::Malformed;
             if ((blockFlags & 0x80u) != 0u &&
@@ -376,17 +959,29 @@ private:
                     decoded.data() + blockOutputStart);
             const std::size_t blockOutputSize =
                 decoded.size() - blockOutputStart;
+            const std::size_t checkOffset =
+                (payloadEnd + 3u) & ~std::size_t(3u);
+            if (checkOffset < payloadEnd ||
+                checkOffset + checkSizeFor(summary.checkType) >
+                    summary.indexOffset)
+                return ArchiveXzResult::Malformed;
+            for (std::size_t padding = payloadEnd; padding < checkOffset;
+                 ++padding) {
+                if (bytes[padding] != 0u)
+                    return ArchiveXzResult::Malformed;
+            }
             if (summary.checkType == 1u &&
-                readLe32(bytes + payloadEnd) !=
+                readLe32(bytes + checkOffset) !=
                     rinruntime_archive_crc32(blockOutput, blockOutputSize))
                 return ArchiveXzResult::CrcMismatch;
             if (summary.checkType == 4u &&
-                readLe64(bytes + payloadEnd) !=
+                readLe64(bytes + checkOffset) !=
                     crc64Xz(blockOutput, blockOutputSize))
                 return ArchiveXzResult::CrcMismatch;
             const std::size_t afterCheck =
-                payloadEnd + checkSizeFor(summary.checkType);
-            blockOffset = (afterCheck + 3u) & ~std::size_t(3u);
+                checkOffset + checkSizeFor(summary.checkType);
+            blockOffset = afterCheck;
+            ++blockIndex;
         }
 
         if (decoded.size() != summary.uncompressedSize)

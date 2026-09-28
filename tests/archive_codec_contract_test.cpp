@@ -358,14 +358,15 @@ static std::vector<std::uint8_t> makeXzStoredLzma2(std::uint8_t checkType)
     bytes[26u] = 0x00u;
     std::memcpy(bytes.data() + 27u, payload, 5u);
     bytes[32u] = 0x00u;
+    const std::size_t checkOffset = 36u;
     if (checkType == 1u)
-        writeLe32(bytes, 33u,
+        writeLe32(bytes, checkOffset,
                   RinRuntime::rinruntime_archive_crc32(
                       bytes.data() + 27u, 5u));
     else if (checkType == 4u)
-        writeLe64(bytes, 33u, xzCrc64(bytes.data() + 27u, 5u));
+        writeLe64(bytes, checkOffset, xzCrc64(bytes.data() + 27u, 5u));
 
-    const std::size_t index = 36u + checkSize;
+    const std::size_t index = checkOffset + checkSize;
     bytes[index] = 0x00u;
     bytes[index + 1u] = 0x01u;
     bytes[index + 2u] = static_cast<std::uint8_t>(0x15u + checkSize);
@@ -570,7 +571,7 @@ int main()
     xzOutput = "poison";
     assert(xzReader.decodeStoredLzma2(compressedXz.data(), compressedXz.size(),
                                       xzOutput) ==
-           RinRuntime::ArchiveXzResult::Unsupported);
+           RinRuntime::ArchiveXzResult::Malformed);
     assert(xzOutput == "poison");
     const std::vector<std::uint8_t> crcXz = makeXzStoredLzma2(1u);
     xzOutput = "poison";
@@ -586,14 +587,14 @@ int main()
            RinRuntime::ArchiveXzResult::Ok);
     assert(xzOutput == "hello");
     std::vector<std::uint8_t> badCrc64Xz = crc64Xz;
-    badCrc64Xz[33u] ^= 0x01u;
+    badCrc64Xz[36u] ^= 0x01u;
     xzOutput = "poison";
     assert(xzReader.decodeStoredLzma2(badCrc64Xz.data(), badCrc64Xz.size(),
                                       xzOutput) ==
            RinRuntime::ArchiveXzResult::CrcMismatch);
     assert(xzOutput == "poison");
     std::vector<std::uint8_t> badCrcXz = crcXz;
-    badCrcXz[33u] ^= 0x01u;
+    badCrcXz[36u] ^= 0x01u;
     xzOutput = "poison";
     assert(xzReader.decodeStoredLzma2(badCrcXz.data(), badCrcXz.size(),
                                       xzOutput) ==
