@@ -129,6 +129,11 @@ int rin_keyring_client_status(void)
     status = send_exact(fd, &request, sizeof(request)) == 0
         ? receive_header(fd, RIN_KEYRING_OP_STATUS, &response)
         : RIN_KEYRING_STORAGE_FAILED;
+    /* STATUS has no response payload.  Do not accept a successful status
+     * header while silently discarding an unexpected body; otherwise a
+     * peer/protocol version mismatch can be mistaken for a healthy keyring. */
+    if (status == RIN_KEYRING_OK && response.payload_size != 0u)
+        status = RIN_KEYRING_STORAGE_FAILED;
     close(fd);
     return status;
 }
