@@ -322,7 +322,9 @@ metadata/CRC records into failure-atomic caller-owned output.  LZMA/other
 coder chains, encryption, multiple streams, filesystem extraction, archive
 service IPC, and File Portal publication remain private or `Unsupported`.
 Empty streams and malformed multi-byte `EmptyStream` bitmaps are also rejected
-as `Unsupported`; they remain private archive-owner cases.
+as `Unsupported`; they remain private archive-owner cases.  Its 7z VLI reader
+also rejects non-minimal encodings such as a zero value encoded with an extra
+byte, so malformed header values do not reach the stored-copy path.
 
 `backup_archive.hpp` adds the public `BackupArchiveReader` consumer for the
 bounded RBK1 ZIP layout (`manifest.rbk1` plus one `payload/<item_id>` entry per

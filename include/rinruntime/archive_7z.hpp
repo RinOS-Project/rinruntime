@@ -299,6 +299,9 @@ private:
             if (cursor >= end) return false;
             value = (value << 8u) | bytes[cursor++];
         }
+        if (additional != 0u &&
+            value < (UINT64_C(1) << (7u * additional)))
+            return false;
         return true;
     }
 
