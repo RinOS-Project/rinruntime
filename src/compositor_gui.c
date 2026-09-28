@@ -349,6 +349,15 @@ static int runtime_receive_exact(void* data, uint32_t size,
     return 0;
 }
 
+static int runtime_deadline_after(uint64_t now_ms, uint64_t timeout_ms,
+                                  uint64_t* deadline_out) {
+    if (deadline_out == NULL || now_ms == 0u || timeout_ms == 0u ||
+        now_ms > UINT64_MAX - timeout_ms)
+        return -1;
+    *deadline_out = now_ms + timeout_ms;
+    return 0;
+}
+
 /* Returns 0 for a valid transport exchange; status is the compositor status. */
 static int runtime_request(uint32_t type, const void* payload,
                            uint32_t payload_size, void* reply_payload,
@@ -377,16 +386,19 @@ static int runtime_request(uint32_t type, const void* payload,
     request_id = g_next_request_id++;
     if (g_next_request_id == 0u) g_next_request_id = 1u;
     request_start_ms = rin_monotonic_ms();
+    if (runtime_deadline_after(
+            request_start_ms,
+            (type == RIN_COMPOSITOR_POLL_INPUT ||
+             type == RIN_COMPOSITOR_POLL_INPUT_V2) ? 50u :
+                RIN_RUNTIME_GUI_REQUEST_TIMEOUT_MS,
+            &deadline_ms) != 0)
+        return -1;
     memset(&request, 0, sizeof(request));
     request.magic = RIN_COMPOSITOR_MAGIC;
     request.version = g_compositor_protocol_version;
     request.type = type;
     request.payload_size = payload_size;
     request.request_id = request_id;
-    deadline_ms = rin_monotonic_ms() +
-        ((type == RIN_COMPOSITOR_POLL_INPUT ||
-          type == RIN_COMPOSITOR_POLL_INPUT_V2) ? 50u :
-         RIN_RUNTIME_GUI_REQUEST_TIMEOUT_MS);
     if (runtime_send_exact(&request, sizeof(request)) != 0 ||
         (payload_size != 0u && runtime_send_exact(payload, payload_size) != 0)) {
         snprintf(diagnostic, sizeof(diagnostic),
