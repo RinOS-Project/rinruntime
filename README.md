@@ -148,6 +148,9 @@ single Copy/Move/Link acceptance before a drop. It does not carry paths,
 descriptors, sockets, compositor handles, or portal authority; private
 compositor, File Portal, and permission-broker adapters decide whether an
 accepted payload may actually be delivered.
+`DragDropPayload::valid()` uses the same strict MIME and UTF-8 checks as the
+session admission path, so directly constructed payloads cannot bypass the
+public validation boundary.
 
 `clipboard.h` provides the public application text clipboard client.  It
 validates the UTF-8 byte bound and uses the public GUI syscall adapter with

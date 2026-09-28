@@ -11,6 +11,17 @@ int main()
     RinRuntime::DragDropSession session;
     const std::uint8_t text[] = {'o', 'k'};
 
+    RinRuntime::DragDropPayload directPayload;
+    directPayload.mimeType = "text/plain/extra";
+    directPayload.label = "ok";
+    assert(!directPayload.valid());
+    directPayload.mimeType = "text/plain";
+    directPayload.label = std::string("\xc0\x80");
+    assert(!directPayload.valid());
+    directPayload.label = "ok";
+    directPayload.bytes.assign(text, text + sizeof(text));
+    assert(directPayload.valid());
+
     assert(!session.begin(0u, 1u, RinRuntime::DragDropAction::Copy));
     assert(session.begin(17u, 3u,
                          static_cast<RinRuntime::DragDropAction>(3u)));

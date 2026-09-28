@@ -12,6 +12,72 @@
 
 namespace RinRuntime {
 
+namespace detail {
+
+static constexpr std::size_t kDragDropMaxMimeTypeBytes = 127u;
+
+inline bool dragDropUtf8Valid(const std::string& value,
+                              std::size_t maximum)
+{
+    if (value.size() > maximum) return false;
+    std::size_t index = 0u;
+    while (index < value.size()) {
+        const std::uint8_t lead = static_cast<std::uint8_t>(value[index]);
+        std::size_t width = 0u;
+        std::uint32_t codepoint = 0u;
+        if (lead <= 0x7fu) {
+            width = 1u;
+            codepoint = lead;
+        } else if (lead >= 0xc2u && lead <= 0xdfu) {
+            width = 2u;
+            codepoint = lead & 0x1fu;
+        } else if (lead >= 0xe0u && lead <= 0xefu) {
+            width = 3u;
+            codepoint = lead & 0x0fu;
+        } else if (lead >= 0xf0u && lead <= 0xf4u) {
+            width = 4u;
+            codepoint = lead & 0x07u;
+        } else {
+            return false;
+        }
+        if (width > value.size() - index) return false;
+        for (std::size_t offset = 1u; offset < width; ++offset) {
+            const std::uint8_t continuation =
+                static_cast<std::uint8_t>(value[index + offset]);
+            if ((continuation & 0xc0u) != 0x80u) return false;
+            codepoint = (codepoint << 6u) | (continuation & 0x3fu);
+        }
+        if ((width == 2u && codepoint < 0x80u) ||
+            (width == 3u && codepoint < 0x800u) ||
+            (width == 4u && codepoint < 0x10000u) ||
+            codepoint > 0x10ffffu ||
+            (codepoint >= 0xd800u && codepoint <= 0xdfffu))
+            return false;
+        index += width;
+    }
+    return true;
+}
+
+inline bool dragDropMimeTypeValid(const std::string& value)
+{
+    if (value.empty() || value.size() > kDragDropMaxMimeTypeBytes)
+        return false;
+    const std::size_t slash = value.find('/');
+    if (slash == std::string::npos || slash == 0u ||
+        slash + 1u >= value.size())
+        return false;
+    for (const unsigned char byte : value) {
+        if (byte < 0x21u || byte > 0x7eu || byte == ' ' || byte == '\\' ||
+            byte == '"' || byte == '(' || byte == ')' || byte == ',' ||
+            byte == ';' || byte == '<' || byte == '>' || byte == '@' ||
+            byte == '[' || byte == ']' || byte == ':' || byte == '?')
+            return false;
+    }
+    return value.find('/', slash + 1u) == std::string::npos;
+}
+
+} // namespace detail
+
 /* These values describe an application-level choice.  They are not a
  * capability or a filesystem permission; a private compositor/File Portal
  * adapter must authorize the resulting operation separately. */
@@ -37,7 +103,8 @@ struct DragDropPayload final {
 class DragDropSession final {
 public:
     static constexpr std::size_t kMaxPayloads = 32u;
-    static constexpr std::size_t kMaxMimeTypeBytes = 127u;
+    static constexpr std::size_t kMaxMimeTypeBytes =
+        detail::kDragDropMaxMimeTypeBytes;
     static constexpr std::size_t kMaxLabelBytes = 255u;
     static constexpr std::size_t kMaxPayloadBytes = 256u * 1024u;
     static constexpr std::size_t kMaxTotalBytes = 1024u * 1024u;
@@ -53,8 +120,14 @@ private:
     bool dropped_ = false;
     bool cancelled_ = false;
 
-    static bool utf8Valid(const std::string& value, std::size_t maximum);
-    static bool mimeTypeValid(const std::string& value);
+    static bool utf8Valid(const std::string& value, std::size_t maximum)
+    {
+        return detail::dragDropUtf8Valid(value, maximum);
+    }
+    static bool mimeTypeValid(const std::string& value)
+    {
+        return detail::dragDropMimeTypeValid(value);
+    }
     static bool actionValid(DragDropAction action);
     static bool actionSingleBit(DragDropAction action);
 
@@ -97,75 +170,9 @@ public:
 
 inline bool DragDropPayload::valid() const
 {
-    if (mimeType.size() > DragDropSession::kMaxMimeTypeBytes ||
-        label.size() > DragDropSession::kMaxLabelBytes ||
-        bytes.size() > DragDropSession::kMaxPayloadBytes)
-        return false;
-    if (mimeType.empty()) return false;
-    for (unsigned char byte : mimeType) {
-        if (byte < 0x21u || byte > 0x7eu) return false;
-    }
-    return true;
-}
-
-inline bool DragDropSession::utf8Valid(const std::string& value,
-                                       std::size_t maximum)
-{
-    if (value.size() > maximum) return false;
-    std::size_t index = 0u;
-    while (index < value.size()) {
-        const std::uint8_t lead = static_cast<std::uint8_t>(value[index]);
-        std::size_t width = 0u;
-        std::uint32_t codepoint = 0u;
-        if (lead <= 0x7fu) {
-            width = 1u;
-            codepoint = lead;
-        } else if (lead >= 0xc2u && lead <= 0xdfu) {
-            width = 2u;
-            codepoint = lead & 0x1fu;
-        } else if (lead >= 0xe0u && lead <= 0xefu) {
-            width = 3u;
-            codepoint = lead & 0x0fu;
-        } else if (lead >= 0xf0u && lead <= 0xf4u) {
-            width = 4u;
-            codepoint = lead & 0x07u;
-        } else {
-            return false;
-        }
-        if (width > value.size() - index) return false;
-        for (std::size_t offset = 1u; offset < width; ++offset) {
-            const std::uint8_t continuation =
-                static_cast<std::uint8_t>(value[index + offset]);
-            if ((continuation & 0xc0u) != 0x80u) return false;
-            codepoint = (codepoint << 6u) | (continuation & 0x3fu);
-        }
-        if ((width == 2u && codepoint < 0x80u) ||
-            (width == 3u && codepoint < 0x800u) ||
-            (width == 4u && codepoint < 0x10000u) ||
-            codepoint > 0x10ffffu ||
-            (codepoint >= 0xd800u && codepoint <= 0xdfffu))
-            return false;
-        index += width;
-    }
-    return true;
-}
-
-inline bool DragDropSession::mimeTypeValid(const std::string& value)
-{
-    if (value.empty() || value.size() > kMaxMimeTypeBytes) return false;
-    const std::size_t slash = value.find('/');
-    if (slash == std::string::npos || slash == 0u ||
-        slash + 1u >= value.size())
-        return false;
-    for (std::size_t index = 0u; index < value.size(); ++index) {
-        const unsigned char byte = static_cast<unsigned char>(value[index]);
-        if (byte < 0x21u || byte > 0x7eu || byte == ' ' || byte == '\\' ||
-            byte == '"' || byte == '(' || byte == ')' || byte == ',' ||
-            byte == ';' || byte == '<' || byte == '>' || byte == '@' ||
-            byte == '[' || byte == ']' || byte == ':' || byte == '?')
-            return false;
-    }
-    return value.find('/', slash + 1u) == std::string::npos;
+    return detail::dragDropMimeTypeValid(mimeType) &&
+           detail::dragDropUtf8Valid(label, DragDropSession::kMaxLabelBytes) &&
+           bytes.size() <= DragDropSession::kMaxPayloadBytes;
 }
 
 inline bool DragDropSession::actionValid(DragDropAction action)
