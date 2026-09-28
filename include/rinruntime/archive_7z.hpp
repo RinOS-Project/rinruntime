@@ -5,7 +5,9 @@
 #define RINRUNTIME_ARCHIVE_7Z_HPP
 
 #include "archive_deflate.hpp"
+#include "archive_xz.hpp"
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -92,11 +94,12 @@ public:
         return Archive7zResult::Ok;
     }
 
-    /* Decode a single non-empty stream using one 7z Copy coder (method 0x00).
-     * This bounded subset is useful for caller-owned test/resource bytes and
-     * intentionally has no path, filename, filesystem, or service authority.
-     * LZMA/Deflate/other coder chains, encryption, multiple folders/streams,
-     * and external headers remain explicit Unsupported results. */
+    /* Decode a single non-empty stream using one 7z Copy coder (method 0x00)
+     * or one LZMA coder (method bytes 03 01 01).  This bounded subset is
+     * useful for caller-owned test/resource bytes and intentionally has no
+     * path, filename, filesystem, or service authority.  Other coder chains,
+     * encryption, multiple folders/streams, and external headers remain
+     * explicit Unsupported results. */
     Archive7zResult decodeStored(const std::uint8_t* bytes, std::size_t size,
                                  std::string& output) const
     {
@@ -146,6 +149,10 @@ private:
         std::uint32_t folder_crc = 0u;
         bool pack_crc_defined = false;
         bool folder_crc_defined = false;
+        std::uint64_t coder_method = 0u;
+        std::array<std::uint8_t, 5u> lzma_properties{};
+        std::size_t lzma_dictionary_size = 0u;
+        bool lzma_coder = false;
 
         if (!takeByte(bytes, end, cursor, 0x01u))
             return Archive7zResult::Malformed;
@@ -189,7 +196,46 @@ private:
         if (coder_count != 1u || cursor >= end)
             return Archive7zResult::Unsupported;
         const std::uint8_t coder_flags = bytes[cursor++];
-        if (coder_flags != 0x01u || cursor >= end || bytes[cursor++] != 0u)
+        const unsigned method_size = coder_flags & 0x0fu;
+        const bool complex_coder = (coder_flags & 0x10u) != 0u;
+        const bool has_properties = (coder_flags & 0x20u) != 0u;
+        if (method_size == 0u || method_size > 8u ||
+            (coder_flags & 0xc0u) != 0u || cursor > end - method_size)
+            return Archive7zResult::Unsupported;
+        for (unsigned index = 0u; index != method_size; ++index)
+            coder_method |= static_cast<std::uint64_t>(bytes[cursor++])
+                            << (index * 8u);
+        if (complex_coder) {
+            std::uint64_t input_streams = 0u;
+            std::uint64_t output_streams = 0u;
+            if (!readEncodedUInt64(bytes, end, cursor, input_streams) ||
+                !readEncodedUInt64(bytes, end, cursor, output_streams) ||
+                input_streams != 1u || output_streams != 1u)
+                return Archive7zResult::Unsupported;
+        }
+        if (has_properties) {
+            std::uint64_t property_size = 0u;
+            if (!readEncodedUInt64(bytes, end, cursor, property_size) ||
+                property_size > static_cast<std::uint64_t>(end - cursor))
+                return Archive7zResult::Malformed;
+            if (coder_method != UINT64_C(0x010103) || property_size != 5u)
+                return Archive7zResult::Unsupported;
+            for (std::size_t index = 0u; index != 5u; ++index)
+                lzma_properties[index] = bytes[cursor + index];
+            const std::uint32_t dictionary =
+                static_cast<std::uint32_t>(lzma_properties[1u]) |
+                static_cast<std::uint32_t>(lzma_properties[2u]) << 8u |
+                static_cast<std::uint32_t>(lzma_properties[3u]) << 16u |
+                static_cast<std::uint32_t>(lzma_properties[4u]) << 24u;
+            if (dictionary == 0u) return Archive7zResult::Malformed;
+            if (dictionary > kMaxStreamBytes) return Archive7zResult::Limit;
+            lzma_dictionary_size = static_cast<std::size_t>(dictionary);
+            lzma_coder = true;
+            cursor += 5u;
+        } else if (coder_method != 0u || complex_coder) {
+            return Archive7zResult::Unsupported;
+        }
+        if (coder_method != 0u && !lzma_coder)
             return Archive7zResult::Unsupported;
 
         if (!takeByte(bytes, end, cursor, 0x0cu) ||
@@ -287,7 +333,7 @@ private:
         }
         if (!takeByte(bytes, end, cursor, 0x00u) || cursor != end)
             return Archive7zResult::Malformed;
-        if (pack_size != unpack_size)
+        if (!lzma_coder && pack_size != unpack_size)
             return Archive7zResult::Unsupported;
         /* The public subset deliberately exposes non-empty resources only;
          * keep an empty 7z file on the private archive-owner path instead of
@@ -304,9 +350,9 @@ private:
                              pack_start64)
             return Archive7zResult::Malformed;
         const std::size_t pack_start = static_cast<std::size_t>(pack_start64);
-        const std::size_t decoded_size = static_cast<std::size_t>(pack_size);
-        std::uint32_t actual_crc = 0xffffffffu;
-        for (std::size_t index = 0u; index < decoded_size; ++index) {
+        const std::size_t packed_size = static_cast<std::size_t>(pack_size);
+        std::uint32_t actual_pack_crc = 0xffffffffu;
+        for (std::size_t index = 0u; index < packed_size; ++index) {
             if ((index & 4095u) == 0u) {
                 if (deadline != nullptr && deadline(deadlineContext))
                     return Archive7zResult::Deadline;
@@ -314,32 +360,59 @@ private:
                     cancellation(cancellationContext))
                     return Archive7zResult::Cancelled;
             }
-            actual_crc ^= bytes[pack_start + index];
+            actual_pack_crc ^= bytes[pack_start + index];
             for (int bit = 0; bit < 8; ++bit)
-                actual_crc = (actual_crc >> 1u) ^
-                             (0xedb88320u & (0u - (actual_crc & 1u)));
+                actual_pack_crc = (actual_pack_crc >> 1u) ^
+                                  (0xedb88320u &
+                                   (0u - (actual_pack_crc & 1u)));
         }
-        actual_crc ^= 0xffffffffu;
-        if ((pack_crc_defined && actual_crc != pack_crc) ||
-            (folder_crc_defined && actual_crc != folder_crc))
+        actual_pack_crc ^= 0xffffffffu;
+        if (pack_crc_defined && actual_pack_crc != pack_crc)
             return Archive7zResult::CrcMismatch;
 
         std::string decoded;
-        std::size_t copied = 0u;
-        while (copied < decoded_size) {
-            if (deadline != nullptr && deadline(deadlineContext))
-                return Archive7zResult::Deadline;
-            if (cancellation != nullptr && cancellation(cancellationContext))
+        if (lzma_coder) {
+            ArchiveXzReader lzma_reader;
+            const ArchiveXzResult lzma_result =
+                lzma_reader.decodeRawLzmaWithDeadline(
+                    bytes + pack_start, packed_size, lzma_properties[0u],
+                    lzma_dictionary_size,
+                    static_cast<std::size_t>(unpack_size), decoded,
+                    cancellation, cancellationContext, deadline,
+                    deadlineContext);
+            if (lzma_result == ArchiveXzResult::Cancelled)
                 return Archive7zResult::Cancelled;
-            const std::size_t part =
-                (decoded_size - copied) > 65536u
-                    ? 65536u
-                    : decoded_size - copied;
-            decoded.append(reinterpret_cast<const char*>(bytes + pack_start +
-                                                         copied),
-                           part);
-            copied += part;
+            if (lzma_result == ArchiveXzResult::Deadline)
+                return Archive7zResult::Deadline;
+            if (lzma_result == ArchiveXzResult::Limit)
+                return Archive7zResult::Limit;
+            if (lzma_result != ArchiveXzResult::Ok)
+                return Archive7zResult::Malformed;
+        } else {
+            std::size_t copied = 0u;
+            while (copied < packed_size) {
+                if (deadline != nullptr && deadline(deadlineContext))
+                    return Archive7zResult::Deadline;
+                if (cancellation != nullptr &&
+                    cancellation(cancellationContext))
+                    return Archive7zResult::Cancelled;
+                const std::size_t part =
+                    (packed_size - copied) > 65536u
+                        ? 65536u
+                        : packed_size - copied;
+                decoded.append(
+                    reinterpret_cast<const char*>(bytes + pack_start + copied),
+                    part);
+                copied += part;
+            }
         }
+        if (decoded.size() != static_cast<std::size_t>(unpack_size))
+            return Archive7zResult::Malformed;
+        if (folder_crc_defined &&
+            rinruntime_archive_crc32(
+                reinterpret_cast<const std::uint8_t*>(decoded.data()),
+                decoded.size()) != folder_crc)
+            return Archive7zResult::CrcMismatch;
         output = decoded;
         return Archive7zResult::Ok;
     }

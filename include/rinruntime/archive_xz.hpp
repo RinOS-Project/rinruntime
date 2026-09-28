@@ -270,6 +270,47 @@ public:
                                  deadline, deadlineContext);
     }
 
+    /* Decode one raw LZMA1 range-coded stream.  7z stores the five-byte LZMA
+     * properties outside the packed stream, so this helper keeps the shared
+     * bounded LZMA core available without making the XZ block parser a 7z
+     * authority. */
+    ArchiveXzResult decodeRawLzma(
+        const std::uint8_t* compressed, std::size_t compressedSize,
+        std::uint8_t properties, std::size_t dictionarySize,
+        std::size_t expectedSize, std::string& output) const
+    {
+        return decodeRawLzma(compressed, compressedSize, properties,
+                             dictionarySize, expectedSize, output, nullptr,
+                             nullptr, nullptr, nullptr);
+    }
+
+    ArchiveXzResult decodeRawLzma(
+        const std::uint8_t* compressed, std::size_t compressedSize,
+        std::uint8_t properties, std::size_t dictionarySize,
+        std::size_t expectedSize, std::string& output,
+        ArchiveDeflateCancellationFunction cancellation,
+        void* cancellationContext) const
+    {
+        return decodeRawLzma(compressed, compressedSize, properties,
+                             dictionarySize, expectedSize, output,
+                             cancellation, cancellationContext, nullptr,
+                             nullptr);
+    }
+
+    ArchiveXzResult decodeRawLzmaWithDeadline(
+        const std::uint8_t* compressed, std::size_t compressedSize,
+        std::uint8_t properties, std::size_t dictionarySize,
+        std::size_t expectedSize, std::string& output,
+        ArchiveDeflateCancellationFunction cancellation,
+        void* cancellationContext, ArchiveDeflateDeadlineFunction deadline,
+        void* deadlineContext) const
+    {
+        return decodeRawLzma(compressed, compressedSize, properties,
+                             dictionarySize, expectedSize, output,
+                             cancellation, cancellationContext, deadline,
+                             deadlineContext);
+    }
+
 private:
     enum class LzmaStatus : int {
         Ok = 0,
@@ -985,6 +1026,47 @@ private:
         }
 
         if (decoded.size() != summary.uncompressedSize)
+            return ArchiveXzResult::Malformed;
+        output = std::move(decoded);
+        return ArchiveXzResult::Ok;
+    }
+
+    ArchiveXzResult decodeRawLzma(
+        const std::uint8_t* compressed, std::size_t compressedSize,
+        std::uint8_t properties, std::size_t dictionarySize,
+        std::size_t expectedSize, std::string& output,
+        ArchiveDeflateCancellationFunction cancellation,
+        void* cancellationContext, ArchiveDeflateDeadlineFunction deadline,
+        void* deadlineContext) const
+    {
+        if (compressed == nullptr || compressedSize < 5u)
+            return ArchiveXzResult::InvalidArgument;
+        if (expectedSize > kMaxStreamBytes) return ArchiveXzResult::Limit;
+        if (dictionarySize == 0u) return ArchiveXzResult::Malformed;
+        if (dictionarySize > kMaxStreamBytes)
+            dictionarySize = kMaxStreamBytes;
+        LzmaDecoder lzma;
+        const LzmaStatus propertyResult = lzma.setProperties(properties);
+        if (propertyResult != LzmaStatus::Ok)
+            return propertyResult == LzmaStatus::Limit
+                       ? ArchiveXzResult::Limit
+                       : ArchiveXzResult::Malformed;
+        if (deadline != nullptr && deadline(deadlineContext))
+            return ArchiveXzResult::Deadline;
+        if (cancellation != nullptr && cancellation(cancellationContext))
+            return ArchiveXzResult::Cancelled;
+        std::string decoded;
+        const LzmaStatus decodeResult = lzma.decodeChunk(
+            compressed, compressedSize, expectedSize, decoded, 0u,
+            dictionarySize, cancellation, cancellationContext, deadline,
+            deadlineContext);
+        if (decodeResult == LzmaStatus::Limit)
+            return ArchiveXzResult::Limit;
+        if (decodeResult == LzmaStatus::Cancelled)
+            return ArchiveXzResult::Cancelled;
+        if (decodeResult == LzmaStatus::Deadline)
+            return ArchiveXzResult::Deadline;
+        if (decodeResult != LzmaStatus::Ok || decoded.size() != expectedSize)
             return ArchiveXzResult::Malformed;
         output = std::move(decoded);
         return ArchiveXzResult::Ok;

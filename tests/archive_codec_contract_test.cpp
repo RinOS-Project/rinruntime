@@ -601,6 +601,28 @@ int main()
            RinRuntime::ArchiveXzResult::CrcMismatch);
     assert(xzOutput == "poison");
 
+    const std::vector<std::uint8_t> rawLzma = {
+        0x00u, 0x34u, 0x19u, 0x49u, 0xdbu, 0x85u, 0x5cu, 0x63u,
+        0xadu, 0x3eu, 0xf9u, 0x63u, 0x73u, 0xe5u, 0x4fu, 0x1cu,
+        0x74u, 0x7bu, 0xd4u, 0x27u, 0xaeu, 0x92u, 0xc5u, 0xf4u,
+        0x54u, 0x43u, 0xdcu, 0xffu, 0xffu, 0xf2u, 0xcbu, 0x80u,
+        0x00u};
+    std::string rawLzmaExpected;
+    for (unsigned index = 0u; index != 100u; ++index)
+        rawLzmaExpected += "hello world! ";
+    xzOutput = "poison";
+    assert(xzReader.decodeRawLzma(
+               rawLzma.data(), rawLzma.size(), 0x5du, 0x40000u,
+               rawLzmaExpected.size(), xzOutput) ==
+           RinRuntime::ArchiveXzResult::Ok);
+    assert(xzOutput == rawLzmaExpected);
+    xzOutput = "poison";
+    assert(xzReader.decodeRawLzma(rawLzma.data(), rawLzma.size(), 0x5du,
+                                  0x40000u, rawLzmaExpected.size(), xzOutput,
+                                  cancelNow, &cancellationRequested) ==
+           RinRuntime::ArchiveXzResult::Cancelled);
+    assert(xzOutput == "poison");
+
     const std::vector<std::uint8_t> sevenZip = make7zStructure();
     RinRuntime::Archive7zReader sevenZipReader;
     RinRuntime::Archive7zSummary sevenZipSummary;
