@@ -92,6 +92,15 @@ size_t rinruntime_unicode_format_datetime(
         (const rin_unicode_datetime_t*)value, conversion);
 }
 
+size_t rinruntime_unicode_format_datetime_pattern(
+    char* output, size_t output_capacity,
+    const RinRuntimeUnicodeDateTime* value, const char* pattern)
+{
+    return rin_unicode_locale_format_datetime_pattern(
+        output, output_capacity,
+        (const rin_unicode_datetime_t*)value, pattern);
+}
+
 size_t rinruntime_unicode_format_integer(
     char* output, size_t output_capacity, int64_t value, const char* locale)
 {

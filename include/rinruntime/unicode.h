@@ -167,6 +167,13 @@ size_t rinruntime_unicode_format_datetime(
     char* output, size_t output_capacity,
     const RinRuntimeUnicodeDateTime* value, char conversion);
 
+/* Expand a caller-owned, NUL-terminated pattern within the same bounded
+ * strftime subset.  This is a pure public formatter: it owns no locale,
+ * timezone, filesystem, or service state. */
+size_t rinruntime_unicode_format_datetime_pattern(
+    char* output, size_t output_capacity,
+    const RinRuntimeUnicodeDateTime* value, const char* pattern);
+
 /* Public runtime forwarding for LibUnicode's bounded locale number
  * formatters.  The locale and number strings are borrowed caller inputs;
  * LibUnicode applies its fixed scan bounds and failure-atomic output rules.
