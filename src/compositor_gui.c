@@ -351,7 +351,7 @@ static int runtime_receive_exact(void* data, uint32_t size,
 
 static int runtime_deadline_after(uint64_t now_ms, uint64_t timeout_ms,
                                   uint64_t* deadline_out) {
-    if (deadline_out == NULL || now_ms == 0u || timeout_ms == 0u ||
+    if (deadline_out == NULL || now_ms == 0u ||
         now_ms > UINT64_MAX - timeout_ms)
         return -1;
     *deadline_out = now_ms + timeout_ms;
@@ -1172,8 +1172,13 @@ static int runtime_async_wait(short events, uint64_t deadline_ms) {
 static int runtime_async_pump(uint32_t timeout_ms) {
     uint32_t completed_count = 0u;
     int waited = 0;
-    const uint64_t wait_deadline = rin_monotonic_ms() + timeout_ms;
+    uint64_t wait_deadline;
     if (g_async_requests.count == 0u) return 0;
+    if (runtime_deadline_after(rin_monotonic_ms(), timeout_ms,
+                               &wait_deadline) != 0) {
+        runtime_close_connection();
+        return -1;
+    }
     if (g_compositor_fd < 0) {
         runtime_async_abort_all(RIN_RESULT_IO);
         return -1;
@@ -1359,8 +1364,13 @@ static int runtime_async_pump(uint32_t timeout_ms) {
 }
 
 static int runtime_async_drain(void) {
-    const uint64_t deadline = rin_monotonic_ms() +
-                              RIN_RUNTIME_GUI_REQUEST_TIMEOUT_MS;
+    uint64_t deadline;
+    if (runtime_deadline_after(rin_monotonic_ms(),
+                               RIN_RUNTIME_GUI_REQUEST_TIMEOUT_MS,
+                               &deadline) != 0) {
+        runtime_close_connection();
+        return -1;
+    }
     while (g_async_requests.count != 0u) {
         const uint64_t now = rin_monotonic_ms();
         uint64_t remaining;
