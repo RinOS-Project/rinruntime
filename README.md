@@ -313,10 +313,11 @@ filter-property bounds, block padding, record sizes, and expanded-size limits
 without opening a path.  `decodeStoredLzma2()` adds a failure-atomic,
 caller-owned output path for check type 0, CRC32 (type 1), or CRC64 (type 4)
 blocks containing both LZMA2 stored chunks (`0x01`/`0x02`) and range-coded
-chunks, or one bounded Delta filter (`0x03`, distance 1..256) or x86 BCJ
-filter (`0x04`, four-byte start offset) plus one LZMA2 filter (`0x21`),
-including the standard block-padding/check ordering.  Delta and x86 BCJ
-output is applied per block before the block check is verified.  Range-coded
+chunks, or one bounded Delta filter (`0x03`, distance 1..256), x86 BCJ
+filter (`0x04`, four-byte start offset), or ARM BCJ filter (`0x07`, no
+properties) plus one LZMA2 filter (`0x21`), including the standard
+block-padding/check ordering.  Delta, x86 BCJ, and ARM BCJ output is applied
+per block before the block check is verified.  Range-coded
 state, dictionary references, cancellation, and deadline checks stay bounded
 by the public content limit; unsupported, duplicate, or incomplete filter
 chains and check types remain explicit `Unsupported` results.  Filesystem

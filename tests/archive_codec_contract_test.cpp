@@ -510,6 +510,50 @@ static std::vector<std::uint8_t> makeXzX86StoredLzma2()
     return bytes;
 }
 
+static std::vector<std::uint8_t> makeXzArmStoredLzma2()
+{
+    /* The stored payload is an ARM B instruction whose filtered immediate is
+     * two; ARM BCJ decoding subtracts PC+8 and restores a zero immediate. */
+    std::vector<std::uint8_t> bytes(56u, 0u);
+    const std::uint8_t magic[] = {
+        0xfdu, 0x37u, 0x7au, 0x58u, 0x5au, 0x00u};
+    std::memcpy(bytes.data(), magic, sizeof(magic));
+    writeLe32(bytes, 8u,
+              RinRuntime::rinruntime_archive_crc32(bytes.data() + 6u, 2u));
+
+    bytes[12u] = 0x03u; /* sixteen-byte block header */
+    bytes[13u] = 0xc1u; /* ARM BCJ followed by LZMA2 */
+    bytes[14u] = 0x08u;
+    bytes[15u] = 0x04u;
+    bytes[16u] = 0x07u; /* ARM BCJ */
+    bytes[17u] = 0x00u;
+    bytes[18u] = 0x21u; /* LZMA2 */
+    bytes[19u] = 0x01u;
+    bytes[20u] = 0x00u; /* dictionary property */
+    writeLe32(bytes, 24u,
+              RinRuntime::rinruntime_archive_crc32(bytes.data() + 12u, 12u));
+
+    bytes[28u] = 0x01u;
+    bytes[29u] = 0x03u;
+    bytes[30u] = 0x00u;
+    const std::uint8_t filteredBranch[] = {0x02u, 0x00u, 0x00u, 0xebu};
+    std::memcpy(bytes.data() + 31u, filteredBranch, sizeof(filteredBranch));
+    bytes[35u] = 0x00u;
+
+    bytes[36u] = 0x00u;
+    bytes[37u] = 0x01u;
+    bytes[38u] = 0x18u; /* sixteen-byte header + eight-byte payload */
+    bytes[39u] = 0x04u;
+    writeLe32(bytes, 40u,
+              RinRuntime::rinruntime_archive_crc32(bytes.data() + 36u, 4u));
+    bytes[48u] = 0x01u;
+    bytes[54u] = static_cast<std::uint8_t>('Y');
+    bytes[55u] = static_cast<std::uint8_t>('Z');
+    writeLe32(bytes, 44u,
+              RinRuntime::rinruntime_archive_crc32(bytes.data() + 48u, 6u));
+    return bytes;
+}
+
 int main()
 {
     const std::uint8_t stored[] = {
@@ -723,6 +767,12 @@ int main()
            RinRuntime::ArchiveXzResult::Ok);
     assert(xzOutput == std::string({static_cast<char>(0xe8), '\0', '\0',
                                     '\0', '\0'}));
+    const std::vector<std::uint8_t> armXz = makeXzArmStoredLzma2();
+    xzOutput = "poison";
+    assert(xzReader.decodeStoredLzma2(armXz.data(), armXz.size(), xzOutput) ==
+           RinRuntime::ArchiveXzResult::Ok);
+    assert(xzOutput == std::string({'\0', '\0', '\0',
+                                    static_cast<char>(0xeb)}));
     std::vector<std::uint8_t> unknownFilterXz = deltaXz;
     unknownFilterXz[16u] = 0x04u;
     writeLe32(unknownFilterXz, 24u,

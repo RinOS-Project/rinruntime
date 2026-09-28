@@ -860,6 +860,7 @@ private:
             std::size_t deltaDistance = 0u;
             bool x86FilterPresent = false;
             std::uint32_t x86StartOffset = 0u;
+            bool armFilterPresent = false;
             for (std::size_t filter = 0u; filter < filterCount; ++filter) {
                 std::uint64_t filterId = 0u;
                 std::uint64_t propertySize = 0u;
@@ -886,6 +887,10 @@ private:
                     x86StartOffset = readLe32(bytes + headerCursor);
                     headerCursor += 4u;
                     x86FilterPresent = true;
+                } else if (filterId == 0x07u) {
+                    if (armFilterPresent || propertySize != 0u)
+                        return ArchiveXzResult::Unsupported;
+                    armFilterPresent = true;
                 } else {
                     return ArchiveXzResult::Unsupported;
                 }
@@ -1054,6 +1059,14 @@ private:
                 if (filterResult != ArchiveXzResult::Ok)
                     return filterResult;
             }
+            if (armFilterPresent) {
+                const ArchiveXzResult filterResult = applyArmBcj(
+                    decoded, blockOutputStart, blockOutputSize,
+                    cancellation, cancellationContext, deadline,
+                    deadlineContext);
+                if (filterResult != ArchiveXzResult::Ok)
+                    return filterResult;
+            }
             const std::size_t checkOffset =
                 (payloadEnd + 3u) & ~std::size_t(3u);
             if (checkOffset < payloadEnd ||
@@ -1215,6 +1228,41 @@ private:
                 previousMask |= 1u;
                 if (isX86MsByte(byte)) previousMask |= 0x10u;
             }
+        }
+        return ArchiveXzResult::Ok;
+    }
+
+    static ArchiveXzResult applyArmBcj(
+        std::string& decoded, std::size_t absoluteOffset, std::size_t size,
+        ArchiveDeflateCancellationFunction cancellation,
+        void* cancellationContext, ArchiveDeflateDeadlineFunction deadline,
+        void* deadlineContext)
+    {
+        size &= ~std::size_t(3u);
+        auto* buffer = reinterpret_cast<std::uint8_t*>(decoded.data()) +
+                       absoluteOffset;
+        const std::uint32_t nowPosition =
+            static_cast<std::uint32_t>(absoluteOffset);
+        for (std::size_t position = 0u; position < size; position += 4u) {
+            if (deadline != nullptr && deadline(deadlineContext))
+                return ArchiveXzResult::Deadline;
+            if (cancellation != nullptr && cancellation(cancellationContext))
+                return ArchiveXzResult::Cancelled;
+            if (buffer[position + 3u] != 0xebu) continue;
+
+            std::uint32_t source =
+                (static_cast<std::uint32_t>(buffer[position + 2u]) << 16u) |
+                (static_cast<std::uint32_t>(buffer[position + 1u]) << 8u) |
+                static_cast<std::uint32_t>(buffer[position]);
+            source <<= 2u;
+            const std::uint32_t destination =
+                (source - nowPosition - static_cast<std::uint32_t>(position) -
+                 8u) >> 2u;
+            buffer[position + 2u] =
+                static_cast<std::uint8_t>(destination >> 16u);
+            buffer[position + 1u] =
+                static_cast<std::uint8_t>(destination >> 8u);
+            buffer[position] = static_cast<std::uint8_t>(destination);
         }
         return ArchiveXzResult::Ok;
     }
