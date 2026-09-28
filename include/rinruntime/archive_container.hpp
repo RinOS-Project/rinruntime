@@ -67,7 +67,9 @@ public:
         if (detected == ArchiveContainerKind::Unknown)
             return ArchiveContainerResult::Unsupported;
         kind_ = detected;
+#if defined(__cpp_exceptions) || defined(_CPPUNWIND)
         try {
+#endif
             ArchiveContainerResult result = ArchiveContainerResult::Malformed;
             switch (kind_) {
             case ArchiveContainerKind::Zip:
@@ -105,10 +107,12 @@ public:
             }
             rebuildEntries();
             return ArchiveContainerResult::Ok;
+#if defined(__cpp_exceptions) || defined(_CPPUNWIND)
         } catch (const std::bad_alloc&) {
             clear();
             return ArchiveContainerResult::Limit;
         }
+#endif
     }
 
     ArchiveContainerResult readEntry(std::size_t index,
@@ -117,7 +121,9 @@ public:
         output.clear();
         if (index >= entries_.size())
             return ArchiveContainerResult::InvalidArgument;
+#if defined(__cpp_exceptions) || defined(_CPPUNWIND)
         try {
+#endif
             switch (kind_) {
             case ArchiveContainerKind::Zip:
                 return map(std::get<ArchiveZipReader>(reader_).readEntry(
@@ -142,10 +148,12 @@ public:
             default:
                 return ArchiveContainerResult::Unsupported;
             }
+#if defined(__cpp_exceptions) || defined(_CPPUNWIND)
         } catch (const std::bad_alloc&) {
             output.clear();
             return ArchiveContainerResult::Limit;
         }
+#endif
     }
 
     void clear()
