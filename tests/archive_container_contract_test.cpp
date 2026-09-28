@@ -259,6 +259,17 @@ int main()
            reader.readEntry(0u, output) ==
                RinRuntime::ArchiveContainerResult::Ok && output == "hello");
 
+    const std::uint8_t streamPayload[] = {'s', 't', 'r', 'e', 'a', 'm'};
+    const std::vector<std::uint8_t> gzip = makeGzip(
+        streamPayload, sizeof(streamPayload));
+    assert(reader.parse(gzip.data(), gzip.size()) ==
+           RinRuntime::ArchiveContainerResult::Ok);
+    assert(reader.kind() == RinRuntime::ArchiveContainerKind::Gzip &&
+           reader.size() == 1u && reader.entries()[0].name == "<stream>" &&
+           reader.entries()[0].size == sizeof(streamPayload));
+    assert(reader.readEntry(0u, output) ==
+           RinRuntime::ArchiveContainerResult::Ok && output == "stream");
+
     const std::uint8_t unknown[] = {'x'};
     assert(reader.parse(unknown, sizeof(unknown)) ==
            RinRuntime::ArchiveContainerResult::Unsupported);

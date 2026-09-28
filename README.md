@@ -271,7 +271,7 @@ stage bytes, or authorize installation/reboot; those remain private updater
 owners.
 
 The archive headers are public, backend-independent codec contracts.  The
-DEFLATE, GZIP, strict ustar TAR, TAR.GZ, and ordinary ZIP readers consume
+DEFLATE, standalone GZIP, strict ustar TAR, TAR.GZ, and ordinary ZIP readers consume
 caller-owned bytes or bounded callbacks and never open paths or publish files.
 `ArchiveDeflateSource` accepts an exact compressed-size pull callback with a
 fixed 4 KiB input window, so streaming owners do not need to expose a file or
@@ -295,6 +295,10 @@ caller-owned staging path for regular TAR entries, and
 sink failure is not publication and directories produce no data callback.
 Filesystem extraction, archive service IPC, and File Portal publication remain
 private RinOS adapters.
+
+`archive_container.hpp` maps a standalone GZIP member to one bounded
+caller-owned `<stream>` entry, while TAR.GZ remains a TAR entry container.  The
+adapter does not infer package trust or publish the stream to a filesystem.
 
 `archive_xz.hpp` provides the public `ArchiveXzReader` structural inspector.
 It verifies the bounded XZ stream header/footer/index, block-header CRCs,
