@@ -1570,8 +1570,8 @@ static RinRuntimeGuiSurface* runtime_new_surface(void) {
     uint32_t index;
     for (index = 0u; index < RIN_RUNTIME_GUI_MAX_SURFACES; ++index) {
         if (!g_surfaces[index].active) {
+            if (g_handle_generations[index] == UINT32_MAX) continue;
             uint32_t generation = g_handle_generations[index] + 1u;
-            if (generation == 0u) generation = 1u;
             g_handle_generations[index] = generation;
             memset(&g_surfaces[index], 0, sizeof(g_surfaces[index]));
             g_surfaces[index].shm_handles[0] = -1;
