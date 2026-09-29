@@ -854,7 +854,8 @@ private:
 
             const std::size_t filterCount =
                 static_cast<std::size_t>((blockFlags & 0x03u) + 1u);
-            if (filterCount > 2u) return ArchiveXzResult::Unsupported;
+            if (filterCount > 4u) return ArchiveXzResult::Unsupported;
+            std::uint8_t filterKinds[4] = {0u, 0u, 0u, 0u};
             bool lzmaFilterPresent = false;
             std::uint8_t dictionaryProperty = 0u;
             std::size_t deltaDistance = 0u;
@@ -874,6 +875,8 @@ private:
                     !readVli(bytes, headerDataEnd, headerCursor, propertySize) ||
                     propertySize > headerDataEnd - headerCursor)
                     return ArchiveXzResult::Malformed;
+                if (filterId > 0xffu) return ArchiveXzResult::Unsupported;
+                filterKinds[filter] = static_cast<std::uint8_t>(filterId);
                 if (filterId == 0x21u) {
                     if (lzmaFilterPresent || propertySize != 1u ||
                         headerCursor >= headerDataEnd)
@@ -925,7 +928,8 @@ private:
                     return ArchiveXzResult::Unsupported;
                 }
             }
-            if (!lzmaFilterPresent) return ArchiveXzResult::Unsupported;
+            if (!lzmaFilterPresent || filterKinds[filterCount - 1u] != 0x21u)
+                return ArchiveXzResult::Unsupported;
             if (dictionaryProperty > 40u) return ArchiveXzResult::Malformed;
             const std::uint64_t requestedDictionary =
                 dictionaryProperty == 40u
@@ -1064,84 +1068,68 @@ private:
                     decoded.data() + blockOutputStart);
             const std::size_t blockOutputSize =
                 decoded.size() - blockOutputStart;
-            if (deltaDistance != 0u) {
-                for (std::size_t index = 0u; index < blockOutputSize; ++index) {
-                    if (deadline != nullptr && deadline(deadlineContext))
-                        return ArchiveXzResult::Deadline;
-                    if (cancellation != nullptr &&
-                        cancellation(cancellationContext))
-                        return ArchiveXzResult::Cancelled;
-                    const std::size_t absolute = blockOutputStart + index;
-                    std::uint8_t value = static_cast<std::uint8_t>(
-                        decoded[absolute]);
-                    if (index >= deltaDistance)
-                        value = static_cast<std::uint8_t>(
-                            value + static_cast<std::uint8_t>(
-                                        decoded[absolute - deltaDistance]));
-                    decoded[absolute] = static_cast<char>(value);
+            for (std::size_t filter = filterCount; filter != 0u; --filter) {
+                ArchiveXzResult filterResult = ArchiveXzResult::Ok;
+                switch (filterKinds[filter - 1u]) {
+                case 0x03u:
+                    filterResult = applyDeltaFilter(
+                        decoded, blockOutputStart, blockOutputSize,
+                        deltaDistance, cancellation, cancellationContext,
+                        deadline, deadlineContext);
+                    break;
+                case 0x04u:
+                    filterResult = applyX86Bcj(
+                        decoded, blockOutputStart, blockOutputSize,
+                        x86StartOffset, cancellation, cancellationContext,
+                        deadline, deadlineContext);
+                    break;
+                case 0x05u:
+                    filterResult = applyPowerPcBcj(
+                        decoded, blockOutputStart, blockOutputSize,
+                        cancellation, cancellationContext, deadline,
+                        deadlineContext);
+                    break;
+                case 0x06u:
+                    filterResult = applyIa64Bcj(
+                        decoded, blockOutputStart, blockOutputSize,
+                        cancellation, cancellationContext, deadline,
+                        deadlineContext);
+                    break;
+                case 0x07u:
+                    filterResult = applyArmBcj(
+                        decoded, blockOutputStart, blockOutputSize,
+                        cancellation, cancellationContext, deadline,
+                        deadlineContext);
+                    break;
+                case 0x08u:
+                    filterResult = applyArmThumbBcj(
+                        decoded, blockOutputStart, blockOutputSize,
+                        cancellation, cancellationContext, deadline,
+                        deadlineContext);
+                    break;
+                case 0x09u:
+                    filterResult = applySparcBcj(
+                        decoded, blockOutputStart, blockOutputSize,
+                        cancellation, cancellationContext, deadline,
+                        deadlineContext);
+                    break;
+                case 0x0au:
+                    filterResult = applyArm64Bcj(
+                        decoded, blockOutputStart, blockOutputSize,
+                        cancellation, cancellationContext, deadline,
+                        deadlineContext);
+                    break;
+                case 0x0bu:
+                    filterResult = applyRiscvBcj(
+                        decoded, blockOutputStart, blockOutputSize,
+                        cancellation, cancellationContext, deadline,
+                        deadlineContext);
+                    break;
+                case 0x21u:
+                    break;
+                default:
+                    return ArchiveXzResult::Unsupported;
                 }
-            }
-            if (x86FilterPresent) {
-                const ArchiveXzResult filterResult = applyX86Bcj(
-                    decoded, blockOutputStart, blockOutputSize,
-                    x86StartOffset, cancellation, cancellationContext,
-                    deadline, deadlineContext);
-                if (filterResult != ArchiveXzResult::Ok)
-                    return filterResult;
-            }
-            if (powerPcFilterPresent) {
-                const ArchiveXzResult filterResult = applyPowerPcBcj(
-                    decoded, blockOutputStart, blockOutputSize,
-                    cancellation, cancellationContext, deadline,
-                    deadlineContext);
-                if (filterResult != ArchiveXzResult::Ok)
-                    return filterResult;
-            }
-            if (ia64FilterPresent) {
-                const ArchiveXzResult filterResult = applyIa64Bcj(
-                    decoded, blockOutputStart, blockOutputSize,
-                    cancellation, cancellationContext, deadline,
-                    deadlineContext);
-                if (filterResult != ArchiveXzResult::Ok)
-                    return filterResult;
-            }
-            if (armFilterPresent) {
-                const ArchiveXzResult filterResult = applyArmBcj(
-                    decoded, blockOutputStart, blockOutputSize,
-                    cancellation, cancellationContext, deadline,
-                    deadlineContext);
-                if (filterResult != ArchiveXzResult::Ok)
-                    return filterResult;
-            }
-            if (armThumbFilterPresent) {
-                const ArchiveXzResult filterResult = applyArmThumbBcj(
-                    decoded, blockOutputStart, blockOutputSize,
-                    cancellation, cancellationContext, deadline,
-                    deadlineContext);
-                if (filterResult != ArchiveXzResult::Ok)
-                    return filterResult;
-            }
-            if (arm64FilterPresent) {
-                const ArchiveXzResult filterResult = applyArm64Bcj(
-                    decoded, blockOutputStart, blockOutputSize,
-                    cancellation, cancellationContext, deadline,
-                    deadlineContext);
-                if (filterResult != ArchiveXzResult::Ok)
-                    return filterResult;
-            }
-            if (sparcFilterPresent) {
-                const ArchiveXzResult filterResult = applySparcBcj(
-                    decoded, blockOutputStart, blockOutputSize,
-                    cancellation, cancellationContext, deadline,
-                    deadlineContext);
-                if (filterResult != ArchiveXzResult::Ok)
-                    return filterResult;
-            }
-            if (riscvFilterPresent) {
-                const ArchiveXzResult filterResult = applyRiscvBcj(
-                    decoded, blockOutputStart, blockOutputSize,
-                    cancellation, cancellationContext, deadline,
-                    deadlineContext);
                 if (filterResult != ArchiveXzResult::Ok)
                     return filterResult;
             }
@@ -1218,6 +1206,29 @@ private:
     }
 
 private:
+    static ArchiveXzResult applyDeltaFilter(
+        std::string& decoded, std::size_t absoluteOffset, std::size_t size,
+        std::size_t distance, ArchiveDeflateCancellationFunction cancellation,
+        void* cancellationContext, ArchiveDeflateDeadlineFunction deadline,
+        void* deadlineContext)
+    {
+        if (distance == 0u) return ArchiveXzResult::Unsupported;
+        for (std::size_t index = 0u; index < size; ++index) {
+            if (deadline != nullptr && deadline(deadlineContext))
+                return ArchiveXzResult::Deadline;
+            if (cancellation != nullptr && cancellation(cancellationContext))
+                return ArchiveXzResult::Cancelled;
+            const std::size_t absolute = absoluteOffset + index;
+            std::uint8_t value = static_cast<std::uint8_t>(decoded[absolute]);
+            if (index >= distance)
+                value = static_cast<std::uint8_t>(
+                    value + static_cast<std::uint8_t>(
+                                decoded[absolute - distance]));
+            decoded[absolute] = static_cast<char>(value);
+        }
+        return ArchiveXzResult::Ok;
+    }
+
     static bool isX86MsByte(std::uint8_t value)
     {
         return value == 0u || value == 0xffu;

@@ -313,16 +313,15 @@ filter-property bounds, block padding, record sizes, and expanded-size limits
 without opening a path.  `decodeStoredLzma2()` adds a failure-atomic,
 caller-owned output path for check type 0, CRC32 (type 1), or CRC64 (type 4)
 blocks containing both LZMA2 stored chunks (`0x01`/`0x02`) and range-coded
-chunks, or one bounded Delta filter (`0x03`, distance 1..256), x86 BCJ
-filter (`0x04`, four-byte start offset), PowerPC BCJ filter (`0x05`, no
-properties), ARM BCJ filter (`0x07`, no properties), ARM Thumb BCJ filter
-(`0x08`, no properties), ARM64 BCJ filter (`0x0a`, no properties), or SPARC
-BCJ filter (`0x09`, no properties), or IA64 BCJ filter (`0x06`, no
-properties), or RISC-V BCJ filter (`0x0b`, no properties) plus one LZMA2 filter
-(`0x21`), including the
+chunks, or an ordered bounded chain of Delta (`0x03`, distance 1..256), x86
+BCJ (`0x04`, four-byte start offset), PowerPC BCJ (`0x05`, no properties), ARM
+BCJ (`0x07`, no properties), ARM Thumb BCJ (`0x08`, no properties), ARM64 BCJ
+(`0x0a`, no properties), SPARC BCJ (`0x09`, no properties), IA64 BCJ (`0x06`,
+no properties), and RISC-V BCJ (`0x0b`, no properties) prefilters plus one
+LZMA2 filter (`0x21`), including the
 standard block-padding/check ordering.  Delta, x86 BCJ, PowerPC BCJ, IA64 BCJ,
 ARM BCJ, ARM Thumb BCJ, ARM64 BCJ, SPARC BCJ, and RISC-V BCJ output is applied
-per block before the block check is verified.  Range-coded
+in reverse header order per block before the block check is verified.  Range-coded
 state, dictionary references, cancellation, and deadline checks stay bounded
 by the public content limit; unsupported, duplicate, or incomplete filter
 chains and check types remain explicit `Unsupported` results.  Filesystem
