@@ -36,9 +36,22 @@ void aquamarineFree(void* pointer) {
 
 const AqFont* loadSystemUiFont() noexcept {
     aq_set_allocator(aquamarineAllocate, aquamarineFree);
-    if (g_system_ui_font_loader != nullptr)
-        g_system_ui_font =
-            g_system_ui_font_loader(g_system_ui_font_loader_context);
+    if (g_system_ui_font_loader != nullptr) {
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
+            g_system_ui_font =
+                g_system_ui_font_loader(g_system_ui_font_loader_context);
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (...) {
+            /* The loader is caller-owned public code.  It must not unwind
+             * through the once-only/noexcept font initialization boundary;
+             * a failed optional resource provider is equivalent to no
+             * provider and uses the bounded built-in fallback. */
+            g_system_ui_font = nullptr;
+        }
+#endif
+    }
     if (g_system_ui_font) {
         aq_set_default_font(g_system_ui_font);
         rin_log("[rinruntime] locale UI font loaded\n");

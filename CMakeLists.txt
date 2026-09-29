@@ -200,6 +200,16 @@ if(RINRUNTIME_BUILD_TESTS)
                               PRIVATE RinRuntime::RinRuntime)
         set_target_properties(rinruntime-render-context-abi-test
                               PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES)
+        add_executable(rinruntime-render-context-test
+                       tests/render_context_contract_test.cpp)
+        target_link_libraries(rinruntime-render-context-test
+                              PRIVATE RinRuntime::RinRuntime)
+        target_include_directories(rinruntime-render-context-test
+                                   PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+        set_target_properties(rinruntime-render-context-test
+                              PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES)
+        add_test(NAME rinruntime-render-context
+                 COMMAND rinruntime-render-context-test)
     endif()
     add_executable(rinruntime-accessibility-client-abi-test
                    tests/accessibility_client_abi_compile_test.c)
