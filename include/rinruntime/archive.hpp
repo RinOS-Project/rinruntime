@@ -8,6 +8,9 @@
 #define RINRUNTIME_ARCHIVE_HPP
 
 #include <cstdint>
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+#    include <new>
+#endif
 #include <string>
 #include <vector>
 
@@ -60,6 +63,9 @@ public:
 
     bool add(const ArchiveEntry& entry)
     {
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
         if (entries_.size() >= RINRUNTIME_ARCHIVE_ENTRY_LIMIT ||
             !entryValid(entry))
             return false;
@@ -73,6 +79,11 @@ public:
         entries_.push_back(entry);
         totalContent_ = next;
         return true;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (const std::bad_alloc&) {
+            return false;
+        }
+#endif
     }
 
     /* Add a source with the conventional directory suffix.  A source path
@@ -80,6 +91,9 @@ public:
      * bounded and rejects embedded NUL/control bytes. */
     bool addSource(const ArchiveSource& source)
     {
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
         if (!sourceValid(source)) return false;
         ArchiveEntry entry;
         entry.name = source.name;
@@ -90,6 +104,11 @@ public:
         entry.directory = source.directory;
         entry.method = source.directory ? 0u : 8u;
         return add(entry);
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (const std::bad_alloc&) {
+            return false;
+        }
+#endif
     }
 
     void clear()

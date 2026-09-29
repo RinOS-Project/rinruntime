@@ -4,6 +4,9 @@
 #ifndef RINRUNTIME_LAYOUT_HPP
 #define RINRUNTIME_LAYOUT_HPP
 
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+#    include <new>
+#endif
 #include <utility>
 
 #include "layout_direction.hpp"
@@ -152,6 +155,9 @@ inline bool validItems(const std::vector<LayoutItem>& items) {
 inline bool assignLinearSizes(const std::vector<LayoutItem>& items,
                               bool horizontal, int32_t available,
                               int32_t gap, std::vector<int32_t>* sizes) {
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+    try {
+#endif
     size_t visibleCount = 0u;
     int64_t required = 0;
     uint64_t totalWeight = 0u;
@@ -191,6 +197,12 @@ inline bool assignLinearSizes(const std::vector<LayoutItem>& items,
         }
     }
     return true;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+    } catch (const std::bad_alloc&) {
+        if (sizes != nullptr) sizes->clear();
+        return false;
+    }
+#endif
 }
 
 } // namespace detail
@@ -198,6 +210,9 @@ inline bool assignLinearSizes(const std::vector<LayoutItem>& items,
 inline bool layoutHBox(const Rect& bounds, const std::vector<LayoutItem>& items,
                        int32_t gap, std::vector<Rect>* output,
                        LayoutDirection direction = LayoutDirection::LeftToRight) {
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+    try {
+#endif
     std::vector<int32_t> widths;
     std::vector<Rect> result;
     int64_t position;
@@ -223,10 +238,18 @@ inline bool layoutHBox(const Rect& bounds, const std::vector<LayoutItem>& items,
     }
     *output = std::move(result);
     return true;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+    } catch (const std::bad_alloc&) {
+        return false;
+    }
+#endif
 }
 
 inline bool layoutVBox(const Rect& bounds, const std::vector<LayoutItem>& items,
                        int32_t gap, std::vector<Rect>* output) {
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+    try {
+#endif
     std::vector<int32_t> heights;
     std::vector<Rect> result;
     int64_t position;
@@ -244,12 +267,20 @@ inline bool layoutVBox(const Rect& bounds, const std::vector<LayoutItem>& items,
     }
     *output = std::move(result);
     return true;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+    } catch (const std::bad_alloc&) {
+        return false;
+    }
+#endif
 }
 
 inline bool layoutGrid(const Rect& bounds, const std::vector<LayoutItem>& items,
                        uint32_t columns, int32_t horizontalGap, int32_t verticalGap,
                        std::vector<Rect>* output,
                        LayoutDirection direction = LayoutDirection::LeftToRight) {
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+    try {
+#endif
     std::vector<int32_t> columnWidths;
     std::vector<int32_t> rowHeights;
     std::vector<Rect> result;
@@ -326,10 +357,18 @@ inline bool layoutGrid(const Rect& bounds, const std::vector<LayoutItem>& items,
     }
     *output = std::move(result);
     return true;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+    } catch (const std::bad_alloc&) {
+        return false;
+    }
+#endif
 }
 
 inline bool layoutStack(const Rect& bounds, const std::vector<LayoutItem>& items,
                         std::vector<Rect>* output) {
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+    try {
+#endif
     std::vector<Rect> result;
     if (!output || !detail::validBounds(bounds) || !detail::validItems(items))
         return false;
@@ -339,6 +378,11 @@ inline bool layoutStack(const Rect& bounds, const std::vector<LayoutItem>& items
     }
     *output = std::move(result);
     return true;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+    } catch (const std::bad_alloc&) {
+        return false;
+    }
+#endif
 }
 
 } // namespace RinRuntime
