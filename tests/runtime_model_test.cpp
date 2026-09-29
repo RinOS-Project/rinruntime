@@ -52,6 +52,7 @@ int main() {
     RinI18nArg i18n_arg = {"name", "RinOS"};
     assert(i18n_catalog.data == nullptr && i18n_catalog.size == 0u);
     assert(i18n_arg.name != nullptr && i18n_arg.value != nullptr);
+    assert(rin_i18n_hash("RinOS") != 0u);
     assert(RinRuntime::utf8GraphemeSpacingMark(0x1a55u));
     RinRuntime::BackupArchiveReader backup_reader;
 

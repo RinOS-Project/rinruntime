@@ -108,6 +108,9 @@ lookup, plural, format, and resource-adapter APIs from the same public include
 boundary. Resource reading is delegated to a caller-owned bounded callback;
 locale selection, catalog publication, filesystem authority, and persistence
 remain private owner responsibilities.
+The CMake, Meson, and target `.rll` source graphs include the bounded
+`rin_i18n.c` implementation so linking `RinRuntime` resolves this public
+adapter without requiring a private owner library.
 
 The public LibUnicode normalization entry points treat a null source as an
 empty input only after validating the requested NFD/NFC/NFKD/NFKC form.  An
