@@ -53,6 +53,7 @@ int main() {
     assert(i18n_catalog.data == nullptr && i18n_catalog.size == 0u);
     assert(i18n_arg.name != nullptr && i18n_arg.value != nullptr);
     assert(RinRuntime::utf8GraphemeSpacingMark(0x1a55u));
+    RinRuntime::BackupArchiveReader backup_reader;
 
     DownloadModelOwner download_owner;
     RinRuntime::DownloadRangeTransportOpsV1 download_ops;

@@ -388,6 +388,11 @@ resolve Known Folders, authenticate package handoffs, read a File Portal
 descriptor, or publish restored bytes; those remain private archive/service
 owners.
 
+The canonical `rinruntime/rinruntime.hpp` umbrella includes this memory-only
+backup reader as well, so ordinary applications and external toolkits can
+consume the bounded RBK1 contract without importing a private archive or File
+Portal owner.
+
 The C RBK1 manifest encoder clears `bytes_size_out` and the caller-owned
 manifest output span on validation or capacity failure (bounded by
 `RINRUNTIME_BACKUP_MANIFEST_STORAGE_MAX`), so a rejected replacement cannot
