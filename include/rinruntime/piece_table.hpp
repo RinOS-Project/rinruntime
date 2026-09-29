@@ -6,6 +6,9 @@
 
 #include <cstddef>
 #include <cstdint>
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+#    include <new>
+#endif
 #include <string>
 #include <utility>
 #include <vector>
@@ -29,14 +32,28 @@ public:
 
     bool setOriginal(const std::string& original) {
         if (original.size() > kMaxBytes) return false;
-        original_ = original;
-        added_.clear();
-        pieces_.clear();
-        if (!original.empty()) pieces_.push_back({Source::Original, 0u,
-                                                   original.size()});
-        size_ = original.size();
-        rebuildLineIndex();
-        return true;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
+            std::string nextOriginal = original;
+            std::string nextAdded;
+            std::vector<Piece> nextPieces;
+            std::vector<size_t> nextLineStarts;
+            if (!original.empty())
+                nextPieces.push_back({Source::Original, 0u, original.size()});
+            rebuildLineIndex(nextOriginal, nextAdded, nextPieces,
+                             nextLineStarts);
+            original_.swap(nextOriginal);
+            added_.swap(nextAdded);
+            pieces_.swap(nextPieces);
+            lineStarts_.swap(nextLineStarts);
+            size_ = original.size();
+            return true;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (const std::bad_alloc&) {
+            return false;
+        }
+#endif
     }
 
     void clear() {
@@ -61,102 +78,129 @@ public:
         if (pieces_.size() >= kMaxPieces && position != size_) return false;
 
         const size_t addedOffset = added_.size();
-        added_.append(value);
-        Piece inserted = {Source::Added, addedOffset, value.size()};
-        std::vector<Piece> next;
-        next.reserve(pieces_.size() + 2u);
-        bool placed = false;
-        size_t cursor = 0u;
-        for (const Piece& piece : pieces_) {
-            if (!placed && position <= cursor + piece.length) {
-                const size_t local = position - cursor;
-                if (local == 0u) {
-                    next.push_back(inserted);
-                    next.push_back(piece);
-                    placed = true;
-                } else if (local == piece.length) {
-                    next.push_back(piece);
-                    next.push_back(inserted);
-                    placed = true;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
+            added_.append(value);
+            Piece inserted = {Source::Added, addedOffset, value.size()};
+            std::vector<Piece> next;
+            next.reserve(pieces_.size() + 2u);
+            bool placed = false;
+            size_t cursor = 0u;
+            for (const Piece& piece : pieces_) {
+                if (!placed && position <= cursor + piece.length) {
+                    const size_t local = position - cursor;
+                    if (local == 0u) {
+                        next.push_back(inserted);
+                        next.push_back(piece);
+                        placed = true;
+                    } else if (local == piece.length) {
+                        next.push_back(piece);
+                        next.push_back(inserted);
+                        placed = true;
+                    } else {
+                        next.push_back({piece.source, piece.offset, local});
+                        next.push_back(inserted);
+                        next.push_back({piece.source, piece.offset + local,
+                                        piece.length - local});
+                        placed = true;
+                    }
                 } else {
-                    next.push_back({piece.source, piece.offset, local});
-                    next.push_back(inserted);
-                    next.push_back({piece.source, piece.offset + local,
-                                    piece.length - local});
-                    placed = true;
+                    next.push_back(piece);
                 }
-            } else {
-                next.push_back(piece);
+                cursor += piece.length;
             }
-            cursor += piece.length;
-        }
-        if (!placed) {
-            next.push_back(inserted);
-            placed = true;
-        }
-        if (next.size() > kMaxPieces) {
+            if (!placed) next.push_back(inserted);
+            if (next.size() > kMaxPieces) {
+                added_.resize(addedOffset);
+                return false;
+            }
+            coalesce(next);
+            std::vector<size_t> nextLineStarts;
+            rebuildLineIndex(original_, added_, next, nextLineStarts);
+            pieces_.swap(next);
+            lineStarts_.swap(nextLineStarts);
+            size_ += value.size();
+            return true;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (const std::bad_alloc&) {
             added_.resize(addedOffset);
             return false;
         }
-        pieces_.swap(next);
-        size_ += value.size();
-        coalesce();
-        rebuildLineIndex();
-        return true;
+#endif
     }
 
     bool erase(size_t position, size_t length) {
         if (position > size_ || length > size_ - position) return false;
         if (length == 0u) return true;
-        const size_t end = position + length;
-        std::vector<Piece> next;
-        next.reserve(pieces_.size());
-        size_t cursor = 0u;
-        for (const Piece& piece : pieces_) {
-            const size_t pieceEnd = cursor + piece.length;
-            if (pieceEnd <= position || cursor >= end) {
-                next.push_back(piece);
-            } else {
-                if (cursor < position)
-                    next.push_back({piece.source, piece.offset,
-                                    position - cursor});
-                if (pieceEnd > end)
-                    next.push_back({piece.source,
-                                    piece.offset + (end - cursor),
-                                    pieceEnd - end});
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
+            const size_t end = position + length;
+            std::vector<Piece> next;
+            next.reserve(pieces_.size());
+            size_t cursor = 0u;
+            for (const Piece& piece : pieces_) {
+                const size_t pieceEnd = cursor + piece.length;
+                if (pieceEnd <= position || cursor >= end) {
+                    next.push_back(piece);
+                } else {
+                    if (cursor < position)
+                        next.push_back({piece.source, piece.offset,
+                                        position - cursor});
+                    if (pieceEnd > end)
+                        next.push_back({piece.source,
+                                        piece.offset + (end - cursor),
+                                        pieceEnd - end});
+                }
+                cursor = pieceEnd;
             }
-            cursor = pieceEnd;
+            coalesce(next);
+            std::vector<size_t> nextLineStarts;
+            rebuildLineIndex(original_, added_, next, nextLineStarts);
+            pieces_.swap(next);
+            lineStarts_.swap(nextLineStarts);
+            size_ -= length;
+            return true;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (const std::bad_alloc&) {
+            return false;
         }
-        pieces_.swap(next);
-        size_ -= length;
-        coalesce();
-        rebuildLineIndex();
-        return true;
+#endif
     }
 
     bool read(size_t position, size_t length, std::string& output) const {
-        output.clear();
-        if (position > size_ || length > size_ - position ||
-            length > kMaxBytes) return false;
-        output.reserve(length);
-        if (length == 0u) return true;
-        const size_t end = position + length;
-        size_t cursor = 0u;
-        for (const Piece& piece : pieces_) {
-            const size_t pieceEnd = cursor + piece.length;
-            if (pieceEnd <= position) {
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
+            output.clear();
+            if (position > size_ || length > size_ - position ||
+                length > kMaxBytes) return false;
+            output.reserve(length);
+            if (length == 0u) return true;
+            const size_t end = position + length;
+            size_t cursor = 0u;
+            for (const Piece& piece : pieces_) {
+                const size_t pieceEnd = cursor + piece.length;
+                if (pieceEnd <= position) {
+                    cursor = pieceEnd;
+                    continue;
+                }
+                if (cursor >= end) break;
+                const size_t begin = position > cursor ? position - cursor : 0u;
+                const size_t stop = end < pieceEnd ? end - cursor : piece.length;
+                const std::string& source = piece.source == Source::Original
+                    ? original_ : added_;
+                output.append(source, piece.offset + begin, stop - begin);
                 cursor = pieceEnd;
-                continue;
             }
-            if (cursor >= end) break;
-            const size_t begin = position > cursor ? position - cursor : 0u;
-            const size_t stop = end < pieceEnd ? end - cursor : piece.length;
-            const std::string& source = piece.source == Source::Original
-                ? original_ : added_;
-            output.append(source, piece.offset + begin, stop - begin);
-            cursor = pieceEnd;
+            return output.size() == length;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (const std::bad_alloc&) {
+            output.clear();
+            return false;
         }
-        return output.size() == length;
+#endif
     }
 
     /* Locate one newline-delimited line without materializing the document.
@@ -197,38 +241,41 @@ private:
                left.offset + left.length == right.offset;
     }
 
-    void coalesce() {
-        if (pieces_.size() < 2u) return;
+    static void coalesce(std::vector<Piece>& pieces) {
+        if (pieces.size() < 2u) return;
         std::vector<Piece> merged;
-        merged.reserve(pieces_.size());
-        for (const Piece& piece : pieces_) {
+        merged.reserve(pieces.size());
+        for (const Piece& piece : pieces) {
             if (!merged.empty() && adjacent(merged.back(), piece))
                 merged.back().length += piece.length;
             else
                 merged.push_back(piece);
         }
-        pieces_.swap(merged);
+        pieces.swap(merged);
     }
 
     /* Keep line starts as a bounded, document-relative index.  Rebuilding
      * after each mutation is intentionally simple and failure-atomic: the
      * piece mutation has already succeeded, while readers thereafter avoid
      * rescanning every byte for each visible line. */
-    void rebuildLineIndex() {
+    static void rebuildLineIndex(const std::string& original,
+                                 const std::string& added,
+                                 const std::vector<Piece>& pieces,
+                                 std::vector<size_t>& output) {
         std::vector<size_t> next;
-        next.reserve(lineStarts_.size() > 0u ? lineStarts_.size() : 1u);
+        next.reserve(1u);
         next.push_back(0u);
         size_t documentPosition = 0u;
-        for (const Piece& piece : pieces_) {
+        for (const Piece& piece : pieces) {
             const std::string& source = piece.source == Source::Original
-                ? original_ : added_;
+                ? original : added;
             for (size_t index = 0u; index < piece.length; ++index) {
                 ++documentPosition;
                 if (source[piece.offset + index] == '\n')
                     next.push_back(documentPosition);
             }
         }
-        lineStarts_.swap(next);
+        output.swap(next);
     }
 
     std::string original_;
