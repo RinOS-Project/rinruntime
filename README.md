@@ -384,8 +384,8 @@ owners.
 `archive_7z.hpp` provides the public `Archive7zReader` envelope inspector and
 the explicitly bounded `decodeStored()` subset.  The decoder accepts one
 non-empty packed stream, bounded multiple folders when each folder is a
-single plain Copy or raw Delta／BCJ filter coder with regular substreams
-described by `SubStreamsInfo`,
+bounded linear plain Copy or raw Delta／BCJ filter coder chain of up to two
+coders with regular substreams described by `SubStreamsInfo`,
 one single BCJ2 coder
 (`03 03 01 1b`) with four packed input streams, or empty regular
 files/directories with no packed stream.  `FilesInfo` may also interleave those empty entries with the

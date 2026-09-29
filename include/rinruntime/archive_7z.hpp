@@ -107,8 +107,8 @@ public:
 
     /* Decode a bounded 7z pipeline of up to four one-in/one-out Copy, Delta,
      * and LZMA coders, or one BCJ2 coder with four packed input streams, plus
-     * bounded single-coder Copy／raw-filter folders containing regular
-     * substreams, plus empty
+     * bounded linear Copy／raw-filter folders of up to two coders containing
+     * regular substreams, plus empty
      * regular files/directories with no packed stream.
      * BindPairs are validated before any coder runs.  A multi-entry folder is
      * exposed as bounded slices of the decoded folder stream, with
@@ -956,10 +956,18 @@ private:
         std::array<std::uint64_t, kMaxFolders> unpack_sizes{};
         std::array<bool, kMaxFolders> folder_crc_defined{};
         std::array<std::uint32_t, kMaxFolders> folder_crcs{};
-        std::array<std::uint64_t, kMaxFolders> folder_methods{};
-        std::array<std::array<std::uint8_t, 4u>, kMaxFolders>
+        static constexpr std::size_t kMaxFolderCoders = 2u;
+        std::array<std::size_t, kMaxFolders> folder_coder_counts{};
+        std::array<std::array<std::uint64_t, kMaxFolderCoders>, kMaxFolders>
+            folder_methods{};
+        std::array<std::array<std::array<std::uint8_t, 4u>,
+                               kMaxFolderCoders>,
+                   kMaxFolders>
             folder_properties{};
-        std::array<std::size_t, kMaxFolders> folder_property_sizes{};
+        std::array<std::array<std::size_t, kMaxFolderCoders>, kMaxFolders>
+            folder_property_sizes{};
+        std::array<std::array<std::uint64_t, kMaxFolderCoders>, kMaxFolders>
+            folder_coder_unpack_sizes{};
         std::array<std::size_t, kMaxFolders> substream_counts{};
         std::array<std::array<std::uint64_t,
                                RINRUNTIME_ARCHIVE_ENTRY_LIMIT>,
@@ -972,10 +980,10 @@ private:
         const std::size_t folders = static_cast<std::size_t>(folder_count);
         substream_counts.fill(1u);
 
-        /* This deliberately bounded extension accepts only one Copy or raw
-         * filter coder per folder.  The folder input is therefore mapped to
-         * the packed stream with the same ordinal; no BindPairs or
-         * packed-stream index table is present in this subset. */
+        /* This deliberately bounded extension accepts at most two Copy or
+         * raw filter coders per folder.  The folder input is mapped to the
+         * packed stream with the same ordinal; the only accepted bond is the
+         * linear second-coder <- first-coder pair. */
         for (std::size_t folder = 0u; folder < folders; ++folder) {
             if (deadline != nullptr && deadline(deadlineContext))
                 return Archive7zResult::Deadline;
@@ -984,40 +992,57 @@ private:
             std::uint64_t coder_count = 0u;
             if (!readEncodedUInt64(bytes, end, cursor, coder_count))
                 return Archive7zResult::Malformed;
-            if (coder_count != 1u) return Archive7zResult::Unsupported;
-            if (cursor >= end) return Archive7zResult::Malformed;
-            const std::uint8_t coder_flags = bytes[cursor++];
-            const unsigned method_size = coder_flags & 0x0fu;
-            const bool has_properties = (coder_flags & 0x20u) != 0u;
-            if (method_size != 1u || (coder_flags & 0xd0u) != 0u ||
-                cursor >= end)
+            if (coder_count == 0u || coder_count > kMaxFolderCoders)
                 return Archive7zResult::Unsupported;
-            const std::uint64_t method = bytes[cursor++];
-            folder_methods[folder] = method;
-            std::size_t expected_property_size = 0u;
-            if (method == 0u) {
-                if (has_properties) return Archive7zResult::Unsupported;
-            } else if (method == 0x03u) {
-                expected_property_size = 1u;
-            } else if (method == 0x04u) {
-                expected_property_size = 4u;
-            } else if (method >= 0x05u && method <= 0x0bu) {
-                expected_property_size = 0u;
-            } else {
-                return Archive7zResult::Unsupported;
-            }
-            if (has_properties) {
-                std::uint64_t property_size = 0u;
-                if (!readEncodedUInt64(bytes, end, cursor, property_size) ||
-                    property_size != expected_property_size ||
-                    property_size > folder_properties[folder].size())
+            folder_coder_counts[folder] =
+                static_cast<std::size_t>(coder_count);
+            for (std::size_t coder = 0u;
+                 coder < static_cast<std::size_t>(coder_count); ++coder) {
+                if (cursor >= end) return Archive7zResult::Malformed;
+                const std::uint8_t coder_flags = bytes[cursor++];
+                const unsigned method_size = coder_flags & 0x0fu;
+                const bool has_properties = (coder_flags & 0x20u) != 0u;
+                if (method_size != 1u || (coder_flags & 0xd0u) != 0u ||
+                    cursor >= end)
                     return Archive7zResult::Unsupported;
-                folder_property_sizes[folder] =
-                    static_cast<std::size_t>(property_size);
-                for (std::size_t index = 0u; index < property_size; ++index)
-                    folder_properties[folder][index] = bytes[cursor++];
-            } else if (expected_property_size != 0u) {
-                return Archive7zResult::Unsupported;
+                const std::uint64_t method = bytes[cursor++];
+                folder_methods[folder][coder] = method;
+                std::size_t expected_property_size = 0u;
+                if (method == 0u) {
+                    if (has_properties) return Archive7zResult::Unsupported;
+                } else if (method == 0x03u) {
+                    expected_property_size = 1u;
+                } else if (method == 0x04u) {
+                    expected_property_size = 4u;
+                } else if (method >= 0x05u && method <= 0x0bu) {
+                    expected_property_size = 0u;
+                } else {
+                    return Archive7zResult::Unsupported;
+                }
+                if (has_properties) {
+                    std::uint64_t property_size = 0u;
+                    if (!readEncodedUInt64(bytes, end, cursor,
+                                           property_size) ||
+                        property_size != expected_property_size ||
+                        property_size > folder_properties[folder][coder].size())
+                        return Archive7zResult::Unsupported;
+                    folder_property_sizes[folder][coder] =
+                        static_cast<std::size_t>(property_size);
+                    for (std::size_t index = 0u; index < property_size;
+                         ++index)
+                        folder_properties[folder][coder][index] =
+                            bytes[cursor++];
+                } else if (expected_property_size != 0u) {
+                    return Archive7zResult::Unsupported;
+                }
+            }
+            if (coder_count == 2u) {
+                std::uint64_t input_index = 0u;
+                std::uint64_t output_index = 0u;
+                if (!readEncodedUInt64(bytes, end, cursor, input_index) ||
+                    !readEncodedUInt64(bytes, end, cursor, output_index) ||
+                    input_index != 1u || output_index != 0u)
+                    return Archive7zResult::Unsupported;
             }
         }
 
@@ -1025,9 +1050,17 @@ private:
             return Archive7zResult::Malformed;
         std::uint64_t total_unpack_size = 0u;
         for (std::size_t folder = 0u; folder < folders; ++folder) {
-            if (!readEncodedUInt64(bytes, end, cursor,
-                                   unpack_sizes[folder]))
-                return Archive7zResult::Malformed;
+            const std::size_t coder_count = folder_coder_counts[folder];
+            for (std::size_t coder = 0u; coder < coder_count; ++coder) {
+                if (!readEncodedUInt64(bytes, end, cursor,
+                                       folder_coder_unpack_sizes[folder][coder]))
+                    return Archive7zResult::Malformed;
+                if (folder_coder_unpack_sizes[folder][coder] >
+                    static_cast<std::uint64_t>(kMaxStreamBytes))
+                    return Archive7zResult::Limit;
+            }
+            unpack_sizes[folder] =
+                folder_coder_unpack_sizes[folder][coder_count - 1u];
             if (unpack_sizes[folder] >
                     static_cast<std::uint64_t>(kMaxStreamBytes) ||
                 total_unpack_size >
@@ -1184,43 +1217,60 @@ private:
                 actual_crc != pack_crcs[folder])
                 return Archive7zResult::CrcMismatch;
             const std::size_t folder_start = combined.size();
-            std::string decoded_folder;
-            if (folder_methods[folder] == 0u) {
-                decoded_folder.assign(
-                    reinterpret_cast<const char*>(bytes + pack_offset),
-                    packed_size);
-            } else {
-                ArchiveXzReader filter_reader;
-                const ArchiveXzResult filter_result =
-                    filter_reader.decodeRawFilter(
-                        static_cast<std::uint8_t>(folder_methods[folder]),
-                        folder_property_sizes[folder] == 0u
-                            ? nullptr
-                            : folder_properties[folder].data(),
-                        folder_property_sizes[folder], bytes + pack_offset,
-                        packed_size, decoded_folder, cancellation,
-                        cancellationContext, deadline, deadlineContext);
-                if (filter_result == ArchiveXzResult::Cancelled)
-                    return Archive7zResult::Cancelled;
-                if (filter_result == ArchiveXzResult::Deadline)
+            std::string coder_input(
+                reinterpret_cast<const char*>(bytes + pack_offset),
+                packed_size);
+            for (std::size_t coder = 0u;
+                 coder < folder_coder_counts[folder]; ++coder) {
+                if (deadline != nullptr && deadline(deadlineContext))
                     return Archive7zResult::Deadline;
-                if (filter_result == ArchiveXzResult::Limit)
-                    return Archive7zResult::Limit;
-                if (filter_result == ArchiveXzResult::Unsupported)
-                    return Archive7zResult::Unsupported;
-                if (filter_result != ArchiveXzResult::Ok)
+                if (cancellation != nullptr &&
+                    cancellation(cancellationContext))
+                    return Archive7zResult::Cancelled;
+                std::string coder_output;
+                const std::uint64_t method = folder_methods[folder][coder];
+                if (method == 0u) {
+                    /* Copy preserves the bounded caller-owned buffer. */
+                } else {
+                    ArchiveXzReader filter_reader;
+                    const ArchiveXzResult filter_result =
+                        filter_reader.decodeRawFilter(
+                            static_cast<std::uint8_t>(method),
+                            folder_property_sizes[folder][coder] == 0u
+                                ? nullptr
+                                : folder_properties[folder][coder].data(),
+                            folder_property_sizes[folder][coder],
+                            reinterpret_cast<const std::uint8_t*>(
+                                coder_input.data()),
+                            coder_input.size(), coder_output, cancellation,
+                            cancellationContext, deadline, deadlineContext);
+                    if (filter_result == ArchiveXzResult::Cancelled)
+                        return Archive7zResult::Cancelled;
+                    if (filter_result == ArchiveXzResult::Deadline)
+                        return Archive7zResult::Deadline;
+                    if (filter_result == ArchiveXzResult::Limit)
+                        return Archive7zResult::Limit;
+                    if (filter_result == ArchiveXzResult::Unsupported)
+                        return Archive7zResult::Unsupported;
+                    if (filter_result != ArchiveXzResult::Ok)
+                        return Archive7zResult::Malformed;
+                    coder_input.swap(coder_output);
+                }
+                if (coder_input.size() != static_cast<std::size_t>(
+                                                folder_coder_unpack_sizes
+                                                    [folder][coder]))
                     return Archive7zResult::Malformed;
             }
-            if (decoded_folder.size() !=
+            if (coder_input.size() !=
                 static_cast<std::size_t>(unpack_sizes[folder]))
                 return Archive7zResult::Malformed;
             if (folder_crc_defined[folder] &&
                 rinruntime_archive_crc32(
                     reinterpret_cast<const std::uint8_t*>(
-                        decoded_folder.data()),
-                    decoded_folder.size()) != folder_crcs[folder])
+                        coder_input.data()),
+                    coder_input.size()) != folder_crcs[folder])
                 return Archive7zResult::CrcMismatch;
-            combined.append(decoded_folder);
+            combined.append(coder_input);
             if (combined.size() - folder_start !=
                 static_cast<std::size_t>(unpack_sizes[folder]))
                 return Archive7zResult::Malformed;
