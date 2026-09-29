@@ -107,7 +107,7 @@ public:
 
     /* Decode a bounded 7z pipeline of up to four one-in/one-out Copy, Delta,
      * and LZMA coders, or one BCJ2 coder with four packed input streams, plus
-     * bounded linear Copy／raw-filter folders of up to two coders containing
+     * bounded linear Copy／raw-filter folders of up to four coders containing
      * regular substreams, plus empty
      * regular files/directories with no packed stream.
      * BindPairs are validated before any coder runs.  A multi-entry folder is
@@ -116,7 +116,7 @@ public:
      * This subset is useful
      * for caller-owned test/resource bytes and intentionally has no path,
      * filename, filesystem, or service authority.  Multi-stream coders,
-     * arbitrary multi-stream graphs, multi-folder coder chains, encryption,
+     * arbitrary multi-stream graphs, non-linear multi-folder coder chains, encryption,
      * empty entries in a non-empty folder, and external headers remain
      * explicit Unsupported results. */
     Archive7zResult decodeStored(const std::uint8_t* bytes, std::size_t size,
@@ -956,7 +956,7 @@ private:
         std::array<std::uint64_t, kMaxFolders> unpack_sizes{};
         std::array<bool, kMaxFolders> folder_crc_defined{};
         std::array<std::uint32_t, kMaxFolders> folder_crcs{};
-        static constexpr std::size_t kMaxFolderCoders = 2u;
+        static constexpr std::size_t kMaxFolderCoders = 4u;
         std::array<std::size_t, kMaxFolders> folder_coder_counts{};
         std::array<std::array<std::uint64_t, kMaxFolderCoders>, kMaxFolders>
             folder_methods{};
@@ -980,10 +980,10 @@ private:
         const std::size_t folders = static_cast<std::size_t>(folder_count);
         substream_counts.fill(1u);
 
-        /* This deliberately bounded extension accepts at most two Copy or
+        /* This deliberately bounded extension accepts at most four Copy or
          * raw filter coders per folder.  The folder input is mapped to the
-         * packed stream with the same ordinal; the only accepted bond is the
-         * linear second-coder <- first-coder pair. */
+         * packed stream with the same ordinal; the only accepted bonds are
+         * the linear (coder + 1) <- coder pairs. */
         for (std::size_t folder = 0u; folder < folders; ++folder) {
             if (deadline != nullptr && deadline(deadlineContext))
                 return Archive7zResult::Deadline;
@@ -1036,12 +1036,14 @@ private:
                     return Archive7zResult::Unsupported;
                 }
             }
-            if (coder_count == 2u) {
+            for (std::size_t pair = 0u;
+                 pair + 1u < static_cast<std::size_t>(coder_count); ++pair) {
                 std::uint64_t input_index = 0u;
                 std::uint64_t output_index = 0u;
                 if (!readEncodedUInt64(bytes, end, cursor, input_index) ||
                     !readEncodedUInt64(bytes, end, cursor, output_index) ||
-                    input_index != 1u || output_index != 0u)
+                    input_index != static_cast<std::uint64_t>(pair + 1u) ||
+                    output_index != static_cast<std::uint64_t>(pair))
                     return Archive7zResult::Unsupported;
             }
         }

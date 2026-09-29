@@ -481,8 +481,10 @@ static std::vector<std::uint8_t> make7zMultiFolderDelta()
     return bytes;
 }
 
-static std::vector<std::uint8_t> make7zMultiFolderCopyChain()
+static std::vector<std::uint8_t> make7zMultiFolderCopyChain(
+    std::size_t coder_count = 2u)
 {
+    assert(coder_count >= 2u && coder_count <= 4u);
     const std::uint8_t signature[] = {
         0x37u, 0x7au, 0xbcu, 0xafu, 0x27u, 0x1cu};
     const std::uint8_t first[] = {'h', 'e', 'l', 'l', 'o'};
@@ -509,19 +511,21 @@ static std::vector<std::uint8_t> make7zMultiFolderCopyChain()
     put7zUInt64(header, 2u); /* NumFolders */
     header.push_back(0u); /* folders are in this header */
     for (unsigned folder = 0u; folder != 2u; ++folder) {
-        put7zUInt64(header, 2u); /* NumCoders */
-        for (unsigned coder = 0u; coder != 2u; ++coder) {
+        put7zUInt64(header, coder_count); /* NumCoders */
+        for (std::size_t coder = 0u; coder != coder_count; ++coder) {
             header.push_back(0x01u); /* one-byte Copy method ID */
             header.push_back(0x00u); /* Copy */
         }
-        put7zUInt64(header, 1u); /* second coder input */
-        put7zUInt64(header, 0u); /* first coder output */
+        for (std::size_t pair = 0u; pair + 1u < coder_count; ++pair) {
+            put7zUInt64(header, pair + 1u); /* next coder input */
+            put7zUInt64(header, pair); /* previous coder output */
+        }
     }
     header.push_back(0x0cu); /* CodersUnpackSize */
-    put7zUInt64(header, sizeof(first));
-    put7zUInt64(header, sizeof(first));
-    put7zUInt64(header, sizeof(second));
-    put7zUInt64(header, sizeof(second));
+    for (unsigned folder = 0u; folder != 2u; ++folder)
+        for (std::size_t coder = 0u; coder != coder_count; ++coder)
+            put7zUInt64(header, folder == 0u ? sizeof(first) :
+                                      sizeof(second));
     header.push_back(0x0au); /* decoded folder CRC */
     header.push_back(1u);
     header.resize(header.size() + 8u);
@@ -1018,6 +1022,19 @@ int main()
     const std::vector<std::uint8_t> sevenZipFolders =
         make7zMultiFolderCopy();
     assert(reader.parse(sevenZipFolders.data(), sevenZipFolders.size()) ==
+           RinRuntime::ArchiveContainerResult::Ok);
+    assert(reader.kind() == RinRuntime::ArchiveContainerKind::SevenZip &&
+           reader.size() == 2u && reader.entries()[0].size == 5u &&
+           reader.entries()[1].size == 5u);
+    assert(reader.readEntry(0u, output) ==
+           RinRuntime::ArchiveContainerResult::Ok && output == "hello");
+    assert(reader.readEntry(1u, output) ==
+           RinRuntime::ArchiveContainerResult::Ok && output == "world");
+
+    const std::vector<std::uint8_t> sevenZipFolderCopyChain4 =
+        make7zMultiFolderCopyChain(4u);
+    assert(reader.parse(sevenZipFolderCopyChain4.data(),
+                        sevenZipFolderCopyChain4.size()) ==
            RinRuntime::ArchiveContainerResult::Ok);
     assert(reader.kind() == RinRuntime::ArchiveContainerKind::SevenZip &&
            reader.size() == 2u && reader.entries()[0].size == 5u &&
