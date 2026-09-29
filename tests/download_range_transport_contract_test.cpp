@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <new>
+#include <stdexcept>
 #include <string>
 
 #include "../include/rinruntime/download_range_transport.hpp"
@@ -66,6 +67,24 @@ static void abortRange(void* opaque) {
 static int throwingBegin(void*, const RinRuntime::DownloadRangeRequest*,
                          RinRuntime::DownloadRangeResponse*) {
     throw std::bad_alloc();
+}
+
+static int throwingRuntimeBegin(void*, const RinRuntime::DownloadRangeRequest*,
+                                RinRuntime::DownloadRangeResponse*) {
+    throw std::runtime_error("begin callback failure");
+}
+
+static int throwingRuntimeRead(void*, std::uint8_t*, std::size_t,
+                               std::size_t*) {
+    throw std::runtime_error("read callback failure");
+}
+
+static int throwingRuntimeCancellation(void*) {
+    throw std::runtime_error("cancellation callback failure");
+}
+
+static void throwingRuntimeAbort(void*) {
+    throw std::runtime_error("abort callback failure");
 }
 
 static int statelessBegin(void*,
@@ -333,5 +352,37 @@ int main() {
            RinRuntime::DownloadRangeTransportAdapter::State::Idle);
     assert(throwingOwner.abortCalls == 1u);
     assert(response.statusCode == 0u);
+
+    /* Public callback boundaries must also contain non-allocation C++
+     * exceptions.  The owner may throw from begin/read/cancel/abort, but no
+     * exception may escape and no partial bytes may remain visible. */
+    RinRuntime::DownloadRangeTransportOpsV1 throwingRuntimeOps = ordinaryOps;
+    throwingRuntimeOps.begin = throwingRuntimeBegin;
+    throwingRuntimeOps.abort = throwingRuntimeAbort;
+    RinRuntime::DownloadRangeTransportAdapter throwingRuntime;
+    assert(throwingRuntime.bind(throwingRuntimeOps));
+    assert(!throwingRuntime.begin(request, response));
+    assert(throwingRuntime.state() ==
+           RinRuntime::DownloadRangeTransportAdapter::State::Idle);
+    throwingRuntimeOps = ordinaryOps;
+    throwingRuntimeOps.read = throwingRuntimeRead;
+    throwingRuntimeOps.abort = throwingRuntimeAbort;
+    assert(throwingRuntime.bind(throwingRuntimeOps));
+    assert(throwingRuntime.begin(request, response));
+    std::uint8_t throwingBytes[4u] = {0xffu, 0xffu, 0xffu, 0xffu};
+    assert(!throwingRuntime.read(throwingBytes, sizeof(throwingBytes),
+                                 bytesRead));
+    assert(bytesRead == 0u);
+    for (const std::uint8_t byte : throwingBytes) assert(byte == 0u);
+    assert(throwingRuntime.state() ==
+           RinRuntime::DownloadRangeTransportAdapter::State::Failed);
+
+    RinRuntime::DownloadRangeTransportAdapter throwingCancellation;
+    throwingRuntimeOps = ordinaryOps;
+    throwingRuntimeOps.cancelled = throwingRuntimeCancellation;
+    assert(throwingCancellation.bind(throwingRuntimeOps));
+    assert(!throwingCancellation.begin(request, response));
+    assert(throwingCancellation.state() ==
+           RinRuntime::DownloadRangeTransportAdapter::State::Idle);
     return 0;
 }

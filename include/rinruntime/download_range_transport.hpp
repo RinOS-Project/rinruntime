@@ -113,23 +113,45 @@ private:
         return normalized;
     }
 
-    int cancellationStatus() const {
+    int cancellationStatus() const noexcept {
         if (ops_.cancelled == nullptr) return 0;
-        return ops_.cancelled(ops_.context);
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
+            return ops_.cancelled(ops_.context);
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (...) {
+            /* A public C callback must not let an owner exception escape the
+             * runtime boundary.  Treat it as an owner failure. */
+            return -1;
+        }
+#endif
     }
 
-    void cancelAndAbort() {
-        if (state_ == State::Streaming && ops_.abort != nullptr)
+    void abortOwner() noexcept {
+        if (state_ != State::Streaming || ops_.abort == nullptr) return;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
             ops_.abort(ops_.context);
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (...) {
+            /* Abort is best effort after the public adapter has already
+             * decided to fail.  Do not leak an owner exception to the caller. */
+        }
+#endif
+    }
+
+    void cancelAndAbort() noexcept {
+        abortOwner();
         request_.clear();
         remaining_ = 0u;
         rangeExhausted_ = false;
         state_ = State::Cancelled;
     }
 
-    void failAndAbort() {
-        if (state_ == State::Streaming && ops_.abort != nullptr)
-            ops_.abort(ops_.context);
+    void failAndAbort() noexcept {
+        abortOwner();
         request_.clear();
         remaining_ = 0u;
         rangeExhausted_ = false;
@@ -178,7 +200,7 @@ public:
         const int result = ops_.begin(ops_.context, &request_, &candidate);
         if (result != 0 || !requestEquivalent(request_, requestBaseline) ||
             !candidate.validFor(requestBaseline)) {
-            ops_.abort(ops_.context);
+            abortOwner();
             request_.clear();
             remaining_ = 0u;
             rangeExhausted_ = false;
@@ -200,9 +222,8 @@ public:
         response = candidate;
         return true;
 #if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
-        } catch (const std::bad_alloc&) {
-            if (state_ == State::Streaming && ops_.abort != nullptr)
-                ops_.abort(ops_.context);
+        } catch (...) {
+            abortOwner();
             request_.clear();
             remaining_ = 0u;
             rangeExhausted_ = false;
@@ -223,6 +244,9 @@ public:
             scrubBuffer(buffer, capacity);
             return false;
         }
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
         const int beforeRead = cancellationStatus();
         if (beforeRead == 1) {
             scrubBuffer(buffer, capacity);
@@ -289,11 +313,17 @@ public:
         scrubBuffer(buffer, capacity);
         failAndAbort();
         return false;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (...) {
+            scrubBuffer(buffer, capacity);
+            failAndAbort();
+            return false;
+        }
+#endif
     }
 
     void abort() override {
-        if (state_ == State::Streaming && ops_.abort != nullptr)
-            ops_.abort(ops_.context);
+        abortOwner();
         request_.clear();
         remaining_ = 0u;
         rangeExhausted_ = false;
