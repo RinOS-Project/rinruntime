@@ -1151,7 +1151,7 @@ int main()
     output = "poison";
     assert(deflate.decode(stored, sizeof(stored), 5u, 0x3610a686u, output,
                           throwingCallback, nullptr) ==
-           RinRuntime::ArchiveDeflateResult::Malformed);
+           RinRuntime::ArchiveDeflateResult::Cancelled);
     assert(output.empty());
 
     RinRuntime::ArchiveDeflateEncoder encoder;
@@ -1182,7 +1182,7 @@ int main()
     output = "poison";
     assert(gzipReader.decode(gzip.data(), gzip.size(), output,
                              throwingCallback, nullptr) ==
-           RinRuntime::ArchiveGzipResult::Malformed);
+           RinRuntime::ArchiveGzipResult::Cancelled);
     assert(output.empty());
     std::string gzipStreamed;
     assert(gzipReader.decodeToSink(gzip.data(), gzip.size(),
@@ -1224,6 +1224,10 @@ int main()
     RinRuntime::ArchiveTarReader tarReader;
     assert(tarReader.parse(tar.data(), tar.size()) ==
            RinRuntime::ArchiveTarResult::Ok);
+    output = "poison";
+    assert(tarReader.readEntry(0u, output, throwingCallback, nullptr) ==
+           RinRuntime::ArchiveTarResult::Cancelled);
+    assert(output.empty());
     assert(tarReader.parseWithDeadline(tar.data(), tar.size(),
                                        throwingCallback, nullptr) ==
            RinRuntime::ArchiveTarResult::Malformed);

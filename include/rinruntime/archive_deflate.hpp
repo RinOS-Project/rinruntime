@@ -220,9 +220,9 @@ private:
 
         bool write(std::uint8_t value)
         {
-            if (cancellation_ != nullptr &&
-                (size_ == 0u || (size_ & 4095u) == 0u) &&
-                cancellation_(cancellationContext_)) {
+            if ((size_ == 0u || (size_ & 4095u) == 0u) &&
+                ArchiveDeflateDecoder::cancellationRequested(
+                    cancellation_, cancellationContext_)) {
                 cancelled_ = true;
                 return false;
             }
@@ -334,7 +334,7 @@ private:
         DecodeOutput decoded(output, sink, context, expectedSize,
                              cancellation, cancellationContext, deadline,
                              deadlineContext);
-        if (cancellation != nullptr && cancellation(cancellationContext))
+        if (cancellationRequested(cancellation, cancellationContext))
             return fail(decoded, ArchiveDeflateResult::Cancelled);
         if (deadline != nullptr && deadline(deadlineContext))
             return fail(decoded, ArchiveDeflateResult::Deadline);
@@ -562,6 +562,25 @@ private:
         output.clear();
         if (deadlineExpired) return ArchiveDeflateResult::Deadline;
         return cancelled ? ArchiveDeflateResult::Cancelled : result;
+    }
+
+    static bool cancellationRequested(
+        ArchiveDeflateCancellationFunction cancellation,
+        void* cancellationContext) noexcept
+    {
+        if (cancellation == nullptr) return false;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
+            return cancellation(cancellationContext);
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (...) {
+            /* A caller-owned cancellation callback is a cancellation
+             * boundary.  Do not let its exception become malformed archive
+             * input or escape through the public decoder. */
+            return true;
+        }
+#endif
     }
 
     static std::uint32_t reverseBits(std::uint32_t value, int count)

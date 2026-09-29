@@ -64,7 +64,7 @@ public:
         const std::size_t expectedSize = static_cast<std::size_t>(header.size);
         if (header.size > RINRUNTIME_ARCHIVE_CONTENT_LIMIT)
             return failOutput(output, ArchiveGzipResult::Limit);
-        if (cancellation != nullptr && cancellation(cancellationContext))
+        if (cancellationRequested(cancellation, cancellationContext))
             return failOutput(output, ArchiveGzipResult::Cancelled);
         const ArchiveDeflateResult result = decoder_.decode(
             bytes + header.deflateOffset, header.deflateSize, expectedSize,
@@ -195,7 +195,7 @@ public:
         if (header.size > RINRUNTIME_ARCHIVE_CONTENT_LIMIT)
             return ArchiveGzipResult::Limit;
         if (sink == nullptr) return ArchiveGzipResult::InvalidArgument;
-        if (cancellation != nullptr && cancellation(cancellationContext))
+        if (cancellationRequested(cancellation, cancellationContext))
             return ArchiveGzipResult::Cancelled;
         const ArchiveDeflateResult result = decoder_.decodeToSink(
             bytes + header.deflateOffset, header.deflateSize,
@@ -298,6 +298,25 @@ public:
     }
 
 private:
+    static bool cancellationRequested(
+        ArchiveDeflateCancellationFunction cancellation,
+        void* cancellationContext) noexcept
+    {
+        if (cancellation == nullptr) return false;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
+            return cancellation(cancellationContext);
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (...) {
+            /* A caller-owned cancellation callback is outside the decoder's
+             * control. Treat an exception as cancellation and scrub any
+             * partial output at the public result boundary. */
+            return true;
+        }
+#endif
+    }
+
     struct Header {
         std::size_t deflateOffset = 0u;
         std::size_t deflateSize = 0u;
@@ -341,7 +360,7 @@ private:
             const std::size_t remaining = source.compressedSize - offset;
             const std::size_t capacity = remaining < 4096u ? remaining : 4096u;
             std::size_t bytesRead = 0u;
-            if (cancellation != nullptr && cancellation(cancellationContext))
+            if (cancellationRequested(cancellation, cancellationContext))
                 return ArchiveGzipResult::Cancelled;
             if (deadline != nullptr && deadline(deadlineContext))
                 return ArchiveGzipResult::Deadline;

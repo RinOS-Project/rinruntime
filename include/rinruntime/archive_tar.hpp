@@ -220,13 +220,13 @@ public:
         const std::uint8_t* bytes = data(index, &size);
         output.clear();
         if (index >= entries_.size()) return ArchiveTarResult::InvalidArgument;
-        if (cancellation != nullptr && cancellation(cancellationContext))
+        if (cancellationRequested(cancellation, cancellationContext))
             return ArchiveTarResult::Cancelled;
         if (entries_[index].directory) return ArchiveTarResult::Ok;
         if (bytes == nullptr) return ArchiveTarResult::Malformed;
         std::size_t offset = 0u;
         while (offset < size) {
-            if (cancellation != nullptr && cancellation(cancellationContext)) {
+            if (cancellationRequested(cancellation, cancellationContext)) {
                 output.clear();
                 return ArchiveTarResult::Cancelled;
             }
@@ -360,6 +360,24 @@ public:
     }
 
 private:
+    static bool cancellationRequested(
+        ArchiveTarCancellationFunction cancellation,
+        void* cancellationContext) noexcept
+    {
+        if (cancellation == nullptr) return false;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
+            return cancellation(cancellationContext);
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (...) {
+            /* Cancellation callbacks are caller-owned. Their exception is a
+             * cancellation signal, never malformed TAR input. */
+            return true;
+        }
+#endif
+    }
+
     static constexpr std::size_t kBlockSize = 512u;
 
     static bool isZeroBlock(const std::uint8_t* block)
