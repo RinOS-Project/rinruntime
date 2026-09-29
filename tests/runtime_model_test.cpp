@@ -47,6 +47,13 @@ static int throwingEventLoopCancellation(void*) {
     throw std::runtime_error("event loop cancellation callback failure");
 }
 
+static bool throwingEventLoopBackend(
+    void*, const RinRuntime::EventLoop::WaitRequest*,
+    RinRuntime::EventLoop::Size, std::uint64_t,
+    RinRuntime::EventLoop::WaitResult*) {
+    throw std::runtime_error("event loop backend failure");
+}
+
 int main() {
     RinRuntime::EventLoop event_loop;
     assert(event_loop.pendingEvents() == 0u);
@@ -55,6 +62,15 @@ int main() {
     assert(!event_loop.runOneCancellable(
         0u, &cancellable_output, throwingEventLoopCancellation, nullptr));
     assert(cancellable_output.type == RinRuntime::EventType::None);
+    RinRuntime::EventLoop backend_loop;
+    RinRuntime::Event backend_event = {};
+    backend_event.type = RinRuntime::EventType::Close;
+    assert(backend_loop.scheduleAt(1u, backend_event) != 0u);
+    RinRuntime::Event backend_output = {};
+    backend_output.type = RinRuntime::EventType::Close;
+    assert(!backend_loop.wait(0u, throwingEventLoopBackend, nullptr,
+                              &backend_output));
+    assert(backend_output.type == RinRuntime::EventType::None);
 
     static_assert(RIN_I18N_RMSG_VERSION == 1u,
                   "public i18n catalog version must remain stable");

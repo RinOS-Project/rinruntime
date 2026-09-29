@@ -155,6 +155,25 @@ private:
         return watch.active && watch.generation == generation ? &watch : nullptr;
     }
 
+    static bool invokeWaitBackend(WaitFunction backend, void* context,
+                                  const WaitRequest* requests, Size count,
+                                  std::uint64_t deadline,
+                                  WaitResult* ready) noexcept {
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
+            return backend(context, requests, count, deadline, ready);
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (...) {
+            /* WaitFunction is caller-owned.  A backend exception must not
+             * escape the noexcept public loop boundary or expose partial
+             * readiness to the caller. */
+            if (ready != nullptr) *ready = {};
+            return false;
+        }
+#endif
+    }
+
 public:
     EventLoop() = default;
 
@@ -292,12 +311,13 @@ public:
         (void)nextDeadline(&deadline);
         if (count == 0u) {
             WaitResult idleResult = {};
-            if (deadline != UINT64_MAX) (void)backend(
-                context, nullptr, 0u, deadline, &idleResult);
+            if (deadline != UINT64_MAX) (void)invokeWaitBackend(
+                backend, context, nullptr, 0u, deadline, &idleResult);
             return false;
         }
         WaitResult ready = {};
-        if (!backend(context, requests, count, deadline, &ready) ||
+        if (!invokeWaitBackend(backend, context, requests, count, deadline,
+                               &ready) ||
             ready.id == 0u || ready.events == 0u)
             return false;
         for (Size index = 0u; index < count; ++index) {
