@@ -54,6 +54,12 @@ static bool throwingEventLoopBackend(
     throw std::runtime_error("event loop backend failure");
 }
 
+static int throwingDnsExchange(
+    void*, const RinRuntime::DnsTransportEndpoint&, const std::uint8_t*,
+    std::size_t, std::uint8_t*, std::size_t, std::size_t*) {
+    throw std::runtime_error("dns exchange callback failure");
+}
+
 int main() {
     RinRuntime::EventLoop event_loop;
     assert(event_loop.pendingEvents() == 0u);
@@ -71,6 +77,25 @@ int main() {
     assert(!backend_loop.wait(0u, throwingEventLoopBackend, nullptr,
                               &backend_output));
     assert(backend_output.type == RinRuntime::EventType::None);
+
+    RinRuntime::DnsTransportEndpoint::NamespaceId dns_namespace = {};
+    dns_namespace[0] = 1u;
+    RinRuntime::DnsTransportEndpoint dns_endpoint;
+    assert(RinRuntime::DnsTransportEndpoint::build(
+        RinRuntime::DnsTransportKind::Udp, "Resolver.Example", 53u, 1u,
+        1u, dns_namespace, dns_endpoint));
+    RinRuntime::DnsTransportSession dns_session;
+    int dns_context = 1;
+    assert(dns_session.bind(dns_endpoint, throwingDnsExchange, &dns_context));
+    const std::uint8_t dns_query[] = {0x01u};
+    std::uint8_t dns_response[4u] = {0xffu, 0xffu, 0xffu, 0xffu};
+    std::size_t dns_response_length = 99u;
+    assert(!dns_session.exchange(dns_query, sizeof(dns_query), dns_response,
+                                  sizeof(dns_response),
+                                  &dns_response_length));
+    assert(dns_response_length == 0u);
+    for (std::uint8_t byte : dns_response) assert(byte == 0u);
+    assert(dns_session.bound());
 
     static_assert(RIN_I18N_RMSG_VERSION == 1u,
                   "public i18n catalog version must remain stable");

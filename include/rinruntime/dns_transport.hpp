@@ -202,8 +202,9 @@ public:
             response[index] = 0u;
         in_flight_ = true;
         std::size_t written = 0u;
-        const int result = exchange_(context_, endpoint_, query, query_length,
-                                     response, response_capacity, &written);
+        const int result = invokeExchange(
+            exchange_, context_, endpoint_, query, query_length, response,
+            response_capacity, &written);
         in_flight_ = false;
         if (result != 0 || written == 0u || written > response_capacity) {
             for (std::size_t index = 0u; index < response_capacity; ++index)
@@ -231,6 +232,24 @@ private:
     void* context_ = nullptr;
     bool in_flight_ = false;
     bool bound_ = false;
+
+    static int invokeExchange(
+        DnsTransportExchangeFunction exchange, void* context,
+        const DnsTransportEndpoint& endpoint, const std::uint8_t* query,
+        std::size_t query_length, std::uint8_t* response,
+        std::size_t response_capacity, std::size_t* response_length) noexcept {
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
+            return exchange(context, endpoint, query, query_length, response,
+                            response_capacity, response_length);
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (...) {
+            if (response_length != nullptr) *response_length = 0u;
+            return -1;
+        }
+#endif
+    }
 
     static bool failResponse(std::uint8_t* response,
                              std::size_t response_capacity) {
