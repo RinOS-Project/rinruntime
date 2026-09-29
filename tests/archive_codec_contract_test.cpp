@@ -1285,6 +1285,10 @@ int main()
            "docs/readme.txt");
     assert(zipReader.readEntry(0u, output) ==
            RinRuntime::ArchiveZipResult::Ok && output == "hello");
+    output = "poison";
+    assert(zipReader.readEntry(0u, output, throwingCallback, nullptr) ==
+           RinRuntime::ArchiveZipResult::Malformed);
+    assert(output.empty());
     deadlineExpired = 1u;
     output = "poison";
     assert(zipReader.readEntryWithDeadline(0u, output, deadlineNow,
@@ -1296,9 +1300,18 @@ int main()
                0u, &collectTar, &streamed, deadlineNow, &deadlineExpired) ==
            RinRuntime::ArchiveZipResult::Deadline);
     assert(streamed.empty());
+    assert(zipReader.readEntryToSink(0u, &throwingTarSink, &streamed) ==
+           RinRuntime::ArchiveZipResult::Malformed);
+    assert(zipReader.readEntryToSinkWithDeadline(
+               0u, &collectTar, &streamed, throwingCallback, nullptr) ==
+           RinRuntime::ArchiveZipResult::Malformed);
     assert(zipReader.parseWithDeadline(zip.data(), zip.size(), deadlineNow,
                                        &deadlineExpired) ==
            RinRuntime::ArchiveZipResult::Deadline);
+    assert(zipReader.empty());
+    assert(zipReader.parseWithDeadline(zip.data(), zip.size(),
+                                       throwingCallback, nullptr) ==
+           RinRuntime::ArchiveZipResult::Malformed);
 
     std::vector<std::uint8_t> traversal = zip;
     const std::size_t nameOffset = 30u;

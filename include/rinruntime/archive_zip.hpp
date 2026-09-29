@@ -65,6 +65,9 @@ public:
         const std::uint8_t* bytes, std::size_t size,
         ArchiveDeflateDeadlineFunction deadline, void* deadlineContext)
     {
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
         clear();
         if (bytes == nullptr || size < 22u)
             return ArchiveZipResult::InvalidArgument;
@@ -74,9 +77,6 @@ public:
         if (deadline != nullptr && deadline(deadlineContext))
             return ArchiveZipResult::Deadline;
 
-#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
-        try {
-#endif
         std::size_t eocd = 0u;
         bool found = false;
         const std::size_t tailStart = size > 65557u ? size - 65557u : 0u;
@@ -245,6 +245,9 @@ public:
         } catch (const std::bad_alloc&) {
             clear();
             return ArchiveZipResult::Limit;
+        } catch (...) {
+            clear();
+            return ArchiveZipResult::Malformed;
         }
 #endif
     }
@@ -332,6 +335,9 @@ public:
         } catch (const std::bad_alloc&) {
             output.clear();
             return ArchiveZipResult::Limit;
+        } catch (...) {
+            output.clear();
+            return ArchiveZipResult::Malformed;
         }
 #endif
     }
@@ -397,6 +403,9 @@ public:
         } catch (const std::bad_alloc&) {
             output.clear();
             return ArchiveZipResult::Limit;
+        } catch (...) {
+            output.clear();
+            return ArchiveZipResult::Malformed;
         }
 #endif
     }
@@ -417,6 +426,9 @@ public:
         ArchiveDeflateCancellationFunction cancellation,
         void* cancellationContext) const
     {
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
         if (index >= entries_.size() || sink == nullptr || context == nullptr)
             return ArchiveZipResult::InvalidArgument;
         const ArchiveZipEntry& entry = entries_[index];
@@ -457,12 +469,20 @@ public:
         if (result == ArchiveDeflateResult::Cancelled)
             return ArchiveZipResult::Cancelled;
         return ArchiveZipResult::Malformed;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (...) {
+            return ArchiveZipResult::Malformed;
+        }
+#endif
     }
 
     ArchiveZipResult readEntryToSinkWithDeadline(
         std::size_t index, ArchiveDeflateSinkFunction sink, void* context,
         ArchiveDeflateDeadlineFunction deadline, void* deadlineContext) const
     {
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
         if (index >= entries_.size() || sink == nullptr || context == nullptr)
             return ArchiveZipResult::InvalidArgument;
         if (deadline != nullptr && deadline(deadlineContext))
@@ -508,6 +528,11 @@ public:
         if (result == ArchiveDeflateResult::Deadline)
             return ArchiveZipResult::Deadline;
         return ArchiveZipResult::Malformed;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (...) {
+            return ArchiveZipResult::Malformed;
+        }
+#endif
     }
 
 private:
