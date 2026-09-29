@@ -155,8 +155,10 @@ private:
         std::uint64_t coder_count = 0u;
         std::array<std::uint64_t, kMaxCoders> coder_methods{};
         std::array<bool, kMaxCoders> lzma_coders{};
-        std::array<bool, kMaxCoders> delta_coders{};
-        std::array<std::size_t, kMaxCoders> delta_distances{};
+        std::array<bool, kMaxCoders> raw_filter_coders{};
+        std::array<std::array<std::uint8_t, 4u>, kMaxCoders>
+            filter_properties{};
+        std::array<std::size_t, kMaxCoders> filter_property_sizes{};
         std::array<std::array<std::uint8_t, 5u>, kMaxCoders>
             lzma_properties{};
         std::array<std::size_t, kMaxCoders> lzma_dictionary_sizes{};
@@ -266,15 +268,25 @@ private:
                             static_cast<std::size_t>(dictionary);
                         lzma_coders[coder] = true;
                         cursor += 5u;
-                    } else if (method == 0x03u && property_size == 1u) {
-                        const std::size_t distance =
-                            static_cast<std::size_t>(bytes[cursor]) + 1u;
-                        delta_distances[coder] = distance;
-                        delta_coders[coder] = true;
-                        cursor += 1u;
+                    } else if (method >= 0x03u && method <= 0x0bu &&
+                               property_size ==
+                                   (method == 0x03u
+                                        ? 1u
+                                        : method == 0x04u ? 4u : 0u)) {
+                        const std::size_t filter_size =
+                            static_cast<std::size_t>(property_size);
+                        for (std::size_t index = 0u; index != filter_size;
+                             ++index)
+                            filter_properties[coder][index] =
+                                bytes[cursor + index];
+                        filter_property_sizes[coder] = filter_size;
+                        raw_filter_coders[coder] = true;
+                        cursor += filter_size;
                     } else {
                         return Archive7zResult::Unsupported;
                     }
+                } else if (method >= 0x05u && method <= 0x0bu) {
+                    raw_filter_coders[coder] = true;
                 } else if (method != 0u) {
                     return Archive7zResult::Unsupported;
                 }
@@ -515,26 +527,29 @@ private:
                             part);
                         copied += part;
                     }
-                } else if (delta_coders[coder] &&
-                           coder_methods[coder] == UINT64_C(0x03)) {
+                } else if (raw_filter_coders[coder]) {
                     if (input_size != expected_size)
                         return Archive7zResult::Malformed;
-                    coder_output.resize(expected_size);
-                    const std::size_t distance = delta_distances[coder];
-                    for (std::size_t index = 0u; index != expected_size;
-                         ++index) {
-                        if (deadline != nullptr && deadline(deadlineContext))
-                            return Archive7zResult::Deadline;
-                        if (cancellation != nullptr &&
-                            cancellation(cancellationContext))
-                            return Archive7zResult::Cancelled;
-                        std::uint8_t value = input[index];
-                        if (index >= distance)
-                            value = static_cast<std::uint8_t>(
-                                value + static_cast<std::uint8_t>(
-                                            coder_output[index - distance]));
-                        coder_output[index] = static_cast<char>(value);
-                    }
+                    ArchiveXzReader filter_reader;
+                    const ArchiveXzResult filter_result =
+                        filter_reader.decodeRawFilter(
+                            static_cast<std::uint8_t>(coder_methods[coder]),
+                            filter_property_sizes[coder] == 0u
+                                ? nullptr
+                                : filter_properties[coder].data(),
+                            filter_property_sizes[coder], input, input_size,
+                            coder_output, cancellation, cancellationContext,
+                            deadline, deadlineContext);
+                    if (filter_result == ArchiveXzResult::Cancelled)
+                        return Archive7zResult::Cancelled;
+                    if (filter_result == ArchiveXzResult::Deadline)
+                        return Archive7zResult::Deadline;
+                    if (filter_result == ArchiveXzResult::Limit)
+                        return Archive7zResult::Limit;
+                    if (filter_result == ArchiveXzResult::Unsupported)
+                        return Archive7zResult::Unsupported;
+                    if (filter_result != ArchiveXzResult::Ok)
+                        return Archive7zResult::Malformed;
                 } else if (lzma_coders[coder] &&
                            coder_methods[coder] == UINT64_C(0x010103)) {
                     ArchiveXzReader lzma_reader;

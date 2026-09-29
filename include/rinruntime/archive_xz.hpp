@@ -311,6 +311,125 @@ public:
                              deadlineContext);
     }
 
+    /* Apply one raw XZ/7z-compatible BCJ or Delta filter to caller-owned
+     * bytes.  The filter has no archive-header authority; it only provides a
+     * bounded common transform for archive coder pipelines. */
+    ArchiveXzResult decodeRawFilter(
+        std::uint8_t filterId, const std::uint8_t* properties,
+        std::size_t propertySize, const std::uint8_t* input,
+        std::size_t inputSize, std::string& output) const
+    {
+        return decodeRawFilter(filterId, properties, propertySize, input,
+                               inputSize, output, nullptr, nullptr, nullptr,
+                               nullptr);
+    }
+
+    ArchiveXzResult decodeRawFilter(
+        std::uint8_t filterId, const std::uint8_t* properties,
+        std::size_t propertySize, const std::uint8_t* input,
+        std::size_t inputSize, std::string& output,
+        ArchiveDeflateCancellationFunction cancellation,
+        void* cancellationContext) const
+    {
+        return decodeRawFilter(filterId, properties, propertySize, input,
+                               inputSize, output, cancellation,
+                               cancellationContext, nullptr, nullptr);
+    }
+
+    ArchiveXzResult decodeRawFilter(
+        std::uint8_t filterId, const std::uint8_t* properties,
+        std::size_t propertySize, const std::uint8_t* input,
+        std::size_t inputSize, std::string& output,
+        ArchiveDeflateCancellationFunction cancellation,
+        void* cancellationContext, ArchiveDeflateDeadlineFunction deadline,
+        void* deadlineContext) const
+    {
+        if (input == nullptr && inputSize != 0u)
+            return ArchiveXzResult::InvalidArgument;
+        if (inputSize > RINRUNTIME_ARCHIVE_CONTENT_LIMIT)
+            return ArchiveXzResult::Limit;
+        if (deadline != nullptr && deadline(deadlineContext))
+            return ArchiveXzResult::Deadline;
+        if (cancellation != nullptr && cancellation(cancellationContext))
+            return ArchiveXzResult::Cancelled;
+
+        std::string decoded;
+        if (inputSize != 0u)
+            decoded.assign(reinterpret_cast<const char*>(input), inputSize);
+        ArchiveXzResult result = ArchiveXzResult::Ok;
+        switch (filterId) {
+        case 0x03u:
+            if (propertySize != 1u || properties == nullptr)
+                return ArchiveXzResult::Unsupported;
+            result = applyDeltaFilter(
+                decoded, 0u, inputSize,
+                static_cast<std::size_t>(properties[0u]) + 1u,
+                cancellation, cancellationContext, deadline, deadlineContext);
+            break;
+        case 0x04u:
+            if (propertySize != 4u || properties == nullptr)
+                return ArchiveXzResult::Unsupported;
+            result = applyX86Bcj(
+                decoded, 0u, inputSize, readLe32(properties), cancellation,
+                cancellationContext, deadline, deadlineContext);
+            break;
+        case 0x05u:
+            if (propertySize != 0u)
+                return ArchiveXzResult::Unsupported;
+            result = applyPowerPcBcj(
+                decoded, 0u, inputSize, cancellation, cancellationContext,
+                deadline, deadlineContext);
+            break;
+        case 0x06u:
+            if (propertySize != 0u)
+                return ArchiveXzResult::Unsupported;
+            result = applyIa64Bcj(
+                decoded, 0u, inputSize, cancellation, cancellationContext,
+                deadline, deadlineContext);
+            break;
+        case 0x07u:
+            if (propertySize != 0u)
+                return ArchiveXzResult::Unsupported;
+            result = applyArmBcj(
+                decoded, 0u, inputSize, cancellation, cancellationContext,
+                deadline, deadlineContext);
+            break;
+        case 0x08u:
+            if (propertySize != 0u)
+                return ArchiveXzResult::Unsupported;
+            result = applyArmThumbBcj(
+                decoded, 0u, inputSize, cancellation, cancellationContext,
+                deadline, deadlineContext);
+            break;
+        case 0x09u:
+            if (propertySize != 0u)
+                return ArchiveXzResult::Unsupported;
+            result = applySparcBcj(
+                decoded, 0u, inputSize, cancellation, cancellationContext,
+                deadline, deadlineContext);
+            break;
+        case 0x0au:
+            if (propertySize != 0u)
+                return ArchiveXzResult::Unsupported;
+            result = applyArm64Bcj(
+                decoded, 0u, inputSize, cancellation, cancellationContext,
+                deadline, deadlineContext);
+            break;
+        case 0x0bu:
+            if (propertySize != 0u)
+                return ArchiveXzResult::Unsupported;
+            result = applyRiscvBcj(
+                decoded, 0u, inputSize, cancellation, cancellationContext,
+                deadline, deadlineContext);
+            break;
+        default:
+            return ArchiveXzResult::Unsupported;
+        }
+        if (result != ArchiveXzResult::Ok) return result;
+        output = std::move(decoded);
+        return ArchiveXzResult::Ok;
+    }
+
 private:
     enum class LzmaStatus : int {
         Ok = 0,
