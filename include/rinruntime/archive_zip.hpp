@@ -10,6 +10,9 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+#    include <new>
+#endif
 #include <string>
 #include <vector>
 
@@ -71,6 +74,9 @@ public:
         if (deadline != nullptr && deadline(deadlineContext))
             return ArchiveZipResult::Deadline;
 
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
         std::size_t eocd = 0u;
         bool found = false;
         const std::size_t tailStart = size > 65557u ? size - 65557u : 0u;
@@ -235,6 +241,12 @@ public:
             return fail(ArchiveZipResult::Malformed);
         totalContent_ = total;
         return ArchiveZipResult::Ok;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (const std::bad_alloc&) {
+            clear();
+            return ArchiveZipResult::Limit;
+        }
+#endif
     }
 
     void clear()
@@ -278,6 +290,9 @@ public:
         ArchiveDeflateCancellationFunction cancellation,
         void* cancellationContext) const
     {
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
         output.clear();
         if (index >= entries_.size())
             return ArchiveZipResult::InvalidArgument;
@@ -313,12 +328,21 @@ public:
             return ArchiveZipResult::Cancelled;
         output.clear();
         return ArchiveZipResult::Malformed;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (const std::bad_alloc&) {
+            output.clear();
+            return ArchiveZipResult::Limit;
+        }
+#endif
     }
 
     ArchiveZipResult readEntryWithDeadline(
         std::size_t index, std::string& output,
         ArchiveDeflateDeadlineFunction deadline, void* deadlineContext) const
     {
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
         output.clear();
         if (index >= entries_.size())
             return ArchiveZipResult::InvalidArgument;
@@ -369,6 +393,12 @@ public:
             return ArchiveZipResult::Deadline;
         output.clear();
         return ArchiveZipResult::Malformed;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (const std::bad_alloc&) {
+            output.clear();
+            return ArchiveZipResult::Limit;
+        }
+#endif
     }
 
     /* Stream one validated entry into a caller-owned staging sink. The sink

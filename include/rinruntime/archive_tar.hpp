@@ -9,6 +9,9 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+#    include <new>
+#endif
 #include <string>
 #include <vector>
 
@@ -72,6 +75,9 @@ public:
         if (deadline != nullptr && deadline(deadlineContext))
             return ArchiveTarResult::Deadline;
 
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
         std::uint64_t total = 0u;
         std::size_t position = 0u;
         bool ended = false;
@@ -162,6 +168,12 @@ public:
         size_ = size;
         totalContent_ = total;
         return ArchiveTarResult::Ok;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (const std::bad_alloc&) {
+            clear();
+            return ArchiveTarResult::Limit;
+        }
+#endif
     }
 
     void clear()
@@ -198,6 +210,9 @@ public:
         ArchiveTarCancellationFunction cancellation,
         void* cancellationContext) const
     {
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
         std::size_t size = 0u;
         const std::uint8_t* bytes = data(index, &size);
         output.clear();
@@ -219,12 +234,21 @@ public:
             offset += chunk;
         }
         return ArchiveTarResult::Ok;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (const std::bad_alloc&) {
+            output.clear();
+            return ArchiveTarResult::Limit;
+        }
+#endif
     }
 
     ArchiveTarResult readEntryWithDeadline(
         std::size_t index, std::string& output,
         ArchiveTarDeadlineFunction deadline, void* deadlineContext) const
     {
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
         output.clear();
         if (index >= entries_.size()) return ArchiveTarResult::InvalidArgument;
         if (deadline != nullptr && deadline(deadlineContext))
@@ -247,6 +271,12 @@ public:
             offset += chunk;
         }
         return ArchiveTarResult::Ok;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (const std::bad_alloc&) {
+            output.clear();
+            return ArchiveTarResult::Limit;
+        }
+#endif
     }
 
     /* Stream one validated regular-file entry into a caller-owned staging
