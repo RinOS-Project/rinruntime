@@ -823,6 +823,64 @@ static std::vector<std::uint8_t> makeXzIa64StoredLzma2()
     return bytes;
 }
 
+static std::vector<std::uint8_t> makeXzRiscvStoredLzma2()
+{
+    /* The second block contains a filtered JAL followed by the RISC-V
+     * special AUIPC+inst2 representation.  Both decode to PC-relative
+     * instructions at their non-zero stream positions. */
+    std::vector<std::uint8_t> bytes(108u, 0u);
+    const std::uint8_t magic[] = {
+        0xfdu, 0x37u, 0x7au, 0x58u, 0x5au, 0x00u};
+    std::memcpy(bytes.data(), magic, sizeof(magic));
+    writeLe32(bytes, 8u,
+              RinRuntime::rinruntime_archive_crc32(bytes.data() + 6u, 2u));
+
+    for (std::size_t block = 12u; block <= 48u; block += 36u) {
+        bytes[block] = 0x03u;
+        bytes[block + 1u] = 0xc1u;
+        bytes[block + 2u] = 0x14u; /* twenty-byte stored payload */
+        bytes[block + 3u] = 0x10u; /* sixteen-byte decoded block */
+        bytes[block + 4u] = 0x0bu; /* RISC-V BCJ */
+        bytes[block + 5u] = 0x00u;
+        bytes[block + 6u] = 0x21u;
+        bytes[block + 7u] = 0x01u;
+        bytes[block + 8u] = 0x00u;
+        writeLe32(bytes, block + 12u,
+                  RinRuntime::rinruntime_archive_crc32(bytes.data() + block,
+                                                        12u));
+    }
+
+    bytes[28u] = 0x01u;
+    bytes[29u] = 0x0fu;
+    bytes[30u] = 0x00u;
+    bytes[47u] = 0x00u;
+
+    bytes[64u] = 0x01u;
+    bytes[65u] = 0x0fu;
+    bytes[66u] = 0x00u;
+    const std::uint8_t filteredInstructions[] = {
+        0xefu, 0x00u, 0x00u, 0x08u, 0x00u, 0x00u, 0x00u, 0x00u,
+        0x17u, 0x31u, 0x19u, 0x18u, 0x00u, 0x00u, 0x00u, 0x18u};
+    std::memcpy(bytes.data() + 67u, filteredInstructions,
+                sizeof(filteredInstructions));
+    bytes[83u] = 0x00u;
+
+    bytes[84u] = 0x00u;
+    bytes[85u] = 0x02u;
+    bytes[86u] = 0x24u;
+    bytes[87u] = 0x10u;
+    bytes[88u] = 0x24u;
+    bytes[89u] = 0x10u;
+    writeLe32(bytes, 92u,
+              RinRuntime::rinruntime_archive_crc32(bytes.data() + 84u, 8u));
+    bytes[100u] = 0x02u;
+    bytes[106u] = static_cast<std::uint8_t>('Y');
+    bytes[107u] = static_cast<std::uint8_t>('Z');
+    writeLe32(bytes, 96u,
+              RinRuntime::rinruntime_archive_crc32(bytes.data() + 100u, 6u));
+    return bytes;
+}
+
 int main()
 {
     const std::uint8_t stored[] = {
@@ -1080,6 +1138,17 @@ int main()
     ia64Expected[16u] = static_cast<char>(0x10u);
     ia64Expected[31u] = static_cast<char>(0x50u);
     assert(xzOutput == ia64Expected);
+    const std::vector<std::uint8_t> riscvXz = makeXzRiscvStoredLzma2();
+    xzOutput = "poison";
+    assert(xzReader.decodeStoredLzma2(riscvXz.data(), riscvXz.size(),
+                                      xzOutput) ==
+           RinRuntime::ArchiveXzResult::Ok);
+    std::string riscvExpected(16u, '\0');
+    riscvExpected += std::string({
+        static_cast<char>(0xefu), '\0', '\0', '\0', '\0', '\0', '\0', '\0',
+        static_cast<char>(0x97u), '\x01', '\0', '\0', static_cast<char>(0x93u),
+        static_cast<char>(0x81u), '\x01', '\0'});
+    assert(xzOutput == riscvExpected);
     std::vector<std::uint8_t> unknownFilterXz = deltaXz;
     unknownFilterXz[16u] = 0x04u;
     writeLe32(unknownFilterXz, 24u,

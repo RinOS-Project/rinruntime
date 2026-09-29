@@ -318,10 +318,11 @@ filter (`0x04`, four-byte start offset), PowerPC BCJ filter (`0x05`, no
 properties), ARM BCJ filter (`0x07`, no properties), ARM Thumb BCJ filter
 (`0x08`, no properties), ARM64 BCJ filter (`0x0a`, no properties), or SPARC
 BCJ filter (`0x09`, no properties), or IA64 BCJ filter (`0x06`, no
-properties) plus one LZMA2 filter (`0x21`), including the
+properties), or RISC-V BCJ filter (`0x0b`, no properties) plus one LZMA2 filter
+(`0x21`), including the
 standard block-padding/check ordering.  Delta, x86 BCJ, PowerPC BCJ, IA64 BCJ,
-ARM BCJ, ARM Thumb BCJ, ARM64 BCJ, and SPARC BCJ output is applied per block
-before the block check is verified.  Range-coded
+ARM BCJ, ARM Thumb BCJ, ARM64 BCJ, SPARC BCJ, and RISC-V BCJ output is applied
+per block before the block check is verified.  Range-coded
 state, dictionary references, cancellation, and deadline checks stay bounded
 by the public content limit; unsupported, duplicate, or incomplete filter
 chains and check types remain explicit `Unsupported` results.  Filesystem

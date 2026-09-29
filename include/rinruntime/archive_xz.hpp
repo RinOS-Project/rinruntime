@@ -866,6 +866,7 @@ private:
             bool armThumbFilterPresent = false;
             bool arm64FilterPresent = false;
             bool sparcFilterPresent = false;
+            bool riscvFilterPresent = false;
             for (std::size_t filter = 0u; filter < filterCount; ++filter) {
                 std::uint64_t filterId = 0u;
                 std::uint64_t propertySize = 0u;
@@ -916,6 +917,10 @@ private:
                     if (sparcFilterPresent || propertySize != 0u)
                         return ArchiveXzResult::Unsupported;
                     sparcFilterPresent = true;
+                } else if (filterId == 0x0bu) {
+                    if (riscvFilterPresent || propertySize != 0u)
+                        return ArchiveXzResult::Unsupported;
+                    riscvFilterPresent = true;
                 } else {
                     return ArchiveXzResult::Unsupported;
                 }
@@ -1126,6 +1131,14 @@ private:
             }
             if (sparcFilterPresent) {
                 const ArchiveXzResult filterResult = applySparcBcj(
+                    decoded, blockOutputStart, blockOutputSize,
+                    cancellation, cancellationContext, deadline,
+                    deadlineContext);
+                if (filterResult != ArchiveXzResult::Ok)
+                    return filterResult;
+            }
+            if (riscvFilterPresent) {
+                const ArchiveXzResult filterResult = applyRiscvBcj(
                     decoded, blockOutputStart, blockOutputSize,
                     cancellation, cancellationContext, deadline,
                     deadlineContext);
@@ -1581,6 +1594,89 @@ private:
         return ArchiveXzResult::Ok;
     }
 
+    static ArchiveXzResult applyRiscvBcj(
+        std::string& decoded, std::size_t absoluteOffset, std::size_t size,
+        ArchiveDeflateCancellationFunction cancellation,
+        void* cancellationContext, ArchiveDeflateDeadlineFunction deadline,
+        void* deadlineContext)
+    {
+        if (size < 8u) return ArchiveXzResult::Ok;
+        size -= 8u;
+        auto* buffer = reinterpret_cast<std::uint8_t*>(decoded.data()) +
+                       absoluteOffset;
+        const std::uint32_t nowPosition =
+            static_cast<std::uint32_t>(absoluteOffset);
+        for (std::size_t position = 0u; position <= size; position += 2u) {
+            if (deadline != nullptr && deadline(deadlineContext))
+                return ArchiveXzResult::Deadline;
+            if (cancellation != nullptr && cancellation(cancellationContext))
+                return ArchiveXzResult::Cancelled;
+
+            std::uint32_t instruction = buffer[position];
+            if (instruction == 0xefu) {
+                const std::uint32_t byte1 = buffer[position + 1u];
+                if ((byte1 & 0x0du) != 0u) continue;
+                const std::uint32_t byte2 = buffer[position + 2u];
+                const std::uint32_t byte3 = buffer[position + 3u];
+                const std::uint32_t programCounter =
+                    nowPosition + static_cast<std::uint32_t>(position);
+                std::uint32_t address = ((byte1 & 0xf0u) << 13u) |
+                                        (byte2 << 9u) | (byte3 << 1u);
+                address -= programCounter;
+                buffer[position + 1u] = static_cast<std::uint8_t>(
+                    (byte1 & 0x0fu) | ((address >> 8u) & 0xf0u));
+                buffer[position + 2u] = static_cast<std::uint8_t>(
+                    ((address >> 16u) & 0x0fu) |
+                    ((address >> 7u) & 0x10u) |
+                    ((address << 4u) & 0xe0u));
+                buffer[position + 3u] = static_cast<std::uint8_t>(
+                    ((address >> 4u) & 0x7fu) |
+                    ((address >> 13u) & 0x80u));
+                position += 2u;
+                continue;
+            }
+
+            if ((instruction & 0x7fu) != 0x17u) continue;
+            std::uint32_t secondInstruction = 0u;
+            instruction |= static_cast<std::uint32_t>(buffer[position + 1u])
+                           << 8u;
+            instruction |= static_cast<std::uint32_t>(buffer[position + 2u])
+                           << 16u;
+            instruction |= static_cast<std::uint32_t>(buffer[position + 3u])
+                           << 24u;
+            if ((instruction & 0xe80u) != 0u) {
+                secondInstruction = readLe32(buffer + position + 4u);
+                if ((((instruction << 8u) ^ (secondInstruction - 3u)) &
+                     0xf8003u) != 0u) {
+                    position += 4u;
+                    continue;
+                }
+                std::uint32_t address = instruction & 0xfffff000u;
+                address += secondInstruction >> 20u;
+                instruction = 0x17u | (2u << 7u) |
+                              (secondInstruction << 12u);
+                secondInstruction = address;
+            } else {
+                const std::uint32_t secondRegister = instruction >> 27u;
+                const std::uint32_t specialCheck = static_cast<std::uint32_t>(
+                    (instruction - 0x3117u) << 18u);
+                if (specialCheck >= (secondRegister & 0x1du)) {
+                    position += 2u;
+                    continue;
+                }
+                std::uint32_t address = readBe32(buffer + position + 4u);
+                address -= nowPosition + static_cast<std::uint32_t>(position);
+                secondInstruction = (instruction >> 12u) | (address << 20u);
+                instruction = 0x17u | (secondRegister << 7u) |
+                              ((address + 0x800u) & 0xfffff000u);
+            }
+            writeLe32(buffer + position, instruction);
+            writeLe32(buffer + position + 4u, secondInstruction);
+            position += 6u;
+        }
+        return ArchiveXzResult::Ok;
+    }
+
     static constexpr std::size_t kHeaderSize = 12u;
     static constexpr std::size_t kFooterSize = 12u;
     static constexpr std::size_t kMinimumIndexSize = 8u;
@@ -1591,6 +1687,22 @@ private:
                static_cast<std::uint32_t>(bytes[1]) << 8u |
                static_cast<std::uint32_t>(bytes[2]) << 16u |
                static_cast<std::uint32_t>(bytes[3]) << 24u;
+    }
+
+    static std::uint32_t readBe32(const std::uint8_t* bytes)
+    {
+        return static_cast<std::uint32_t>(bytes[0]) << 24u |
+               static_cast<std::uint32_t>(bytes[1]) << 16u |
+               static_cast<std::uint32_t>(bytes[2]) << 8u |
+               static_cast<std::uint32_t>(bytes[3]);
+    }
+
+    static void writeLe32(std::uint8_t* bytes, std::uint32_t value)
+    {
+        bytes[0] = static_cast<std::uint8_t>(value);
+        bytes[1] = static_cast<std::uint8_t>(value >> 8u);
+        bytes[2] = static_cast<std::uint8_t>(value >> 16u);
+        bytes[3] = static_cast<std::uint8_t>(value >> 24u);
     }
 
     static std::uint64_t readLe64(const std::uint8_t* bytes)
