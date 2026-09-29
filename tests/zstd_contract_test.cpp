@@ -64,9 +64,35 @@ int main()
 
     /* A frame carrying a compressed-block type is rejected explicitly. */
     const std::uint8_t compressedBlock[] = {
-        0x28u, 0xb5u, 0x2fu, 0xfdu, 0x20u, 0x01u,
-        0x0du, 0x00u, 0x00u, 0x00u};
+        0x28u, 0xb5u, 0x2fu, 0xfdu, 0x20u, 0x00u,
+        0x15u, 0x00u, 0x00u, 0x80u, 0x00u};
     assert(decoder.decode(compressedBlock, sizeof(compressedBlock), decoded) ==
+           RinCompression::ZstdResult::Unsupported && decoded.empty());
+
+    /* A compressed block may carry raw literals and no sequences.  This is a
+     * useful interoperable subset that does not pretend to decode entropy
+     * literals or FSE/Huffman sequences. */
+    const std::uint8_t compressedRawLiterals[] = {
+        0x28u, 0xb5u, 0x2fu, 0xfdu, 0x20u, 0x05u,
+        0x3du, 0x00u, 0x00u, 0x05u, 'h', 'e', 'l', 'l', 'o', 0x00u};
+    assert(decoder.decode(compressedRawLiterals,
+                          sizeof(compressedRawLiterals), decoded) ==
+           RinCompression::ZstdResult::Ok);
+    assert(decoded == std::vector<std::uint8_t>(hello, hello + sizeof(hello)));
+
+    const std::uint8_t compressedRleLiterals[] = {
+        0x28u, 0xb5u, 0x2fu, 0xfdu, 0x20u, 0x05u,
+        0x1du, 0x00u, 0x00u, 0x45u, 'x', 0x00u};
+    assert(decoder.decode(compressedRleLiterals,
+                          sizeof(compressedRleLiterals), decoded) ==
+           RinCompression::ZstdResult::Ok);
+    assert(decoded == std::vector<std::uint8_t>(5u, 'x'));
+
+    const std::uint8_t compressedWithSequences[] = {
+        0x28u, 0xb5u, 0x2fu, 0xfdu, 0x20u, 0x01u,
+        0x1du, 0x00u, 0x00u, 0x01u, 'x', 0x01u};
+    assert(decoder.decode(compressedWithSequences,
+                          sizeof(compressedWithSequences), decoded) ==
            RinCompression::ZstdResult::Unsupported && decoded.empty());
 
     /* A checksum-bearing raw frame for the empty payload. The low 32 bits of

@@ -26,10 +26,12 @@ enum class ZstdResult : int {
 };
 
 /* This public codec handles the interoperable Zstandard frame envelope with
- * raw and RLE blocks. Entropy-compressed blocks and external dictionaries are
- * deliberately reported as Unsupported until a bounded decoder for those
- * algorithms is added; a caller must not treat that result as success. The
- * frame contains no filesystem, service, or publication policy. */
+ * raw and RLE blocks plus the bounded compressed-block form whose literals are
+ * raw/RLE and whose sequence count is zero. Entropy-coded literals, non-zero
+ * sequences, and external dictionaries remain explicitly Unsupported until a
+ * bounded decoder for those algorithms is added; a caller must not treat
+ * that result as success. The frame contains no filesystem, service, or
+ * publication policy. */
 static constexpr std::size_t kZstdMaximumBytes = 268435456u;
 static constexpr std::size_t kZstdMaximumBlockBytes = 128u * 1024u;
 static constexpr std::size_t kZstdMaximumBlocks = 65536u;
@@ -482,7 +484,66 @@ public:
                     output.push_back(value);
                 }
             } else if (blockType == 2u) {
-                return fail(output, ZstdResult::Unsupported);
+                const std::size_t blockEnd = position + blockSize;
+                if (blockEnd < position || blockEnd > compressedSize)
+                    return fail(output, ZstdResult::Malformed);
+                if (position >= blockEnd)
+                    return fail(output, ZstdResult::Malformed);
+
+                const std::uint8_t literalsHeader = compressed[position++];
+                const unsigned literalsType = literalsHeader >> 6u;
+                const unsigned sizeFormat = (literalsHeader >> 4u) & 0x03u;
+                if (literalsType > 1u)
+                    return fail(output, ZstdResult::Unsupported);
+
+                const std::size_t literalsHeaderBytes =
+                    static_cast<std::size_t>(sizeFormat) + 1u;
+                if (literalsHeaderBytes > blockEnd - (position - 1u))
+                    return fail(output, ZstdResult::Malformed);
+                std::uint64_t literalSize =
+                    static_cast<std::uint64_t>(literalsHeader & 0x0fu);
+                for (std::size_t index = 1u; index < literalsHeaderBytes;
+                     ++index) {
+                    literalSize |= static_cast<std::uint64_t>(
+                        compressed[position++]) << (4u + 8u * (index - 1u));
+                }
+                if (literalSize > static_cast<std::uint64_t>(
+                                      kZstdMaximumBlockBytes))
+                    return fail(output, ZstdResult::Limit);
+                const std::size_t literalBytes =
+                    static_cast<std::size_t>(literalSize);
+                if (literalBytes > maximumOutputBytes - output.size())
+                    return fail(output, ZstdResult::Limit);
+                if (literalsType == 0u) {
+                    if (literalBytes > blockEnd - position)
+                        return fail(output, ZstdResult::Malformed);
+                    if (!zstd_detail::appendWithinLimit(
+                            output, compressed + position, literalBytes))
+                        return fail(output, ZstdResult::Limit);
+                    position += literalBytes;
+                } else {
+                    if (position >= blockEnd)
+                        return fail(output, ZstdResult::Malformed);
+                    const std::uint8_t value = compressed[position++];
+                    for (std::size_t index = 0u; index < literalBytes;
+                         ++index) {
+                        if ((index & 0xfffu) == 0u &&
+                            cancelled(cancellation, cancellationContext))
+                            return fail(output, ZstdResult::Cancelled);
+                        output.push_back(value);
+                    }
+                }
+
+                /* A compressed block with no sequences is just its literals.
+                 * Keep non-zero sequence streams explicit until the bounded
+                 * FSE/Huffman sequence decoder exists. */
+                if (position >= blockEnd)
+                    return fail(output, ZstdResult::Malformed);
+                const std::uint8_t sequenceCount = compressed[position++];
+                if (sequenceCount != 0u)
+                    return fail(output, ZstdResult::Unsupported);
+                if (position != blockEnd)
+                    return fail(output, ZstdResult::Malformed);
             } else {
                 return fail(output, ZstdResult::Malformed);
             }
