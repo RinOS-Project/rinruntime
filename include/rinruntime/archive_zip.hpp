@@ -581,6 +581,9 @@ public:
     ArchiveZipResult addDeflated(const char* name, const std::uint8_t* data,
                                  std::size_t size)
     {
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
         if (data == nullptr && size != 0u)
             return ArchiveZipResult::InvalidArgument;
         if (size == 0u)
@@ -590,6 +593,11 @@ public:
             return ArchiveZipResult::Limit;
         return addEntry(name, data, size, compressed.data(), compressed.size(),
                         8u);
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (const std::bad_alloc&) {
+            return ArchiveZipResult::Limit;
+        }
+#endif
     }
 
     /* Emit a deterministic dynamic-Huffman block containing literals only.
@@ -599,6 +607,9 @@ public:
     ArchiveZipResult addDynamic(const char* name, const std::uint8_t* data,
                                 std::size_t size)
     {
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
         if (data == nullptr && size != 0u)
             return ArchiveZipResult::InvalidArgument;
         if (size == 0u)
@@ -608,10 +619,18 @@ public:
             return ArchiveZipResult::Limit;
         return addEntry(name, data, size, compressed.data(), compressed.size(),
                         8u);
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (const std::bad_alloc&) {
+            return ArchiveZipResult::Limit;
+        }
+#endif
     }
 
     ArchiveZipResult finish(std::vector<std::uint8_t>& output) const
     {
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
         if (entries_.empty())
             return ArchiveZipResult::InvalidArgument;
         if (entries_.size() > RINRUNTIME_ARCHIVE_ENTRY_LIMIT ||
@@ -660,6 +679,12 @@ public:
         put16(candidate, 0u); /* comment length */
         output = candidate;
         return ArchiveZipResult::Ok;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (const std::bad_alloc&) {
+            output.clear();
+            return ArchiveZipResult::Limit;
+        }
+#endif
     }
 
     void clear()
@@ -881,6 +906,9 @@ private:
                               std::size_t compressedSize,
                               std::uint16_t method)
     {
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
         int directory = 0;
         std::size_t nameSize = 0u;
         std::uint64_t newTotal = 0u;
@@ -927,6 +955,14 @@ private:
         entries_.push_back(entry);
         totalContent_ = newTotal;
         return ArchiveZipResult::Ok;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (const std::bad_alloc&) {
+            /* A failed append may have partially extended image_.  Do not
+             * expose a writer with an unfinishable half-entry. */
+            clear();
+            return ArchiveZipResult::Limit;
+        }
+#endif
     }
 
     std::uint64_t totalContent_ = 0u;
