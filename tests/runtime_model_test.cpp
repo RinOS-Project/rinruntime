@@ -46,6 +46,13 @@ int main() {
     RinRuntime::EventLoop event_loop;
     assert(event_loop.pendingEvents() == 0u);
 
+    static_assert(RIN_I18N_RMSG_VERSION == 1u,
+                  "public i18n catalog version must remain stable");
+    RinI18nCatalog i18n_catalog = {};
+    RinI18nArg i18n_arg = {"name", "RinOS"};
+    assert(i18n_catalog.data == nullptr && i18n_catalog.size == 0u);
+    assert(i18n_arg.name != nullptr && i18n_arg.value != nullptr);
+
     DownloadModelOwner download_owner;
     RinRuntime::DownloadRangeTransportOpsV1 download_ops;
     download_ops.structSize = sizeof(download_ops);

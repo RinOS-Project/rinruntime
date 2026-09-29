@@ -93,6 +93,14 @@ The CMake, Meson, and target `.rll` source graphs include LibUnicode's locale
 adapter alongside `core.c`, so these public forwarding symbols are linked
 rather than left as source-only declarations.
 
+The canonical `rinruntime/rinruntime.hpp` umbrella also exposes public
+`libi18n` through `rin_i18n.h`. Ordinary applications and external toolkits
+can use the caller-owned `RinI18nCatalog`/`RinI18nArg` models and bounded
+lookup, plural, format, and resource-adapter APIs from the same public include
+boundary. Resource reading is delegated to a caller-owned bounded callback;
+locale selection, catalog publication, filesystem authority, and persistence
+remain private owner responsibilities.
+
 The public LibUnicode normalization entry points treat a null source as an
 empty input only after validating the requested NFD/NFC/NFKD/NFKC form.  An
 unsupported form therefore fails closed and clears the caller's destination
