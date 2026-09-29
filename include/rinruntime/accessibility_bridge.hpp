@@ -154,28 +154,60 @@ public:
     }
 
     AccessibilityTree accessibilityTree() const override {
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
         AccessibilityTree output;
         if (!compose(&output)) return AccessibilityTree();
         return output;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (...) {
+            return AccessibilityTree();
+        }
+#endif
     }
 
     bool focusAccessibilityNode(std::uint64_t nodeId) override {
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
         if (nodeId == 0u) return false;
         if ((nodeId & WEB_CONTENT_ID_TAG) != 0u)
             return webContent_ != nullptr && untagWebId(nodeId) != 0u &&
                    webContent_->focusAccessibilityNode(untagWebId(nodeId));
         return chrome_ != nullptr && chrome_->focusAccessibilityNode(nodeId);
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (...) {
+            return false;
+        }
+#endif
     }
 
     bool performAccessibilityAction(std::uint64_t nodeId,
                                     AccessibilityAction action) override {
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
         return dispatch(nodeId, action, "", false);
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (...) {
+            return false;
+        }
+#endif
     }
 
     bool performAccessibilityActionValue(
         std::uint64_t nodeId, AccessibilityAction action,
         const std::string& value) override {
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
         return dispatch(nodeId, action, value, true);
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (...) {
+            return false;
+        }
+#endif
     }
 };
 
