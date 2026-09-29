@@ -389,6 +389,67 @@ static std::vector<std::uint8_t> make7zEmptyEntries()
     return bytes;
 }
 
+static std::vector<std::uint8_t> make7zMixedEmptyEntries()
+{
+    const std::uint8_t signature[] = {
+        0x37u, 0x7au, 0xbcu, 0xafu, 0x27u, 0x1cu};
+    const std::uint8_t payload[] = {'h', 'e', 'l', 'l', 'o'};
+    std::vector<std::uint8_t> header;
+    header.push_back(0x01u); /* Header */
+    header.push_back(0x04u); /* MainStreamsInfo */
+    header.push_back(0x06u); /* PackInfo */
+    put7zUInt64(header, 0u); /* PackPos */
+    put7zUInt64(header, 1u); /* NumPackStreams */
+    header.push_back(0x09u); /* Size */
+    put7zUInt64(header, sizeof(payload));
+    header.push_back(0x0au); /* Pack CRC */
+    header.push_back(1u);
+    header.resize(header.size() + 4u);
+    put32(header, header.size() - 4u,
+          RinRuntime::rinruntime_archive_crc32(payload, sizeof(payload)));
+    header.push_back(0x00u); /* PackInfo end */
+    header.push_back(0x07u); /* UnPackInfo */
+    header.push_back(0x0bu); /* Folder */
+    put7zUInt64(header, 1u); /* NumFolders */
+    header.push_back(0u); /* folders are in this header */
+    put7zUInt64(header, 1u); /* NumCoders */
+    header.push_back(0x01u); /* Copy coder */
+    header.push_back(0x00u);
+    header.push_back(0x0cu); /* CodersUnpackSize */
+    put7zUInt64(header, sizeof(payload));
+    header.push_back(0x0au); /* Folder CRC */
+    header.push_back(1u);
+    header.resize(header.size() + 4u);
+    put32(header, header.size() - 4u,
+          RinRuntime::rinruntime_archive_crc32(payload, sizeof(payload)));
+    header.push_back(0x00u); /* UnPackInfo end */
+    header.push_back(0x00u); /* MainStreamsInfo end */
+    header.push_back(0x05u); /* FilesInfo */
+    put7zUInt64(header, 2u); /* NumFiles */
+    header.push_back(0x0eu); /* EmptyStream */
+    put7zUInt64(header, 1u);
+    header.push_back(0x01u); /* file 0 has no packed stream */
+    header.push_back(0x0fu); /* EmptyFile */
+    put7zUInt64(header, 1u);
+    header.push_back(0x01u); /* file 0 is an empty regular file */
+    header.push_back(0x00u); /* FilesInfo end */
+    header.push_back(0x00u); /* Header end */
+
+    std::vector<std::uint8_t> bytes(32u + sizeof(payload) + header.size(), 0u);
+    std::memcpy(bytes.data(), signature, sizeof(signature));
+    bytes[7u] = 4u;
+    std::memcpy(bytes.data() + 32u, payload, sizeof(payload));
+    const std::size_t header_offset = 32u + sizeof(payload);
+    std::memcpy(bytes.data() + header_offset, header.data(), header.size());
+    put64(bytes, 12u, sizeof(payload));
+    put64(bytes, 20u, header.size());
+    put32(bytes, 28u, RinRuntime::rinruntime_archive_crc32(
+                              bytes.data() + header_offset, header.size()));
+    put32(bytes, 8u, RinRuntime::rinruntime_archive_crc32(
+                             bytes.data() + 12u, 20u));
+    return bytes;
+}
+
 static std::vector<std::uint8_t> make7zLzma(std::string& expected)
 {
     const std::uint8_t signature[] = {
@@ -709,6 +770,21 @@ int main()
     output = "poison";
     assert(reader.readEntryWithDeadline(1u, output, nullptr, nullptr) ==
            RinRuntime::ArchiveContainerResult::Ok && output.empty());
+
+    const std::vector<std::uint8_t> mixedEmptySevenZip =
+        make7zMixedEmptyEntries();
+    assert(reader.parse(mixedEmptySevenZip.data(),
+                        mixedEmptySevenZip.size()) ==
+           RinRuntime::ArchiveContainerResult::Ok);
+    assert(reader.kind() == RinRuntime::ArchiveContainerKind::SevenZip &&
+           reader.size() == 2u && !reader.entries()[0].directory &&
+           !reader.entries()[1].directory && reader.entries()[0].size == 0u &&
+           reader.entries()[1].size == 5u);
+    output = "poison";
+    assert(reader.readEntry(0u, output) ==
+           RinRuntime::ArchiveContainerResult::Ok && output.empty());
+    assert(reader.readEntry(1u, output) ==
+           RinRuntime::ArchiveContainerResult::Ok && output == "hello");
 
     std::string lzmaExpected;
     const std::vector<std::uint8_t> lzma = make7zLzma(lzmaExpected);

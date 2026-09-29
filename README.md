@@ -379,7 +379,8 @@ owners.
 the explicitly bounded `decodeStored()` subset.  The decoder accepts one
 non-empty packed stream, one single BCJ2 coder (`03 03 01 1b`) with four
 packed input streams, or empty regular files/directories with no packed
-stream.  The
+stream.  `FilesInfo` may also interleave those empty entries with the
+decoded substreams.  The
 single BCJ2 path validates the MAIN／CALL／JUMP／RC stream sizes, range-coded
 branch decisions, exact output size, and complete input consumption.  Other
 pipelines use a linear pipeline of up to four one-in/one-out Copy (`0x00`), Delta
@@ -390,16 +391,15 @@ dictionary property) coders.  BindPairs, packed/final stream selection,
 intermediate sizes, and optional single-file metadata/CRC records are
 validated before failure-atomic caller-owned output is published.
 The raw BCJ/Delta transforms reuse the public `ArchiveXzReader` filter helper;
-arbitrary multi-stream coders, encryption, multiple folders/streamed entries,
+arbitrary multi-stream coders, encryption, multiple folders,
 filesystem extraction, archive service IPC, and File Portal publication remain
 private or explicit `Unsupported` results.
 The shared `ArchiveXzReader::decodeRawLzma()` helper owns only the bounded raw
 range-coded codec; it does not parse 7z headers or publish bytes.  Multi-stream
-coders, encryption, multiple folders/streamed entries, filesystem extraction, archive
+coders, encryption, multiple folders, filesystem extraction, archive
 service IPC, and File Portal publication remain private or `Unsupported`.
-Empty entries inside a non-empty folder, arbitrary multi-stream graphs,
-multiple folders, and malformed empty-stream metadata remain explicit
-`Unsupported` or malformed results.  Its 7z VLI reader
+Arbitrary multi-stream graphs, multiple folders, and malformed empty-stream
+metadata remain explicit `Unsupported` or malformed results.  Its 7z VLI reader
 consumes multi-byte extra bytes in the format's little-endian order and rejects
 non-minimal encodings such as a zero value encoded with an extra byte, so
 malformed header values do not reach the stored-copy path.
