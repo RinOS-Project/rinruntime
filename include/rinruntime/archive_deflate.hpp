@@ -10,6 +10,9 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+#    include <new>
+#endif
 #include <string>
 #include <vector>
 
@@ -311,6 +314,9 @@ private:
         void* deadlineContext, ArchiveDeflateReadFunction read,
         void* readContext) const
     {
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
         if (read != nullptr && compressed != nullptr)
             return ArchiveDeflateResult::InvalidArgument;
         if (read == nullptr && compressed == nullptr)
@@ -425,6 +431,13 @@ private:
                               ? ArchiveDeflateResult::Malformed
                               : ArchiveDeflateResult::CrcMismatch);
         return ArchiveDeflateResult::Ok;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (const std::bad_alloc&) {
+            if (output != nullptr)
+                output->clear();
+            return ArchiveDeflateResult::Limit;
+        }
+#endif
     }
 
     class Decoder final {
