@@ -6,6 +6,9 @@
 
 #include <cstddef>
 #include <cstdint>
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+#    include <new>
+#endif
 #include <vector>
 
 namespace RinCompression {
@@ -44,6 +47,9 @@ public:
                          CancellationFunction cancellation,
                          void* cancellationContext) const
     {
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
         constexpr std::size_t kStoredBlockPayload = 65535u;
         output.clear();
         if (input == nullptr && inputSize != 0u)
@@ -87,6 +93,12 @@ public:
             return DeflateResult::Cancelled;
         }
         return DeflateResult::Ok;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (const std::bad_alloc&) {
+            output.clear();
+            return DeflateResult::Limit;
+        }
+#endif
     }
 };
 

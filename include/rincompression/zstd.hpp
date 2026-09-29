@@ -6,6 +6,9 @@
 
 #include <cstddef>
 #include <cstdint>
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+#    include <new>
+#endif
 #include <vector>
 
 namespace RinCompression {
@@ -228,6 +231,9 @@ public:
                       ZstdCancellationFunction cancellation,
                       void* cancellationContext) const
     {
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
         output.clear();
         if (input == nullptr && inputSize != 0u)
             return ZstdResult::InvalidArgument;
@@ -278,6 +284,12 @@ public:
         }
         return cancelled(cancellation, cancellationContext)
             ? fail(output, ZstdResult::Cancelled) : ZstdResult::Ok;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (const std::bad_alloc&) {
+            output.clear();
+            return ZstdResult::Limit;
+        }
+#endif
     }
 };
 
@@ -385,6 +397,9 @@ public:
                       ZstdCancellationFunction cancellation,
                       void* cancellationContext) const
     {
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
         output.clear();
         if (compressed == nullptr && compressedSize != 0u)
             return ZstdResult::InvalidArgument;
@@ -462,6 +477,12 @@ public:
             return fail(output, ZstdResult::Malformed);
         return cancelled(cancellation, cancellationContext)
             ? fail(output, ZstdResult::Cancelled) : ZstdResult::Ok;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (const std::bad_alloc&) {
+            output.clear();
+            return ZstdResult::Limit;
+        }
+#endif
     }
 };
 

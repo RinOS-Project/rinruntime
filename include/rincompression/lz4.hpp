@@ -7,6 +7,9 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+#    include <new>
+#endif
 #include <vector>
 
 namespace RinCompression {
@@ -52,6 +55,9 @@ public:
                      std::size_t maximumOutputBytes,
                      Lz4CancellationFunction cancellation,
                      void* cancellationContext) const {
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
         std::size_t position = 0u;
         output.clear();
         if (compressed == nullptr && compressedSize != 0u)
@@ -137,6 +143,12 @@ public:
         if (cancelled(cancellation, cancellationContext))
             return fail(output, Lz4Result::Cancelled);
         return Lz4Result::Ok;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (const std::bad_alloc&) {
+            output.clear();
+            return Lz4Result::Limit;
+        }
+#endif
     }
 };
 
@@ -160,6 +172,9 @@ public:
                      std::vector<std::uint8_t>& output,
                      Lz4CancellationFunction cancellation,
                      void* cancellationContext) const {
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
         std::size_t extension = 0u;
         output.clear();
         if (input == nullptr && inputSize != 0u)
@@ -209,6 +224,12 @@ public:
             return Lz4Result::Cancelled;
         }
         return Lz4Result::Ok;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (const std::bad_alloc&) {
+            output.clear();
+            return Lz4Result::Limit;
+        }
+#endif
     }
 };
 
