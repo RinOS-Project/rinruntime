@@ -173,7 +173,19 @@ public:
     int dispatch() const noexcept {
         WindowEvent event;
         const int result = poll(&event);
-        if (result > 0 && event_handler_) return event_handler_(event) ? 1 : 0;
+        if (result > 0 && event_handler_) {
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+            try {
+#endif
+                return event_handler_(event) ? 1 : 0;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+            } catch (...) {
+                /* The native event was already dequeued.  Do not let
+                 * application code unwind through this noexcept adapter. */
+                return RIN_ERROR_IO;
+            }
+#endif
+        }
         return result;
     }
 
@@ -201,9 +213,19 @@ public:
             (void)endNativeFrame();
             return RIN_ERROR_ABI_MISMATCH;
         }
-        if (paint_handler_) paint_handler_(*surface);
-        if (paint_handler_no_args_) paint_handler_no_args_();
-        return endNativeFrame();
+        bool callback_failed = false;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
+            if (paint_handler_) paint_handler_(*surface);
+            if (paint_handler_no_args_) paint_handler_no_args_();
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (...) {
+            callback_failed = true;
+        }
+#endif
+        const int end_result = endNativeFrame();
+        return callback_failed ? RIN_ERROR_IO : end_result;
     }
 
     void close() noexcept {
@@ -216,8 +238,17 @@ private:
     static void dispatchCompletion(
         const RinRuntimeGuiCompletionV1* completion, void* context) {
         auto* window = static_cast<Window*>(context);
-        if (window && completion && window->completion_handler_)
+        if (!window || !completion || !window->completion_handler_) return;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
             window->completion_handler_(*completion);
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (...) {
+            /* Completion delivery is asynchronous and has no error return;
+             * consume application callback failure at the public boundary. */
+        }
+#endif
     }
 
     void updateCompletionCallback() noexcept {
