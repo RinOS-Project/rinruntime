@@ -254,7 +254,8 @@ static std::vector<std::uint8_t> make7zStored(bool copy_chain = false,
     return bytes;
 }
 
-static std::vector<std::uint8_t> make7zMultiFolderCopy()
+static std::vector<std::uint8_t> make7zMultiFolderCopy(
+    bool mixed_empty = false)
 {
     const std::uint8_t signature[] = {
         0x37u, 0x7au, 0xbcu, 0xafu, 0x27u, 0x1cu};
@@ -299,7 +300,15 @@ static std::vector<std::uint8_t> make7zMultiFolderCopy()
     header.push_back(0x00u); /* UnPackInfo end */
     header.push_back(0x00u); /* MainStreamsInfo end */
     header.push_back(0x05u); /* FilesInfo */
-    put7zUInt64(header, 2u); /* NumFiles */
+    put7zUInt64(header, mixed_empty ? 3u : 2u); /* NumFiles */
+    if (mixed_empty) {
+        header.push_back(0x0eu); /* EmptyStream */
+        put7zUInt64(header, 1u);
+        header.push_back(0x01u); /* file 0 has no packed stream */
+        header.push_back(0x0fu); /* EmptyFile */
+        put7zUInt64(header, 1u);
+        header.push_back(0x01u); /* file 0 is an empty regular file */
+    }
     header.push_back(0x00u); /* FilesInfo properties end */
     header.push_back(0x00u); /* Header end */
 
@@ -1193,6 +1202,22 @@ int main()
     assert(reader.readEntry(0u, output) ==
            RinRuntime::ArchiveContainerResult::Ok && output == "hello");
     assert(reader.readEntry(1u, output) ==
+           RinRuntime::ArchiveContainerResult::Ok && output == "world");
+
+    const std::vector<std::uint8_t> sevenZipFoldersMixedEmpty =
+        make7zMultiFolderCopy(true);
+    assert(reader.parse(sevenZipFoldersMixedEmpty.data(),
+                        sevenZipFoldersMixedEmpty.size()) ==
+           RinRuntime::ArchiveContainerResult::Ok);
+    assert(reader.kind() == RinRuntime::ArchiveContainerKind::SevenZip &&
+           reader.size() == 3u && !reader.entries()[0].directory &&
+           reader.entries()[0].size == 0u &&
+           reader.entries()[1].size == 5u && reader.entries()[2].size == 5u);
+    assert(reader.readEntry(0u, output) ==
+           RinRuntime::ArchiveContainerResult::Ok && output.empty());
+    assert(reader.readEntry(1u, output) ==
+           RinRuntime::ArchiveContainerResult::Ok && output == "hello");
+    assert(reader.readEntry(2u, output) ==
            RinRuntime::ArchiveContainerResult::Ok && output == "world");
 
     const std::vector<std::uint8_t> sevenZipFolderCopyChain4 =
