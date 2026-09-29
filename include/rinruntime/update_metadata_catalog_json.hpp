@@ -116,6 +116,9 @@ public:
         } catch (const std::bad_alloc&) {
             error = "update catalog allocation";
             return false;
+        } catch (...) {
+            error.clear();
+            return false;
         }
 #endif
         output = std::move(candidate);

@@ -345,6 +345,9 @@ public:
         } catch (const std::bad_alloc&) {
             error = "package metadata allocation";
             return false;
+        } catch (...) {
+            error.clear();
+            return false;
         }
 #endif
         output = std::move(candidate);

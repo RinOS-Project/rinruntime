@@ -122,6 +122,9 @@ public:
         } catch (const std::bad_alloc&) {
             error = "theme allocation";
             return false;
+        } catch (...) {
+            error.clear();
+            return false;
         }
 #endif
         output = candidate;
