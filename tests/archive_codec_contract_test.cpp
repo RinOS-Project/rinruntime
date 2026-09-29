@@ -212,14 +212,18 @@ static std::vector<std::uint8_t> make7zStored(bool copy_chain = false,
                                               bool delta_first = false,
                                               bool x86_first = false,
                                               bool lzma2_first = false,
-                                              std::size_t pack_position = 0u)
+                                              std::size_t pack_position = 0u,
+                                              bool multi_entry = false)
 {
+    assert(!multi_entry || (!delta_first && !x86_first && !lzma2_first));
     assert((delta_first ? 1u : 0u) + (x86_first ? 1u : 0u) +
                (lzma2_first ? 1u : 0u) <=
            1u);
     const std::uint8_t signature[] = {
         0x37u, 0x7au, 0xbcu, 0xafu, 0x27u, 0x1cu};
     const std::uint8_t payload[] = {'h', 'e', 'l', 'l', 'o'};
+    const std::uint8_t multi_payload[] = {
+        'h', 'e', 'l', 'l', 'o', 'w', 'o', 'r', 'l', 'd', '!'};
     const std::uint8_t delta_payload[] = {0x68u, 0xfdu, 0x07u, 0x00u,
                                           0x03u};
     const std::uint8_t x86_payload[] = {0xe8u, 0x05u, 0x00u, 0x00u,
@@ -229,12 +233,18 @@ static std::vector<std::uint8_t> make7zStored(bool copy_chain = false,
     const std::uint8_t lzma2_payload[] = {
         0x01u, 0x04u, 0x00u, 'h', 'e', 'l', 'l', 'o', 0x00u};
     const std::uint8_t* packed =
-        lzma2_first ? lzma2_payload
-                    : x86_first ? x86_payload
-                                : delta_first ? delta_payload : payload;
-    const std::uint8_t* expected = x86_first ? x86_output : payload;
+        multi_entry ? multi_payload
+                    : lzma2_first ? lzma2_payload
+                                  : x86_first ? x86_payload
+                                              : delta_first ? delta_payload
+                                                            : payload;
+    const std::uint8_t* expected =
+        multi_entry ? multi_payload : x86_first ? x86_output : payload;
     const std::size_t packed_size =
-        lzma2_first ? sizeof(lzma2_payload) : sizeof(payload);
+        multi_entry ? sizeof(multi_payload)
+                    : lzma2_first ? sizeof(lzma2_payload) : sizeof(payload);
+    const std::size_t expected_size =
+        multi_entry ? sizeof(multi_payload) : sizeof(payload);
     std::vector<std::uint8_t> header;
     header.push_back(0x01u); /* Header */
     header.push_back(0x04u); /* MainStreamsInfo */
@@ -282,16 +292,40 @@ static std::vector<std::uint8_t> make7zStored(bool copy_chain = false,
         put7zUInt64(header, 0u);
     }
     header.push_back(0x0cu); /* CodersUnpackSize */
-    put7zUInt64(header, sizeof(payload));
-    if (copy_chain) put7zUInt64(header, sizeof(payload));
+    put7zUInt64(header, expected_size);
+    if (copy_chain) put7zUInt64(header, expected_size);
     header.push_back(0x0au); /* Folder CRC */
     header.push_back(1u); /* all defined */
     put32(header, RinRuntime::rinruntime_archive_crc32(
-                        expected, sizeof(payload)));
+                        expected, expected_size));
     header.push_back(0x00u); /* UnPackInfo end */
+    if (multi_entry) {
+        header.push_back(0x08u); /* SubStreamsInfo */
+        header.push_back(0x0du); /* NumUnpackStream */
+        put7zUInt64(header, 2u);
+        header.push_back(0x09u); /* Size */
+        put7zUInt64(header, sizeof(payload));
+        header.push_back(0x0au); /* Substream CRCs */
+        header.push_back(1u);
+        header.resize(header.size() + 4u);
+        const std::uint32_t first_crc =
+            RinRuntime::rinruntime_archive_crc32(payload, sizeof(payload));
+        for (unsigned index = 0u; index != 4u; ++index)
+            header[header.size() - 4u + index] =
+                static_cast<std::uint8_t>(first_crc >> (index * 8u));
+        header.resize(header.size() + 4u);
+        const std::uint32_t second_crc =
+            RinRuntime::rinruntime_archive_crc32(
+                multi_payload + sizeof(payload),
+                sizeof(multi_payload) - sizeof(payload));
+        for (unsigned index = 0u; index != 4u; ++index)
+            header[header.size() - 4u + index] =
+                static_cast<std::uint8_t>(second_crc >> (index * 8u));
+        header.push_back(0x00u); /* SubStreamsInfo end */
+    }
     header.push_back(0x00u); /* MainStreamsInfo end */
     header.push_back(0x05u); /* FilesInfo */
-    put7zUInt64(header, 1u); /* NumFiles */
+    put7zUInt64(header, multi_entry ? 2u : 1u); /* NumFiles */
     header.push_back(0x00u); /* FilesInfo properties end */
     header.push_back(0x00u); /* Header end */
 
@@ -1475,6 +1509,21 @@ int main()
                                        sevenZipOutput) ==
            RinRuntime::Archive7zResult::Ok);
     assert(sevenZipOutput == "hello");
+    const std::vector<std::uint8_t> multiEntrySevenZip =
+        make7zStored(false, false, false, false, 0u, true);
+    sevenZipOutput = "poison";
+    assert(sevenZipReader.decodeStored(
+               multiEntrySevenZip.data(), multiEntrySevenZip.size(),
+               sevenZipOutput) == RinRuntime::Archive7zResult::Ok);
+    assert(sevenZipOutput == "helloworld!" &&
+           sevenZipReader.entryCount() == 2u &&
+           sevenZipReader.entry(0u) != nullptr &&
+           sevenZipReader.entry(0u)->offset == 0u &&
+           sevenZipReader.entry(0u)->size == 5u &&
+           sevenZipReader.entry(1u) != nullptr &&
+           sevenZipReader.entry(1u)->offset == 5u &&
+           sevenZipReader.entry(1u)->size == 6u &&
+           sevenZipReader.entry(2u) == nullptr);
     const std::vector<std::uint8_t> largePackPositionSevenZip =
         make7zStored(false, false, false, false, 65536u);
     sevenZipOutput = "poison";

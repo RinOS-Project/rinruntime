@@ -5,6 +5,7 @@
 #define RINRUNTIME_ARCHIVE_7Z_HPP
 
 #include "archive_deflate.hpp"
+#include "archive_policy.h"
 #include "archive_xz.hpp"
 
 #include <array>
@@ -34,6 +35,12 @@ struct Archive7zSummary {
     std::uint8_t reserved[2] = {0u, 0u};
 };
 
+struct Archive7zEntrySummary {
+    std::size_t offset = 0u;
+    std::size_t size = 0u;
+    bool directory = false;
+};
+
 /*
  * The public reader checks the 7z envelope and exposes one deliberately small
  * caller-owned decode subset.  It does not decrypt headers, materialize named
@@ -50,6 +57,7 @@ public:
                             Archive7zSummary& output) const
     {
         output = {};
+        entry_count_ = 0u;
         if (bytes == nullptr) return Archive7zResult::InvalidArgument;
         if (size < kSignatureHeaderSize) return Archive7zResult::Malformed;
         if (size > kMaxStreamBytes) return Archive7zResult::Limit;
@@ -96,13 +104,16 @@ public:
 
     /* Decode a bounded 7z pipeline of up to four one-in/one-out Copy, Delta,
      * and LZMA coders, or one BCJ2 coder with four packed input streams, plus
-     * a single empty regular file with no packed stream.
-     * BindPairs are validated before any coder runs.  This subset is useful
+     * a single folder containing bounded regular substreams, plus a single
+     * empty regular file with no packed stream.
+     * BindPairs are validated before any coder runs.  A multi-entry folder is
+     * exposed as bounded slices of the decoded folder stream; only non-empty
+     * regular entries are admitted in that form.  This subset is useful
      * for caller-owned test/resource bytes and intentionally has no path,
      * filename, filesystem, or service authority.  Multi-stream coders,
-     * arbitrary multi-stream graphs, encryption, multiple folders/streams/
-     * entries, directories, and external headers remain explicit Unsupported
-     * results. */
+     * arbitrary multi-stream graphs, encryption, multiple folders, empty
+     * entries in a non-empty folder, directories, and external headers remain
+     * explicit Unsupported results. */
     Archive7zResult decodeStored(const std::uint8_t* bytes, std::size_t size,
                                  std::string& output) const
     {
@@ -127,6 +138,14 @@ public:
                             deadlineContext);
     }
 
+    std::size_t entryCount() const { return entry_count_; }
+
+    const Archive7zEntrySummary* entry(std::size_t index) const
+    {
+        if (index >= entry_count_) return nullptr;
+        return &entries_[index];
+    }
+
 private:
     Archive7zResult decodeStored(
         const std::uint8_t* bytes, std::size_t size, std::string& output,
@@ -134,6 +153,7 @@ private:
         void* cancellationContext, ArchiveDeflateDeadlineFunction deadline,
         void* deadlineContext) const
     {
+        entry_count_ = 0u;
         if (deadline != nullptr && deadline(deadlineContext))
             return Archive7zResult::Deadline;
         if (cancellation != nullptr && cancellation(cancellationContext))
@@ -155,6 +175,16 @@ private:
         std::uint64_t unpack_size = 0u;
         std::uint32_t folder_crc = 0u;
         bool folder_crc_defined = false;
+        std::uint64_t substream_count = 1u;
+        std::array<std::uint64_t, RINRUNTIME_ARCHIVE_ENTRY_LIMIT>
+            substream_sizes{};
+        std::array<bool, RINRUNTIME_ARCHIVE_ENTRY_LIMIT>
+            substream_crc_defined{};
+        std::array<std::uint32_t, RINRUNTIME_ARCHIVE_ENTRY_LIMIT>
+            substream_crcs{};
+        bool substream_sizes_present = false;
+        bool substream_crcs_present = false;
+        bool substream_count_present = false;
         static constexpr std::size_t kMaxCoders = 4u;
         std::uint64_t coder_count = 0u;
         std::array<std::uint64_t, kMaxCoders> coder_methods{};
@@ -416,11 +446,13 @@ private:
             if (!takeByte(bytes, end, cursor, 0x00u))
                 return Archive7zResult::Malformed;
 
-            /* A one-folder/one-stream archive has no need for SubStreamsInfo. */
+            /* A one-folder/one-stream archive has no need for SubStreamsInfo.
+             * When present, this bounded reader accepts only the standard
+             * single-folder substream layout: the decoded folder stream is
+             * split into regular entries after the folder coder runs. */
             if (cursor >= end) return Archive7zResult::Malformed;
             if (bytes[cursor] == 0x08u) {
                 ++cursor;
-                std::uint64_t substream_count = 1u;
                 while (cursor < end && bytes[cursor] != 0u) {
                     if (deadline != nullptr && deadline(deadlineContext))
                         return Archive7zResult::Deadline;
@@ -429,49 +461,78 @@ private:
                         return Archive7zResult::Cancelled;
                     const std::uint8_t property = bytes[cursor++];
                     if (property == 0x0du) {
+                        if (substream_count_present ||
+                            substream_sizes_present ||
+                            substream_crcs_present)
+                            return Archive7zResult::Malformed;
+                        substream_count_present = true;
                         if (!readEncodedUInt64(bytes, end, cursor,
                                                substream_count))
                             return Archive7zResult::Malformed;
-                        if (substream_count != 1u)
+                        if (substream_count == 0u ||
+                            substream_count > RINRUNTIME_ARCHIVE_ENTRY_LIMIT)
                             return Archive7zResult::Unsupported;
                     } else if (property == 0x09u) {
-                        std::uint64_t substream_size = 0u;
-                        if (!readEncodedUInt64(bytes, end, cursor,
-                                               substream_size))
+                        if (substream_sizes_present || substream_count == 0u)
                             return Archive7zResult::Malformed;
-                        if (substream_size != unpack_size)
-                            return Archive7zResult::Malformed;
-                    } else if (property == 0x0au) {
-                        bool defined = false;
-                        std::uint32_t crc = 0u;
-                        if (!readCrc(bytes, end, cursor, defined, crc))
-                            return Archive7zResult::Malformed;
-                        if (defined && folder_crc_defined && crc != folder_crc)
-                            return Archive7zResult::CrcMismatch;
-                        if (defined && !folder_crc_defined) {
-                            folder_crc = crc;
-                            folder_crc_defined = true;
+                        substream_sizes_present = true;
+                        std::uint64_t total = 0u;
+                        for (std::uint64_t index = 0u;
+                             index + 1u < substream_count; ++index) {
+                            std::uint64_t substream_size = 0u;
+                            if (!readEncodedUInt64(bytes, end, cursor,
+                                                   substream_size) ||
+                                substream_size > unpack_size ||
+                                total > unpack_size - substream_size)
+                                return Archive7zResult::Malformed;
+                            substream_sizes[static_cast<std::size_t>(index)] =
+                                substream_size;
+                            total += substream_size;
                         }
+                        if (total > unpack_size)
+                            return Archive7zResult::Malformed;
+                        substream_sizes[static_cast<std::size_t>(
+                            substream_count - 1u)] = unpack_size - total;
+                    } else if (property == 0x0au) {
+                        if (substream_crcs_present || substream_count == 0u)
+                            return Archive7zResult::Malformed;
+                        substream_crcs_present = true;
+                        if (!readCrcs(bytes, end, cursor,
+                                      static_cast<std::size_t>(substream_count),
+                                      substream_crc_defined,
+                                      substream_crcs))
+                            return Archive7zResult::Malformed;
                     } else {
                         return Archive7zResult::Unsupported;
                     }
                 }
                 if (!takeByte(bytes, end, cursor, 0x00u))
                     return Archive7zResult::Malformed;
+                if (substream_count > 1u && !substream_sizes_present)
+                    return Archive7zResult::Unsupported;
+                if (!substream_sizes_present && substream_count == 1u)
+                    substream_sizes[0u] = unpack_size;
+            } else {
+                substream_sizes[0u] = unpack_size;
             }
             if (!takeByte(bytes, end, cursor, 0x00u))
                 return Archive7zResult::Malformed;
+            if (substream_count == 1u && substream_crcs_present &&
+                substream_crc_defined[0u] && folder_crc_defined &&
+                substream_crcs[0u] != folder_crc)
+                return Archive7zResult::CrcMismatch;
         }
 
-        /* FilesInfo is parsed only far enough to prove that this is one
-         * non-empty file or one empty regular file.  Names and other metadata
-         * are not public output. */
+        /* FilesInfo is parsed only far enough to prove that every decoded
+         * substream maps to one non-empty regular file.  Names and other
+         * metadata are intentionally not public output. */
         if (cursor < end && bytes[cursor] == 0x05u) {
             ++cursor;
             std::uint64_t file_count = 0u;
             if (!readEncodedUInt64(bytes, end, cursor, file_count))
                 return Archive7zResult::Malformed;
-            if (file_count != 1u) return Archive7zResult::Unsupported;
+            if (file_count != substream_count)
+                return Archive7zResult::Unsupported;
             while (cursor < end && bytes[cursor] != 0u) {
                 if (deadline != nullptr && deadline(deadlineContext))
                     return Archive7zResult::Deadline;
@@ -486,14 +547,12 @@ private:
                 const std::size_t property_end =
                     cursor + static_cast<std::size_t>(property_size);
                 if (property == 0x0eu) {
-                    const std::size_t bitmap_size = 1u;
-                    if (property_size != bitmap_size ||
+                    if (stream_info_present || property_size != 1u ||
                         bytes[cursor] != 1u)
                         return Archive7zResult::Unsupported;
                     empty_stream = true;
                 } else if (property == 0x0fu) {
-                    const std::size_t bitmap_size = 1u;
-                    if (property_size != bitmap_size ||
+                    if (stream_info_present || property_size != 1u ||
                         bytes[cursor] != 1u)
                         return Archive7zResult::Unsupported;
                     empty_file = true;
@@ -504,14 +563,56 @@ private:
             }
             if (!takeByte(bytes, end, cursor, 0x00u))
                 return Archive7zResult::Malformed;
+        } else if (substream_count > 1u) {
+            return Archive7zResult::Unsupported;
         }
         if (!takeByte(bytes, end, cursor, 0x00u) || cursor != end)
             return Archive7zResult::Malformed;
+
+        const auto publish_entries = [&](const std::string& decoded)
+            -> Archive7zResult {
+            if (decoded.size() != static_cast<std::size_t>(unpack_size))
+                return Archive7zResult::Malformed;
+            if (folder_crc_defined &&
+                rinruntime_archive_crc32(
+                    reinterpret_cast<const std::uint8_t*>(decoded.data()),
+                    decoded.size()) != folder_crc)
+                return Archive7zResult::CrcMismatch;
+            if (substream_count == 0u ||
+                substream_count > RINRUNTIME_ARCHIVE_ENTRY_LIMIT)
+                return Archive7zResult::Unsupported;
+            std::size_t offset = 0u;
+            for (std::size_t index = 0u;
+                 index < static_cast<std::size_t>(substream_count); ++index) {
+                const std::uint64_t entry_size64 = substream_sizes[index];
+                if (offset > decoded.size() || entry_size64 > unpack_size ||
+                    entry_size64 > static_cast<std::uint64_t>(decoded.size() -
+                                                               offset))
+                    return Archive7zResult::Malformed;
+                const std::size_t entry_size =
+                    static_cast<std::size_t>(entry_size64);
+                if (entry_size == 0u)
+                    return Archive7zResult::Unsupported;
+                if (substream_crc_defined[index] &&
+                    rinruntime_archive_crc32(
+                        reinterpret_cast<const std::uint8_t*>(
+                            decoded.data() + offset),
+                        entry_size) != substream_crcs[index])
+                    return Archive7zResult::CrcMismatch;
+                entries_[index] = {offset, entry_size, false};
+                offset += entry_size;
+            }
+            if (offset != decoded.size()) return Archive7zResult::Malformed;
+            entry_count_ = static_cast<std::size_t>(substream_count);
+            return Archive7zResult::Ok;
+        };
         if (!stream_info_present) {
             if (!empty_stream || !empty_file || pack_size != 0u ||
                 unpack_size != 0u)
                 return Archive7zResult::Unsupported;
             output.clear();
+            entries_[0u] = {0u, 0u, false};
+            entry_count_ = 1u;
             return Archive7zResult::Ok;
         }
         if (empty_stream || empty_file)
@@ -588,6 +689,8 @@ private:
                     reinterpret_cast<const std::uint8_t*>(decoded.data()),
                     decoded.size()) != folder_crc)
                 return Archive7zResult::CrcMismatch;
+            const Archive7zResult entry_result = publish_entries(decoded);
+            if (entry_result != Archive7zResult::Ok) return entry_result;
             output = decoded;
             return Archive7zResult::Ok;
         }
@@ -719,13 +822,8 @@ private:
         if (!coder_completed[final_output_index])
             return Archive7zResult::Unsupported;
         const std::string& decoded = coder_outputs[final_output_index];
-        if (decoded.size() != static_cast<std::size_t>(unpack_size))
-            return Archive7zResult::Malformed;
-        if (folder_crc_defined &&
-            rinruntime_archive_crc32(
-                reinterpret_cast<const std::uint8_t*>(decoded.data()),
-                decoded.size()) != folder_crc)
-            return Archive7zResult::CrcMismatch;
+        const Archive7zResult entry_result = publish_entries(decoded);
+        if (entry_result != Archive7zResult::Ok) return entry_result;
         output = decoded;
         return Archive7zResult::Ok;
     }
@@ -919,12 +1017,13 @@ private:
         return Archive7zResult::Ok;
     }
 
+    template <std::size_t Capacity>
     static bool readCrcs(
         const std::uint8_t* bytes, std::size_t end, std::size_t& cursor,
-        std::size_t count, std::array<bool, 4u>& defined,
-        std::array<std::uint32_t, 4u>& values)
+        std::size_t count, std::array<bool, Capacity>& defined,
+        std::array<std::uint32_t, Capacity>& values)
     {
-        if (count == 0u || count > 4u || cursor >= end) return false;
+        if (count == 0u || count > Capacity || cursor >= end) return false;
         const std::uint8_t all_defined = bytes[cursor++];
         if (all_defined > 1u) return false;
         defined.fill(all_defined != 0u);
@@ -1033,6 +1132,10 @@ private:
             value |= static_cast<std::uint64_t>(bytes[index]) << (index * 8u);
         return value;
     }
+
+    mutable std::array<Archive7zEntrySummary, RINRUNTIME_ARCHIVE_ENTRY_LIMIT>
+        entries_{};
+    mutable std::size_t entry_count_ = 0u;
 };
 
 } // namespace RinRuntime

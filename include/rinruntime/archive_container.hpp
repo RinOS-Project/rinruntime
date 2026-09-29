@@ -194,7 +194,19 @@ public:
                 return copyWithCancellation(bytes, size, output,
                                             cancellation, cancellationContext);
             }
-            case ArchiveContainerKind::SevenZip:
+            case ArchiveContainerKind::SevenZip: {
+                const Archive7zReader& reader =
+                    std::get<Archive7zReader>(reader_);
+                const Archive7zEntrySummary* entry = reader.entry(index);
+                if (entry == nullptr || entry->directory ||
+                    entry->offset > stream_.size() ||
+                    entry->size > stream_.size() - entry->offset)
+                    return ArchiveContainerResult::Malformed;
+                return copyWithCancellation(
+                    reinterpret_cast<const std::uint8_t*>(stream_.data()) +
+                        entry->offset,
+                    entry->size, output, cancellation, cancellationContext);
+            }
             case ArchiveContainerKind::Xz:
             case ArchiveContainerKind::Gzip:
                 return copyWithCancellation(
@@ -240,7 +252,19 @@ public:
                 return copyWithDeadline(bytes, size, output, deadline,
                                         deadlineContext);
             }
-            case ArchiveContainerKind::SevenZip:
+            case ArchiveContainerKind::SevenZip: {
+                const Archive7zReader& reader =
+                    std::get<Archive7zReader>(reader_);
+                const Archive7zEntrySummary* entry = reader.entry(index);
+                if (entry == nullptr || entry->directory ||
+                    entry->offset > stream_.size() ||
+                    entry->size > stream_.size() - entry->offset)
+                    return ArchiveContainerResult::Malformed;
+                return copyWithDeadline(
+                    reinterpret_cast<const std::uint8_t*>(stream_.data()) +
+                        entry->offset,
+                    entry->size, output, deadline, deadlineContext);
+            }
             case ArchiveContainerKind::Xz:
             case ArchiveContainerKind::Gzip:
                 return copyWithDeadline(
@@ -474,7 +498,22 @@ private:
                                     entry.directory});
             }
             break;
-        case ArchiveContainerKind::SevenZip:
+        case ArchiveContainerKind::SevenZip: {
+            const Archive7zReader& reader =
+                std::get<Archive7zReader>(reader_);
+            const std::size_t count = reader.entryCount();
+            for (std::size_t index = 0u; index < count; ++index) {
+                const Archive7zEntrySummary* entry = reader.entry(index);
+                if (entry == nullptr) continue;
+                std::string name = "<stream>";
+                if (count > 1u)
+                    name = "<stream:" + std::to_string(index) + ">";
+                entries_.push_back({name,
+                                    static_cast<std::uint64_t>(entry->size),
+                                    0u, entry->directory});
+            }
+            break;
+        }
         case ArchiveContainerKind::Xz:
         case ArchiveContainerKind::Gzip:
             entries_.push_back({"<stream>",

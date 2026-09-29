@@ -151,17 +151,23 @@ static std::vector<std::uint8_t> makeGzip(const std::uint8_t* payload,
 }
 
 static std::vector<std::uint8_t> make7zStored(bool copy_chain = false,
-                                              bool lzma2 = false)
+                                              bool lzma2 = false,
+                                              bool multi_entry = false)
 {
-    assert(!(copy_chain && lzma2));
+    assert(!(copy_chain && lzma2) && (!multi_entry || (!copy_chain && !lzma2)));
     const std::uint8_t signature[] = {
         0x37u, 0x7au, 0xbcu, 0xafu, 0x27u, 0x1cu};
     const std::uint8_t payload[] = {'h', 'e', 'l', 'l', 'o'};
+    const std::uint8_t multi_payload[] = {
+        'h', 'e', 'l', 'l', 'o', 'w', 'o', 'r', 'l', 'd', '!'};
     const std::uint8_t lzma2_payload[] = {
         0x01u, 0x04u, 0x00u, 'h', 'e', 'l', 'l', 'o', 0x00u};
-    const std::uint8_t* packed = lzma2 ? lzma2_payload : payload;
+    const std::uint8_t* packed = multi_entry
+        ? multi_payload
+        : lzma2 ? lzma2_payload : payload;
     const std::size_t packed_size =
-        lzma2 ? sizeof(lzma2_payload) : sizeof(payload);
+        multi_entry ? sizeof(multi_payload)
+                    : lzma2 ? sizeof(lzma2_payload) : sizeof(payload);
     std::vector<std::uint8_t> header;
     header.push_back(0x01u); /* Header */
     header.push_back(0x04u); /* MainStreamsInfo */
@@ -197,17 +203,38 @@ static std::vector<std::uint8_t> make7zStored(bool copy_chain = false,
         put7zUInt64(header, 0u);
     }
     header.push_back(0x0cu); /* CodersUnpackSize */
-    put7zUInt64(header, sizeof(payload));
-    if (copy_chain) put7zUInt64(header, sizeof(payload));
+    put7zUInt64(header, multi_entry ? sizeof(multi_payload) : sizeof(payload));
+    if (copy_chain)
+        put7zUInt64(header, sizeof(payload));
     header.push_back(0x0au); /* Folder CRC */
     header.push_back(1u);
     header.resize(header.size() + 4u);
     put32(header, header.size() - 4u,
-          RinRuntime::rinruntime_archive_crc32(payload, sizeof(payload)));
+          RinRuntime::rinruntime_archive_crc32(
+              multi_entry ? multi_payload : payload,
+              multi_entry ? sizeof(multi_payload) : sizeof(payload)));
     header.push_back(0x00u); /* UnPackInfo end */
+    if (multi_entry) {
+        header.push_back(0x08u); /* SubStreamsInfo */
+        header.push_back(0x0du); /* NumUnpackStream */
+        put7zUInt64(header, 2u);
+        header.push_back(0x09u); /* Size */
+        put7zUInt64(header, sizeof(payload));
+        header.push_back(0x0au); /* Substream CRCs */
+        header.push_back(1u);
+        header.resize(header.size() + 4u);
+        put32(header, header.size() - 4u,
+              RinRuntime::rinruntime_archive_crc32(payload, sizeof(payload)));
+        header.resize(header.size() + 4u);
+        put32(header, header.size() - 4u,
+              RinRuntime::rinruntime_archive_crc32(
+                  multi_payload + sizeof(payload),
+                  sizeof(multi_payload) - sizeof(payload)));
+        header.push_back(0x00u); /* SubStreamsInfo end */
+    }
     header.push_back(0x00u); /* MainStreamsInfo end */
     header.push_back(0x05u); /* FilesInfo */
-    put7zUInt64(header, 1u); /* NumFiles */
+    put7zUInt64(header, multi_entry ? 2u : 1u); /* NumFiles */
     header.push_back(0x00u); /* FilesInfo properties end */
     header.push_back(0x00u); /* Header end */
 
@@ -571,6 +598,26 @@ int main()
            RinRuntime::ArchiveContainerResult::Ok && output == "hello");
     output = "poison";
     assert(reader.readEntryWithCancellation(0u, output, stopImmediately,
+                                            nullptr) ==
+           RinRuntime::ArchiveContainerResult::Cancelled);
+    assert(output.empty());
+
+    const std::vector<std::uint8_t> sevenZipMulti =
+        make7zStored(false, false, true);
+    assert(reader.parse(sevenZipMulti.data(), sevenZipMulti.size()) ==
+           RinRuntime::ArchiveContainerResult::Ok);
+    assert(reader.kind() == RinRuntime::ArchiveContainerKind::SevenZip &&
+           reader.size() == 2u &&
+           reader.entries()[0].name == "<stream:0>" &&
+           reader.entries()[0].size == 5u &&
+           reader.entries()[1].name == "<stream:1>" &&
+           reader.entries()[1].size == 6u);
+    assert(reader.readEntry(0u, output) ==
+           RinRuntime::ArchiveContainerResult::Ok && output == "hello");
+    assert(reader.readEntry(1u, output) ==
+           RinRuntime::ArchiveContainerResult::Ok && output == "world!");
+    output = "poison";
+    assert(reader.readEntryWithCancellation(1u, output, stopImmediately,
                                             nullptr) ==
            RinRuntime::ArchiveContainerResult::Cancelled);
     assert(output.empty());
