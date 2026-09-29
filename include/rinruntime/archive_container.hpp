@@ -198,10 +198,10 @@ public:
                 const Archive7zReader& reader =
                     std::get<Archive7zReader>(reader_);
                 const Archive7zEntrySummary* entry = reader.entry(index);
-                if (entry == nullptr || entry->directory ||
-                    entry->offset > stream_.size() ||
+                if (entry == nullptr || entry->offset > stream_.size() ||
                     entry->size > stream_.size() - entry->offset)
                     return ArchiveContainerResult::Malformed;
+                if (entry->directory) return ArchiveContainerResult::Ok;
                 return copyWithCancellation(
                     reinterpret_cast<const std::uint8_t*>(stream_.data()) +
                         entry->offset,
@@ -256,10 +256,10 @@ public:
                 const Archive7zReader& reader =
                     std::get<Archive7zReader>(reader_);
                 const Archive7zEntrySummary* entry = reader.entry(index);
-                if (entry == nullptr || entry->directory ||
-                    entry->offset > stream_.size() ||
+                if (entry == nullptr || entry->offset > stream_.size() ||
                     entry->size > stream_.size() - entry->offset)
                     return ArchiveContainerResult::Malformed;
+                if (entry->directory) return ArchiveContainerResult::Ok;
                 return copyWithDeadline(
                     reinterpret_cast<const std::uint8_t*>(stream_.data()) +
                         entry->offset,

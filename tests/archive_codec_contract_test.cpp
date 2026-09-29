@@ -1609,7 +1609,7 @@ int main()
     assert(sevenZipReader.decodeStored(malformedEmptySevenZip.data(),
                                        malformedEmptySevenZip.size(),
                                        sevenZipOutput) ==
-           RinRuntime::Archive7zResult::Unsupported);
+           RinRuntime::Archive7zResult::Malformed);
     assert(sevenZipOutput == "poison");
     std::vector<std::uint8_t> nonCanonicalSevenZip = storedSevenZip;
     nonCanonicalSevenZip.insert(nonCanonicalSevenZip.begin() + 41u, 0u);

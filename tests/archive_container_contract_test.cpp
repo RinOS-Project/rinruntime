@@ -357,6 +357,38 @@ static std::vector<std::uint8_t> make7zEmpty()
     return bytes;
 }
 
+static std::vector<std::uint8_t> make7zEmptyEntries()
+{
+    const std::uint8_t signature[] = {
+        0x37u, 0x7au, 0xbcu, 0xafu, 0x27u, 0x1cu};
+    std::vector<std::uint8_t> header;
+    header.push_back(0x01u); /* Header */
+    header.push_back(0x04u); /* MainStreamsInfo */
+    header.push_back(0x00u); /* no packed streams */
+    header.push_back(0x05u); /* FilesInfo */
+    put7zUInt64(header, 2u); /* NumFiles */
+    header.push_back(0x0eu); /* EmptyStream */
+    put7zUInt64(header, 1u);
+    header.push_back(0x03u); /* both files have no packed stream */
+    header.push_back(0x0fu); /* EmptyFile */
+    put7zUInt64(header, 1u);
+    header.push_back(0x02u); /* file 0 is a directory, file 1 is regular */
+    header.push_back(0x00u); /* FilesInfo end */
+    header.push_back(0x00u); /* Header end */
+
+    std::vector<std::uint8_t> bytes(32u + header.size(), 0u);
+    std::memcpy(bytes.data(), signature, sizeof(signature));
+    bytes[7u] = 4u;
+    std::memcpy(bytes.data() + 32u, header.data(), header.size());
+    put64(bytes, 12u, 0u);
+    put64(bytes, 20u, header.size());
+    put32(bytes, 28u, RinRuntime::rinruntime_archive_crc32(
+                              bytes.data() + 32u, header.size()));
+    put32(bytes, 8u, RinRuntime::rinruntime_archive_crc32(
+                             bytes.data() + 12u, 20u));
+    return bytes;
+}
+
 static std::vector<std::uint8_t> make7zLzma(std::string& expected)
 {
     const std::uint8_t signature[] = {
@@ -660,6 +692,22 @@ int main()
            reader.entries()[0].size == 0u);
     output = "poison";
     assert(reader.readEntry(0u, output) ==
+           RinRuntime::ArchiveContainerResult::Ok && output.empty());
+
+    const std::vector<std::uint8_t> emptySevenZipEntries =
+        make7zEmptyEntries();
+    assert(reader.parse(emptySevenZipEntries.data(),
+                        emptySevenZipEntries.size()) ==
+           RinRuntime::ArchiveContainerResult::Ok);
+    assert(reader.kind() == RinRuntime::ArchiveContainerKind::SevenZip &&
+           reader.size() == 2u && reader.entries()[0].directory &&
+           !reader.entries()[1].directory && reader.entries()[0].size == 0u &&
+           reader.entries()[1].size == 0u);
+    output = "poison";
+    assert(reader.readEntry(0u, output) ==
+           RinRuntime::ArchiveContainerResult::Ok && output.empty());
+    output = "poison";
+    assert(reader.readEntryWithDeadline(1u, output, nullptr, nullptr) ==
            RinRuntime::ArchiveContainerResult::Ok && output.empty());
 
     std::string lzmaExpected;

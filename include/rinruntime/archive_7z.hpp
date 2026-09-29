@@ -107,16 +107,16 @@ public:
 
     /* Decode a bounded 7z pipeline of up to four one-in/one-out Copy, Delta,
      * and LZMA coders, or one BCJ2 coder with four packed input streams, plus
-     * a single folder containing bounded regular substreams, plus a single
-     * empty regular file with no packed stream.
+     * a single folder containing bounded regular substreams, plus empty
+     * regular files/directories with no packed stream.
      * BindPairs are validated before any coder runs.  A multi-entry folder is
      * exposed as bounded slices of the decoded folder stream; only non-empty
      * regular entries are admitted in that form.  This subset is useful
      * for caller-owned test/resource bytes and intentionally has no path,
      * filename, filesystem, or service authority.  Multi-stream coders,
      * arbitrary multi-stream graphs, encryption, multiple folders, empty
-     * entries in a non-empty folder, directories, and external headers remain
-     * explicit Unsupported results. */
+     * entries in a non-empty folder, and external headers remain explicit
+     * Unsupported results. */
     Archive7zResult decodeStored(const std::uint8_t* bytes, std::size_t size,
                                  std::string& output) const
     {
@@ -213,8 +213,13 @@ private:
         int packed_input_index = -1;
         bool stream_info_present = false;
         bool bcj2_folder = false;
-        bool empty_stream = false;
-        bool empty_file = false;
+        std::uint64_t file_count = 0u;
+        std::array<bool, RINRUNTIME_ARCHIVE_ENTRY_LIMIT> file_empty_stream{};
+        std::array<bool, RINRUNTIME_ARCHIVE_ENTRY_LIMIT> file_empty_regular{};
+        std::size_t empty_stream_count = 0u;
+        bool files_info_present = false;
+        bool empty_stream_present = false;
+        bool empty_file_present = false;
 
         if (!takeByte(bytes, end, cursor, 0x01u))
             return Archive7zResult::Malformed;
@@ -529,15 +534,17 @@ private:
                 return Archive7zResult::CrcMismatch;
         }
 
-        /* FilesInfo is parsed only far enough to prove that every decoded
-         * substream maps to one non-empty regular file.  Names and other
-         * metadata are intentionally not public output. */
+        /* FilesInfo is parsed only far enough to map decoded substreams to
+         * regular files.  Names and other metadata are intentionally not
+         * public output.  A no-packed-stream archive may instead contain
+         * multiple empty regular files and directories. */
         if (cursor < end && bytes[cursor] == 0x05u) {
+            files_info_present = true;
             ++cursor;
-            std::uint64_t file_count = 0u;
             if (!readEncodedUInt64(bytes, end, cursor, file_count))
                 return Archive7zResult::Malformed;
-            if (file_count != substream_count)
+            if (file_count == 0u ||
+                file_count > RINRUNTIME_ARCHIVE_ENTRY_LIMIT)
                 return Archive7zResult::Unsupported;
             while (cursor < end && bytes[cursor] != 0u) {
                 if (deadline != nullptr && deadline(deadlineContext))
@@ -553,15 +560,68 @@ private:
                 const std::size_t property_end =
                     cursor + static_cast<std::size_t>(property_size);
                 if (property == 0x0eu) {
-                    if (stream_info_present || property_size != 1u ||
-                        bytes[cursor] != 1u)
-                        return Archive7zResult::Unsupported;
-                    empty_stream = true;
+                    const std::size_t count =
+                        static_cast<std::size_t>(file_count);
+                    const std::size_t bitmap_size = (count + 7u) / 8u;
+                    if (stream_info_present || empty_stream_present ||
+                        property_size != bitmap_size ||
+                        bitmap_size > end - cursor)
+                        return stream_info_present
+                                   ? Archive7zResult::Unsupported
+                                   : Archive7zResult::Malformed;
+                    empty_stream_present = true;
+                    empty_stream_count = 0u;
+                    for (std::size_t byte = 0u; byte < bitmap_size; ++byte) {
+                        const std::uint8_t bitmap = bytes[cursor + byte];
+                        const std::size_t first = byte * 8u;
+                        for (std::size_t bit = 0u;
+                             bit != 8u && first + bit < count; ++bit) {
+                            const bool empty =
+                                (bitmap & static_cast<std::uint8_t>(1u << bit)) !=
+                                0u;
+                            file_empty_stream[first + bit] = empty;
+                            if (empty) ++empty_stream_count;
+                        }
+                        if (first + 8u > count &&
+                            (bitmap & static_cast<std::uint8_t>(
+                                           0xffu << (count - first))) != 0u)
+                            return Archive7zResult::Malformed;
+                    }
                 } else if (property == 0x0fu) {
-                    if (stream_info_present || property_size != 1u ||
-                        bytes[cursor] != 1u)
-                        return Archive7zResult::Unsupported;
-                    empty_file = true;
+                    if (stream_info_present || !empty_stream_present ||
+                        empty_file_present)
+                        return stream_info_present
+                                   ? Archive7zResult::Unsupported
+                                   : Archive7zResult::Malformed;
+                    const std::size_t bitmap_size =
+                        (empty_stream_count + 7u) / 8u;
+                    if (property_size != bitmap_size ||
+                        bitmap_size > end - cursor)
+                        return Archive7zResult::Malformed;
+                    std::array<bool, RINRUNTIME_ARCHIVE_ENTRY_LIMIT>
+                        empty_file_ordinal{};
+                    for (std::size_t byte = 0u; byte < bitmap_size; ++byte) {
+                        const std::uint8_t bitmap = bytes[cursor + byte];
+                        const std::size_t first = byte * 8u;
+                        for (std::size_t bit = 0u;
+                             bit != 8u && first + bit < empty_stream_count;
+                             ++bit)
+                            empty_file_ordinal[first + bit] =
+                                (bitmap & static_cast<std::uint8_t>(
+                                               1u << bit)) != 0u;
+                        if (first + 8u > empty_stream_count &&
+                            (bitmap & static_cast<std::uint8_t>(
+                                           0xffu << (empty_stream_count -
+                                                     first))) != 0u)
+                            return Archive7zResult::Malformed;
+                    }
+                    std::size_t ordinal = 0u;
+                    for (std::size_t file = 0u;
+                         file < static_cast<std::size_t>(file_count); ++file) {
+                        if (!file_empty_stream[file]) continue;
+                        file_empty_regular[file] = empty_file_ordinal[ordinal++];
+                    }
+                    empty_file_present = true;
                 } else if (property == 0x10u) {
                     return Archive7zResult::Unsupported;
                 }
@@ -569,6 +629,14 @@ private:
             }
             if (!takeByte(bytes, end, cursor, 0x00u))
                 return Archive7zResult::Malformed;
+            if (stream_info_present) {
+                if (file_count != substream_count ||
+                    empty_stream_present || empty_file_present)
+                    return Archive7zResult::Unsupported;
+            } else if (!empty_stream_present || !empty_file_present ||
+                       empty_stream_count != file_count) {
+                return Archive7zResult::Unsupported;
+            }
         } else if (substream_count > 1u) {
             return Archive7zResult::Unsupported;
         }
@@ -613,16 +681,16 @@ private:
             return Archive7zResult::Ok;
         };
         if (!stream_info_present) {
-            if (!empty_stream || !empty_file || pack_size != 0u ||
+            if (!files_info_present || file_count == 0u || pack_size != 0u ||
                 unpack_size != 0u)
                 return Archive7zResult::Unsupported;
             output.clear();
-            entries_[0u] = {0u, 0u, false};
-            entry_count_ = 1u;
+            for (std::size_t index = 0u;
+                 index < static_cast<std::size_t>(file_count); ++index)
+                entries_[index] = {0u, 0u, !file_empty_regular[index]};
+            entry_count_ = static_cast<std::size_t>(file_count);
             return Archive7zResult::Ok;
         }
-        if (empty_stream || empty_file)
-            return Archive7zResult::Malformed;
         if (pack_size == 0u)
             return Archive7zResult::Unsupported;
         if (pack_position > static_cast<std::uint64_t>(size -
