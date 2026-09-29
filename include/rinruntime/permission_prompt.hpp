@@ -70,7 +70,20 @@ private:
         decision_ = decision;
         setVisible(false);
         auto callback = onDecision_;
-        if (callback) callback(decision_);
+        if (callback) {
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+            try {
+#endif
+                callback(decision_);
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+            } catch (...) {
+                /* The decision is already terminal and the prompt is hidden;
+                 * report notification failure without reopening the prompt or
+                 * allowing a caller-owned exception to escape. */
+                return false;
+            }
+#endif
+        }
         return true;
     }
 

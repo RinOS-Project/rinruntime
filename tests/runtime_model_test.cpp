@@ -231,6 +231,29 @@ int main() {
     });
     assert(!throwingStop.stop());
     assert(throwingStop.state() == Rin::Application::State::Stopped);
+    RinRuntime::PermissionPrompt prompt;
+    assert(prompt.request("https://example.test", "camera", "Use camera"));
+    prompt.setOnDecision([](RinRuntime::PermissionPromptDecision) {
+        throw std::runtime_error("permission callback failure");
+    });
+    assert(!prompt.allow());
+    assert(prompt.decision() == RinRuntime::PermissionPromptDecision::Allow);
+    assert(!prompt.isPending());
+
+    RinRuntime::SemanticWidget semantic;
+    assert(semantic.configure("Name", "old", "", 0u,
+                              RinRuntime::ACCESSIBILITY_ACTION_ACTIVATE |
+                                  RinRuntime::ACCESSIBILITY_ACTION_SET_VALUE,
+                              true, true));
+    semantic.setActivate([]() -> bool {
+        throw std::runtime_error("semantic activate failure");
+    });
+    assert(!semantic.activate());
+    semantic.setValueHandler([](const std::string&) -> bool {
+        throw std::runtime_error("semantic value callback failure");
+    });
+    assert(!semantic.setAccessibilityValue("new"));
+    assert(semantic.value() == "old");
     Rin::Document document;
     assert(document.setText("Rin"));
     assert(document.insert(3u, "OS"));

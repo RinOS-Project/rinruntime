@@ -70,7 +70,18 @@ public:
     }
 
     const std::string& value() const { return value_; }
-    bool activate() { return activate_ ? activate_() : false; }
+    bool activate() {
+        if (!activate_) return false;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
+            return activate_();
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (...) {
+            return false;
+        }
+#endif
+    }
 
     AccessibilityRole accessibilityRole() const override { return role_; }
     std::string accessibilityValue() const override { return value_; }
@@ -91,6 +102,8 @@ public:
             return true;
 #if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
         } catch (const std::bad_alloc&) {
+            return false;
+        } catch (...) {
             return false;
         }
 #endif
