@@ -126,8 +126,10 @@ int main() {
      * otherwise a stale deadline can become an unbounded sleep. */
     g_now = 99u;
     ready = {99u, RinRuntime::EventLoop::WAIT_READABLE};
+    const uint32_t set_items_before_rollback = g_set_items_calls;
     assert(!backend.wait(&valid, 1u, 100u, &ready));
     assert(ready.id == 0u && ready.events == 0u);
+    assert(g_set_items_calls == set_items_before_rollback);
     g_now = 100u;
 
     assert(loop.unwatch(watch));

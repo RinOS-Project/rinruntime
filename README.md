@@ -109,8 +109,11 @@ userspace adapters are public runtime; the kernel owns only the wait-set
 syscall and IPC readiness producers. Direct adapter callers also get
 fail-closed validation for zero handles, unsupported event bits, and duplicate
 wait IDs before any wait-set items are published. Both deadline adapters also
-reject a monotonic-clock rollback before recomputing a timeout, so a stale
-deadline cannot become an unbounded sleep after a repeated or interrupted wait.
+reject a monotonic-clock rollback before publishing a new SDK wait-set item
+list and before recomputing a timeout, so a stale deadline cannot become an
+unbounded sleep after a repeated or interrupted wait. The SDK adapter repeats
+the deadline sample after item publication to avoid extending a finite wait by
+the publication syscall itself.
 `RinEventLoopBackend::reset()` also clears the retired wait-item bytes and
 clock sample before a new wait-set session is initialized, so a reconnect with
 a fresh clock epoch cannot be rejected as an intra-session rollback.

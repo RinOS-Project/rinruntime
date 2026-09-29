@@ -137,6 +137,13 @@ public:
             (count == 0u && deadline == UINT64_MAX))
             return false;
 
+        /* Validate the deadline before mutating the target wait-set.  A
+         * monotonic-clock rollback is an adapter failure, not a reason to
+         * publish a new item list and leave the kernel-side session changed
+         * when no wait can be issued. */
+        std::uint64_t timeout = 0u;
+        if (!timeoutNanoseconds(deadline, &timeout)) return false;
+
         for (Size index = 0u; index < count; ++index) {
             const EventLoop::WaitRequest& request = requests[index];
             items_[index].handle = static_cast<RinHandle>(request.nativeHandle);
@@ -151,7 +158,10 @@ public:
         if (rin_wait_set_set_items_v1(waitSet_, itemSlice) != RIN_SUCCESS)
             return false;
 
-        std::uint64_t timeout = 0u;
+        /* The item publication is a bounded syscall and may consume time.
+         * Recompute once before waiting so a deadline cannot be extended by
+         * the publication itself; a rollback during that interval still
+         * fails closed without issuing the wait syscall. */
         if (!timeoutNanoseconds(deadline, &timeout)) return false;
         RinWaitResultV1 result = {};
         result.struct_size = sizeof(result);
