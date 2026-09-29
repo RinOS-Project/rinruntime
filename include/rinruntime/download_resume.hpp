@@ -313,13 +313,54 @@ inline bool readDownloadRangeToBuffer(DownloadRangeTransport& transport,
     outputSize = 0u;
     if (!request.valid() || output == nullptr || capacity == 0u)
         return false;
+    bool beginEntered = false;
+    bool settled = false;
+#if !defined(__cpp_exceptions) && !defined(__EXCEPTIONS) && \
+    !defined(_CPPUNWIND)
+    (void)beginEntered;
+    (void)settled;
+#endif
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+    const auto scrubOnOwnerFailure = [&]() noexcept {
+        const std::size_t bounded =
+            capacity < DownloadPartialReceipt::kMaxBytes
+                ? capacity
+                : static_cast<std::size_t>(DownloadPartialReceipt::kMaxBytes);
+        for (std::size_t index = 0u; index < bounded; ++index)
+            output[index] = 0u;
+        outputSize = 0u;
+    };
+    const auto abortAfterOwnerFailure = [&]() noexcept {
+        if (!beginEntered || settled) return;
+        bool cancelled = false;
+        try {
+            cancelled = transport.wasCancelled();
+        } catch (...) {
+            /* An owner failure while querying cancellation cannot justify
+             * exposing the transport's partially-owned state. */
+        }
+        if (!cancelled) {
+            try {
+                transport.abort();
+            } catch (...) {
+                /* Abort is best effort after the public helper failed. */
+            }
+        }
+        settled = true;
+    };
+    try {
+#endif
     DownloadRangeResponse response;
     /* A failed begin() is already terminal for the transport.  In
      * particular, do not call abort() here: a public adapter may preserve a
      * distinct cancellation state for the caller to inspect. */
-    if (!transport.begin(request, response))
+    beginEntered = true;
+    if (!transport.begin(request, response)) {
+        settled = true;
         return false;
+    }
     if (!response.validFor(request) || response.contentLength > capacity) {
+        settled = true;
         transport.abort();
         return false;
     }
@@ -339,7 +380,13 @@ inline bool readDownloadRangeToBuffer(DownloadRangeTransport& transport,
              * terminal cancellation state and performed the upstream abort.
              * Preserve that state so callers can distinguish cancellation
              * from an ordinary read failure via wasCancelled(). */
-            if (!transport.wasCancelled()) transport.abort();
+            const bool cancelled = transport.wasCancelled();
+            if (!cancelled) {
+                settled = true;
+                transport.abort();
+            } else {
+                settled = true;
+            }
             return false;
         }
         outputSize += bytesRead;
@@ -351,10 +398,24 @@ inline bool readDownloadRangeToBuffer(DownloadRangeTransport& transport,
         for (std::size_t index = 0u; index < expected; ++index)
             output[index] = 0u;
         outputSize = 0u;
-        if (!transport.wasCancelled()) transport.abort();
+        const bool cancelled = transport.wasCancelled();
+        if (!cancelled) {
+            settled = true;
+            transport.abort();
+        } else {
+            settled = true;
+        }
         return false;
     }
+    settled = true;
     return true;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+    } catch (...) {
+        scrubOnOwnerFailure();
+        abortAfterOwnerFailure();
+        return false;
+    }
+#endif
 }
 
 inline bool parseDownloadContentRange(const std::string& value,

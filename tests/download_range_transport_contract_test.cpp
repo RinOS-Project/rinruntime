@@ -87,6 +87,38 @@ static void throwingRuntimeAbort(void*) {
     throw std::runtime_error("abort callback failure");
 }
 
+class ThrowingRangeTransport final : public RinRuntime::DownloadRangeTransport {
+public:
+    bool throwFromBegin = false;
+    bool abortCalled = false;
+
+    bool begin(const RinRuntime::DownloadRangeRequest& request,
+               RinRuntime::DownloadRangeResponse& response) override {
+        if (throwFromBegin)
+            throw std::runtime_error("transport begin failure");
+        response.statusCode = 206u;
+        response.contentRangeStart = request.offset;
+        response.contentRangeEnd = request.totalBytes - 1u;
+        response.contentRangeTotal = request.totalBytes;
+        response.contentLength = request.totalBytes - request.offset;
+        response.generation = request.generation;
+        response.validator = request.validator;
+        return true;
+    }
+
+    bool read(std::uint8_t* buffer, std::size_t capacity,
+              std::size_t& bytesRead) override {
+        if (buffer != nullptr && capacity != 0u) buffer[0] = 0xccu;
+        bytesRead = 1u;
+        throw std::runtime_error("transport read failure");
+    }
+
+    void abort() override {
+        abortCalled = true;
+        throw std::runtime_error("transport abort failure");
+    }
+};
+
 static int statelessBegin(void*,
                           const RinRuntime::DownloadRangeRequest* request,
                           RinRuntime::DownloadRangeResponse* response) {
@@ -384,5 +416,32 @@ int main() {
     assert(!throwingCancellation.begin(request, response));
     assert(throwingCancellation.state() ==
            RinRuntime::DownloadRangeTransportAdapter::State::Idle);
+
+    /* The convenience helper is also a public virtual-transport boundary.
+     * A general application may implement DownloadRangeTransport directly;
+     * owner exceptions must not escape, and a partially written caller
+     * buffer must be scrubbed even when abort() itself throws. */
+    ThrowingRangeTransport throwingTransport;
+    throwingTransport.throwFromBegin = true;
+    std::uint8_t ownerFailureOutput[4u] = {0xffu, 0xffu, 0xffu, 0xffu};
+    std::size_t ownerFailureSize = 99u;
+    assert(!RinRuntime::readDownloadRangeToBuffer(
+        throwingTransport, request, ownerFailureOutput,
+        sizeof(ownerFailureOutput), ownerFailureSize));
+    assert(ownerFailureSize == 0u);
+    for (const std::uint8_t byte : ownerFailureOutput) assert(byte == 0u);
+    assert(throwingTransport.abortCalled);
+
+    throwingTransport.throwFromBegin = false;
+    throwingTransport.abortCalled = false;
+    ownerFailureOutput[0] = ownerFailureOutput[1] =
+        ownerFailureOutput[2] = ownerFailureOutput[3] = 0xffu;
+    ownerFailureSize = 99u;
+    assert(!RinRuntime::readDownloadRangeToBuffer(
+        throwingTransport, request, ownerFailureOutput,
+        sizeof(ownerFailureOutput), ownerFailureSize));
+    assert(ownerFailureSize == 0u);
+    for (const std::uint8_t byte : ownerFailureOutput) assert(byte == 0u);
+    assert(throwingTransport.abortCalled);
     return 0;
 }
