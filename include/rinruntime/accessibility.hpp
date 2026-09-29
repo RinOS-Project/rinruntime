@@ -11,7 +11,11 @@
 #define RINRUNTIME_ACCESSIBILITY_HPP
 
 #include <cstdint>
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+#    include <new>
+#endif
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace RinRuntime {
@@ -159,16 +163,30 @@ class AccessibilityDesktopService {
     }
 
 public:
-    static void registerWindow(uintptr_t handle, AccessibilityProvider* provider) {
-        std::vector<Registration>& values = registrations();
-        if (handle == 0u || !provider) return;
-        for (auto& value : values) {
-            if (value.handle == handle) {
-                value.provider = provider;
-                return;
+    static bool tryRegisterWindow(uintptr_t handle,
+                                  AccessibilityProvider* provider) {
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
+            std::vector<Registration>& values = registrations();
+            if (handle == 0u || !provider) return false;
+            for (auto& value : values) {
+                if (value.handle == handle) {
+                    value.provider = provider;
+                    return true;
+                }
             }
+            values.push_back({handle, provider});
+            return true;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (const std::bad_alloc&) {
+            return false;
         }
-        values.push_back({handle, provider});
+#endif
+    }
+
+    static void registerWindow(uintptr_t handle, AccessibilityProvider* provider) {
+        (void)tryRegisterWindow(handle, provider);
     }
 
     static void unregisterWindow(uintptr_t handle,
@@ -187,12 +205,21 @@ public:
 
     static bool getTree(uintptr_t handle, AccessibilityTree* output) {
         if (handle == 0u || !output) return false;
-        for (const auto& value : registrations()) {
-            if (value.handle == handle && value.provider) {
-                *output = value.provider->accessibilityTree();
-                return true;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
+            for (const auto& value : registrations()) {
+                if (value.handle == handle && value.provider) {
+                    AccessibilityTree tree = value.provider->accessibilityTree();
+                    *output = std::move(tree);
+                    return true;
+                }
             }
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (const std::bad_alloc&) {
+            return false;
         }
+#endif
         return false;
     }
 
@@ -201,16 +228,24 @@ public:
      * bridge, but never expose a live Widget pointer to the caller. */
     static bool findNode(uintptr_t handle, uint64_t generation,
                          uint64_t nodeId, AccessibilityNode* output) {
-        AccessibilityTree tree = {};
-        if (!output || nodeId == 0u || !getTree(handle, &tree) ||
-            tree.generation != generation)
-            return false;
-        for (const auto& node : tree.nodes) {
-            if (node.id == nodeId) {
-                *output = node;
-                return true;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
+            AccessibilityTree tree = {};
+            if (!output || nodeId == 0u || !getTree(handle, &tree) ||
+                tree.generation != generation)
+                return false;
+            for (const auto& node : tree.nodes) {
+                if (node.id == nodeId) {
+                    *output = node;
+                    return true;
+                }
             }
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (const std::bad_alloc&) {
+            return false;
         }
+#endif
         return false;
     }
 
@@ -222,35 +257,51 @@ public:
             (static_cast<uint32_t>(action) &
              (static_cast<uint32_t>(action) - 1u)) != 0u)
             return false;
-        for (const auto& registration : registrations()) {
-            if (registration.handle != handle || !registration.provider)
-                continue;
-            AccessibilityNode node = {};
-            AccessibilityTree tree = registration.provider->accessibilityTree();
-            if (tree.generation != generation) return false;
-            bool found = false;
-            for (const auto& candidate : tree.nodes) {
-                if (candidate.id == nodeId) {
-                    node = candidate;
-                    found = true;
-                    break;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
+            for (const auto& registration : registrations()) {
+                if (registration.handle != handle || !registration.provider)
+                    continue;
+                AccessibilityNode node = {};
+                AccessibilityTree tree = registration.provider->accessibilityTree();
+                if (tree.generation != generation) return false;
+                bool found = false;
+                for (const auto& candidate : tree.nodes) {
+                    if (candidate.id == nodeId) {
+                        node = candidate;
+                        found = true;
+                        break;
+                    }
                 }
+                if (!found || (node.metadata.actions &
+                               static_cast<uint32_t>(action)) == 0u)
+                    return false;
+                return registration.provider->performAccessibilityActionValue(
+                    nodeId, action, value);
             }
-            if (!found || (node.metadata.actions &
-                           static_cast<uint32_t>(action)) == 0u)
-                return false;
-            return registration.provider->performAccessibilityActionValue(
-                nodeId, action, value);
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (const std::bad_alloc&) {
+            return false;
         }
+#endif
         return false;
     }
 
     static bool focusNode(uintptr_t handle, uint64_t nodeId) {
         if (handle == 0u || nodeId == 0u) return false;
-        for (const auto& value : registrations()) {
-            if (value.handle == handle && value.provider)
-                return value.provider->focusAccessibilityNode(nodeId);
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
+            for (const auto& value : registrations()) {
+                if (value.handle == handle && value.provider)
+                    return value.provider->focusAccessibilityNode(nodeId);
+            }
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (const std::bad_alloc&) {
+            return false;
         }
+#endif
         return false;
     }
 };

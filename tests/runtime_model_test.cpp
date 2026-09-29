@@ -170,5 +170,34 @@ int main() {
     Rin::ActivityFeed feed;
     assert(feed.add({"Build", "completed", false}));
     assert(feed.markRead(0u));
+
+    RinRuntime::RadioButton radio("Choice", "main");
+    assert(radio.setLabel("Updated"));
+    assert(radio.setGroup("options"));
+    RinRuntime::List list;
+    assert(list.addItem("first"));
+    assert(list.setItems({"second", "third"}));
+    assert(list.selectedItem() == nullptr);
+    RinRuntime::Table table;
+    assert(table.addColumn({"Name", 96, true}));
+    assert(table.setColumnValue(0, [](int32_t) { return std::string("value"); }));
+    RinRuntime::Tree widget_tree;
+    const uint64_t tree_root = widget_tree.addRoot("Root");
+    assert(tree_root != 0u);
+    assert(widget_tree.addChild(tree_root, "Child") != 0u);
+    RinRuntime::TabView tabs;
+    assert(tabs.addTab("One"));
+    assert(tabs.setTabs({"Two", "Three"}));
+    RinRuntime::ComboBox combo;
+    assert(combo.addItem("One"));
+    assert(combo.setItems({"Two", "Three"}));
+    RinRuntime::PopupMenu popup("Actions");
+    assert(popup.addItem("Run") == 0);
+    assert(popup.setItemAction(0, [] {}));
+    RinRuntime::MenuBar menu_bar;
+    const int32_t menu = menu_bar.addMenu("File");
+    assert(menu >= 0);
+    assert(menu_bar.addItem(menu, {"Open", "", [] {}}));
+    assert(menu_bar.setAction("File", "Open", [] {}));
     return 0;
 }

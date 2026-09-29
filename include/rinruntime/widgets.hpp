@@ -20,6 +20,7 @@
 #include "widget.hpp"
 #include <functional>
 #include <utility>
+#include <vector>
 
 namespace RinRuntime {
 
@@ -39,6 +40,62 @@ constexpr uint32_t kEnd = 0x23u;
  * cannot retain bytes that the shared IPC/text contract would reject. */
 inline bool validText(const std::string& value) {
     return strictUtf8TextValid(value);
+}
+
+inline bool replaceText(std::string& target, const std::string& value) {
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+    try {
+#endif
+        std::string candidate = value;
+        target.swap(candidate);
+        return true;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+    } catch (const std::bad_alloc&) {
+        return false;
+    }
+#endif
+}
+
+template <typename T>
+inline bool appendCopy(std::vector<T>& target, const T& value) {
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+    try {
+#endif
+        target.push_back(value);
+        return true;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+    } catch (const std::bad_alloc&) {
+        return false;
+    }
+#endif
+}
+
+template <typename T>
+inline bool appendMove(std::vector<T>& target, T&& value) {
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+    try {
+#endif
+        target.push_back(std::move(value));
+        return true;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+    } catch (const std::bad_alloc&) {
+        return false;
+    }
+#endif
+}
+
+template <typename T>
+inline bool replaceBySwap(T& target, T value) {
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+    try {
+#endif
+        target.swap(value);
+        return true;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+    } catch (const std::bad_alloc&) {
+        return false;
+    }
+#endif
 }
 }
 
@@ -546,24 +603,35 @@ class List : public Widget {
     }
 
 public:
-    void setItems(const std::vector<std::string>& values) {
+    bool setItems(const std::vector<std::string>& values) {
         if (values.size() > kMaxItems) {
             clear();
-            return;
+            return false;
         }
         for (const auto& value : values) {
             if (!validItem(value)) {
                 clear();
-                return;
+                return false;
             }
         }
-        items_ = values;
-        syncModels();
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
+            std::vector<std::string> candidate = values;
+            items_.swap(candidate);
+            syncModels();
+            return true;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (const std::bad_alloc&) {
+            return false;
+        }
+#endif
     }
-    void addItem(const std::string& value) {
-        if (items_.size() >= kMaxItems || !validItem(value)) return;
-        items_.push_back(value);
+    bool addItem(const std::string& value) {
+        if (items_.size() >= kMaxItems || !validItem(value)) return false;
+        if (!widget_detail::appendCopy(items_, value)) return false;
         syncModels();
+        return true;
     }
     void clear() {
         items_.clear();
@@ -802,8 +870,7 @@ private:
 public:
     bool addColumn(const Column& column) {
         if (columns_.size() >= kMaxColumns || !validColumn(column)) return false;
-        columns_.push_back(column);
-        return true;
+        return widget_detail::appendCopy(columns_, column);
     }
     const std::vector<Column>& columns() const { return columns_; }
     std::vector<Column>& columns() { return columns_; }
@@ -811,8 +878,8 @@ public:
                         std::function<std::string(int32_t)> callback) {
         if (index < 0 || index >= static_cast<int32_t>(columns_.size()))
             return false;
-        columns_[index].valueAt = std::move(callback);
-        return true;
+        return widget_detail::replaceBySwap(columns_[index].valueAt,
+                                            std::move(callback));
     }
     void setRowCount(int32_t count) {
         rowCount_ = count < 0 ? 0 : (count > kMaxRows ? kMaxRows : count);
@@ -1002,24 +1069,48 @@ class Tree : public Widget {
 
 public:
     uint64_t addRoot(const std::string& label) {
-        if (itemCount() >= kMaxItems || !validLabel(label) || nextId_ == 0u)
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
+            if (itemCount() >= kMaxItems || !validLabel(label) ||
+                nextId_ == 0u)
+                return 0u;
+            TreeItem value;
+            value.id = nextId_;
+            value.label = label;
+            if (!widget_detail::appendMove(roots_, std::move(value)))
+                return 0u;
+            const uint64_t id = nextId_;
+            ++nextId_;
+            return id;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (const std::bad_alloc&) {
             return 0u;
-        TreeItem value;
-        value.id = nextId_++;
-        value.label = label;
-        roots_.push_back(std::move(value));
-        return roots_.back().id;
+        }
+#endif
     }
     uint64_t addChild(uint64_t parentId, const std::string& label) {
-        if (itemCount() >= kMaxItems || !validLabel(label) || nextId_ == 0u)
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
+            if (itemCount() >= kMaxItems || !validLabel(label) ||
+                nextId_ == 0u)
+                return 0u;
+            TreeItem* parent = findIn(roots_, parentId);
+            if (!parent) return 0u;
+            TreeItem value;
+            value.id = nextId_;
+            value.label = label;
+            if (!widget_detail::appendMove(parent->children, std::move(value)))
+                return 0u;
+            const uint64_t id = nextId_;
+            ++nextId_;
+            return id;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (const std::bad_alloc&) {
             return 0u;
-        TreeItem* parent = findIn(roots_, parentId);
-        if (!parent) return 0u;
-        TreeItem value;
-        value.id = nextId_++;
-        value.label = label;
-        parent->children.push_back(std::move(value));
-        return parent->children.back().id;
+        }
+#endif
     }
     bool setExpanded(uint64_t id, bool value) {
         TreeItem* item = findIn(roots_, id);
@@ -1135,11 +1226,27 @@ class TabView : public Widget {
 
 public:
     TabView() = default;
-    void addTab(const std::string& label) { tabs_.push_back(label); }
-    void setTabs(const std::vector<std::string>& tabs) {
-        tabs_ = tabs;
-        if (tabs_.empty()) activeTab_ = 0;
-        else if (activeTab_ >= (int32_t)tabs_.size()) activeTab_ = (int32_t)tabs_.size() - 1;
+    bool addTab(const std::string& label) {
+        return widget_detail::appendCopy(tabs_, label);
+    }
+    bool setTabs(const std::vector<std::string>& tabs) {
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
+            std::vector<std::string> candidate = tabs;
+            int32_t nextActive = activeTab_;
+            if (candidate.empty()) nextActive = 0;
+            else if (nextActive < 0 ||
+                     nextActive >= static_cast<int32_t>(candidate.size()))
+                nextActive = static_cast<int32_t>(candidate.size()) - 1;
+            tabs_.swap(candidate);
+            activeTab_ = nextActive;
+            return true;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (const std::bad_alloc&) {
+            return false;
+        }
+#endif
     }
     const std::vector<std::string>& tabs() const { return tabs_; }
     void setActiveTab(int32_t index) {
@@ -1199,11 +1306,23 @@ class ComboBox : public Widget {
 
 public:
     ComboBox() = default;
-    void addItem(const std::string& item) { items_.push_back(item); }
-    void setItems(const std::vector<std::string>& items) {
-        items_ = items;
-        selectedIndex_ = -1;
-        open_ = false;
+    bool addItem(const std::string& item) {
+        return widget_detail::appendCopy(items_, item);
+    }
+    bool setItems(const std::vector<std::string>& items) {
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
+            std::vector<std::string> candidate = items;
+            items_.swap(candidate);
+            selectedIndex_ = -1;
+            open_ = false;
+            return true;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (const std::bad_alloc&) {
+            return false;
+        }
+#endif
     }
     const std::vector<std::string>& items() const { return items_; }
     void setSelectedIndex(int32_t index) {
@@ -1299,14 +1418,12 @@ public:
 
     bool setLabel(const std::string& label) {
         if (!widget_detail::validText(label)) return false;
-        label_ = label;
-        return true;
+        return widget_detail::replaceText(label_, label);
     }
     const std::string& label() const { return label_; }
     bool setGroup(const std::string& group) {
         if (!widget_detail::validText(group)) return false;
-        group_ = group;
-        return true;
+        return widget_detail::replaceText(group_, group);
     }
     const std::string& group() const { return group_; }
     bool isChecked() const { return checked_; }
@@ -1424,8 +1541,7 @@ public:
 
     bool setTitle(const std::string& title) {
         if (!validText(title)) return false;
-        title_ = title;
-        return true;
+        return widget_detail::replaceText(title_, title);
     }
     const std::string& title() const { return title_; }
 
@@ -1434,14 +1550,31 @@ public:
                     bool enabled = true) {
         if (items_.size() >= kMaxItems || !validText(label) ||
             !validText(shortcut)) return -1;
-        items_.push_back(MenuItem(label, shortcut, std::move(action), false,
-                                  enabled));
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
+            MenuItem item(label, shortcut, std::move(action), false, enabled);
+            if (!widget_detail::appendMove(items_, std::move(item))) return -1;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (const std::bad_alloc&) {
+            return -1;
+        }
+#endif
         return static_cast<int32_t>(items_.size() - 1u);
     }
 
     int32_t addSeparator() {
         if (items_.size() >= kMaxItems) return -1;
-        items_.push_back(MenuItem("", "", nullptr, true, false));
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
+            MenuItem item("", "", nullptr, true, false);
+            if (!widget_detail::appendMove(items_, std::move(item))) return -1;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (const std::bad_alloc&) {
+            return -1;
+        }
+#endif
         return static_cast<int32_t>(items_.size() - 1u);
     }
 
@@ -1461,8 +1594,8 @@ public:
     bool setItemAction(int32_t index, std::function<void()> action) {
         if (index < 0 || index >= static_cast<int32_t>(items_.size()) ||
             items_[index].separator) return false;
-        items_[index].action = std::move(action);
-        return true;
+        return widget_detail::replaceBySwap(items_[index].action,
+                                            std::move(action));
     }
 
     bool setActiveIndex(int32_t index) {
@@ -1618,16 +1751,24 @@ public:
     }
     int32_t addMenu(const std::string& title) {
         if (menus_.size() >= kMaxMenus || !validText(title)) return -1;
-        menus_.push_back(Menu());
-        menus_.back().title = title;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
+            Menu menu;
+            menu.title = title;
+            if (!widget_detail::appendMove(menus_, std::move(menu))) return -1;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (const std::bad_alloc&) {
+            return -1;
+        }
+#endif
         return (int32_t)menus_.size() - 1;
     }
     bool addItem(int32_t menuIndex, const MenuItem& item) {
         if (menuIndex < 0 || menuIndex >= (int32_t)menus_.size()) return false;
         if (menus_[menuIndex].items.size() >= kMaxItemsPerMenu ||
             !validText(item.label) || !validText(item.shortcut)) return false;
-        menus_[menuIndex].items.push_back(item);
-        return true;
+        return widget_detail::appendCopy(menus_[menuIndex].items, item);
     }
     bool setAction(const std::string& menuTitle, const std::string& itemLabel,
                    std::function<void()> action) {
@@ -1635,8 +1776,8 @@ public:
             if (menu.title != menuTitle) continue;
             for (auto& item : menu.items) {
                 if (item.label == itemLabel) {
-                    item.action = action;
-                    return true;
+                    return widget_detail::replaceBySwap(item.action,
+                                                        std::move(action));
                 }
             }
         }
