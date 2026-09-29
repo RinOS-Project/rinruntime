@@ -247,8 +247,20 @@ public:
                            void* cancellationContext) noexcept {
         if (output == nullptr) return false;
         *output = {};
-        if (cancellation != nullptr && cancellation(cancellationContext))
-            return false;
+        if (cancellation != nullptr) {
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+            try {
+#endif
+                if (cancellation(cancellationContext)) return false;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+            } catch (...) {
+                /* A caller-owned callback is outside the runtime's control.
+                 * Keep this noexcept public boundary failure-closed instead
+                 * of allowing an exception to terminate the application. */
+                return false;
+            }
+#endif
+        }
         return runOne(now, output);
     }
 

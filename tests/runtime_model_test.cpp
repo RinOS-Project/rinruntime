@@ -3,6 +3,7 @@
 
 #include <cassert>
 #include <cstdint>
+#include <stdexcept>
 #include <vector>
 
 struct DownloadModelOwner {
@@ -42,9 +43,18 @@ static int readDownloadModelRange(void* context, std::uint8_t* buffer,
 
 static void abortDownloadModelRange(void*) {}
 
+static int throwingEventLoopCancellation(void*) {
+    throw std::runtime_error("event loop cancellation callback failure");
+}
+
 int main() {
     RinRuntime::EventLoop event_loop;
     assert(event_loop.pendingEvents() == 0u);
+    RinRuntime::Event cancellable_output = {};
+    cancellable_output.type = RinRuntime::EventType::Close;
+    assert(!event_loop.runOneCancellable(
+        0u, &cancellable_output, throwingEventLoopCancellation, nullptr));
+    assert(cancellable_output.type == RinRuntime::EventType::None);
 
     static_assert(RIN_I18N_RMSG_VERSION == 1u,
                   "public i18n catalog version must remain stable");
