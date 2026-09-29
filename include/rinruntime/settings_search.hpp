@@ -75,11 +75,37 @@ class SettingSearchIndex {
                containsFolded(entry.category, token);
     }
 
+    static int pollCancellation(RinRuntimeCancellationFunction cancellation,
+                                void* context) noexcept {
+        if (cancellation == nullptr) return 0;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
+            return cancellation(context);
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (...) {
+            /* A caller-owned callback must not unwind through the public
+             * search boundary.  A negative result distinguishes owner
+             * failure from an ordinary cancellation request. */
+            return -1;
+        }
+#endif
+    }
+
+    static void clearMatches(size_t* output, size_t capacity,
+                             size_t count) noexcept {
+        if (output == nullptr) return;
+        if (count > capacity) count = capacity;
+        for (size_t index = 0u; index < count; ++index)
+            output[index] = 0u;
+    }
+
 public:
     enum class MatchResult : std::uint8_t {
         Completed = 0,
         Cancelled = 1,
         InvalidArgument = 2,
+        CallbackFailure = 3,
     };
 
     static constexpr size_t maximumEntries() { return kMaximumEntries; }
@@ -146,12 +172,13 @@ public:
             return MatchResult::InvalidArgument;
         *matchedCount = 0u;
         for (size_t index = 0u; index < entries_.size(); ++index) {
-            if (cancellation != nullptr && cancellation(context) != 0) {
-                for (size_t clear = 0u; clear < *matchedCount && clear < capacity;
-                     ++clear)
-                    output[clear] = 0u;
+            const int cancellationStatus = pollCancellation(cancellation,
+                                                             context);
+            if (cancellationStatus != 0) {
+                clearMatches(output, capacity, *matchedCount);
                 *matchedCount = 0u;
-                return MatchResult::Cancelled;
+                return cancellationStatus < 0 ? MatchResult::CallbackFailure
+                                              : MatchResult::Cancelled;
             }
             if (!matches(index)) continue;
             if (*matchedCount < capacity) output[*matchedCount] = index;
