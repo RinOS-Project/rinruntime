@@ -6,6 +6,10 @@
 
 #include "archive_deflate.hpp"
 
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+#    include <new>
+#endif
+
 namespace RinRuntime {
 
 enum class ArchiveGzipResult : int {
@@ -45,6 +49,9 @@ public:
         ArchiveDeflateCancellationFunction cancellation,
         void* cancellationContext) const
     {
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
         Header header;
         /* A failed parse or admission must not leave a previous successful
          * decode visible to the caller.  This is also required for the
@@ -73,12 +80,21 @@ public:
         if (static_cast<std::uint32_t>(output.size()) != header.size)
             return failOutput(output, ArchiveGzipResult::Malformed);
         return ArchiveGzipResult::Ok;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (const std::bad_alloc&) {
+            output.clear();
+            return ArchiveGzipResult::Limit;
+        }
+#endif
     }
 
     ArchiveGzipResult decodeWithDeadline(
         const std::uint8_t* bytes, std::size_t size, std::string& output,
         ArchiveDeflateDeadlineFunction deadline, void* deadlineContext) const
     {
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
         Header header;
         output.clear();
         const ArchiveGzipResult headerResult = parseHeader(
@@ -104,6 +120,12 @@ public:
         if (static_cast<std::uint32_t>(output.size()) != header.size)
             return failOutput(output, ArchiveGzipResult::Malformed);
         return ArchiveGzipResult::Ok;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (const std::bad_alloc&) {
+            output.clear();
+            return ArchiveGzipResult::Limit;
+        }
+#endif
     }
 
     ArchiveGzipResult decode(const ArchiveGzipSource& source,
