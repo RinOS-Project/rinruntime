@@ -153,6 +153,27 @@ public:
     }
 
 private:
+    struct CancellationCallbackFailure {};
+
+    static bool cancellationRequested(
+        ArchiveDeflateCancellationFunction cancellation,
+        void* cancellationContext)
+    {
+        if (cancellation == nullptr) return false;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
+            return cancellation(cancellationContext);
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (...) {
+            /* Keep ordinary cancellation distinct from a callback exception;
+             * the public decoder catch boundary clears output only for the
+             * latter while preserving established cancellation semantics. */
+            throw CancellationCallbackFailure{};
+        }
+#endif
+    }
+
     Archive7zResult decodeStored(
         const std::uint8_t* bytes, std::size_t size, std::string& output,
         ArchiveDeflateCancellationFunction cancellation,
@@ -165,8 +186,9 @@ private:
         entry_count_ = 0u;
         if (deadline != nullptr && deadline(deadlineContext))
             return Archive7zResult::Deadline;
-        if (cancellation != nullptr && cancellation(cancellationContext))
+        if (cancellationRequested(cancellation, cancellationContext)) {
             return Archive7zResult::Cancelled;
+        }
         Archive7zSummary summary;
         Archive7zResult result = inspect(bytes, size, summary);
         if (result != Archive7zResult::Ok) return result;
@@ -479,9 +501,10 @@ private:
                 while (cursor < end && bytes[cursor] != 0u) {
                     if (deadline != nullptr && deadline(deadlineContext))
                         return Archive7zResult::Deadline;
-                    if (cancellation != nullptr &&
-                        cancellation(cancellationContext))
+                    if (cancellationRequested(cancellation,
+                                               cancellationContext)) {
                         return Archive7zResult::Cancelled;
+                    }
                     const std::uint8_t property = bytes[cursor++];
                     if (property == 0x0du) {
                         if (substream_count_present ||
@@ -561,9 +584,9 @@ private:
             while (cursor < end && bytes[cursor] != 0u) {
                 if (deadline != nullptr && deadline(deadlineContext))
                     return Archive7zResult::Deadline;
-                if (cancellation != nullptr &&
-                    cancellation(cancellationContext))
+                if (cancellationRequested(cancellation, cancellationContext)) {
                     return Archive7zResult::Cancelled;
+                }
                 const std::uint8_t property = bytes[cursor++];
                 std::uint64_t property_size = 0u;
                 if (!readEncodedUInt64(bytes, end, cursor, property_size) ||
@@ -753,9 +776,10 @@ private:
                 if ((index & 4095u) == 0u) {
                     if (deadline != nullptr && deadline(deadlineContext))
                         return Archive7zResult::Deadline;
-                    if (cancellation != nullptr &&
-                        cancellation(cancellationContext))
+                    if (cancellationRequested(cancellation,
+                                               cancellationContext)) {
                         return Archive7zResult::Cancelled;
+                    }
                 }
                 actual_pack_crc ^= bytes[pack_starts[stream] + index];
                 for (int bit = 0; bit < 8; ++bit)
@@ -783,8 +807,9 @@ private:
                 bcj2_streams, bcj2_sizes,
                 static_cast<std::size_t>(unpack_size), decoded, cancellation,
                 cancellationContext, deadline, deadlineContext);
-            if (bcj2_result != Archive7zResult::Ok)
+            if (bcj2_result != Archive7zResult::Ok) {
                 return bcj2_result;
+            }
             if (folder_crc_defined &&
                 rinruntime_archive_crc32(
                     reinterpret_cast<const std::uint8_t*>(decoded.data()),
@@ -835,9 +860,10 @@ private:
                     while (copied < input_size) {
                         if (deadline != nullptr && deadline(deadlineContext))
                             return Archive7zResult::Deadline;
-                        if (cancellation != nullptr &&
-                            cancellation(cancellationContext))
+                        if (cancellationRequested(cancellation,
+                                                  cancellationContext)) {
                             return Archive7zResult::Cancelled;
+                        }
                         const std::size_t part =
                             (input_size - copied) > 65536u
                                 ? 65536u
@@ -855,8 +881,9 @@ private:
                             input, input_size, lzma2_properties[coder],
                             expected_size, coder_output, cancellation,
                             cancellationContext, deadline, deadlineContext);
-                    if (lzma2_result == ArchiveXzResult::Cancelled)
+                    if (lzma2_result == ArchiveXzResult::Cancelled) {
                         return Archive7zResult::Cancelled;
+                    }
                     if (lzma2_result == ArchiveXzResult::Deadline)
                         return Archive7zResult::Deadline;
                     if (lzma2_result == ArchiveXzResult::Limit)
@@ -878,8 +905,9 @@ private:
                             filter_property_sizes[coder], input, input_size,
                             coder_output, cancellation, cancellationContext,
                             deadline, deadlineContext);
-                    if (filter_result == ArchiveXzResult::Cancelled)
+                    if (filter_result == ArchiveXzResult::Cancelled) {
                         return Archive7zResult::Cancelled;
+                    }
                     if (filter_result == ArchiveXzResult::Deadline)
                         return Archive7zResult::Deadline;
                     if (filter_result == ArchiveXzResult::Limit)
@@ -897,8 +925,9 @@ private:
                             lzma_dictionary_sizes[coder], expected_size,
                             coder_output, cancellation, cancellationContext,
                             deadline, deadlineContext);
-                    if (lzma_result == ArchiveXzResult::Cancelled)
+                    if (lzma_result == ArchiveXzResult::Cancelled) {
                         return Archive7zResult::Cancelled;
+                    }
                     if (lzma_result == ArchiveXzResult::Deadline)
                         return Archive7zResult::Deadline;
                     if (lzma_result == ArchiveXzResult::Limit)
@@ -932,6 +961,10 @@ private:
             entry_count_ = 0u;
             output.clear();
             return Archive7zResult::Limit;
+        } catch (const CancellationCallbackFailure&) {
+            entry_count_ = 0u;
+            output.clear();
+            return Archive7zResult::Cancelled;
         } catch (...) {
             entry_count_ = 0u;
             output.clear();
@@ -1013,8 +1046,9 @@ private:
         for (std::size_t folder = 0u; folder < folders; ++folder) {
             if (deadline != nullptr && deadline(deadlineContext))
                 return Archive7zResult::Deadline;
-            if (cancellation != nullptr && cancellation(cancellationContext))
+            if (cancellationRequested(cancellation, cancellationContext)) {
                 return Archive7zResult::Cancelled;
+            }
             std::uint64_t coder_count = 0u;
             if (!readEncodedUInt64(bytes, end, cursor, coder_count))
                 return Archive7zResult::Malformed;
@@ -1154,9 +1188,9 @@ private:
             while (cursor < end && bytes[cursor] != 0u) {
                 if (deadline != nullptr && deadline(deadlineContext))
                     return Archive7zResult::Deadline;
-                if (cancellation != nullptr &&
-                    cancellation(cancellationContext))
+                if (cancellationRequested(cancellation, cancellationContext)) {
                     return Archive7zResult::Cancelled;
+                }
                 const std::uint8_t property = bytes[cursor++];
                 if (property == 0x0du) {
                     if (substream_counts_present ||
@@ -1246,8 +1280,9 @@ private:
         while (cursor < end && bytes[cursor] != 0u) {
             if (deadline != nullptr && deadline(deadlineContext))
                 return Archive7zResult::Deadline;
-            if (cancellation != nullptr && cancellation(cancellationContext))
+            if (cancellationRequested(cancellation, cancellationContext)) {
                 return Archive7zResult::Cancelled;
+            }
             const std::uint8_t property = bytes[cursor++];
             std::uint64_t property_size = 0u;
             if (!readEncodedUInt64(bytes, end, cursor, property_size) ||
@@ -1355,9 +1390,10 @@ private:
                 if ((index & 4095u) == 0u) {
                     if (deadline != nullptr && deadline(deadlineContext))
                         return Archive7zResult::Deadline;
-                    if (cancellation != nullptr &&
-                        cancellation(cancellationContext))
+                    if (cancellationRequested(cancellation,
+                                               cancellationContext)) {
                         return Archive7zResult::Cancelled;
+                    }
                 }
                 const std::uint8_t value = bytes[pack_offset + index];
                 actual_crc ^= value;
@@ -1378,9 +1414,9 @@ private:
                  coder < folder_coder_counts[folder]; ++coder) {
                 if (deadline != nullptr && deadline(deadlineContext))
                     return Archive7zResult::Deadline;
-                if (cancellation != nullptr &&
-                    cancellation(cancellationContext))
+                if (cancellationRequested(cancellation, cancellationContext)) {
                     return Archive7zResult::Cancelled;
+                }
                 std::string coder_output;
                 const std::uint64_t method = folder_methods[folder][coder];
                 if (method == 0u) {
@@ -1397,8 +1433,9 @@ private:
                             folder_coder_unpack_sizes[folder][coder],
                             coder_output, cancellation, cancellationContext,
                             deadline, deadlineContext);
-                    if (lzma2_result == ArchiveXzResult::Cancelled)
+                    if (lzma2_result == ArchiveXzResult::Cancelled) {
                         return Archive7zResult::Cancelled;
+                    }
                     if (lzma2_result == ArchiveXzResult::Deadline)
                         return Archive7zResult::Deadline;
                     if (lzma2_result == ArchiveXzResult::Limit)
@@ -1421,8 +1458,9 @@ private:
                             folder_coder_unpack_sizes[folder][coder],
                             coder_output, cancellation, cancellationContext,
                             deadline, deadlineContext);
-                    if (lzma_result == ArchiveXzResult::Cancelled)
+                    if (lzma_result == ArchiveXzResult::Cancelled) {
                         return Archive7zResult::Cancelled;
+                    }
                     if (lzma_result == ArchiveXzResult::Deadline)
                         return Archive7zResult::Deadline;
                     if (lzma_result == ArchiveXzResult::Limit)
@@ -1445,8 +1483,9 @@ private:
                                 coder_input.data()),
                             coder_input.size(), coder_output, cancellation,
                             cancellationContext, deadline, deadlineContext);
-                    if (filter_result == ArchiveXzResult::Cancelled)
+                    if (filter_result == ArchiveXzResult::Cancelled) {
                         return Archive7zResult::Cancelled;
+                    }
                     if (filter_result == ArchiveXzResult::Deadline)
                         return Archive7zResult::Deadline;
                     if (filter_result == ArchiveXzResult::Limit)
@@ -1585,7 +1624,7 @@ private:
             const bool deadline_hit =
                 deadline != nullptr && deadline(deadlineContext);
             const bool cancellation_hit =
-                cancellation != nullptr && cancellation(cancellationContext);
+                cancellationRequested(cancellation, cancellationContext);
             if (deadline_hit || cancellation_hit)
                 return deadline_hit ? Archive7zResult::Deadline
                                     : Archive7zResult::Cancelled;

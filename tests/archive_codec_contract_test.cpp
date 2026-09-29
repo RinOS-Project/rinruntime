@@ -1368,7 +1368,7 @@ int main()
     xzOutput = "poison";
     assert(xzReader.decodeStoredLzma2(
                storedXz.data(), storedXz.size(), xzOutput, throwingCallback,
-               nullptr) == RinRuntime::ArchiveXzResult::Malformed);
+               nullptr) == RinRuntime::ArchiveXzResult::Cancelled);
     assert(xzOutput.empty());
     std::vector<std::uint8_t> compressedXz = storedXz;
     compressedXz[24u] = 0x80u;
@@ -1573,7 +1573,7 @@ int main()
     sevenZipOutput = "poison";
     assert(sevenZipReader.decodeStored(
                storedSevenZip.data(), storedSevenZip.size(), sevenZipOutput,
-               throwingCallback, nullptr) == RinRuntime::Archive7zResult::Malformed);
+               throwingCallback, nullptr) == RinRuntime::Archive7zResult::Cancelled);
     assert(sevenZipOutput.empty());
     const std::vector<std::uint8_t> multiEntrySevenZip =
         make7zStored(false, false, false, false, 0u, true);

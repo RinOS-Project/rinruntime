@@ -356,8 +356,9 @@ public:
             return ArchiveXzResult::Limit;
         if (deadline != nullptr && deadline(deadlineContext))
             return ArchiveXzResult::Deadline;
-        if (cancellation != nullptr && cancellation(cancellationContext))
+        if (cancellationRequested(cancellation, cancellationContext)) {
             return ArchiveXzResult::Cancelled;
+        }
 
         std::string decoded;
         if (inputSize != 0u)
@@ -438,6 +439,9 @@ public:
         } catch (const std::bad_alloc&) {
             output.clear();
             return ArchiveXzResult::Limit;
+        } catch (const CancellationCallbackFailure&) {
+            output.clear();
+            return ArchiveXzResult::Cancelled;
         } catch (...) {
             output.clear();
             return ArchiveXzResult::Malformed;
@@ -446,6 +450,27 @@ public:
     }
 
 private:
+    struct CancellationCallbackFailure {};
+
+    static bool cancellationRequested(
+        ArchiveDeflateCancellationFunction cancellation,
+        void* cancellationContext)
+    {
+        if (cancellation == nullptr) return false;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
+            return cancellation(cancellationContext);
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (...) {
+            /* Keep ordinary cancellation distinct from a callback exception;
+             * the public decoder catch boundary clears output only for the
+             * latter while preserving established cancellation semantics. */
+            throw CancellationCallbackFailure{};
+        }
+#endif
+    }
+
     enum class LzmaStatus : int {
         Ok = 0,
         Malformed = -1,
@@ -830,8 +855,8 @@ private:
                 if ((output.size() & 4095u) == 0u) {
                     if (deadline != nullptr && deadline(deadlineContext))
                         return LzmaStatus::Deadline;
-                    if (cancellation != nullptr &&
-                        cancellation(cancellationContext))
+                    if (ArchiveXzReader::cancellationRequested(
+                            cancellation, cancellationContext))
                         return LzmaStatus::Cancelled;
                 }
                 const unsigned positionState =
@@ -937,8 +962,9 @@ private:
 #endif
         if (deadline != nullptr && deadline(deadlineContext))
             return ArchiveXzResult::Deadline;
-        if (cancellation != nullptr && cancellation(cancellationContext))
+        if (cancellationRequested(cancellation, cancellationContext)) {
             return ArchiveXzResult::Cancelled;
+        }
         ArchiveXzSummary summary;
         ArchiveXzResult result = inspect(bytes, size, summary);
         if (result != ArchiveXzResult::Ok) return result;
@@ -969,8 +995,9 @@ private:
         while (blockOffset < summary.indexOffset) {
             if (deadline != nullptr && deadline(deadlineContext))
                 return ArchiveXzResult::Deadline;
-            if (cancellation != nullptr && cancellation(cancellationContext))
+            if (cancellationRequested(cancellation, cancellationContext)) {
                 return ArchiveXzResult::Cancelled;
+            }
             const std::size_t blockHeaderSize =
                 (static_cast<std::size_t>(bytes[blockOffset]) + 1u) * 4u;
             const std::size_t headerEnd = blockOffset + blockHeaderSize;
@@ -1103,9 +1130,9 @@ private:
             while (cursor < payloadEnd) {
                 if (deadline != nullptr && deadline(deadlineContext))
                     return ArchiveXzResult::Deadline;
-                if (cancellation != nullptr &&
-                    cancellation(cancellationContext))
+                if (cancellationRequested(cancellation, cancellationContext)) {
                     return ArchiveXzResult::Cancelled;
+                }
                 const std::uint8_t control = bytes[cursor++];
                 if (control == 0u) {
                     streamEnded = true;
@@ -1133,9 +1160,10 @@ private:
                     while (copied < chunkBytes) {
                         if (deadline != nullptr && deadline(deadlineContext))
                             return ArchiveXzResult::Deadline;
-                        if (cancellation != nullptr &&
-                            cancellation(cancellationContext))
+                        if (cancellationRequested(cancellation,
+                                                  cancellationContext)) {
                             return ArchiveXzResult::Cancelled;
+                        }
                         const std::size_t part =
                             (chunkBytes - copied) > 65536u
                                 ? 65536u
@@ -1267,8 +1295,9 @@ private:
                 default:
                     return ArchiveXzResult::Unsupported;
                 }
-                if (filterResult != ArchiveXzResult::Ok)
+                if (filterResult != ArchiveXzResult::Ok) {
                     return filterResult;
+                }
             }
             const std::size_t checkOffset =
                 (payloadEnd + 3u) & ~std::size_t(3u);
@@ -1303,6 +1332,9 @@ private:
         } catch (const std::bad_alloc&) {
             output.clear();
             return ArchiveXzResult::Limit;
+        } catch (const CancellationCallbackFailure&) {
+            output.clear();
+            return ArchiveXzResult::Cancelled;
         } catch (...) {
             output.clear();
             return ArchiveXzResult::Malformed;
@@ -1335,8 +1367,9 @@ private:
                        : ArchiveXzResult::Malformed;
         if (deadline != nullptr && deadline(deadlineContext))
             return ArchiveXzResult::Deadline;
-        if (cancellation != nullptr && cancellation(cancellationContext))
+        if (cancellationRequested(cancellation, cancellationContext)) {
             return ArchiveXzResult::Cancelled;
+        }
         std::string decoded;
         const LzmaStatus decodeResult = lzma.decodeChunk(
             compressed, compressedSize, expectedSize, decoded, 0u,
@@ -1344,8 +1377,9 @@ private:
             deadlineContext);
         if (decodeResult == LzmaStatus::Limit)
             return ArchiveXzResult::Limit;
-        if (decodeResult == LzmaStatus::Cancelled)
+        if (decodeResult == LzmaStatus::Cancelled) {
             return ArchiveXzResult::Cancelled;
+        }
         if (decodeResult == LzmaStatus::Deadline)
             return ArchiveXzResult::Deadline;
         if (decodeResult != LzmaStatus::Ok || decoded.size() != expectedSize)
@@ -1356,6 +1390,9 @@ private:
         } catch (const std::bad_alloc&) {
             output.clear();
             return ArchiveXzResult::Limit;
+        } catch (const CancellationCallbackFailure&) {
+            output.clear();
+            return ArchiveXzResult::Cancelled;
         } catch (...) {
             output.clear();
             return ArchiveXzResult::Malformed;
@@ -1374,7 +1411,7 @@ private:
         for (std::size_t index = 0u; index < size; ++index) {
             if (deadline != nullptr && deadline(deadlineContext))
                 return ArchiveXzResult::Deadline;
-            if (cancellation != nullptr && cancellation(cancellationContext))
+            if (cancellationRequested(cancellation, cancellationContext))
                 return ArchiveXzResult::Cancelled;
             const std::size_t absolute = absoluteOffset + index;
             std::uint8_t value = static_cast<std::uint8_t>(decoded[absolute]);
@@ -1415,7 +1452,7 @@ private:
         while (bufferPosition <= limit) {
             if (deadline != nullptr && deadline(deadlineContext))
                 return ArchiveXzResult::Deadline;
-            if (cancellation != nullptr && cancellation(cancellationContext))
+            if (cancellationRequested(cancellation, cancellationContext))
                 return ArchiveXzResult::Cancelled;
 
             std::uint8_t byte = buffer[bufferPosition];
@@ -1493,7 +1530,7 @@ private:
         for (std::size_t position = 0u; position < size; position += 4u) {
             if (deadline != nullptr && deadline(deadlineContext))
                 return ArchiveXzResult::Deadline;
-            if (cancellation != nullptr && cancellation(cancellationContext))
+            if (cancellationRequested(cancellation, cancellationContext))
                 return ArchiveXzResult::Cancelled;
             if ((buffer[position] >> 2u) != 0x12u ||
                 (buffer[position + 3u] & 3u) != 1u)
@@ -1545,7 +1582,7 @@ private:
                 if (((mask >> slot) & 1u) == 0u) continue;
                 if (deadline != nullptr && deadline(deadlineContext))
                     return ArchiveXzResult::Deadline;
-                if (cancellation != nullptr && cancellation(cancellationContext))
+                if (cancellationRequested(cancellation, cancellationContext))
                     return ArchiveXzResult::Cancelled;
                 const std::size_t bytePosition = bitPosition >> 3u;
                 const std::uint32_t bitRemainder = bitPosition & 7u;
@@ -1599,7 +1636,7 @@ private:
         for (std::size_t position = 0u; position < size; position += 4u) {
             if (deadline != nullptr && deadline(deadlineContext))
                 return ArchiveXzResult::Deadline;
-            if (cancellation != nullptr && cancellation(cancellationContext))
+            if (cancellationRequested(cancellation, cancellationContext))
                 return ArchiveXzResult::Cancelled;
             if (buffer[position + 3u] != 0xebu) continue;
 
@@ -1635,7 +1672,7 @@ private:
         for (std::size_t position = 0u; position <= size; position += 2u) {
             if (deadline != nullptr && deadline(deadlineContext))
                 return ArchiveXzResult::Deadline;
-            if (cancellation != nullptr && cancellation(cancellationContext))
+            if (cancellationRequested(cancellation, cancellationContext))
                 return ArchiveXzResult::Cancelled;
             if ((buffer[position + 1u] & 0xf8u) != 0xf0u ||
                 (buffer[position + 3u] & 0xf8u) != 0xf8u)
@@ -1677,7 +1714,7 @@ private:
         for (std::size_t position = 0u; position < size; position += 4u) {
             if (deadline != nullptr && deadline(deadlineContext))
                 return ArchiveXzResult::Deadline;
-            if (cancellation != nullptr && cancellation(cancellationContext))
+            if (cancellationRequested(cancellation, cancellationContext))
                 return ArchiveXzResult::Cancelled;
 
             const std::uint32_t source = readLe32(buffer + position);
@@ -1731,7 +1768,7 @@ private:
         for (std::size_t position = 0u; position < size; position += 4u) {
             if (deadline != nullptr && deadline(deadlineContext))
                 return ArchiveXzResult::Deadline;
-            if (cancellation != nullptr && cancellation(cancellationContext))
+            if (cancellationRequested(cancellation, cancellationContext))
                 return ArchiveXzResult::Cancelled;
             const bool positiveCall =
                 buffer[position] == 0x40u &&
@@ -1778,7 +1815,7 @@ private:
         for (std::size_t position = 0u; position <= size; position += 2u) {
             if (deadline != nullptr && deadline(deadlineContext))
                 return ArchiveXzResult::Deadline;
-            if (cancellation != nullptr && cancellation(cancellationContext))
+            if (cancellationRequested(cancellation, cancellationContext))
                 return ArchiveXzResult::Cancelled;
 
             std::uint32_t instruction = buffer[position];
@@ -1862,8 +1899,9 @@ private:
             return ArchiveXzResult::Limit;
         if (deadline != nullptr && deadline(deadlineContext))
             return ArchiveXzResult::Deadline;
-        if (cancellation != nullptr && cancellation(cancellationContext))
+        if (cancellationRequested(cancellation, cancellationContext)) {
             return ArchiveXzResult::Cancelled;
+        }
         if (dictionaryProperty > 40u) return ArchiveXzResult::Malformed;
 
         const std::uint64_t requestedDictionary =
@@ -1885,8 +1923,9 @@ private:
         while (cursor < compressedSize) {
             if (deadline != nullptr && deadline(deadlineContext))
                 return ArchiveXzResult::Deadline;
-            if (cancellation != nullptr && cancellation(cancellationContext))
+            if (cancellationRequested(cancellation, cancellationContext)) {
                 return ArchiveXzResult::Cancelled;
+            }
             const std::uint8_t control = compressed[cursor++];
             if (control == 0u) {
                 if (cursor != compressedSize) return ArchiveXzResult::Malformed;
@@ -1914,9 +1953,10 @@ private:
                 while (copied < chunkBytes) {
                     if (deadline != nullptr && deadline(deadlineContext))
                         return ArchiveXzResult::Deadline;
-                    if (cancellation != nullptr &&
-                        cancellation(cancellationContext))
+                    if (cancellationRequested(cancellation,
+                                              cancellationContext)) {
                         return ArchiveXzResult::Cancelled;
+                    }
                     const std::size_t part =
                         chunkBytes - copied > 65536u ? 65536u
                                                      : chunkBytes - copied;
@@ -1984,6 +2024,9 @@ private:
         } catch (const std::bad_alloc&) {
             output.clear();
             return ArchiveXzResult::Limit;
+        } catch (const CancellationCallbackFailure&) {
+            output.clear();
+            return ArchiveXzResult::Cancelled;
         } catch (...) {
             output.clear();
             return ArchiveXzResult::Malformed;
