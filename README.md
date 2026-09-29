@@ -138,6 +138,9 @@ external toolkits: its owner may be an HTTP range source, a local/object-store
 source, or another bounded byte provider. Authentication, authorization,
 HTTPS/TLS, partial-byte storage, and Browser File Portal publication remain
 outside this generic public transport contract.
+The canonical `rinruntime/rinruntime.hpp` umbrella exposes the same adapter;
+the `rinruntime-model` host contract exercises it with a caller-owned range
+source without importing any Browser or service owner.
 
 `DownloadPartialReceipt::encode()` also clears the caller-owned output range
 on failure, bounded to the receipt wire size. This prevents stale durable

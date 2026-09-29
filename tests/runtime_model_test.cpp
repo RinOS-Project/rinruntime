@@ -5,9 +5,71 @@
 #include <cstdint>
 #include <vector>
 
+struct DownloadModelOwner {
+    unsigned reads = 0u;
+};
+
+static int beginDownloadModelRange(
+    void*, const RinRuntime::DownloadRangeRequest* request,
+    RinRuntime::DownloadRangeResponse* response) {
+    if (request == nullptr || response == nullptr) return -1;
+    response->statusCode = 206u;
+    response->contentRangeStart = request->offset;
+    response->contentRangeEnd = request->totalBytes - 1u;
+    response->contentRangeTotal = request->totalBytes;
+    response->contentLength = request->totalBytes - request->offset;
+    response->generation = request->generation;
+    response->validator = request->validator;
+    return 0;
+}
+
+static int readDownloadModelRange(void* context, std::uint8_t* buffer,
+                                  std::size_t capacity,
+                                  std::size_t* bytesRead) {
+    auto* owner = static_cast<DownloadModelOwner*>(context);
+    if (owner == nullptr || buffer == nullptr || bytesRead == nullptr ||
+        capacity == 0u)
+        return -1;
+    if (owner->reads++ == 0u) {
+        if (capacity < 1u) return -1;
+        buffer[0] = 0x5au;
+        *bytesRead = 1u;
+        return 0;
+    }
+    *bytesRead = 0u;
+    return 0;
+}
+
+static void abortDownloadModelRange(void*) {}
+
 int main() {
     RinRuntime::EventLoop event_loop;
     assert(event_loop.pendingEvents() == 0u);
+
+    DownloadModelOwner download_owner;
+    RinRuntime::DownloadRangeTransportOpsV1 download_ops;
+    download_ops.structSize = sizeof(download_ops);
+    download_ops.context = &download_owner;
+    download_ops.begin = beginDownloadModelRange;
+    download_ops.read = readDownloadModelRange;
+    download_ops.abort = abortDownloadModelRange;
+    RinRuntime::DownloadRangeTransportAdapter download;
+    assert(download.bind(download_ops));
+    RinRuntime::DownloadRangeRequest download_request;
+    download_request.requestId = 1u;
+    download_request.generation = 1u;
+    download_request.totalBytes = 1u;
+    download_request.validator = "model";
+    RinRuntime::DownloadRangeResponse download_response;
+    assert(download.begin(download_request, download_response));
+    std::uint8_t download_buffer[1u] = {};
+    std::size_t download_bytes = 0u;
+    assert(download.read(download_buffer, sizeof(download_buffer),
+                         download_bytes));
+    assert(download_bytes == 1u && download_buffer[0] == 0x5au);
+    assert(download.read(download_buffer, sizeof(download_buffer),
+                         download_bytes));
+    assert(download_bytes == 0u);
 
     RinCompression::ZstdFrameEncoder zstd_encoder;
     RinCompression::ZstdFrameDecoder zstd_decoder;
