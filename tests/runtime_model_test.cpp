@@ -54,6 +54,12 @@ int main() {
     assert(i18n_arg.name != nullptr && i18n_arg.value != nullptr);
     assert(rin_i18n_hash("RinOS") != 0u);
     assert(RinRuntime::utf8GraphemeSpacingMark(0x1a55u));
+#if !defined(_WIN32)
+    RinRuntime::PollEventLoopBackend* poll_backend = nullptr;
+    (void)poll_backend;
+#endif
+    RinRuntime::RinEventLoopBackend* rin_backend = nullptr;
+    (void)rin_backend;
     RinRuntime::BackupArchiveReader backup_reader;
 
     DownloadModelOwner download_owner;

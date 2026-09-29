@@ -43,6 +43,10 @@
 #include "accessibility_wire.hpp"
 #include "event.hpp"
 #include "event_loop.hpp"
+#if !defined(_WIN32)
+#include "event_loop_poll.hpp"
+#endif
+#include "event_loop_rin.hpp"
 #include "layout.hpp"
 #include "display_policy.hpp"
 #include "widget.hpp"
