@@ -3,6 +3,8 @@
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
+#include <new>
+#include <string>
 
 #include "../include/rinruntime/download_range_transport.hpp"
 
@@ -59,6 +61,11 @@ static int readRange(void* opaque, std::uint8_t* buffer, std::size_t capacity,
 
 static void abortRange(void* opaque) {
     ++static_cast<Owner*>(opaque)->abortCalls;
+}
+
+static int throwingBegin(void*, const RinRuntime::DownloadRangeRequest*,
+                         RinRuntime::DownloadRangeResponse*) {
+    throw std::bad_alloc();
 }
 
 static int statelessBegin(void*,
@@ -138,6 +145,21 @@ int main() {
     receiptWire[43u] = 1u;
     assert(!RinRuntime::DownloadPartialReceipt::decode(
         receiptWire, receiptSize, decodedReceipt));
+
+    RinRuntime::DownloadRangeRequest prepared;
+    prepared.validator = "stale";
+    assert(prepared.prepare(receipt, receipt.requestId, receipt.generation,
+                            receipt.validator));
+    assert(prepared.offset == receipt.committedBytes);
+    std::string rangeHeader = "stale";
+    assert(prepared.makeRangeHeader(rangeHeader));
+    assert(rangeHeader == "bytes=2-");
+
+    RinRuntime::DownloadRangeResponse madeResponse;
+    assert(RinRuntime::makeDownloadRangeResponse(
+        prepared, 206u, "bytes 2-4/5", "3", prepared.generation,
+        prepared.validator, madeResponse));
+    assert(madeResponse.validFor(prepared));
 
     Owner ordinaryOwner;
     RinRuntime::DownloadRangeTransportOpsV1 ordinaryOps;
@@ -298,5 +320,18 @@ int main() {
     for (const std::uint8_t byte : readCancelledOutput) assert(byte == 0u);
     assert(readCancelled.wasCancelled());
     assert(readCancelledOwner.abortCalls == 1u);
+
+    Owner throwingOwner;
+    RinRuntime::DownloadRangeTransportOpsV1 throwingOps = ordinaryOps;
+    throwingOps.context = &throwingOwner;
+    throwingOps.begin = throwingBegin;
+    RinRuntime::DownloadRangeTransportAdapter throwing;
+    assert(throwing.bind(throwingOps));
+    response.statusCode = 206u;
+    assert(!throwing.begin(request, response));
+    assert(throwing.state() ==
+           RinRuntime::DownloadRangeTransportAdapter::State::Idle);
+    assert(throwingOwner.abortCalls == 1u);
+    assert(response.statusCode == 0u);
     return 0;
 }

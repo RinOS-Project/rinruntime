@@ -185,6 +185,12 @@ source without importing any Browser or service owner.
 `DownloadPartialReceipt::encode()` also clears the caller-owned output range
 on failure, bounded to the receipt wire size. This prevents stale durable
 receipt bytes from being reused after an invalid or undersized encode.
+The decode, request preparation, range-header construction, and response
+construction paths are failure-atomic under exception-enabled builds: an
+allocation failure clears the candidate/output state and returns failure
+without publishing a partial validator or header. The transport adapter also
+catches an owner `std::bad_alloc` from `begin()`, aborts the admitted range,
+and returns to `Idle` without exposing a partial response.
 
 The public v1 transport callback table accepts both the original fixed prefix
 and the extended table containing the optional cancellation callback. Older

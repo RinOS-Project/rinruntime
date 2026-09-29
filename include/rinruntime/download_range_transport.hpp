@@ -15,6 +15,10 @@
 #include <string>
 #endif
 
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+#include <new>
+#endif
+
 #include "cancellation.h"
 #include "download_resume.hpp"
 
@@ -153,6 +157,9 @@ public:
         response = DownloadRangeResponse{};
         if (state_ != State::Idle || !opsValid(ops_) || !request.valid())
             return false;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
         request_ = request;
         state_ = State::Streaming;
         const int beforeBegin = cancellationStatus();
@@ -192,6 +199,18 @@ public:
         rangeExhausted_ = false;
         response = candidate;
         return true;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (const std::bad_alloc&) {
+            if (state_ == State::Streaming && ops_.abort != nullptr)
+                ops_.abort(ops_.context);
+            request_.clear();
+            remaining_ = 0u;
+            rangeExhausted_ = false;
+            state_ = State::Idle;
+            response = DownloadRangeResponse{};
+            return false;
+        }
+#endif
     }
 
     bool read(std::uint8_t* buffer, std::size_t capacity,

@@ -16,6 +16,10 @@
 #include <cstring>
 #endif
 
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+#include <new>
+#endif
+
 namespace RinRuntime {
 
 /*
@@ -107,17 +111,29 @@ struct DownloadPartialReceipt {
              ++index) {
             if (input[index] != 0u) return false;
         }
-        output.requestId = get64(input + 8u);
-        output.totalBytes = get64(input + 16u);
-        output.committedBytes = get64(input + 24u);
-        output.generation = get64(input + 32u);
-        output.validator.assign(reinterpret_cast<const char*>(input + 44u),
-                                validatorSize);
-        if (!output.valid()) {
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
+            DownloadPartialReceipt candidate;
+            candidate.requestId = get64(input + 8u);
+            candidate.totalBytes = get64(input + 16u);
+            candidate.committedBytes = get64(input + 24u);
+            candidate.generation = get64(input + 32u);
+            candidate.validator.assign(
+                reinterpret_cast<const char*>(input + 44u), validatorSize);
+            if (!candidate.valid()) return false;
+            output.requestId = candidate.requestId;
+            output.totalBytes = candidate.totalBytes;
+            output.committedBytes = candidate.committedBytes;
+            output.generation = candidate.generation;
+            output.validator.swap(candidate.validator);
+            return true;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (const std::bad_alloc&) {
             output.clear();
             return false;
         }
-        return true;
+#endif
     }
 
 private:
@@ -194,19 +210,48 @@ struct DownloadRangeRequest {
         if (!receipt.matches(expectedRequestId, expectedGeneration,
                              expectedValidator, receipt.committedBytes))
             return false;
-        requestId = receipt.requestId;
-        generation = receipt.generation;
-        offset = receipt.committedBytes;
-        totalBytes = receipt.totalBytes;
-        validator = receipt.validator;
-        return valid();
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
+            DownloadRangeRequest candidate;
+            candidate.requestId = receipt.requestId;
+            candidate.generation = receipt.generation;
+            candidate.offset = receipt.committedBytes;
+            candidate.totalBytes = receipt.totalBytes;
+            candidate.validator = receipt.validator;
+            if (!candidate.valid()) return false;
+            requestId = candidate.requestId;
+            generation = candidate.generation;
+            offset = candidate.offset;
+            totalBytes = candidate.totalBytes;
+            validator.swap(candidate.validator);
+            return true;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (const std::bad_alloc&) {
+            clear();
+            return false;
+        }
+#endif
     }
 
     bool makeRangeHeader(std::string& output) const {
         output.clear();
         if (!valid()) return false;
-        output = "bytes=" + std::to_string(offset) + "-";
-        return output.size() < kMaxRangeHeaderBytes;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
+            std::string candidate = "bytes=";
+            candidate += std::to_string(offset);
+            candidate += '-';
+            if (candidate.size() >= kMaxRangeHeaderBytes) return false;
+            output.swap(candidate);
+            return true;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (const std::bad_alloc&) {
+            output.clear();
+            return false;
+        }
+#endif
     }
 
 private:
@@ -333,18 +378,32 @@ inline bool makeDownloadRangeResponse(
         !parseDownloadContentRange(contentRange, start, end, total) ||
         !parseDownloadContentLength(contentLength, length))
         return false;
-    output.statusCode = statusCode;
-    output.contentRangeStart = start;
-    output.contentRangeEnd = end;
-    output.contentRangeTotal = total;
-    output.contentLength = length;
-    output.generation = generation;
-    output.validator = validator;
-    if (!output.validFor(request)) {
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+    try {
+#endif
+        DownloadRangeResponse candidate;
+        candidate.statusCode = statusCode;
+        candidate.contentRangeStart = start;
+        candidate.contentRangeEnd = end;
+        candidate.contentRangeTotal = total;
+        candidate.contentLength = length;
+        candidate.generation = generation;
+        candidate.validator = validator;
+        if (!candidate.validFor(request)) return false;
+        output.statusCode = candidate.statusCode;
+        output.contentRangeStart = candidate.contentRangeStart;
+        output.contentRangeEnd = candidate.contentRangeEnd;
+        output.contentRangeTotal = candidate.contentRangeTotal;
+        output.contentLength = candidate.contentLength;
+        output.generation = candidate.generation;
+        output.validator.swap(candidate.validator);
+        return true;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+    } catch (const std::bad_alloc&) {
         output = DownloadRangeResponse{};
         return false;
     }
-    return true;
+#endif
 }
 
 inline bool parseDownloadContentRange(const std::string& value,
