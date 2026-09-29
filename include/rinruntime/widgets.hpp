@@ -959,7 +959,6 @@ public:
 #endif
     }
     const std::vector<Column>& columns() const { return columns_; }
-    std::vector<Column>& columns() { return columns_; }
     bool setColumnValue(int32_t index,
                         std::function<std::string(int32_t)> callback) {
         if (index < 0 || index >= static_cast<int32_t>(columns_.size()))
@@ -1738,7 +1737,6 @@ public:
     }
 
     const std::vector<MenuItem>& items() const { return items_; }
-    std::vector<MenuItem>& items() { return items_; }
     int32_t activeIndex() const { return activeIndex_; }
     bool isOpen() const { return open_; }
 
@@ -2044,7 +2042,6 @@ public:
         return false;
     }
     const std::vector<Menu>& menus() const { return menus_; }
-    std::vector<Menu>& menus() { return menus_; }
     int32_t activeMenu() const { return activeMenu_; }
     bool isOpen(int32_t index) const {
         return index >= 0 && index < (int32_t)menus_.size() && menus_[index].open;

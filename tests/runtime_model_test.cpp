@@ -4,6 +4,7 @@
 #include <cassert>
 #include <cstdint>
 #include <stdexcept>
+#include <type_traits>
 #include <vector>
 
 struct DownloadModelOwner {
@@ -61,6 +62,13 @@ static int throwingDnsExchange(
 }
 
 int main() {
+    static_assert(std::is_const_v<std::remove_reference_t<
+                      decltype(std::declval<RinRuntime::Table&>().columns())>>);
+    static_assert(std::is_const_v<std::remove_reference_t<
+                      decltype(std::declval<RinRuntime::PopupMenu&>().items())>>);
+    static_assert(std::is_const_v<std::remove_reference_t<
+                      decltype(std::declval<RinRuntime::MenuBar&>().menus())>>);
+
     RinRuntime::EventLoop event_loop;
     assert(event_loop.pendingEvents() == 0u);
     RinRuntime::Event cancellable_output = {};
