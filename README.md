@@ -384,7 +384,8 @@ owners.
 `archive_7z.hpp` provides the public `Archive7zReader` envelope inspector and
 the explicitly bounded `decodeStored()` subset.  The decoder accepts one
 non-empty packed stream, bounded multiple folders when each folder is a
-single plain Copy coder with one regular substream, one single BCJ2 coder
+single plain Copy coder with regular substreams described by `SubStreamsInfo`,
+one single BCJ2 coder
 (`03 03 01 1b`) with four packed input streams, or empty regular
 files/directories with no packed stream.  `FilesInfo` may also interleave those empty entries with the
 decoded substreams.  The
@@ -398,16 +399,16 @@ dictionary property) coders.  BindPairs, packed/final stream selection,
 intermediate sizes, and optional single-file metadata/CRC records are
 validated before failure-atomic caller-owned output is published.
 The raw BCJ/Delta transforms reuse the public `ArchiveXzReader` filter helper;
-arbitrary multi-stream coders, encryption, multiple folders,
+arbitrary multi-stream coders, multi-folder coder chains, encryption,
 filesystem extraction, archive service IPC, and File Portal publication remain
 private or explicit `Unsupported` results.
 The shared `ArchiveXzReader::decodeRawLzma()` helper owns only the bounded raw
 range-coded codec; it does not parse 7z headers or publish bytes.  Multi-stream
 coders, encryption, multiple folders, filesystem extraction, archive
 service IPC, and File Portal publication remain private or `Unsupported`.
-Arbitrary multi-stream graphs, multi-folder coder chains or SubStreamsInfo,
-encryption, and malformed empty-stream metadata remain explicit `Unsupported`
-or malformed results.  Its 7z VLI reader
+Arbitrary multi-stream graphs, multi-folder coder chains, encryption, and
+malformed empty-stream metadata remain explicit `Unsupported` or malformed
+results.  Its 7z VLI reader
 consumes multi-byte extra bytes in the format's little-endian order and rejects
 non-minimal encodings such as a zero value encoded with an extra byte, so
 malformed header values do not reach the stored-copy path.
