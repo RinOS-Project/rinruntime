@@ -227,6 +227,77 @@ static std::vector<std::uint8_t> make7zStored(bool copy_chain = false,
     return bytes;
 }
 
+static std::vector<std::uint8_t> make7zBcj2()
+{
+    const std::uint8_t signature[] = {
+        0x37u, 0x7au, 0xbcu, 0xafu, 0x27u, 0x1cu};
+    const std::uint8_t main_stream[] = {0xe8u, 0x00u, 0x00u, 0x00u,
+                                        0x00u};
+    const std::uint8_t rc_stream[] = {0x00u, 0x00u, 0x00u, 0x00u, 0x01u};
+    std::vector<std::uint8_t> header;
+    header.push_back(0x01u); /* Header */
+    header.push_back(0x04u); /* MainStreamsInfo */
+    header.push_back(0x06u); /* PackInfo */
+    put7zUInt64(header, 0u); /* PackPos */
+    put7zUInt64(header, 4u); /* NumPackStreams */
+    header.push_back(0x09u); /* Size */
+    put7zUInt64(header, sizeof(main_stream));
+    put7zUInt64(header, 0u);
+    put7zUInt64(header, 0u);
+    put7zUInt64(header, sizeof(rc_stream));
+    header.push_back(0x00u); /* PackInfo end */
+    header.push_back(0x07u); /* UnPackInfo */
+    header.push_back(0x0bu); /* Folder */
+    put7zUInt64(header, 1u); /* NumFolders */
+    header.push_back(0u); /* folders are in this header */
+    put7zUInt64(header, 1u); /* NumCoders */
+    header.push_back(0x14u); /* four-input BCJ2 coder, no properties */
+    header.push_back(0x03u);
+    header.push_back(0x03u);
+    header.push_back(0x01u);
+    header.push_back(0x1bu);
+    put7zUInt64(header, 4u); /* NumInStreams */
+    put7zUInt64(header, 1u); /* NumOutStreams */
+    put7zUInt64(header, 0u);
+    put7zUInt64(header, 1u);
+    put7zUInt64(header, 2u);
+    put7zUInt64(header, 3u);
+    header.push_back(0x0cu); /* CodersUnpackSize */
+    put7zUInt64(header, sizeof(main_stream));
+    header.push_back(0x0au); /* Folder CRC */
+    header.push_back(1u);
+    header.resize(header.size() + 4u);
+    put32(header, header.size() - 4u,
+          RinRuntime::rinruntime_archive_crc32(main_stream,
+                                                sizeof(main_stream)));
+    header.push_back(0x00u); /* UnPackInfo end */
+    header.push_back(0x00u); /* MainStreamsInfo end */
+    header.push_back(0x05u); /* FilesInfo */
+    put7zUInt64(header, 1u); /* NumFiles */
+    header.push_back(0x00u); /* FilesInfo properties end */
+    header.push_back(0x00u); /* Header end */
+
+    std::vector<std::uint8_t> bytes(32u + sizeof(main_stream) +
+                                        sizeof(rc_stream) + header.size(),
+                                    0u);
+    std::memcpy(bytes.data(), signature, sizeof(signature));
+    bytes[7u] = 4u;
+    std::memcpy(bytes.data() + 32u, main_stream, sizeof(main_stream));
+    std::memcpy(bytes.data() + 32u + sizeof(main_stream), rc_stream,
+                sizeof(rc_stream));
+    const std::size_t header_offset =
+        32u + sizeof(main_stream) + sizeof(rc_stream);
+    std::memcpy(bytes.data() + header_offset, header.data(), header.size());
+    put64(bytes, 12u, sizeof(main_stream) + sizeof(rc_stream));
+    put64(bytes, 20u, header.size());
+    put32(bytes, 28u,
+          RinRuntime::rinruntime_archive_crc32(bytes.data() + header_offset,
+                                                header.size()));
+    put32(bytes, 8u,
+          RinRuntime::rinruntime_archive_crc32(bytes.data() + 12u, 20u));
+    return bytes;
+}
+
 static std::vector<std::uint8_t> make7zEmpty()
 {
     const std::uint8_t signature[] = {
@@ -522,6 +593,17 @@ int main()
     output = "poison";
     assert(reader.readEntry(0u, output) ==
            RinRuntime::ArchiveContainerResult::Ok && output == "hello");
+
+    const std::vector<std::uint8_t> sevenZipBcj2 = make7zBcj2();
+    assert(reader.parse(sevenZipBcj2.data(), sevenZipBcj2.size()) ==
+           RinRuntime::ArchiveContainerResult::Ok);
+    assert(reader.kind() == RinRuntime::ArchiveContainerKind::SevenZip &&
+           reader.size() == 1u && reader.entries()[0].size == 5u);
+    output = "poison";
+    assert(reader.readEntry(0u, output) ==
+           RinRuntime::ArchiveContainerResult::Ok &&
+           output == std::string({static_cast<char>(0xe8), '\0', '\0', '\0',
+                                  '\0'}));
 
     const std::vector<std::uint8_t> emptySevenZip = make7zEmpty();
     assert(reader.parse(emptySevenZip.data(), emptySevenZip.size()) ==

@@ -297,6 +297,98 @@ static std::vector<std::uint8_t> make7zStored(bool copy_chain = false,
     return bytes;
 }
 
+static std::vector<std::uint8_t> make7zBcj2(bool converted_branch = false)
+{
+    const std::uint8_t signature[] = {
+        0x37u, 0x7au, 0xbcu, 0xafu, 0x27u, 0x1cu};
+    const std::uint8_t identity_main[] = {0xe8u, 0x00u, 0x00u, 0x00u,
+                                          0x00u};
+    const std::uint8_t branch_main[] = {0xe8u};
+    const std::uint8_t identity_call[1] = {0u};
+    const std::uint8_t branch_call[] = {0x00u, 0x00u, 0x00u, 0x00u};
+    const std::uint8_t jump_stream[1] = {0u};
+    const std::uint8_t identity_rc[] = {0x00u, 0x00u, 0x00u, 0x00u,
+                                        0x01u};
+    const std::uint8_t branch_rc[] = {0x00u, 0x7fu, 0xffu, 0xfcu, 0x00u};
+    const std::uint8_t expected_branch[] = {0xe8u, 0xfbu, 0xffu, 0xffu,
+                                            0xffu};
+    const std::uint8_t* main_stream =
+        converted_branch ? branch_main : identity_main;
+    const std::size_t main_size =
+        converted_branch ? sizeof(branch_main) : sizeof(identity_main);
+    const std::uint8_t* call_stream =
+        converted_branch ? branch_call : identity_call;
+    const std::size_t call_size =
+        converted_branch ? sizeof(branch_call) : 0u;
+    const std::uint8_t* rc_stream = converted_branch ? branch_rc : identity_rc;
+    const std::uint8_t* expected = converted_branch ? expected_branch
+                                                    : identity_main;
+    const std::uint8_t* streams[] = {main_stream, call_stream, jump_stream,
+                                     rc_stream};
+    const std::size_t stream_sizes[] = {main_size, call_size, 0u,
+                                        converted_branch ? sizeof(branch_rc)
+                                                          : sizeof(identity_rc)};
+    std::vector<std::uint8_t> header;
+    header.push_back(0x01u); /* Header */
+    header.push_back(0x04u); /* MainStreamsInfo */
+    header.push_back(0x06u); /* PackInfo */
+    put7zUInt64(header, 0u); /* PackPos */
+    put7zUInt64(header, 4u); /* NumPackStreams */
+    header.push_back(0x09u); /* Size */
+    for (std::size_t stream = 0u; stream != 4u; ++stream)
+        put7zUInt64(header, stream_sizes[stream]);
+    header.push_back(0x00u); /* PackInfo end; pack CRCs omitted */
+    header.push_back(0x07u); /* UnPackInfo */
+    header.push_back(0x0bu); /* Folder */
+    put7zUInt64(header, 1u); /* NumFolders */
+    header.push_back(0u); /* folders are in this header */
+    put7zUInt64(header, 1u); /* NumCoders */
+    header.push_back(0x14u); /* four-input BCJ2 coder, no properties */
+    header.push_back(0x03u);
+    header.push_back(0x03u);
+    header.push_back(0x01u);
+    header.push_back(0x1bu);
+    put7zUInt64(header, 4u); /* NumInStreams */
+    put7zUInt64(header, 1u); /* NumOutStreams */
+    put7zUInt64(header, 0u); /* MAIN packed stream */
+    put7zUInt64(header, 1u); /* CALL packed stream */
+    put7zUInt64(header, 2u); /* JUMP packed stream */
+    put7zUInt64(header, 3u); /* RC packed stream */
+    header.push_back(0x0cu); /* CodersUnpackSize */
+    put7zUInt64(header, 5u);
+    header.push_back(0x0au); /* Folder CRC */
+    header.push_back(1u);
+    put32(header, RinRuntime::rinruntime_archive_crc32(
+                       expected, 5u));
+    header.push_back(0x00u); /* UnPackInfo end */
+    header.push_back(0x00u); /* MainStreamsInfo end */
+    header.push_back(0x05u); /* FilesInfo */
+    put7zUInt64(header, 1u); /* NumFiles */
+    header.push_back(0x00u); /* FilesInfo properties end */
+    header.push_back(0x00u); /* Header end */
+
+    std::vector<std::uint8_t> bytes(32u + stream_sizes[0u] +
+                                        stream_sizes[1u] + stream_sizes[2u] +
+                                        stream_sizes[3u] + header.size(),
+                                    0u);
+    std::memcpy(bytes.data(), signature, sizeof(signature));
+    bytes[7u] = 4u;
+    std::size_t offset = 32u;
+    for (std::size_t stream = 0u; stream != 4u; ++stream) {
+        std::memcpy(bytes.data() + offset, streams[stream],
+                    stream_sizes[stream]);
+        offset += stream_sizes[stream];
+    }
+    std::memcpy(bytes.data() + offset, header.data(), header.size());
+    writeLe64(bytes, 12u, offset - 32u);
+    writeLe64(bytes, 20u, header.size());
+    writeLe32(bytes, 28u, RinRuntime::rinruntime_archive_crc32(
+                              bytes.data() + offset, header.size()));
+    writeLe32(bytes, 8u, RinRuntime::rinruntime_archive_crc32(
+                             bytes.data() + 12u, 20u));
+    return bytes;
+}
+
 static std::vector<std::uint8_t> make7zEmpty()
 {
     const std::uint8_t signature[] = {
@@ -1400,6 +1492,29 @@ int main()
                                        lzma2SevenZip.size(), sevenZipOutput) ==
            RinRuntime::Archive7zResult::Ok);
     assert(sevenZipOutput == "hello");
+    const std::vector<std::uint8_t> bcj2SevenZip = make7zBcj2();
+    sevenZipOutput = "poison";
+    assert(sevenZipReader.decodeStored(bcj2SevenZip.data(),
+                                       bcj2SevenZip.size(), sevenZipOutput) ==
+           RinRuntime::Archive7zResult::Ok);
+    assert(sevenZipOutput ==
+           std::string({static_cast<char>(0xe8), '\0', '\0', '\0', '\0'}));
+    const std::vector<std::uint8_t> bcj2BranchSevenZip =
+        make7zBcj2(true);
+    sevenZipOutput = "poison";
+    assert(sevenZipReader.decodeStored(
+               bcj2BranchSevenZip.data(), bcj2BranchSevenZip.size(),
+               sevenZipOutput) == RinRuntime::Archive7zResult::Ok);
+    assert(sevenZipOutput ==
+           std::string({static_cast<char>(0xe8), static_cast<char>(0xfbu),
+                        static_cast<char>(0xffu), static_cast<char>(0xffu),
+                        static_cast<char>(0xffu)}));
+    std::uint32_t cancel = 1u;
+    sevenZipOutput = "poison";
+    assert(sevenZipReader.decodeStored(
+               bcj2SevenZip.data(), bcj2SevenZip.size(), sevenZipOutput,
+               cancelNow, &cancel) == RinRuntime::Archive7zResult::Cancelled);
+    assert(sevenZipOutput == "poison");
     const std::vector<std::uint8_t> emptySevenZip = make7zEmpty();
     sevenZipOutput = "poison";
     assert(sevenZipReader.decodeStored(emptySevenZip.data(),

@@ -94,14 +94,15 @@ public:
         return Archive7zResult::Ok;
     }
 
-    /* Decode a bounded linear 7z pipeline of up to four one-in/one-out Copy,
-     * Delta, and LZMA coders, plus a single empty regular file with no packed
-     * stream.
+    /* Decode a bounded 7z pipeline of up to four one-in/one-out Copy, Delta,
+     * and LZMA coders, or one BCJ2 coder with four packed input streams, plus
+     * a single empty regular file with no packed stream.
      * BindPairs are validated before any coder runs.  This subset is useful
      * for caller-owned test/resource bytes and intentionally has no path,
      * filename, filesystem, or service authority.  Multi-stream coders,
-     * encryption, multiple folders/streams/entries, directories, and
-     * external headers remain explicit Unsupported results. */
+     * arbitrary multi-stream graphs, encryption, multiple folders/streams/
+     * entries, directories, and external headers remain explicit Unsupported
+     * results. */
     Archive7zResult decodeStored(const std::uint8_t* bytes, std::size_t size,
                                  std::string& output) const
     {
@@ -146,10 +147,13 @@ private:
                                 summary.nextHeaderSize;
         std::uint64_t pack_position = 0u;
         std::uint64_t pack_size = 0u;
+        std::size_t pack_stream_count = 0u;
+        static constexpr std::size_t kMaxPackedStreams = 4u;
+        std::array<std::uint64_t, kMaxPackedStreams> pack_sizes{};
+        std::array<bool, kMaxPackedStreams> pack_crc_defined{};
+        std::array<std::uint32_t, kMaxPackedStreams> pack_crcs{};
         std::uint64_t unpack_size = 0u;
-        std::uint32_t pack_crc = 0u;
         std::uint32_t folder_crc = 0u;
-        bool pack_crc_defined = false;
         bool folder_crc_defined = false;
         static constexpr std::size_t kMaxCoders = 4u;
         std::uint64_t coder_count = 0u;
@@ -167,10 +171,12 @@ private:
         std::array<std::uint64_t, kMaxCoders> coder_unpack_sizes{};
         std::array<int, kMaxCoders> input_sources{};
         std::array<bool, kMaxCoders> output_bound{};
+        std::array<std::size_t, kMaxPackedStreams> packed_stream_inputs{};
         input_sources.fill(-1);
         std::size_t final_output_index = kMaxCoders;
         int packed_input_index = -1;
         bool stream_info_present = false;
+        bool bcj2_folder = false;
         bool empty_stream = false;
         bool empty_file = false;
 
@@ -187,19 +193,36 @@ private:
             if (!takeByte(bytes, end, cursor, 0x06u) ||
                 !readEncodedUInt64(bytes, end, cursor, pack_position))
                 return Archive7zResult::Malformed;
-            std::uint64_t pack_stream_count = 0u;
-            if (!readEncodedUInt64(bytes, end, cursor, pack_stream_count))
+            std::uint64_t encoded_pack_stream_count = 0u;
+            if (!readEncodedUInt64(bytes, end, cursor,
+                                   encoded_pack_stream_count))
                 return Archive7zResult::Malformed;
-            if (pack_stream_count != 1u)
+            if (encoded_pack_stream_count == 0u ||
+                encoded_pack_stream_count > kMaxPackedStreams ||
+                (encoded_pack_stream_count != 1u &&
+                 encoded_pack_stream_count != 4u))
                 return Archive7zResult::Unsupported;
+            pack_stream_count =
+                static_cast<std::size_t>(encoded_pack_stream_count);
             if (!takeByte(bytes, end, cursor, 0x09u) ||
-                !readEncodedUInt64(bytes, end, cursor, pack_size))
+                pack_stream_count == 0u)
                 return Archive7zResult::Malformed;
-            if (pack_size > static_cast<std::uint64_t>(kMaxStreamBytes))
-                return Archive7zResult::Limit;
+            for (std::size_t stream = 0u; stream < pack_stream_count;
+                 ++stream) {
+                if (!readEncodedUInt64(bytes, end, cursor,
+                                       pack_sizes[stream]))
+                    return Archive7zResult::Malformed;
+                if (pack_sizes[stream] >
+                    static_cast<std::uint64_t>(kMaxStreamBytes) ||
+                    pack_size > static_cast<std::uint64_t>(kMaxStreamBytes) -
+                                     pack_sizes[stream])
+                    return Archive7zResult::Limit;
+                pack_size += pack_sizes[stream];
+            }
             if (cursor < end && bytes[cursor] == 0x0au) {
                 ++cursor;
-                if (!readCrc(bytes, end, cursor, pack_crc_defined, pack_crc))
+                if (!readCrcs(bytes, end, cursor, pack_stream_count,
+                              pack_crc_defined, pack_crcs))
                     return Archive7zResult::Malformed;
             }
             if (!takeByte(bytes, end, cursor, 0x00u))
@@ -231,18 +254,33 @@ private:
                     method_size > end - cursor)
                     return Archive7zResult::Unsupported;
                 std::uint64_t method = 0u;
+                std::array<std::uint8_t, 8u> method_bytes{};
                 for (unsigned index = 0u; index != method_size; ++index)
-                    method |= static_cast<std::uint64_t>(bytes[cursor++])
+                    method_bytes[index] = bytes[cursor++];
+                for (unsigned index = 0u; index != method_size; ++index)
+                    method |= static_cast<std::uint64_t>(method_bytes[index])
                               << (index * 8u);
+                const bool is_bcj2_method =
+                    method_size == 4u && method_bytes[0u] == 0x03u &&
+                    method_bytes[1u] == 0x03u && method_bytes[2u] == 0x01u &&
+                    method_bytes[3u] == 0x1bu;
                 if (complex_coder) {
                     std::uint64_t input_streams = 0u;
                     std::uint64_t output_streams = 0u;
                     if (!readEncodedUInt64(bytes, end, cursor,
                                            input_streams) ||
                         !readEncodedUInt64(bytes, end, cursor,
-                                           output_streams) ||
-                        input_streams != 1u || output_streams != 1u)
+                                           output_streams))
                         return Archive7zResult::Unsupported;
+                    if (is_bcj2_method && input_streams == 4u &&
+                        output_streams == 1u) {
+                        if (coder_count != 1u || pack_stream_count != 4u ||
+                            has_properties)
+                            return Archive7zResult::Unsupported;
+                        bcj2_folder = true;
+                    } else if (input_streams != 1u || output_streams != 1u) {
+                        return Archive7zResult::Unsupported;
+                    }
                 }
                 if (has_properties) {
                     std::uint64_t property_size = 0u;
@@ -291,6 +329,9 @@ private:
                     } else {
                         return Archive7zResult::Unsupported;
                     }
+                } else if (is_bcj2_method) {
+                    if (!complex_coder || !bcj2_folder)
+                        return Archive7zResult::Unsupported;
                 } else if (method >= 0x05u && method <= 0x0bu) {
                     raw_filter_coders[coder] = true;
                 } else if (method != 0u) {
@@ -299,38 +340,60 @@ private:
                 coder_methods[coder] = method;
             }
 
-            /* With one stream per coder, the folder has coder_count - 1
-             * bindings and exactly one packed input and one final output. */
-            for (std::size_t pair = 0u;
-                 pair + 1u < static_cast<std::size_t>(coder_count); ++pair) {
-                std::uint64_t in_index = 0u;
-                std::uint64_t out_index = 0u;
-                if (!readEncodedUInt64(bytes, end, cursor, in_index) ||
-                    !readEncodedUInt64(bytes, end, cursor, out_index) ||
-                    in_index >= coder_count || out_index >= coder_count)
-                    return Archive7zResult::Unsupported;
-                const std::size_t in = static_cast<std::size_t>(in_index);
-                const std::size_t out = static_cast<std::size_t>(out_index);
-                if (input_sources[in] != -1 || output_bound[out])
-                    return Archive7zResult::Unsupported;
-                input_sources[in] = static_cast<int>(out);
-                output_bound[out] = true;
-            }
-            for (std::size_t coder = 0u;
-                 coder < static_cast<std::size_t>(coder_count); ++coder) {
-                if (input_sources[coder] == -1) {
-                    if (packed_input_index != -1)
+            if (bcj2_folder) {
+                /* A single BCJ2 coder has one output, four inputs, no bonds,
+                 * and an explicit packed-stream index for each input. */
+                for (std::size_t stream = 0u; stream != 4u; ++stream) {
+                    std::uint64_t input_index = 0u;
+                    if (!readEncodedUInt64(bytes, end, cursor, input_index) ||
+                        input_index >= 4u)
                         return Archive7zResult::Unsupported;
-                    packed_input_index = static_cast<int>(coder);
+                    for (std::size_t prior = 0u; prior < stream; ++prior)
+                        if (packed_stream_inputs[prior] ==
+                            static_cast<std::size_t>(input_index))
+                            return Archive7zResult::Unsupported;
+                    packed_stream_inputs[stream] =
+                        static_cast<std::size_t>(input_index);
                 }
-                if (!output_bound[coder]) {
-                    if (final_output_index != kMaxCoders)
+                final_output_index = 0u;
+            } else {
+                if (pack_stream_count != 1u)
+                    return Archive7zResult::Unsupported;
+                /* With one stream per coder, the folder has coder_count - 1
+                 * bindings and exactly one packed input and one final output. */
+                for (std::size_t pair = 0u;
+                     pair + 1u < static_cast<std::size_t>(coder_count);
+                     ++pair) {
+                    std::uint64_t in_index = 0u;
+                    std::uint64_t out_index = 0u;
+                    if (!readEncodedUInt64(bytes, end, cursor, in_index) ||
+                        !readEncodedUInt64(bytes, end, cursor, out_index) ||
+                        in_index >= coder_count || out_index >= coder_count)
                         return Archive7zResult::Unsupported;
-                    final_output_index = coder;
+                    const std::size_t in = static_cast<std::size_t>(in_index);
+                    const std::size_t out = static_cast<std::size_t>(out_index);
+                    if (input_sources[in] != -1 || output_bound[out])
+                        return Archive7zResult::Unsupported;
+                    input_sources[in] = static_cast<int>(out);
+                    output_bound[out] = true;
                 }
+                for (std::size_t coder = 0u;
+                     coder < static_cast<std::size_t>(coder_count); ++coder) {
+                    if (input_sources[coder] == -1) {
+                        if (packed_input_index != -1)
+                            return Archive7zResult::Unsupported;
+                        packed_input_index = static_cast<int>(coder);
+                    }
+                    if (!output_bound[coder]) {
+                        if (final_output_index != kMaxCoders)
+                            return Archive7zResult::Unsupported;
+                        final_output_index = coder;
+                    }
+                }
+                if (packed_input_index == -1 ||
+                    final_output_index == kMaxCoders)
+                    return Archive7zResult::Unsupported;
             }
-            if (packed_input_index == -1 || final_output_index == kMaxCoders)
-                return Archive7zResult::Unsupported;
 
             if (!takeByte(bytes, end, cursor, 0x0cu) ||
                 coder_count == 0u)
@@ -465,25 +528,72 @@ private:
                              pack_start64)
             return Archive7zResult::Malformed;
         const std::size_t pack_start = static_cast<std::size_t>(pack_start64);
-        const std::size_t packed_size = static_cast<std::size_t>(pack_size);
-        std::uint32_t actual_pack_crc = 0xffffffffu;
-        for (std::size_t index = 0u; index < packed_size; ++index) {
-            if ((index & 4095u) == 0u) {
-                if (deadline != nullptr && deadline(deadlineContext))
-                    return Archive7zResult::Deadline;
-                if (cancellation != nullptr &&
-                    cancellation(cancellationContext))
-                    return Archive7zResult::Cancelled;
-            }
-            actual_pack_crc ^= bytes[pack_start + index];
-            for (int bit = 0; bit < 8; ++bit)
-                actual_pack_crc = (actual_pack_crc >> 1u) ^
-                                  (0xedb88320u &
-                                   (0u - (actual_pack_crc & 1u)));
+        std::array<std::size_t, kMaxPackedStreams> pack_starts{};
+        std::size_t pack_offset = pack_start;
+        for (std::size_t stream = 0u; stream < pack_stream_count;
+             ++stream) {
+            pack_starts[stream] = pack_offset;
+            if (pack_offset > summary.nextHeaderOffset)
+                return Archive7zResult::Malformed;
+            if (pack_sizes[stream] >
+                static_cast<std::uint64_t>(summary.nextHeaderOffset -
+                                           pack_offset))
+                return Archive7zResult::Malformed;
+            pack_offset += static_cast<std::size_t>(pack_sizes[stream]);
         }
-        actual_pack_crc ^= 0xffffffffu;
-        if (pack_crc_defined && actual_pack_crc != pack_crc)
-            return Archive7zResult::CrcMismatch;
+        if (pack_offset != pack_start + static_cast<std::size_t>(pack_size))
+            return Archive7zResult::Malformed;
+        for (std::size_t stream = 0u; stream < pack_stream_count; ++stream) {
+            const std::size_t stream_size =
+                static_cast<std::size_t>(pack_sizes[stream]);
+            std::uint32_t actual_pack_crc = 0xffffffffu;
+            for (std::size_t index = 0u; index < stream_size; ++index) {
+                if ((index & 4095u) == 0u) {
+                    if (deadline != nullptr && deadline(deadlineContext))
+                        return Archive7zResult::Deadline;
+                    if (cancellation != nullptr &&
+                        cancellation(cancellationContext))
+                        return Archive7zResult::Cancelled;
+                }
+                actual_pack_crc ^= bytes[pack_starts[stream] + index];
+                for (int bit = 0; bit < 8; ++bit)
+                    actual_pack_crc = (actual_pack_crc >> 1u) ^
+                                      (0xedb88320u &
+                                       (0u - (actual_pack_crc & 1u)));
+            }
+            actual_pack_crc ^= 0xffffffffu;
+            if (pack_crc_defined[stream] &&
+                actual_pack_crc != pack_crcs[stream])
+                return Archive7zResult::CrcMismatch;
+        }
+
+        if (bcj2_folder) {
+            std::array<const std::uint8_t*, 4u> bcj2_streams{};
+            std::array<std::size_t, 4u> bcj2_sizes{};
+            for (std::size_t packed = 0u; packed != 4u; ++packed) {
+                const std::size_t input = packed_stream_inputs[packed];
+                bcj2_streams[input] = bytes + pack_starts[packed];
+                bcj2_sizes[input] =
+                    static_cast<std::size_t>(pack_sizes[packed]);
+            }
+            std::string decoded;
+            const Archive7zResult bcj2_result = decodeBcj2(
+                bcj2_streams, bcj2_sizes,
+                static_cast<std::size_t>(unpack_size), decoded, cancellation,
+                cancellationContext, deadline, deadlineContext);
+            if (bcj2_result != Archive7zResult::Ok)
+                return bcj2_result;
+            if (folder_crc_defined &&
+                rinruntime_archive_crc32(
+                    reinterpret_cast<const std::uint8_t*>(decoded.data()),
+                    decoded.size()) != folder_crc)
+                return Archive7zResult::CrcMismatch;
+            output = decoded;
+            return Archive7zResult::Ok;
+        }
+
+        const std::size_t packed_size =
+            static_cast<std::size_t>(pack_sizes[0u]);
 
         std::array<std::string, kMaxCoders> coder_outputs{};
         std::array<bool, kMaxCoders> coder_completed{};
@@ -621,6 +731,228 @@ private:
     }
 
 private:
+    static Archive7zResult decodeBcj2(
+        const std::array<const std::uint8_t*, 4u>& streams,
+        const std::array<std::size_t, 4u>& sizes, std::size_t expected_size,
+        std::string& output, ArchiveDeflateCancellationFunction cancellation,
+        void* cancellationContext, ArchiveDeflateDeadlineFunction deadline,
+        void* deadlineContext)
+    {
+        if (expected_size > kMaxStreamBytes) return Archive7zResult::Limit;
+        if (sizes[3u] < 5u || (sizes[1u] & 3u) != 0u ||
+            (sizes[2u] & 3u) != 0u)
+            return Archive7zResult::Malformed;
+
+        static constexpr std::uint32_t kTopValue = UINT32_C(1) << 24u;
+        static constexpr unsigned kNumBitModelTotalBits = 11u;
+        static constexpr std::uint32_t kBitModelTotal = UINT32_C(1) << 11u;
+        static constexpr unsigned kNumMoveBits = 5u;
+        static constexpr unsigned kStreamMain = 0u;
+        static constexpr unsigned kStreamCall = 1u;
+        static constexpr unsigned kStreamJump = 2u;
+        static constexpr unsigned kStreamRc = 3u;
+        static constexpr unsigned kStateOrig0 = 4u;
+        static constexpr unsigned kStateOrig3 = 7u;
+
+        std::array<std::size_t, 4u> positions{};
+        std::array<std::uint16_t, 258u> probabilities{};
+        probabilities.fill(static_cast<std::uint16_t>(kBitModelTotal >> 1u));
+        std::string decoded;
+        decoded.reserve(expected_size);
+
+        unsigned state = kStreamRc;
+        std::uint32_t ip = 0u;
+        std::uint32_t temp = 0u;
+        std::uint32_t range = 0u;
+        std::uint32_t code = 0u;
+
+        const auto readRcByte = [&](std::uint8_t& value) {
+            if (positions[kStreamRc] >= sizes[kStreamRc]) return false;
+            value = streams[kStreamRc][positions[kStreamRc]++];
+            return true;
+        };
+
+        for (;;) {
+            const bool deadline_hit =
+                deadline != nullptr && deadline(deadlineContext);
+            const bool cancellation_hit =
+                cancellation != nullptr && cancellation(cancellationContext);
+            if (deadline_hit || cancellation_hit)
+                return deadline_hit ? Archive7zResult::Deadline
+                                    : Archive7zResult::Cancelled;
+
+            std::uint32_t value = temp;
+            if (range <= 5u) {
+                for (; range != 5u; ++range) {
+                    if (range == 1u && code != 0u)
+                        return Archive7zResult::Malformed;
+                    std::uint8_t next = 0u;
+                    if (!readRcByte(next)) return Archive7zResult::Malformed;
+                    code = (code << 8u) | next;
+                }
+                if (code == UINT32_C(0xffffffff))
+                    return Archive7zResult::Malformed;
+                range = UINT32_C(0xffffffff);
+            }
+
+            if (state == kStreamCall || state == kStreamJump) {
+                const std::size_t branch_size = sizes[state];
+                if (branch_size - positions[state] < 4u)
+                    return Archive7zResult::Malformed;
+                const std::uint8_t* branch =
+                    streams[state] + positions[state];
+                value = (static_cast<std::uint32_t>(branch[0u]) << 24u) |
+                        (static_cast<std::uint32_t>(branch[1u]) << 16u) |
+                        (static_cast<std::uint32_t>(branch[2u]) << 8u) |
+                        static_cast<std::uint32_t>(branch[3u]);
+                positions[state] += 4u;
+                ip += 4u;
+                value -= ip;
+                state = kStateOrig0;
+            }
+
+            if (state >= kStateOrig0 && state <= kStateOrig3) {
+                while (state <= kStateOrig3) {
+                    if (decoded.size() >= expected_size)
+                        return Archive7zResult::Malformed;
+                    decoded.push_back(static_cast<char>(value & 0xffu));
+                    value >>= 8u;
+                    ++state;
+                }
+                temp = value;
+                if (decoded.size() == expected_size) break;
+            }
+
+            bool marker = false;
+            for (;;) {
+                if (range < kTopValue) {
+                    std::uint8_t next = 0u;
+                    if (!readRcByte(next)) return Archive7zResult::Malformed;
+                    range <<= 8u;
+                    code = (code << 8u) | next;
+                }
+                if (positions[kStreamMain] >= sizes[kStreamMain]) {
+                    state = kStreamMain;
+                    break;
+                }
+                if (decoded.size() >= expected_size)
+                    return Archive7zResult::Malformed;
+                const std::uint8_t byte =
+                    streams[kStreamMain][positions[kStreamMain]++];
+                decoded.push_back(static_cast<char>(byte));
+                value = (value << 24u) | byte;
+                ++ip;
+                const bool direct_marker =
+                    ((static_cast<unsigned>(byte) + (0x100u - 0xe8u)) &
+                     0xfeu) == 0u;
+                const std::uint32_t marker_mask =
+                    (static_cast<std::uint32_t>(1u) << 28u) - 1u;
+                const bool overlapped_marker =
+                    ((value - ((static_cast<std::uint32_t>(0x0fu) << 24u) +
+                               0x80u)) &
+                     (marker_mask << 4u)) == 0u;
+                if (direct_marker || overlapped_marker) {
+                    marker = true;
+                    break;
+                }
+                if (decoded.size() == expected_size) {
+                    state = positions[kStreamMain] == sizes[kStreamMain]
+                                ? kStreamMain
+                                : kStateOrig0;
+                    break;
+                }
+            }
+
+            if (decoded.size() == expected_size) break;
+            if (!marker) return Archive7zResult::Malformed;
+
+            const unsigned context = ((value + 0x17u) >> 6u) & 1u;
+            const unsigned probability_index =
+                ((0u - context) & static_cast<unsigned>(
+                                      static_cast<std::uint8_t>(value >> 24u))) +
+                context + ((value >> 5u) & 1u);
+            if (probability_index >= probabilities.size())
+                return Archive7zResult::Malformed;
+            const std::uint32_t probability = probabilities[probability_index];
+            const std::uint32_t bound =
+                (range >> kNumBitModelTotalBits) * probability;
+            if (code < bound) {
+                range = bound;
+                probabilities[probability_index] = static_cast<std::uint16_t>(
+                    probability +
+                    ((kBitModelTotal - probability) >> kNumMoveBits));
+                temp = value;
+                continue;
+            }
+            range -= bound;
+            code -= bound;
+            probabilities[probability_index] = static_cast<std::uint16_t>(
+                probability - (probability >> kNumMoveBits));
+
+            const unsigned branch_stream =
+                (((value + 0x57u) >> 6u) & 1u) + kStreamCall;
+            if (sizes[branch_stream] - positions[branch_stream] < 4u)
+                return Archive7zResult::Malformed;
+            const std::uint8_t* branch =
+                streams[branch_stream] + positions[branch_stream];
+            std::uint32_t target =
+                (static_cast<std::uint32_t>(branch[0u]) << 24u) |
+                (static_cast<std::uint32_t>(branch[1u]) << 16u) |
+                (static_cast<std::uint32_t>(branch[2u]) << 8u) |
+                static_cast<std::uint32_t>(branch[3u]);
+            positions[branch_stream] += 4u;
+            ip += 4u;
+            target -= ip;
+            if (expected_size < 4u || decoded.size() > expected_size - 4u)
+                return Archive7zResult::Malformed;
+            decoded.push_back(static_cast<char>(target & 0xffu));
+            decoded.push_back(static_cast<char>((target >> 8u) & 0xffu));
+            decoded.push_back(static_cast<char>((target >> 16u) & 0xffu));
+            decoded.push_back(static_cast<char>((target >> 24u) & 0xffu));
+            temp = target >> 24u;
+        }
+
+        for (std::size_t stream = 0u; stream != 4u; ++stream)
+            if (positions[stream] != sizes[stream])
+                return Archive7zResult::Malformed;
+        output = decoded;
+        return Archive7zResult::Ok;
+    }
+
+    static bool readCrcs(
+        const std::uint8_t* bytes, std::size_t end, std::size_t& cursor,
+        std::size_t count, std::array<bool, 4u>& defined,
+        std::array<std::uint32_t, 4u>& values)
+    {
+        if (count == 0u || count > 4u || cursor >= end) return false;
+        const std::uint8_t all_defined = bytes[cursor++];
+        if (all_defined > 1u) return false;
+        defined.fill(all_defined != 0u);
+        if (all_defined == 0u) {
+            const std::size_t bitmap_size = (count + 7u) / 8u;
+            if (bitmap_size > end - cursor) return false;
+            for (std::size_t byte = 0u; byte != bitmap_size; ++byte) {
+                const std::uint8_t bitmap = bytes[cursor++];
+                const std::size_t first = byte * 8u;
+                for (std::size_t bit = 0u; bit != 8u && first + bit < count;
+                     ++bit)
+                    defined[first + bit] = (bitmap & (1u << bit)) != 0u;
+                if (first + 8u > count &&
+                    (bitmap & static_cast<std::uint8_t>(
+                                  0xffu << (count - first))))
+                    return false;
+            }
+        }
+        for (std::size_t index = 0u; index != count; ++index) {
+            values[index] = 0u;
+            if (!defined[index]) continue;
+            if (end - cursor < 4u) return false;
+            values[index] = readLe32(bytes + cursor);
+            cursor += 4u;
+        }
+        return true;
+    }
+
     static bool takeByte(const std::uint8_t* bytes, std::size_t end,
                          std::size_t& cursor, std::uint8_t expected)
     {
