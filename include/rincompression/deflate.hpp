@@ -34,6 +34,23 @@ static constexpr std::size_t kMaximumBytes = 268435456u;
  * strategy without changing this contract.
  */
 class DeflateEncoder final {
+    static bool cancelled(CancellationFunction function,
+                          void* context) noexcept
+    {
+        if (function == nullptr) return false;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
+            return function(context);
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (...) {
+            /* A public caller-owned cancellation callback is a failure
+             * boundary; do not let it publish a partial encoded stream. */
+            return true;
+        }
+#endif
+    }
+
 public:
     DeflateResult encode(const std::uint8_t* input,
                          std::size_t inputSize,
@@ -60,7 +77,7 @@ public:
 
         std::size_t offset = 0u;
         do {
-            if (cancellation != nullptr && cancellation(cancellationContext)) {
+            if (cancelled(cancellation, cancellationContext)) {
                 output.clear();
                 return DeflateResult::Cancelled;
             }
@@ -88,7 +105,7 @@ public:
             offset += blockSize;
         } while (offset < inputSize || inputSize == 0u);
 
-        if (cancellation != nullptr && cancellation(cancellationContext)) {
+        if (cancelled(cancellation, cancellationContext)) {
             output.clear();
             return DeflateResult::Cancelled;
         }

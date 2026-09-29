@@ -7,12 +7,18 @@
 #include <cassert>
 #include <cstdint>
 #include <string>
+#include <stdexcept>
 #include <vector>
 
 static bool cancelNow(void* context)
 {
     return context != nullptr &&
            *static_cast<const std::uint32_t*>(context) != 0u;
+}
+
+static bool throwingCancel(void*)
+{
+    throw std::runtime_error("cancellation callback failure");
 }
 
 int main()
@@ -35,6 +41,10 @@ int main()
     std::uint32_t cancelled = 1u;
     assert(encoder.encode(payload, sizeof(payload), encoded, cancelNow,
                           &cancelled) == RinCompression::DeflateResult::Cancelled);
+    assert(encoded.empty());
+    encoded.assign(1u, 0xa5u);
+    assert(encoder.encode(payload, sizeof(payload), encoded, throwingCancel,
+                          nullptr) == RinCompression::DeflateResult::Cancelled);
     assert(encoded.empty());
     assert(encoder.encode(nullptr, 1u, encoded) ==
            RinCompression::DeflateResult::InvalidArgument);
