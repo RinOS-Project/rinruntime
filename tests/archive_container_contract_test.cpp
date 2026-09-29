@@ -150,11 +150,18 @@ static std::vector<std::uint8_t> makeGzip(const std::uint8_t* payload,
     return bytes;
 }
 
-static std::vector<std::uint8_t> make7zStored(bool copy_chain = false)
+static std::vector<std::uint8_t> make7zStored(bool copy_chain = false,
+                                              bool lzma2 = false)
 {
+    assert(!(copy_chain && lzma2));
     const std::uint8_t signature[] = {
         0x37u, 0x7au, 0xbcu, 0xafu, 0x27u, 0x1cu};
     const std::uint8_t payload[] = {'h', 'e', 'l', 'l', 'o'};
+    const std::uint8_t lzma2_payload[] = {
+        0x01u, 0x04u, 0x00u, 'h', 'e', 'l', 'l', 'o', 0x00u};
+    const std::uint8_t* packed = lzma2 ? lzma2_payload : payload;
+    const std::size_t packed_size =
+        lzma2 ? sizeof(lzma2_payload) : sizeof(payload);
     std::vector<std::uint8_t> header;
     header.push_back(0x01u); /* Header */
     header.push_back(0x04u); /* MainStreamsInfo */
@@ -162,20 +169,27 @@ static std::vector<std::uint8_t> make7zStored(bool copy_chain = false)
     put7zUInt64(header, 0u); /* PackPos */
     put7zUInt64(header, 1u); /* NumPackStreams */
     header.push_back(0x09u); /* Size */
-    put7zUInt64(header, sizeof(payload));
+    put7zUInt64(header, packed_size);
     header.push_back(0x0au); /* Pack CRC */
     header.push_back(1u);
     header.resize(header.size() + 4u);
     put32(header, header.size() - 4u,
-          RinRuntime::rinruntime_archive_crc32(payload, sizeof(payload)));
+          RinRuntime::rinruntime_archive_crc32(packed, packed_size));
     header.push_back(0x00u); /* PackInfo end */
     header.push_back(0x07u); /* UnPackInfo */
     header.push_back(0x0bu); /* Folder */
     put7zUInt64(header, 1u); /* NumFolders */
     header.push_back(0u); /* folders are in this header */
     put7zUInt64(header, copy_chain ? 2u : 1u); /* NumCoders */
-    header.push_back(0x01u); /* one-byte method ID, no properties */
-    header.push_back(0x00u); /* Copy coder */
+    if (lzma2) {
+        header.push_back(0x21u); /* one-byte LZMA2 method ID + properties */
+        header.push_back(0x21u);
+        header.push_back(0x01u); /* one dictionary-property byte */
+        header.push_back(0x00u); /* 4 KiB dictionary */
+    } else {
+        header.push_back(0x01u); /* one-byte method ID, no properties */
+        header.push_back(0x00u); /* Copy coder */
+    }
     if (copy_chain) {
         header.push_back(0x01u); /* second one-byte Copy method ID */
         header.push_back(0x00u);
@@ -197,13 +211,13 @@ static std::vector<std::uint8_t> make7zStored(bool copy_chain = false)
     header.push_back(0x00u); /* FilesInfo properties end */
     header.push_back(0x00u); /* Header end */
 
-    std::vector<std::uint8_t> bytes(32u + sizeof(payload) + header.size(), 0u);
+    std::vector<std::uint8_t> bytes(32u + packed_size + header.size(), 0u);
     std::memcpy(bytes.data(), signature, sizeof(signature));
     bytes[7u] = 4u;
-    std::memcpy(bytes.data() + 32u, payload, sizeof(payload));
-    const std::size_t headerOffset = 32u + sizeof(payload);
+    std::memcpy(bytes.data() + 32u, packed, packed_size);
+    const std::size_t headerOffset = 32u + packed_size;
     std::memcpy(bytes.data() + headerOffset, header.data(), header.size());
-    put64(bytes, 12u, sizeof(payload));
+    put64(bytes, 12u, packed_size);
     put64(bytes, 20u, header.size());
     put32(bytes, 28u,
           RinRuntime::rinruntime_archive_crc32(bytes.data() + headerOffset,
@@ -492,6 +506,16 @@ int main()
 
     const std::vector<std::uint8_t> sevenZipCopyChain = make7zStored(true);
     assert(reader.parse(sevenZipCopyChain.data(), sevenZipCopyChain.size()) ==
+           RinRuntime::ArchiveContainerResult::Ok);
+    assert(reader.kind() == RinRuntime::ArchiveContainerKind::SevenZip &&
+           reader.size() == 1u && reader.entries()[0].size == 5u);
+    output = "poison";
+    assert(reader.readEntry(0u, output) ==
+           RinRuntime::ArchiveContainerResult::Ok && output == "hello");
+
+    const std::vector<std::uint8_t> sevenZipLzma2 =
+        make7zStored(false, true);
+    assert(reader.parse(sevenZipLzma2.data(), sevenZipLzma2.size()) ==
            RinRuntime::ArchiveContainerResult::Ok);
     assert(reader.kind() == RinRuntime::ArchiveContainerKind::SevenZip &&
            reader.size() == 1u && reader.entries()[0].size == 5u);

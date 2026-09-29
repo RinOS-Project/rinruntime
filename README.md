@@ -305,7 +305,9 @@ private RinOS adapters.
 
 `archive_container.hpp` maps a standalone GZIP member to one bounded
 caller-owned `<stream>` entry, while TAR.GZ remains a TAR entry container.  The
-adapter does not infer package trust or publish the stream to a filesystem.
+adapter also maps the bounded 7z Copy／Delta／BCJ／LZMA／LZMA2 subset and XZ
+decoded stream to the same `<stream>` contract.  It does not infer package
+trust or publish the stream to a filesystem.
 
 `archive_xz.hpp` provides the public `ArchiveXzReader` structural inspector.
 It verifies the bounded XZ stream header/footer/index, block-header CRCs,
