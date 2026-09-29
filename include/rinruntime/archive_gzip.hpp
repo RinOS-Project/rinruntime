@@ -185,6 +185,9 @@ public:
         ArchiveDeflateCancellationFunction cancellation,
         void* cancellationContext) const
     {
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
         Header header;
         SinkState state{sink, context, 0u};
         const ArchiveGzipResult headerResult = parseHeader(bytes, size, header);
@@ -209,6 +212,11 @@ public:
                                         : ArchiveGzipResult::Malformed);
         return state.size == header.size ? ArchiveGzipResult::Ok
                                          : ArchiveGzipResult::Malformed;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (...) {
+            return ArchiveGzipResult::Malformed;
+        }
+#endif
     }
 
     ArchiveGzipResult decodeToSinkWithDeadline(
@@ -216,6 +224,9 @@ public:
         ArchiveDeflateSinkFunction sink, void* context,
         ArchiveDeflateDeadlineFunction deadline, void* deadlineContext) const
     {
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
         Header header;
         SinkState state{sink, context, 0u};
         const ArchiveGzipResult headerResult = parseHeader(
@@ -241,6 +252,11 @@ public:
                                         : ArchiveGzipResult::Malformed);
         return state.size == header.size ? ArchiveGzipResult::Ok
                                          : ArchiveGzipResult::Malformed;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (...) {
+            return ArchiveGzipResult::Malformed;
+        }
+#endif
     }
 
     ArchiveGzipResult decodeToSink(
@@ -310,6 +326,9 @@ private:
         void* cancellationContext, ArchiveDeflateDeadlineFunction deadline,
         void* deadlineContext)
     {
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
         std::size_t offset = 0u;
         if (source.read == nullptr || source.compressedSize == 0u ||
             source.compressedSize > RINRUNTIME_ARCHIVE_CONTENT_LIMIT ||
@@ -333,6 +352,11 @@ private:
             offset += bytesRead;
         }
         return ArchiveGzipResult::Ok;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (...) {
+            return ArchiveGzipResult::Malformed;
+        }
+#endif
     }
 
     static std::uint32_t get32(const std::uint8_t* bytes)

@@ -1184,13 +1184,17 @@ int main()
                              throwingCallback, nullptr) ==
            RinRuntime::ArchiveGzipResult::Malformed);
     assert(output.empty());
+    std::string gzipStreamed;
+    assert(gzipReader.decodeToSink(gzip.data(), gzip.size(),
+                                   &throwingTarSink, &gzipStreamed) ==
+           RinRuntime::ArchiveGzipResult::Malformed);
     deadlineExpired = 1u;
     output = "poison";
     assert(gzipReader.decodeWithDeadline(
                gzip.data(), gzip.size(), output, deadlineNow,
                &deadlineExpired) == RinRuntime::ArchiveGzipResult::Deadline);
     assert(output.empty());
-    std::string gzipStreamed;
+    gzipStreamed.clear();
     assert(gzipReader.decodeToSinkWithDeadline(
                gzip.data(), gzip.size(), &collectTar, &gzipStreamed,
                deadlineNow, &deadlineExpired) ==
