@@ -208,6 +208,29 @@ int main() {
     assert(application.start());
     assert(application.requestQuit());
     assert(application.stop());
+    Rin::Application throwingStart;
+    throwingStart.onStarted([] {
+        throw std::runtime_error("start callback failure");
+    });
+    assert(!throwingStart.start());
+    assert(throwingStart.state() == Rin::Application::State::Stopped);
+
+    Rin::Application throwingDispatch;
+    assert(throwingDispatch.start());
+    throwingDispatch.onEvent([](const Rin::Event&) -> bool {
+        throw std::runtime_error("event callback failure");
+    });
+    assert(!throwingDispatch.dispatch(Rin::Event{}));
+    assert(throwingDispatch.state() == Rin::Application::State::QuitRequested);
+    assert(throwingDispatch.stop());
+
+    Rin::Application throwingStop;
+    assert(throwingStop.start());
+    throwingStop.onStopped([] {
+        throw std::runtime_error("stop callback failure");
+    });
+    assert(!throwingStop.stop());
+    assert(throwingStop.state() == Rin::Application::State::Stopped);
     Rin::Document document;
     assert(document.setText("Rin"));
     assert(document.insert(3u, "OS"));

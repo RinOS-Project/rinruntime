@@ -60,13 +60,37 @@ public:
     bool start() {
         if (state_ != State::Created) return false;
         state_ = State::Running;
-        if (started_) started_();
+        if (started_) {
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+            try {
+#endif
+                started_();
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+            } catch (...) {
+                /* A public lifecycle callback cannot leave a half-started
+                 * application observable.  Stop before reporting failure. */
+                state_ = State::Stopped;
+                return false;
+            }
+#endif
+        }
         return true;
     }
 
     bool dispatch(const Event& event) {
         if (state_ != State::Running || !eventHandler_) return false;
-        return eventHandler_(event);
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
+            return eventHandler_(event);
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (...) {
+            /* Do not dispatch more events after a user handler failed.  The
+             * caller can still perform the ordinary stop transition. */
+            state_ = State::QuitRequested;
+            return false;
+        }
+#endif
     }
 
     bool requestQuit() {
@@ -79,7 +103,19 @@ public:
         if (state_ != State::Running && state_ != State::QuitRequested)
             return false;
         state_ = State::Stopped;
-        if (stopped_) stopped_();
+        if (stopped_) {
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+            try {
+#endif
+                stopped_();
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+            } catch (...) {
+                /* The terminal state is already committed; report callback
+                 * failure without reopening or leaking the exception. */
+                return false;
+            }
+#endif
+        }
         return true;
     }
 
