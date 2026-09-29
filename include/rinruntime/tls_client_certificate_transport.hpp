@@ -70,6 +70,29 @@ class TlsClientCertificateTransport final {
         }
     }
 
+    static int invokeSigner(
+        TlsClientCertificateKeyOwnerSignFunction signer, void* context,
+        const std::uint8_t capability[
+            RINRUNTIME_TLS_CLIENT_CERTIFICATE_CAPABILITY_BYTES],
+        std::uint64_t request_id, std::uint64_t connection_generation,
+        std::uint16_t signature_scheme, const std::uint8_t* message,
+        std::size_t message_length, std::uint8_t* signature,
+        std::size_t signature_capacity, std::size_t* signature_length) noexcept {
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
+            return signer(context, capability, request_id,
+                          connection_generation, signature_scheme, message,
+                          message_length, signature, signature_capacity,
+                          signature_length);
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (...) {
+            if (signature_length != nullptr) *signature_length = 0u;
+            return -1;
+        }
+#endif
+    }
+
 public:
     TlsClientCertificateTransport() = default;
 
@@ -131,8 +154,8 @@ public:
 
         std::size_t written = 0u;
         signing_ = true;
-        const int result = signer_(
-            signer_context_, capability_, request_.request_id,
+        const int result = invokeSigner(
+            signer_, signer_context_, capability_, request_.request_id,
             request_.connection_generation, signature_scheme, message,
             message_length, signature, signature_capacity, &written);
         signing_ = false;

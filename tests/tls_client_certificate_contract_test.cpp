@@ -3,6 +3,7 @@
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
+#include <stdexcept>
 
 #include "../include/rinruntime/tls_client_certificate_binding.hpp"
 
@@ -47,6 +48,22 @@ int install(void* context, const void* certificate_list,
     return 0;
 }
 
+int throwing_sign(
+    void*, const std::uint8_t[
+        RINRUNTIME_TLS_CLIENT_CERTIFICATE_CAPABILITY_BYTES], std::uint64_t,
+    std::uint64_t, std::uint16_t, const std::uint8_t*, std::size_t,
+    std::uint8_t*, std::size_t, std::size_t*) {
+    throw std::runtime_error("TLS signer callback failure");
+}
+
+int throwing_install(void*, const void*, std::size_t,
+                    int (*)(void*, std::uint16_t, const std::uint8_t*,
+                             std::size_t, std::uint8_t*, std::size_t,
+                             std::size_t*),
+                    void*) {
+    throw std::runtime_error("TLS installer callback failure");
+}
+
 } // namespace
 
 int main() {
@@ -85,5 +102,24 @@ int main() {
            transport.connectionGeneration() == 0u &&
            transport.certificateList() == nullptr &&
            transport.certificateListSize() == 0u);
+
+    RinRuntime::TlsClientCertificateTransport throwing_transport;
+    assert(throwing_transport.bind(request, throwing_sign, &context));
+    assert(!RinRuntime::installTlsClientCertificate(
+        &context, throwing_transport, throwing_install));
+    assert(throwing_transport.state() ==
+           RinRuntime::TlsClientCertificateTransportState::Bound);
+    assert(RinRuntime::installTlsClientCertificate(
+        &context, throwing_transport, install));
+    std::uint8_t failed_signature[8u] = {
+        0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu};
+    std::size_t failed_signature_length = 99u;
+    assert(throwing_transport.sign(
+               0x0403u, transcript, sizeof(transcript), failed_signature,
+               sizeof(failed_signature), &failed_signature_length) == -1);
+    assert(failed_signature_length == 0u);
+    for (std::uint8_t byte : failed_signature) assert(byte == 0u);
+    assert(throwing_transport.state() ==
+           RinRuntime::TlsClientCertificateTransportState::Failed);
     return 0;
 }

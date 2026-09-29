@@ -25,10 +25,20 @@ inline bool installTlsClientCertificate(
     if (tls_context == nullptr || installer == nullptr ||
         transport.state() != TlsClientCertificateTransportState::Bound)
         return false;
-    if (installer(tls_context, transport.certificateList(),
-                  static_cast<std::size_t>(transport.certificateListSize()),
-                  &TlsClientCertificateTransport::signCallback, &transport) !=
-        0)
+    int result = -1;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+    try {
+#endif
+        result = installer(
+            tls_context, transport.certificateList(),
+            static_cast<std::size_t>(transport.certificateListSize()),
+            &TlsClientCertificateTransport::signCallback, &transport);
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+    } catch (...) {
+        return false;
+    }
+#endif
+    if (result != 0)
         return false;
     return transport.startHandshake();
 }
