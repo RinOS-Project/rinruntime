@@ -180,6 +180,10 @@ int main() {
     assert(list.selectedItem() == nullptr);
     RinRuntime::Table table;
     assert(table.addColumn({"Name", 96, true}));
+    assert(table.setColumns({{"Name", 120, true}, {"Age", 96, false}}));
+    assert(table.columns().size() == 2u);
+    assert(!table.setColumns({{"Invalid", 1, false}}));
+    assert(table.columns().size() == 2u);
     assert(table.setColumnValue(0, [](int32_t) { return std::string("value"); }));
     RinRuntime::Tree widget_tree;
     const uint64_t tree_root = widget_tree.addRoot("Root");
@@ -193,11 +197,20 @@ int main() {
     assert(combo.setItems({"Two", "Three"}));
     RinRuntime::PopupMenu popup("Actions");
     assert(popup.addItem("Run") == 0);
+    std::vector<RinRuntime::MenuItem> popup_items;
+    popup_items.emplace_back("Open", "", [] {});
+    assert(popup.setItems(popup_items));
+    assert(popup.items().size() == 1u);
     assert(popup.setItemAction(0, [] {}));
     RinRuntime::MenuBar menu_bar;
     const int32_t menu = menu_bar.addMenu("File");
     assert(menu >= 0);
     assert(menu_bar.addItem(menu, {"Open", "", [] {}}));
     assert(menu_bar.setAction("File", "Open", [] {}));
+    RinRuntime::Menu replacement;
+    replacement.title = "Edit";
+    replacement.items.emplace_back("Copy", "", [] {});
+    assert(menu_bar.setMenus({replacement}));
+    assert(menu_bar.menus().size() == 1u);
     return 0;
 }

@@ -872,6 +872,27 @@ public:
         if (columns_.size() >= kMaxColumns || !validColumn(column)) return false;
         return widget_detail::appendCopy(columns_, column);
     }
+    bool setColumns(const std::vector<Column>& columns) {
+        if (columns.size() > kMaxColumns) return false;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
+            for (const auto& column : columns)
+                if (!validColumn(column)) return false;
+            std::vector<Column> candidate = columns;
+            columns_.swap(candidate);
+            if (sortColumn_ < 0 ||
+                sortColumn_ >= static_cast<int32_t>(columns_.size())) {
+                sortColumn_ = -1;
+                sortAscending_ = true;
+            }
+            return true;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (const std::bad_alloc&) {
+            return false;
+        }
+#endif
+    }
     const std::vector<Column>& columns() const { return columns_; }
     std::vector<Column>& columns() { return columns_; }
     bool setColumnValue(int32_t index,
@@ -1578,6 +1599,27 @@ public:
         return static_cast<int32_t>(items_.size() - 1u);
     }
 
+    bool setItems(const std::vector<MenuItem>& items) {
+        if (items.size() > kMaxItems) return false;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
+            for (const auto& item : items)
+                if (!validText(item.label) || !validText(item.shortcut))
+                    return false;
+            std::vector<MenuItem> candidate = items;
+            for (auto& item : candidate) item.selected = false;
+            items_.swap(candidate);
+            activeIndex_ = -1;
+            open_ = false;
+            return true;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (const std::bad_alloc&) {
+            return false;
+        }
+#endif
+    }
+
     const std::vector<MenuItem>& items() const { return items_; }
     std::vector<MenuItem>& items() { return items_; }
     int32_t activeIndex() const { return activeIndex_; }
@@ -1763,6 +1805,33 @@ public:
         }
 #endif
         return (int32_t)menus_.size() - 1;
+    }
+    bool setMenus(const std::vector<Menu>& menus) {
+        if (menus.size() > kMaxMenus) return false;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
+            for (const auto& menu : menus) {
+                if (!validText(menu.title) ||
+                    menu.items.size() > kMaxItemsPerMenu)
+                    return false;
+                for (const auto& item : menu.items)
+                    if (!validText(item.label) || !validText(item.shortcut))
+                        return false;
+            }
+            std::vector<Menu> candidate = menus;
+            for (auto& menu : candidate) {
+                menu.open = false;
+                for (auto& item : menu.items) item.selected = false;
+            }
+            menus_.swap(candidate);
+            activeMenu_ = -1;
+            return true;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (const std::bad_alloc&) {
+            return false;
+        }
+#endif
     }
     bool addItem(int32_t menuIndex, const MenuItem& item) {
         if (menuIndex < 0 || menuIndex >= (int32_t)menus_.size()) return false;
