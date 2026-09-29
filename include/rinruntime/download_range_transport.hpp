@@ -220,8 +220,16 @@ public:
             failAndAbort();
             return false;
         }
+        /* Do not let an owner inspect or fetch bytes beyond the admitted
+         * range merely because the caller supplied a larger buffer.  The
+         * final zero-byte EOF probe still uses the caller's capacity. */
+        std::size_t readCapacity = capacity;
+        if (remaining_ != 0u &&
+            remaining_ < static_cast<std::uint64_t>(readCapacity)) {
+            readCapacity = static_cast<std::size_t>(remaining_);
+        }
         std::size_t candidate = 0u;
-        const int readResult = ops_.read(ops_.context, buffer, capacity,
+        const int readResult = ops_.read(ops_.context, buffer, readCapacity,
                                          &candidate);
         const int afterRead = cancellationStatus();
         if (afterRead == 1) {

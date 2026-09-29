@@ -194,7 +194,9 @@ future incompatible table must use a new ABI version.
 `readDownloadRangeToBuffer()` is the optional caller-owned convenience helper
 for this same public transport. It revalidates the admitted response length,
 reads in at most 64 KiB chunks, rejects early EOF and trailing bytes, and
-scrubs the accepted range on failure before returning. The adapter also scrubs
+scrubs the accepted range on failure before returning. The adapter also clamps
+each owner callback to the admitted remaining range (while retaining a final
+zero-byte EOF probe) and scrubs
 the caller-owned read buffer after a direct callback failure or cancellation,
 so a failed direct `read()` cannot leave partial transfer bytes behind. It does
 not authenticate the source, persist partial bytes, or publish a File Portal
