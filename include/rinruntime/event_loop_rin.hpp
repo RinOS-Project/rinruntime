@@ -47,6 +47,7 @@ private:
     void* clockContext_ = nullptr;
     RinWaitSet waitSet_ = RIN_HANDLE_INVALID;
     RinWaitItemV1 items_[EventLoop::kWaitCapacity] = {};
+    Size itemCount_ = 0u;
     std::uint64_t lastNow_ = 0u;
     bool haveLastNow_ = false;
 
@@ -116,6 +117,7 @@ public:
              * restarted target may expose a fresh clock owner whose epoch is
              * lower than the retired session's last sample. */
             for (RinWaitItemV1& item : items_) item = {};
+            itemCount_ = 0u;
             lastNow_ = 0u;
             haveLastNow_ = false;
         }
@@ -144,6 +146,11 @@ public:
         std::uint64_t timeout = 0u;
         if (!timeoutNanoseconds(deadline, &timeout)) return false;
 
+        RinWaitItemV1 previousItems[EventLoop::kWaitCapacity] = {};
+        for (Size index = 0u; index < itemCount_; ++index)
+            previousItems[index] = items_[index];
+        const Size previousItemCount = itemCount_;
+
         for (Size index = 0u; index < count; ++index) {
             const EventLoop::WaitRequest& request = requests[index];
             items_[index].handle = static_cast<RinHandle>(request.nativeHandle);
@@ -157,12 +164,38 @@ public:
             static_cast<std::uint64_t>(count * sizeof(items_[0]))};
         if (rin_wait_set_set_items_v1(waitSet_, itemSlice) != RIN_SUCCESS)
             return false;
+        itemCount_ = count;
 
         /* The item publication is a bounded syscall and may consume time.
          * Recompute once before waiting so a deadline cannot be extended by
          * the publication itself; a rollback during that interval still
-         * fails closed without issuing the wait syscall. */
-        if (!timeoutNanoseconds(deadline, &timeout)) return false;
+         * fails closed without issuing the wait syscall.  Restore the
+         * previously published item list first so the adapter remains
+         * failure-atomic even though publication already occurred. */
+        if (!timeoutNanoseconds(deadline, &timeout)) {
+            const RinSliceV1 previousSlice = {
+                previousItemCount == 0u
+                    ? 0u
+                    : static_cast<std::uint64_t>(reinterpret_cast<
+                          std::uintptr_t>(previousItems)),
+                static_cast<std::uint64_t>(
+                    previousItemCount * sizeof(previousItems[0]))};
+            if (rin_wait_set_set_items_v1(waitSet_, previousSlice) ==
+                RIN_SUCCESS) {
+                for (Size index = 0u; index < previousItemCount; ++index)
+                    items_[index] = previousItems[index];
+                for (Size index = previousItemCount;
+                     index < EventLoop::kWaitCapacity; ++index)
+                    items_[index] = {};
+                itemCount_ = previousItemCount;
+            } else {
+                (void)rin_object_close_v1(static_cast<RinObject>(waitSet_));
+                waitSet_ = RIN_HANDLE_INVALID;
+                for (RinWaitItemV1& item : items_) item = {};
+                itemCount_ = 0u;
+            }
+            return false;
+        }
         RinWaitResultV1 result = {};
         result.struct_size = sizeof(result);
         result.version = RIN_SDK_STRUCT_VERSION_1;

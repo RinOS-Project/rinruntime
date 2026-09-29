@@ -18,6 +18,7 @@ struct SdkArgsV1 {
 static RinWaitItemV1 g_item;
 static uint32_t g_set_items_calls;
 static bool g_malformed_wait_result;
+static bool g_rollback_after_set;
 static uint64_t g_now = 100u;
 
 static uint64_t test_clock(void*) noexcept { return g_now; }
@@ -46,6 +47,10 @@ static RinResult fake_invoke(uint64_t, uint32_t library, uint32_t operation,
         memcpy(&g_item, reinterpret_cast<const void*>(static_cast<uintptr_t>(
                    args->value[1])), sizeof(g_item));
         ++g_set_items_calls;
+        if (g_rollback_after_set) {
+            g_rollback_after_set = false;
+            g_now = 90u;
+        }
         return RIN_SUCCESS;
     }
     if (operation == 11u) {
@@ -139,6 +144,27 @@ int main() {
      * must not be mistaken for a rollback within the same session. */
     g_now = 1000u;
     assert(backend.wait(&valid, 1u, 1001u, &ready));
+
+    /* Publication can consume enough time for the monotonic source to
+     * appear to roll back.  The adapter must restore the previously
+     * published item list before returning failure instead of leaving the
+     * target wait-set with an unissued request. */
+    RinRuntime::EventLoop::WaitRequest rollback_request = {};
+    rollback_request.id = 88u;
+    rollback_request.nativeHandle = opaque_handle;
+    rollback_request.events = RinRuntime::EventLoop::WAIT_WRITABLE;
+    const uint32_t set_items_before_rollback_after_publish =
+        g_set_items_calls;
+    g_rollback_after_set = true;
+    ready = {99u, RinRuntime::EventLoop::WAIT_READABLE};
+    assert(!backend.wait(&rollback_request, 1u, 1001u, &ready));
+    assert(ready.id == 0u && ready.events == 0u);
+    assert(g_set_items_calls ==
+           set_items_before_rollback_after_publish + 2u);
+    assert(g_item.events == RinRuntime::EventLoop::WAIT_READABLE);
+    assert(g_item.user_tag == valid.id);
+    g_now = 1000u;
+
     assert(backend.reset() == RIN_SUCCESS);
     assert(!backend.initialized());
     g_now = 10u;

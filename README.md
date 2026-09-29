@@ -148,7 +148,9 @@ reject a monotonic-clock rollback before publishing a new SDK wait-set item
 list and before recomputing a timeout, so a stale deadline cannot become an
 unbounded sleep after a repeated or interrupted wait. The SDK adapter repeats
 the deadline sample after item publication to avoid extending a finite wait by
-the publication syscall itself.
+the publication syscall itself. If that second sample detects a rollback, it
+restores the previously published item list; if restoration fails, it closes
+the wait-set rather than leaving a stale target-side request usable.
 `RinEventLoopBackend::reset()` also clears the retired wait-item bytes and
 clock sample before a new wait-set session is initialized, so a reconnect with
 a fresh clock epoch cannot be rejected as an intra-session rollback.
