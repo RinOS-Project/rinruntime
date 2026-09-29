@@ -182,6 +182,12 @@ int main() {
     assert(table.addColumn({"Name", 96, true}));
     assert(table.setColumns({{"Name", 120, true}, {"Age", 96, false}}));
     assert(table.columns().size() == 2u);
+    assert(table.replaceColumn(1, {"Years", 96, true}));
+    assert(table.columns()[1].header == "Years");
+    assert(!table.replaceColumn(1, {"Invalid", 1, false}));
+    assert(table.removeColumn(1));
+    assert(table.columns().size() == 1u);
+    assert(table.addColumn({"Years", 96, true}));
     assert(!table.setColumns({{"Invalid", 1, false}}));
     assert(table.columns().size() == 2u);
     assert(table.setColumnValue(0, [](int32_t) { return std::string("value"); }));
@@ -201,6 +207,14 @@ int main() {
     popup_items.emplace_back("Open", "", [] {});
     assert(popup.setItems(popup_items));
     assert(popup.items().size() == 1u);
+    assert(popup.replaceItem(0, {"Save", "Ctrl+S", [] {}, false, true}));
+    assert(popup.items()[0].label == "Save");
+    assert(popup.removeItem(0));
+    assert(popup.items().empty());
+    assert(popup.addItem("Open") == 0);
+    popup.clearItems();
+    assert(popup.items().empty());
+    assert(popup.addItem("Open") == 0);
     assert(popup.setItemAction(0, [] {}));
     RinRuntime::MenuBar menu_bar;
     const int32_t menu = menu_bar.addMenu("File");
@@ -212,5 +226,16 @@ int main() {
     replacement.items.emplace_back("Copy", "", [] {});
     assert(menu_bar.setMenus({replacement}));
     assert(menu_bar.menus().size() == 1u);
+    RinRuntime::Menu replacement_again;
+    replacement_again.title = "View";
+    replacement_again.items.emplace_back("Zoom", "", [] {});
+    assert(menu_bar.replaceMenu(0, replacement_again));
+    assert(menu_bar.menus()[0].title == "View");
+    std::vector<RinRuntime::MenuItem> menu_items;
+    menu_items.emplace_back("Full Screen", "F11", [] {});
+    assert(menu_bar.setMenuItems(0, menu_items));
+    assert(menu_bar.menus()[0].items.size() == 1u);
+    assert(menu_bar.removeMenu(0));
+    assert(menu_bar.menus().empty());
     return 0;
 }
