@@ -37,8 +37,20 @@ class Lz4BlockDecoder final {
         return result;
     }
 
-    static bool cancelled(Lz4CancellationFunction function, void* context) {
-        return function != nullptr && function(context);
+    static bool cancelled(Lz4CancellationFunction function,
+                          void* context) noexcept {
+        if (function == nullptr) return false;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
+            return function(context);
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (...) {
+            /* A public caller-owned cancellation callback must not let an
+             * exception escape or allow partial decoded bytes to publish. */
+            return true;
+        }
+#endif
     }
 
 public:
@@ -156,8 +168,20 @@ public:
  * portable interoperability encoder, not a compression-ratio strategy; a
  * container owner may choose a denser private match finder. */
 class Lz4BlockEncoder final {
-    static bool cancelled(Lz4CancellationFunction function, void* context) {
-        return function != nullptr && function(context);
+    static bool cancelled(Lz4CancellationFunction function,
+                          void* context) noexcept {
+        if (function == nullptr) return false;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
+            return function(context);
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (...) {
+            /* Encoding is also a public callback boundary; cancellation is
+             * the safe failure result when the callback cannot complete. */
+            return true;
+        }
+#endif
     }
 
 public:

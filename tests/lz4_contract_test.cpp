@@ -7,6 +7,7 @@
 #include <cassert>
 #include <cstdint>
 #include <string>
+#include <stdexcept>
 #include <vector>
 
 static bool cancelNow(void* context)
@@ -20,6 +21,11 @@ static bool cancelAfterSeveralPolls(void* context)
     auto* polls = static_cast<std::uint32_t*>(context);
     if (polls == nullptr) return true;
     return ++*polls >= 3u;
+}
+
+static bool throwingCancel(void*)
+{
+    throw std::runtime_error("cancellation callback failure");
 }
 
 int main()
@@ -69,11 +75,21 @@ int main()
                           RinCompression::kLz4MaximumBytes, cancelNow,
                           &cancelled) == RinCompression::Lz4Result::Cancelled);
     assert(output.empty());
+    output.assign(1u, 0xa5u);
+    assert(decoder.decode(literal, sizeof(literal), output,
+                          RinCompression::kLz4MaximumBytes, throwingCancel,
+                          nullptr) == RinCompression::Lz4Result::Cancelled);
+    assert(output.empty());
     assert(decoder.decode(nullptr, 1u, output) ==
            RinCompression::Lz4Result::InvalidArgument);
     std::uint32_t cancelledEncode = 1u;
     assert(encoder.encode(reinterpret_cast<const std::uint8_t*>("hello"), 5u,
                           encoded, cancelNow, &cancelledEncode) ==
+           RinCompression::Lz4Result::Cancelled);
+    assert(encoded.empty());
+    encoded.assign(1u, 0xa5u);
+    assert(encoder.encode(reinterpret_cast<const std::uint8_t*>("hello"), 5u,
+                          encoded, throwingCancel, nullptr) ==
            RinCompression::Lz4Result::Cancelled);
     assert(encoded.empty());
 
