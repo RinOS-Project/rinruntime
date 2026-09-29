@@ -4,6 +4,9 @@
 #ifndef RINRUNTIME_TEXT_INPUT_HPP
 #define RINRUNTIME_TEXT_INPUT_HPP
 
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+#    include <new>
+#endif
 #include "event.hpp"
 #include "accessibility.hpp"
 #include "unicode.hpp"
@@ -131,12 +134,21 @@ class TextInputModel {
 
     bool replaceRange(size_t start, size_t end, const std::string& value) {
         if (start > end || end > text_.length()) return false;
-        text_.erase(start, end - start);
-        text_.insert(start, value);
-        cursor_ = start + value.length();
-        selectionStart_ = cursor_;
-        selectionEnd_ = cursor_;
-        return true;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
+            std::string candidate = text_;
+            candidate.replace(start, end - start, value);
+            text_.swap(candidate);
+            cursor_ = start + value.length();
+            selectionStart_ = cursor_;
+            selectionEnd_ = cursor_;
+            return true;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (const std::bad_alloc&) {
+            return false;
+        }
+#endif
     }
 
     void moveCursor(size_t position, bool extendSelection) {
@@ -169,12 +181,21 @@ private:
 public:
     bool setText(const std::string& value) {
         if (!validUtf8(value.data(), value.length())) return false;
-        text_ = value;
-        cursor_ = text_.length();
-        selectionStart_ = cursor_;
-        selectionEnd_ = cursor_;
-        clearComposition();
-        return true;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
+            std::string candidate = value;
+            text_.swap(candidate);
+            cursor_ = text_.length();
+            selectionStart_ = cursor_;
+            selectionEnd_ = cursor_;
+            clearComposition();
+            return true;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (const std::bad_alloc&) {
+            return false;
+        }
+#endif
     }
     const std::string& text() const { return text_; }
     size_t cursor() const { return cursor_; }
@@ -194,6 +215,9 @@ public:
     bool setComposition(const char* value, size_t valueLength,
                         size_t selectionStart, size_t selectionEnd) {
         if (!value && valueLength != 0u) return false;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
         std::string candidate(value ? value : "", valueLength);
         if (!validUtf8(value, valueLength) || selectionStart > valueLength ||
             selectionEnd > valueLength ||
@@ -204,16 +228,25 @@ public:
             clearComposition();
             return true;
         }
+        size_t replaceStart = compositionReplaceStart_;
+        size_t replaceEnd = compositionReplaceEnd_;
         if (!composition_.active) {
-            compositionReplaceStart_ = selectionStart_ < selectionEnd_
+            replaceStart = selectionStart_ < selectionEnd_
                 ? selectionStart_ : selectionEnd_;
-            compositionReplaceEnd_ = selectionStart_ < selectionEnd_
+            replaceEnd = selectionStart_ < selectionEnd_
                 ? selectionEnd_ : selectionStart_;
         }
-        composition_.text.assign(value, valueLength);
+        composition_.text.swap(candidate);
+        compositionReplaceStart_ = replaceStart;
+        compositionReplaceEnd_ = replaceEnd;
         composition_.selection = {selectionStart, selectionEnd};
         composition_.active = true;
         return true;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (const std::bad_alloc&) {
+            return false;
+        }
+#endif
     }
     bool setComposition(const std::string& value, size_t selectionStart,
                         size_t selectionEnd) {
@@ -286,11 +319,26 @@ public:
             encoded[3] = static_cast<char>(0x80u | (codepoint & 0x3fu));
             byteCount = 4u;
         }
-        clearComposition();
-        (void)eraseSelection();
-        text_.insert(cursor_, encoded, byteCount);
-        moveCursor(cursor_ + byteCount, false);
-        return true;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
+            const size_t start = selectionStart_ < selectionEnd_
+                ? selectionStart_ : selectionEnd_;
+            const size_t end = selectionStart_ < selectionEnd_
+                ? selectionEnd_ : selectionStart_;
+            std::string candidate = text_;
+            if (start != end) candidate.erase(start, end - start);
+            const size_t insertion = start;
+            candidate.insert(insertion, encoded, byteCount);
+            text_.swap(candidate);
+            clearComposition();
+            moveCursor(insertion + byteCount, false);
+            return true;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (const std::bad_alloc&) {
+            return false;
+        }
+#endif
     }
 
     bool handleEvent(const Event& event, bool focused, bool acceptsNewline) {

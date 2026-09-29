@@ -70,13 +70,31 @@ public:
 
     bool setAccessibilityName(const std::string& value) {
         if (!strictUtf8TextValid(value)) return false;
-        accessibilityName = value;
-        return true;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
+            std::string candidate = value;
+            accessibilityName.swap(candidate);
+            return true;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (const std::bad_alloc&) {
+            return false;
+        }
+#endif
     }
     bool setAccessibilityDescription(const std::string& value) {
         if (!strictUtf8TextValid(value)) return false;
-        accessibilityDescription = value;
-        return true;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
+            std::string candidate = value;
+            accessibilityDescription.swap(candidate);
+            return true;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (const std::bad_alloc&) {
+            return false;
+        }
+#endif
     }
     /* Focus controllers own when this changes; it is public so a non-RinOS
      * toolkit can share the same accessibility focus state. */

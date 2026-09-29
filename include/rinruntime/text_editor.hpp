@@ -4,6 +4,9 @@
 #ifndef RINRUNTIME_TEXT_EDITOR_HPP
 #define RINRUNTIME_TEXT_EDITOR_HPP
 
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+#    include <new>
+#endif
 #include <string>
 #include "unicode.hpp"
 
@@ -86,9 +89,18 @@ public:
             validPrefix != value.size()) {
             return false;
         }
-        text_ = value;
-        cursor_ = anchor_ = text_.size();
-        return true;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
+            std::string candidate = value;
+            text_.swap(candidate);
+            cursor_ = anchor_ = text_.size();
+            return true;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (const std::bad_alloc&) {
+            return false;
+        }
+#endif
     }
 
     const std::string& text() const { return text_; }
@@ -175,13 +187,23 @@ public:
             count == 0u) {
             return false;
         }
-        if (hasSelection() && !eraseRange(selectionStart(), selectionEnd())) {
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
+            const size_t start = hasSelection() ? selectionStart() : cursor_;
+            const size_t end = hasSelection() ? selectionEnd() : cursor_;
+            std::string candidate = text_;
+            if (start != end) candidate.erase(start, end - start);
+            candidate.insert(start, encoded, count);
+            text_.swap(candidate);
+            cursor_ = start + count;
+            anchor_ = cursor_;
+            return true;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (const std::bad_alloc&) {
             return false;
         }
-        text_.insert(cursor_, encoded, count);
-        cursor_ += count;
-        anchor_ = cursor_;
-        return true;
+#endif
     }
 
     bool insertNewline() {
