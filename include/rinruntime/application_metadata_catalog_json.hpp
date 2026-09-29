@@ -9,6 +9,10 @@
 #include <string_view>
 #include <utility>
 
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS)
+#    include <new>
+#endif
+
 #include <rinjson/json.hpp>
 
 #include "application_metadata_catalog.hpp"
@@ -114,6 +118,9 @@ public:
         } catch (const rinjson::Error& exception) {
             error = "application catalog JSON: ";
             error += exception.what();
+            return false;
+        } catch (const std::bad_alloc&) {
+            error = "application catalog allocation";
             return false;
         }
 #endif

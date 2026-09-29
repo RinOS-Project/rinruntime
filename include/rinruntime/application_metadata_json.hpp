@@ -10,6 +10,10 @@
 #include <utility>
 #include <vector>
 
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS)
+#    include <new>
+#endif
+
 #include <rinjson/json.hpp>
 
 #include "../../../rinresource/include/rinresource/loader.h"
@@ -153,6 +157,9 @@ public:
         } catch (const rinjson::Error& exception) {
             error = "metadata JSON: ";
             error += exception.what();
+            return false;
+        } catch (const std::bad_alloc&) {
+            error = "metadata allocation";
             return false;
         }
 #endif
