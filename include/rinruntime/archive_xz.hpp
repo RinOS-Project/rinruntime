@@ -9,6 +9,9 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+#    include <new>
+#endif
 #include <string>
 #include <utility>
 #include <vector>
@@ -344,6 +347,9 @@ public:
         void* cancellationContext, ArchiveDeflateDeadlineFunction deadline,
         void* deadlineContext) const
     {
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
         if (input == nullptr && inputSize != 0u)
             return ArchiveXzResult::InvalidArgument;
         if (inputSize > RINRUNTIME_ARCHIVE_CONTENT_LIMIT)
@@ -428,6 +434,12 @@ public:
         if (result != ArchiveXzResult::Ok) return result;
         output = std::move(decoded);
         return ArchiveXzResult::Ok;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (const std::bad_alloc&) {
+            output.clear();
+            return ArchiveXzResult::Limit;
+        }
+#endif
     }
 
 private:
@@ -917,6 +929,9 @@ private:
         void* cancellationContext, ArchiveDeflateDeadlineFunction deadline,
         void* deadlineContext) const
     {
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
         if (deadline != nullptr && deadline(deadlineContext))
             return ArchiveXzResult::Deadline;
         if (cancellation != nullptr && cancellation(cancellationContext))
@@ -1281,6 +1296,12 @@ private:
             return ArchiveXzResult::Malformed;
         output = std::move(decoded);
         return ArchiveXzResult::Ok;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (const std::bad_alloc&) {
+            output.clear();
+            return ArchiveXzResult::Limit;
+        }
+#endif
     }
 
     ArchiveXzResult decodeRawLzma(
@@ -1291,6 +1312,9 @@ private:
         void* cancellationContext, ArchiveDeflateDeadlineFunction deadline,
         void* deadlineContext) const
     {
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
         if (compressed == nullptr || compressedSize < 5u)
             return ArchiveXzResult::InvalidArgument;
         if (expectedSize > kMaxStreamBytes) return ArchiveXzResult::Limit;
@@ -1322,6 +1346,12 @@ private:
             return ArchiveXzResult::Malformed;
         output = std::move(decoded);
         return ArchiveXzResult::Ok;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (const std::bad_alloc&) {
+            output.clear();
+            return ArchiveXzResult::Limit;
+        }
+#endif
     }
 
 private:
@@ -1814,6 +1844,9 @@ private:
         void* cancellationContext, ArchiveDeflateDeadlineFunction deadline,
         void* deadlineContext)
     {
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
         if (compressed == nullptr && compressedSize != 0u)
             return ArchiveXzResult::InvalidArgument;
         if (compressedSize > kMaxStreamBytes || expectedSize > kMaxStreamBytes)
@@ -1938,6 +1971,12 @@ private:
             return ArchiveXzResult::Malformed;
         output = std::move(decoded);
         return ArchiveXzResult::Ok;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (const std::bad_alloc&) {
+            output.clear();
+            return ArchiveXzResult::Limit;
+        }
+#endif
     }
 
 public:

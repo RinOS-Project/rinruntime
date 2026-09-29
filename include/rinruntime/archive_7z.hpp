@@ -11,6 +11,9 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+#    include <new>
+#endif
 #include <string>
 
 namespace RinRuntime {
@@ -153,6 +156,9 @@ private:
         void* cancellationContext, ArchiveDeflateDeadlineFunction deadline,
         void* deadlineContext) const
     {
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
         entry_count_ = 0u;
         if (deadline != nullptr && deadline(deadlineContext))
             return Archive7zResult::Deadline;
@@ -826,6 +832,13 @@ private:
         if (entry_result != Archive7zResult::Ok) return entry_result;
         output = decoded;
         return Archive7zResult::Ok;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (const std::bad_alloc&) {
+            entry_count_ = 0u;
+            output.clear();
+            return Archive7zResult::Limit;
+        }
+#endif
     }
 
 private:
