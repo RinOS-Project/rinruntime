@@ -198,9 +198,12 @@ static void put7zUInt64(std::vector<std::uint8_t>& bytes,
 
 static std::vector<std::uint8_t> make7zStored(bool copy_chain = false,
                                               bool delta_first = false,
-                                              bool x86_first = false)
+                                              bool x86_first = false,
+                                              bool lzma2_first = false)
 {
-    assert(!(delta_first && x86_first));
+    assert((delta_first ? 1u : 0u) + (x86_first ? 1u : 0u) +
+               (lzma2_first ? 1u : 0u) <=
+           1u);
     const std::uint8_t signature[] = {
         0x37u, 0x7au, 0xbcu, 0xafu, 0x27u, 0x1cu};
     const std::uint8_t payload[] = {'h', 'e', 'l', 'l', 'o'};
@@ -210,11 +213,15 @@ static std::vector<std::uint8_t> make7zStored(bool copy_chain = false,
                                         0x00u};
     const std::uint8_t x86_output[] = {0xe8u, 0x00u, 0x00u, 0x00u,
                                        0x00u};
-    const std::uint8_t* packed = x86_first
-                                     ? x86_payload
-                                     : delta_first ? delta_payload : payload;
+    const std::uint8_t lzma2_payload[] = {
+        0x01u, 0x04u, 0x00u, 'h', 'e', 'l', 'l', 'o', 0x00u};
+    const std::uint8_t* packed =
+        lzma2_first ? lzma2_payload
+                    : x86_first ? x86_payload
+                                : delta_first ? delta_payload : payload;
     const std::uint8_t* expected = x86_first ? x86_output : payload;
-    const std::size_t packed_size = sizeof(payload);
+    const std::size_t packed_size =
+        lzma2_first ? sizeof(lzma2_payload) : sizeof(payload);
     std::vector<std::uint8_t> header;
     header.push_back(0x01u); /* Header */
     header.push_back(0x04u); /* MainStreamsInfo */
@@ -246,6 +253,11 @@ static std::vector<std::uint8_t> make7zStored(bool copy_chain = false,
         header.push_back(0x00u);
         header.push_back(0x00u);
         header.push_back(0x00u);
+    } else if (lzma2_first) {
+        header.push_back(0x21u); /* one-byte LZMA2 method ID + properties */
+        header.push_back(0x21u);
+        header.push_back(0x01u); /* one dictionary-property byte */
+        header.push_back(0x00u); /* 4 KiB dictionary */
     } else {
         header.push_back(0x01u); /* one-byte method ID, no properties */
         header.push_back(0x00u); /* Copy coder */
@@ -274,7 +286,7 @@ static std::vector<std::uint8_t> make7zStored(bool copy_chain = false,
     std::memcpy(bytes.data(), signature, sizeof(signature));
     bytes[7u] = 4u;
     std::memcpy(bytes.data() + 32u, packed, packed_size);
-    const std::size_t header_offset = 32u + sizeof(payload);
+    const std::size_t header_offset = 32u + packed_size;
     std::memcpy(bytes.data() + header_offset, header.data(), header.size());
     writeLe64(bytes, 12u, packed_size);
     writeLe64(bytes, 20u, header.size());
@@ -1381,6 +1393,13 @@ int main()
            RinRuntime::Archive7zResult::Ok);
     assert(sevenZipOutput == std::string({static_cast<char>(0xe8), '\0',
                                           '\0', '\0', '\0'}));
+    const std::vector<std::uint8_t> lzma2SevenZip =
+        make7zStored(false, false, false, true);
+    sevenZipOutput = "poison";
+    assert(sevenZipReader.decodeStored(lzma2SevenZip.data(),
+                                       lzma2SevenZip.size(), sevenZipOutput) ==
+           RinRuntime::Archive7zResult::Ok);
+    assert(sevenZipOutput == "hello");
     const std::vector<std::uint8_t> emptySevenZip = make7zEmpty();
     sevenZipOutput = "poison";
     assert(sevenZipReader.decodeStored(emptySevenZip.data(),

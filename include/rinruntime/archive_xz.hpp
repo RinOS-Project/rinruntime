@@ -1807,6 +1807,179 @@ private:
         return ArchiveXzResult::Ok;
     }
 
+    static ArchiveXzResult decodeRawLzma2Impl(
+        const std::uint8_t* compressed, std::size_t compressedSize,
+        std::uint8_t dictionaryProperty, std::size_t expectedSize,
+        std::string& output, ArchiveDeflateCancellationFunction cancellation,
+        void* cancellationContext, ArchiveDeflateDeadlineFunction deadline,
+        void* deadlineContext)
+    {
+        if (compressed == nullptr && compressedSize != 0u)
+            return ArchiveXzResult::InvalidArgument;
+        if (compressedSize > kMaxStreamBytes || expectedSize > kMaxStreamBytes)
+            return ArchiveXzResult::Limit;
+        if (deadline != nullptr && deadline(deadlineContext))
+            return ArchiveXzResult::Deadline;
+        if (cancellation != nullptr && cancellation(cancellationContext))
+            return ArchiveXzResult::Cancelled;
+        if (dictionaryProperty > 40u) return ArchiveXzResult::Malformed;
+
+        const std::uint64_t requestedDictionary =
+            dictionaryProperty == 40u
+                ? static_cast<std::uint64_t>(kMaxStreamBytes)
+                : (static_cast<std::uint64_t>(2u) |
+                   static_cast<std::uint64_t>(dictionaryProperty & 1u))
+                      << (dictionaryProperty / 2u + 11u);
+        const std::size_t dictionarySize =
+            requestedDictionary > kMaxStreamBytes
+                ? kMaxStreamBytes
+                : static_cast<std::size_t>(requestedDictionary);
+        std::string decoded;
+        decoded.reserve(expectedSize);
+        LzmaDecoder lzma;
+        std::size_t cursor = 0u;
+        std::size_t historyStart = 0u;
+        bool streamEnded = false;
+        while (cursor < compressedSize) {
+            if (deadline != nullptr && deadline(deadlineContext))
+                return ArchiveXzResult::Deadline;
+            if (cancellation != nullptr && cancellation(cancellationContext))
+                return ArchiveXzResult::Cancelled;
+            const std::uint8_t control = compressed[cursor++];
+            if (control == 0u) {
+                if (cursor != compressedSize) return ArchiveXzResult::Malformed;
+                streamEnded = true;
+                break;
+            }
+            if (control == 0x01u || control == 0x02u) {
+                if (compressedSize - cursor < 2u)
+                    return ArchiveXzResult::Malformed;
+                const std::size_t chunkSize =
+                    static_cast<std::size_t>(compressed[cursor]) |
+                    (static_cast<std::size_t>(compressed[cursor + 1u]) << 8u);
+                cursor += 2u;
+                const std::size_t chunkBytes = chunkSize + 1u;
+                if (chunkBytes > compressedSize - cursor)
+                    return ArchiveXzResult::Malformed;
+                if (decoded.size() > expectedSize ||
+                    chunkBytes > expectedSize - decoded.size())
+                    return ArchiveXzResult::Malformed;
+                if (control == 0x01u) {
+                    historyStart = decoded.size();
+                    lzma.resetState();
+                }
+                std::size_t copied = 0u;
+                while (copied < chunkBytes) {
+                    if (deadline != nullptr && deadline(deadlineContext))
+                        return ArchiveXzResult::Deadline;
+                    if (cancellation != nullptr &&
+                        cancellation(cancellationContext))
+                        return ArchiveXzResult::Cancelled;
+                    const std::size_t part =
+                        chunkBytes - copied > 65536u ? 65536u
+                                                     : chunkBytes - copied;
+                    decoded.append(reinterpret_cast<const char*>(
+                                       compressed + cursor + copied),
+                                   part);
+                    copied += part;
+                }
+                cursor += chunkBytes;
+                continue;
+            }
+            if (control < 0x80u || compressedSize - cursor < 4u)
+                return ArchiveXzResult::Malformed;
+            const std::size_t uncompressedSize =
+                (static_cast<std::size_t>(control & 0x1fu) << 16u) |
+                (static_cast<std::size_t>(compressed[cursor]) << 8u) |
+                static_cast<std::size_t>(compressed[cursor + 1u]);
+            cursor += 2u;
+            const std::size_t compressedChunkSize =
+                (static_cast<std::size_t>(compressed[cursor]) << 8u) |
+                static_cast<std::size_t>(compressed[cursor + 1u]);
+            cursor += 2u;
+            const std::size_t chunkUncompressedSize = uncompressedSize + 1u;
+            const std::size_t compressedChunkBytes = compressedChunkSize + 1u;
+            if (compressedChunkBytes > compressedSize - cursor)
+                return ArchiveXzResult::Malformed;
+            if (decoded.size() > expectedSize ||
+                chunkUncompressedSize > expectedSize - decoded.size())
+                return ArchiveXzResult::Malformed;
+            if (control >= 0xc0u) {
+                if (cursor >= compressedSize)
+                    return ArchiveXzResult::Malformed;
+                const LzmaStatus propertyResult =
+                    lzma.setProperties(compressed[cursor++]);
+                if (propertyResult != LzmaStatus::Ok)
+                    return propertyResult == LzmaStatus::Limit
+                               ? ArchiveXzResult::Limit
+                               : ArchiveXzResult::Malformed;
+            } else if (!lzma.initialized) {
+                return ArchiveXzResult::Malformed;
+            } else if (control >= 0xa0u) {
+                lzma.resetState();
+            }
+            if (control >= 0xe0u) historyStart = decoded.size();
+            const LzmaStatus decodeResult = lzma.decodeChunk(
+                compressed + cursor, compressedChunkBytes,
+                chunkUncompressedSize, decoded, historyStart, dictionarySize,
+                cancellation, cancellationContext, deadline, deadlineContext);
+            if (decodeResult != LzmaStatus::Ok) {
+                if (decodeResult == LzmaStatus::Limit)
+                    return ArchiveXzResult::Limit;
+                if (decodeResult == LzmaStatus::Cancelled)
+                    return ArchiveXzResult::Cancelled;
+                if (decodeResult == LzmaStatus::Deadline)
+                    return ArchiveXzResult::Deadline;
+                return ArchiveXzResult::Malformed;
+            }
+            cursor += compressedChunkBytes;
+        }
+        if (!streamEnded || decoded.size() != expectedSize)
+            return ArchiveXzResult::Malformed;
+        output = std::move(decoded);
+        return ArchiveXzResult::Ok;
+    }
+
+public:
+    /* Decode one raw LZMA2 stream as used by the 7z method 0x21 coder.  The
+     * one-byte dictionary property is kept outside the packed stream, while
+     * output publication remains failure-atomic and caller-owned. */
+    ArchiveXzResult decodeRawLzma2(
+        const std::uint8_t* compressed, std::size_t compressedSize,
+        std::uint8_t dictionaryProperty, std::size_t expectedSize,
+        std::string& output) const
+    {
+        return decodeRawLzma2(compressed, compressedSize, dictionaryProperty,
+                              expectedSize, output, nullptr, nullptr,
+                              nullptr, nullptr);
+    }
+
+    ArchiveXzResult decodeRawLzma2(
+        const std::uint8_t* compressed, std::size_t compressedSize,
+        std::uint8_t dictionaryProperty, std::size_t expectedSize,
+        std::string& output, ArchiveDeflateCancellationFunction cancellation,
+        void* cancellationContext) const
+    {
+        return decodeRawLzma2(compressed, compressedSize, dictionaryProperty,
+                              expectedSize, output, cancellation,
+                              cancellationContext, nullptr, nullptr);
+    }
+
+    ArchiveXzResult decodeRawLzma2(
+        const std::uint8_t* compressed, std::size_t compressedSize,
+        std::uint8_t dictionaryProperty, std::size_t expectedSize,
+        std::string& output, ArchiveDeflateCancellationFunction cancellation,
+        void* cancellationContext, ArchiveDeflateDeadlineFunction deadline,
+        void* deadlineContext) const
+    {
+        return decodeRawLzma2Impl(
+            compressed, compressedSize, dictionaryProperty, expectedSize,
+            output, cancellation, cancellationContext, deadline,
+            deadlineContext);
+    }
+
+private:
+
     static constexpr std::size_t kHeaderSize = 12u;
     static constexpr std::size_t kFooterSize = 12u;
     static constexpr std::size_t kMinimumIndexSize = 8u;

@@ -334,11 +334,12 @@ non-empty packed stream, or one empty regular file with no packed stream, and
 uses a linear pipeline of up to four one-in/one-out Copy (`0x00`), Delta
 (`0x03`, one-byte distance property), the XZ-compatible BCJ subset (`0x04`
 through `0x0b`, with the x86 four-byte start-offset property), and LZMA
-(`03 01 01` with its five-byte properties) coders.  BindPairs, packed/final
-stream selection, intermediate sizes, and optional single-file metadata/CRC
-records are validated before failure-atomic caller-owned output is published.
+(`03 01 01` with its five-byte properties) or LZMA2 (`0x21`, one-byte
+dictionary property) coders.  BindPairs, packed/final stream selection,
+intermediate sizes, and optional single-file metadata/CRC records are
+validated before failure-atomic caller-owned output is published.
 The raw BCJ/Delta transforms reuse the public `ArchiveXzReader` filter helper;
-multi-stream coders, BCJ2, LZMA2, encryption, multiple folders/entries,
+multi-stream coders, BCJ2, encryption, multiple folders/entries,
 filesystem extraction, archive service IPC, and File Portal publication remain
 private or explicit `Unsupported` results.
 The shared `ArchiveXzReader::decodeRawLzma()` helper owns only the bounded raw

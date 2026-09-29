@@ -155,6 +155,8 @@ private:
         std::uint64_t coder_count = 0u;
         std::array<std::uint64_t, kMaxCoders> coder_methods{};
         std::array<bool, kMaxCoders> lzma_coders{};
+        std::array<bool, kMaxCoders> lzma2_coders{};
+        std::array<std::uint8_t, kMaxCoders> lzma2_properties{};
         std::array<bool, kMaxCoders> raw_filter_coders{};
         std::array<std::array<std::uint8_t, 4u>, kMaxCoders>
             filter_properties{};
@@ -268,6 +270,10 @@ private:
                             static_cast<std::size_t>(dictionary);
                         lzma_coders[coder] = true;
                         cursor += 5u;
+                    } else if (method == UINT64_C(0x21) &&
+                               property_size == 1u) {
+                        lzma2_properties[coder] = bytes[cursor++];
+                        lzma2_coders[coder] = true;
                     } else if (method >= 0x03u && method <= 0x0bu &&
                                property_size ==
                                    (method == 0x03u
@@ -527,6 +533,24 @@ private:
                             part);
                         copied += part;
                     }
+                } else if (lzma2_coders[coder] &&
+                           coder_methods[coder] == UINT64_C(0x21)) {
+                    ArchiveXzReader lzma2_reader;
+                    const ArchiveXzResult lzma2_result =
+                        lzma2_reader.decodeRawLzma2(
+                            input, input_size, lzma2_properties[coder],
+                            expected_size, coder_output, cancellation,
+                            cancellationContext, deadline, deadlineContext);
+                    if (lzma2_result == ArchiveXzResult::Cancelled)
+                        return Archive7zResult::Cancelled;
+                    if (lzma2_result == ArchiveXzResult::Deadline)
+                        return Archive7zResult::Deadline;
+                    if (lzma2_result == ArchiveXzResult::Limit)
+                        return Archive7zResult::Limit;
+                    if (lzma2_result == ArchiveXzResult::Unsupported)
+                        return Archive7zResult::Unsupported;
+                    if (lzma2_result != ArchiveXzResult::Ok)
+                        return Archive7zResult::Malformed;
                 } else if (raw_filter_coders[coder]) {
                     if (input_size != expected_size)
                         return Archive7zResult::Malformed;
