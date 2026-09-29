@@ -5,6 +5,7 @@
 #include <cassert>
 #include <cstdint>
 #include <cstring>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -66,6 +67,11 @@ static bool stopOnce(void* context)
         return false;
     state->fired = true;
     return true;
+}
+
+static bool throwingCallback(void*)
+{
+    throw std::runtime_error("container callback failure");
 }
 
 static std::vector<std::uint8_t> makeTar()
@@ -1107,6 +1113,16 @@ int main()
     assert(reader.readEntryWithCancellation(0u, output, stopImmediately,
                                             nullptr) ==
            RinRuntime::ArchiveContainerResult::Cancelled);
+    assert(output.empty());
+    output = "poison";
+    assert(reader.readEntryWithCancellation(0u, output, throwingCallback,
+                                            nullptr) ==
+           RinRuntime::ArchiveContainerResult::Malformed);
+    assert(output.empty());
+    output = "poison";
+    assert(reader.readEntryWithDeadline(0u, output, throwingCallback,
+                                        nullptr) ==
+           RinRuntime::ArchiveContainerResult::Malformed);
     assert(output.empty());
 
     const std::vector<std::uint8_t> tar = makeTar();

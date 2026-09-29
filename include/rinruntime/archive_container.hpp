@@ -151,6 +151,9 @@ public:
         } catch (const std::bad_alloc&) {
             clear();
             return ArchiveContainerResult::Limit;
+        } catch (...) {
+            clear();
+            return ArchiveContainerResult::Malformed;
         }
 #endif
     }
@@ -166,14 +169,14 @@ public:
         ArchiveDeflateCancellationFunction cancellation,
         void* cancellationContext) const
     {
+#if defined(__cpp_exceptions) || defined(_CPPUNWIND)
+        try {
+#endif
         output.clear();
         if (index >= entries_.size())
             return ArchiveContainerResult::InvalidArgument;
         if (cancellation != nullptr && cancellation(cancellationContext))
             return ArchiveContainerResult::Cancelled;
-#if defined(__cpp_exceptions) || defined(_CPPUNWIND)
-        try {
-#endif
             switch (kind_) {
             case ArchiveContainerKind::Zip:
                 return map(std::get<ArchiveZipReader>(reader_)
@@ -219,6 +222,9 @@ public:
         } catch (const std::bad_alloc&) {
             output.clear();
             return ArchiveContainerResult::Limit;
+        } catch (...) {
+            output.clear();
+            return ArchiveContainerResult::Malformed;
         }
 #endif
     }
@@ -277,6 +283,9 @@ public:
         } catch (const std::bad_alloc&) {
             output.clear();
             return ArchiveContainerResult::Limit;
+        } catch (...) {
+            output.clear();
+            return ArchiveContainerResult::Malformed;
         }
 #endif
     }
