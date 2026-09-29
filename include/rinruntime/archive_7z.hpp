@@ -94,8 +94,9 @@ public:
         return Archive7zResult::Ok;
     }
 
-    /* Decode a bounded linear 7z pipeline of up to four one-in/one-out Copy
-     * and LZMA coders, plus a single empty regular file with no packed stream.
+    /* Decode a bounded linear 7z pipeline of up to four one-in/one-out Copy,
+     * Delta, and LZMA coders, plus a single empty regular file with no packed
+     * stream.
      * BindPairs are validated before any coder runs.  This subset is useful
      * for caller-owned test/resource bytes and intentionally has no path,
      * filename, filesystem, or service authority.  Multi-stream coders,
@@ -154,6 +155,8 @@ private:
         std::uint64_t coder_count = 0u;
         std::array<std::uint64_t, kMaxCoders> coder_methods{};
         std::array<bool, kMaxCoders> lzma_coders{};
+        std::array<bool, kMaxCoders> delta_coders{};
+        std::array<std::size_t, kMaxCoders> delta_distances{};
         std::array<std::array<std::uint8_t, 5u>, kMaxCoders>
             lzma_properties{};
         std::array<std::size_t, kMaxCoders> lzma_dictionary_sizes{};
@@ -242,26 +245,36 @@ private:
                     if (!readEncodedUInt64(bytes, end, cursor, property_size) ||
                         property_size > static_cast<std::uint64_t>(end - cursor))
                         return Archive7zResult::Malformed;
-                    if (method != UINT64_C(0x010103) || property_size != 5u)
+                    if (method == UINT64_C(0x010103) &&
+                        property_size == 5u) {
+                        for (std::size_t index = 0u; index != 5u; ++index)
+                            lzma_properties[coder][index] =
+                                bytes[cursor + index];
+                        const std::uint32_t dictionary =
+                            static_cast<std::uint32_t>(
+                                lzma_properties[coder][1u]) |
+                            static_cast<std::uint32_t>(
+                                lzma_properties[coder][2u]) << 8u |
+                            static_cast<std::uint32_t>(
+                                lzma_properties[coder][3u]) << 16u |
+                            static_cast<std::uint32_t>(
+                                lzma_properties[coder][4u]) << 24u;
+                        if (dictionary == 0u) return Archive7zResult::Malformed;
+                        if (dictionary > kMaxStreamBytes)
+                            return Archive7zResult::Limit;
+                        lzma_dictionary_sizes[coder] =
+                            static_cast<std::size_t>(dictionary);
+                        lzma_coders[coder] = true;
+                        cursor += 5u;
+                    } else if (method == 0x03u && property_size == 1u) {
+                        const std::size_t distance =
+                            static_cast<std::size_t>(bytes[cursor]) + 1u;
+                        delta_distances[coder] = distance;
+                        delta_coders[coder] = true;
+                        cursor += 1u;
+                    } else {
                         return Archive7zResult::Unsupported;
-                    for (std::size_t index = 0u; index != 5u; ++index)
-                        lzma_properties[coder][index] = bytes[cursor + index];
-                    const std::uint32_t dictionary =
-                        static_cast<std::uint32_t>(
-                            lzma_properties[coder][1u]) |
-                        static_cast<std::uint32_t>(
-                            lzma_properties[coder][2u]) << 8u |
-                        static_cast<std::uint32_t>(
-                            lzma_properties[coder][3u]) << 16u |
-                        static_cast<std::uint32_t>(
-                            lzma_properties[coder][4u]) << 24u;
-                    if (dictionary == 0u) return Archive7zResult::Malformed;
-                    if (dictionary > kMaxStreamBytes)
-                        return Archive7zResult::Limit;
-                    lzma_dictionary_sizes[coder] =
-                        static_cast<std::size_t>(dictionary);
-                    lzma_coders[coder] = true;
-                    cursor += 5u;
+                    }
                 } else if (method != 0u) {
                     return Archive7zResult::Unsupported;
                 }
@@ -501,6 +514,26 @@ private:
                             reinterpret_cast<const char*>(input + copied),
                             part);
                         copied += part;
+                    }
+                } else if (delta_coders[coder] &&
+                           coder_methods[coder] == UINT64_C(0x03)) {
+                    if (input_size != expected_size)
+                        return Archive7zResult::Malformed;
+                    coder_output.resize(expected_size);
+                    const std::size_t distance = delta_distances[coder];
+                    for (std::size_t index = 0u; index != expected_size;
+                         ++index) {
+                        if (deadline != nullptr && deadline(deadlineContext))
+                            return Archive7zResult::Deadline;
+                        if (cancellation != nullptr &&
+                            cancellation(cancellationContext))
+                            return Archive7zResult::Cancelled;
+                        std::uint8_t value = input[index];
+                        if (index >= distance)
+                            value = static_cast<std::uint8_t>(
+                                value + static_cast<std::uint8_t>(
+                                            coder_output[index - distance]));
+                        coder_output[index] = static_cast<char>(value);
                     }
                 } else if (lzma_coders[coder] &&
                            coder_methods[coder] == UINT64_C(0x010103)) {

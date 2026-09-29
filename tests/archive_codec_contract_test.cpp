@@ -196,11 +196,16 @@ static void put7zUInt64(std::vector<std::uint8_t>& bytes,
     bytes.push_back(static_cast<std::uint8_t>(value));
 }
 
-static std::vector<std::uint8_t> make7zStored(bool copy_chain = false)
+static std::vector<std::uint8_t> make7zStored(bool copy_chain = false,
+                                              bool delta_first = false)
 {
     const std::uint8_t signature[] = {
         0x37u, 0x7au, 0xbcu, 0xafu, 0x27u, 0x1cu};
     const std::uint8_t payload[] = {'h', 'e', 'l', 'l', 'o'};
+    const std::uint8_t delta_payload[] = {0x68u, 0xfdu, 0x07u, 0x00u,
+                                          0x03u};
+    const std::uint8_t* packed = delta_first ? delta_payload : payload;
+    const std::size_t packed_size = sizeof(payload);
     std::vector<std::uint8_t> header;
     header.push_back(0x01u); /* Header */
     header.push_back(0x04u); /* MainStreamsInfo */
@@ -208,19 +213,26 @@ static std::vector<std::uint8_t> make7zStored(bool copy_chain = false)
     put7zUInt64(header, 0u); /* PackPos */
     put7zUInt64(header, 1u); /* NumPackStreams */
     header.push_back(0x09u); /* Size */
-    put7zUInt64(header, sizeof(payload));
+    put7zUInt64(header, packed_size);
     header.push_back(0x0au); /* Pack CRC */
     header.push_back(1u); /* all defined */
     put32(header, RinRuntime::rinruntime_archive_crc32(
-                        payload, sizeof(payload)));
+                        packed, packed_size));
     header.push_back(0x00u); /* PackInfo end */
     header.push_back(0x07u); /* UnPackInfo */
     header.push_back(0x0bu); /* Folder */
     put7zUInt64(header, 1u); /* NumFolders */
     header.push_back(0u); /* folders are in this header */
     put7zUInt64(header, copy_chain ? 2u : 1u); /* NumCoders */
-    header.push_back(0x01u); /* one-byte method ID, no properties */
-    header.push_back(0x00u); /* Copy coder */
+    if (delta_first) {
+        header.push_back(0x21u); /* one-byte Delta method ID + properties */
+        header.push_back(0x03u);
+        header.push_back(0x01u); /* one property byte */
+        header.push_back(0x00u); /* distance = 1 */
+    } else {
+        header.push_back(0x01u); /* one-byte method ID, no properties */
+        header.push_back(0x00u); /* Copy coder */
+    }
     if (copy_chain) {
         header.push_back(0x01u); /* second one-byte Copy coder */
         header.push_back(0x00u);
@@ -241,13 +253,13 @@ static std::vector<std::uint8_t> make7zStored(bool copy_chain = false)
     header.push_back(0x00u); /* FilesInfo properties end */
     header.push_back(0x00u); /* Header end */
 
-    std::vector<std::uint8_t> bytes(32u + sizeof(payload) + header.size(), 0u);
+    std::vector<std::uint8_t> bytes(32u + packed_size + header.size(), 0u);
     std::memcpy(bytes.data(), signature, sizeof(signature));
     bytes[7u] = 4u;
-    std::memcpy(bytes.data() + 32u, payload, sizeof(payload));
+    std::memcpy(bytes.data() + 32u, packed, packed_size);
     const std::size_t header_offset = 32u + sizeof(payload);
     std::memcpy(bytes.data() + header_offset, header.data(), header.size());
-    writeLe64(bytes, 12u, sizeof(payload));
+    writeLe64(bytes, 12u, packed_size);
     writeLe64(bytes, 20u, header.size());
     writeLe32(bytes, 28u, RinRuntime::rinruntime_archive_crc32(
                               bytes.data() + header_offset, header.size()));
@@ -1333,6 +1345,14 @@ int main()
     sevenZipOutput = "poison";
     assert(sevenZipReader.decodeStored(copyChainSevenZip.data(),
                                        copyChainSevenZip.size(),
+                                       sevenZipOutput) ==
+           RinRuntime::Archive7zResult::Ok);
+    assert(sevenZipOutput == "hello");
+    const std::vector<std::uint8_t> deltaCopySevenZip =
+        make7zStored(true, true);
+    sevenZipOutput = "poison";
+    assert(sevenZipReader.decodeStored(deltaCopySevenZip.data(),
+                                       deltaCopySevenZip.size(),
                                        sevenZipOutput) ==
            RinRuntime::Archive7zResult::Ok);
     assert(sevenZipOutput == "hello");
