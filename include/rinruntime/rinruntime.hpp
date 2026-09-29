@@ -69,6 +69,8 @@
 #include "file_operation_service.h"
 #include "rin_keyring_client.h"
 #include "text_codec.h"
+#include "unicode.h"
+#include "unicode.hpp"
 #include "accessibility_service_client.h"
 #include "application_data.hpp"
 #include "application_data_lifecycle.hpp"

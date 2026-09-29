@@ -47,6 +47,14 @@ failure-closed at `UINT32_MAX` instead of wrapping, and `clear()` never resets
 that lifetime state, so a stale ID cannot become valid again after a long-lived
 loop has recycled a slot.
 
+The canonical `rinruntime/rinruntime.hpp` umbrella includes both public
+Unicode adapters, `unicode.h` and `unicode.hpp`, so ordinary applications and
+external toolkits can use the bounded UTF-8, grapheme, normalization,
+comparison, locale, date/time, number, and case-fold contracts from one public
+include. Unicode data and locale catalog ownership remain in the public
+library snapshot/private data owner; the umbrella grants no filesystem or
+service authority.
+
 `unicode.hpp` supplies the text model's bounded UTF-8 grapheme stepping. Its
 thin C adapter delegates to the public `libunicode` snapshot, so C++ editing,
 the C runtime, and `rinicud` use the same CRLF, combining/spacing mark, Hangul,
