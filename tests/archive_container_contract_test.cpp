@@ -406,6 +406,81 @@ static std::vector<std::uint8_t> make7zMultiFolderCopySubstreams()
     return bytes;
 }
 
+static std::vector<std::uint8_t> make7zMultiFolderDelta()
+{
+    const std::uint8_t signature[] = {
+        0x37u, 0x7au, 0xbcu, 0xafu, 0x27u, 0x1cu};
+    const std::uint8_t first[] = {0x68u, 0xfdu, 0x07u,
+                                  0x00u, 0x03u, 0xb2u};
+    const std::uint8_t second[] = {0x77u, 0xf8u, 0x03u,
+                                   0xfau, 0xf8u, 0xdbu};
+    const std::uint8_t first_decoded[] = {'h', 'e', 'l', 'l', 'o', '!'};
+    const std::uint8_t second_decoded[] = {'w', 'o', 'r', 'l', 'd', '?'};
+    std::vector<std::uint8_t> header;
+    header.push_back(0x01u); /* Header */
+    header.push_back(0x04u); /* MainStreamsInfo */
+    header.push_back(0x06u); /* PackInfo */
+    put7zUInt64(header, 0u); /* PackPos */
+    put7zUInt64(header, 2u); /* NumPackStreams */
+    header.push_back(0x09u); /* Size */
+    put7zUInt64(header, sizeof(first));
+    put7zUInt64(header, sizeof(second));
+    header.push_back(0x0au); /* Pack CRC */
+    header.push_back(1u);
+    header.resize(header.size() + 8u);
+    put32(header, header.size() - 8u,
+          RinRuntime::rinruntime_archive_crc32(first, sizeof(first)));
+    put32(header, header.size() - 4u,
+          RinRuntime::rinruntime_archive_crc32(second, sizeof(second)));
+    header.push_back(0x00u); /* PackInfo end */
+    header.push_back(0x07u); /* UnPackInfo */
+    header.push_back(0x0bu); /* Folder */
+    put7zUInt64(header, 2u); /* NumFolders */
+    header.push_back(0u); /* folders are in this header */
+    for (unsigned folder = 0u; folder != 2u; ++folder) {
+        header.push_back(1u); /* NumCoders */
+        header.push_back(0x21u); /* one-byte Delta method + property */
+        header.push_back(0x03u); /* Delta */
+        header.push_back(1u); /* one property byte */
+        header.push_back(0u); /* distance 1 */
+    }
+    header.push_back(0x0cu); /* CodersUnpackSize */
+    put7zUInt64(header, sizeof(first_decoded));
+    put7zUInt64(header, sizeof(second_decoded));
+    header.push_back(0x0au); /* decoded folder CRC */
+    header.push_back(1u);
+    header.resize(header.size() + 8u);
+    put32(header, header.size() - 8u,
+          RinRuntime::rinruntime_archive_crc32(first_decoded,
+                                                sizeof(first_decoded)));
+    put32(header, header.size() - 4u,
+          RinRuntime::rinruntime_archive_crc32(second_decoded,
+                                                sizeof(second_decoded)));
+    header.push_back(0x00u); /* UnPackInfo end */
+    header.push_back(0x00u); /* MainStreamsInfo end */
+    header.push_back(0x05u); /* FilesInfo */
+    put7zUInt64(header, 2u); /* NumFiles */
+    header.push_back(0x00u); /* FilesInfo properties end */
+    header.push_back(0x00u); /* Header end */
+
+    const std::size_t packed_size = sizeof(first) + sizeof(second);
+    std::vector<std::uint8_t> bytes(32u + packed_size + header.size(), 0u);
+    std::memcpy(bytes.data(), signature, sizeof(signature));
+    bytes[7u] = 4u;
+    std::memcpy(bytes.data() + 32u, first, sizeof(first));
+    std::memcpy(bytes.data() + 32u + sizeof(first), second, sizeof(second));
+    const std::size_t header_offset = 32u + packed_size;
+    std::memcpy(bytes.data() + header_offset, header.data(), header.size());
+    put64(bytes, 12u, packed_size);
+    put64(bytes, 20u, header.size());
+    put32(bytes, 28u,
+          RinRuntime::rinruntime_archive_crc32(bytes.data() + header_offset,
+                                                header.size()));
+    put32(bytes, 8u,
+          RinRuntime::rinruntime_archive_crc32(bytes.data() + 12u, 20u));
+    return bytes;
+}
+
 static std::vector<std::uint8_t> make7zBcj2()
 {
     const std::uint8_t signature[] = {
@@ -897,6 +972,19 @@ int main()
            RinRuntime::ArchiveContainerResult::Ok && output == "world");
     assert(reader.readEntry(3u, output) ==
            RinRuntime::ArchiveContainerResult::Ok && output == "?");
+
+    const std::vector<std::uint8_t> sevenZipFolderDelta =
+        make7zMultiFolderDelta();
+    assert(reader.parse(sevenZipFolderDelta.data(),
+                        sevenZipFolderDelta.size()) ==
+           RinRuntime::ArchiveContainerResult::Ok);
+    assert(reader.kind() == RinRuntime::ArchiveContainerKind::SevenZip &&
+           reader.size() == 2u && reader.entries()[0].size == 6u &&
+           reader.entries()[1].size == 6u);
+    assert(reader.readEntry(0u, output) ==
+           RinRuntime::ArchiveContainerResult::Ok && output == "hello!");
+    assert(reader.readEntry(1u, output) ==
+           RinRuntime::ArchiveContainerResult::Ok && output == "world?");
 
     const std::vector<std::uint8_t> sevenZipCopyChain = make7zStored(true);
     assert(reader.parse(sevenZipCopyChain.data(), sevenZipCopyChain.size()) ==
