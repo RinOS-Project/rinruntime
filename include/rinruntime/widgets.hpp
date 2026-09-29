@@ -97,6 +97,24 @@ inline bool replaceBySwap(T& target, T value) {
     }
 #endif
 }
+
+/* Widget callbacks are application-owned code.  Event state is committed
+ * before these calls, so a callback exception must not unwind through the
+ * public model or roll back the already-published state. */
+template <typename Callback, typename... Args>
+inline bool invokeCallback(Callback& callback, Args&&... args) noexcept {
+    if (!callback) return false;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+    try {
+#endif
+        callback(std::forward<Args>(args)...);
+        return true;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+    } catch (...) {
+        return false;
+    }
+#endif
+}
 }
 
 class Button : public Widget {
@@ -155,13 +173,14 @@ public:
         }
         if (event.type == EventType::MouseUp && pressed_) {
             pressed_ = false;
-            if (getBounds().contains(event.x, event.y) && onClick_) onClick_();
+            if (getBounds().contains(event.x, event.y))
+                (void)widget_detail::invokeCallback(onClick_);
             return true;
         }
         if (event.type == EventType::KeyDown && hasAccessibilityFocus() &&
             (event.key == widget_detail::kReturn ||
              event.key == widget_detail::kSpace)) {
-            if (onClick_) onClick_();
+            (void)widget_detail::invokeCallback(onClick_);
             return true;
         }
         return false;
@@ -354,7 +373,7 @@ public:
     bool toggle() {
         if (!isEnabled()) return false;
         checked_ = !checked_;
-        if (onChange_) onChange_(checked_);
+        (void)widget_detail::invokeCallback(onChange_, checked_);
         return true;
     }
 
@@ -377,7 +396,8 @@ class Slider : public Widget {
     std::function<void(int32_t)> onChange_;
 
     void notifyIfChanged(int32_t oldValue) {
-        if (value_ != oldValue && onChange_) onChange_(value_);
+        if (value_ != oldValue)
+            (void)widget_detail::invokeCallback(onChange_, value_);
     }
 
 public:
@@ -552,12 +572,14 @@ public:
     bool handleEvent(const Event& event) override {
         if (!open_ || event.type != EventType::KeyDown) return false;
         if (event.key == widget_detail::kEscape) {
-            if (cancelAction_) cancelAction_();
-            else dismiss();
+            if (cancelAction_)
+                (void)widget_detail::invokeCallback(cancelAction_);
+            else
+                dismiss();
             return true;
         }
         if (event.key == widget_detail::kReturn) {
-            if (defaultAction_) defaultAction_();
+            (void)widget_detail::invokeCallback(defaultAction_);
             return true;
         }
         return false;
@@ -593,7 +615,8 @@ class List : public Widget {
     bool selectIndex(int32_t index, bool notify) {
         if (!selection_.select(index)) return false;
         revealSelected();
-        if (notify && onSelect_) onSelect_(index);
+        if (notify)
+            (void)widget_detail::invokeCallback(onSelect_, index);
         return true;
     }
     static bool validItem(const std::string& value) {
@@ -697,8 +720,9 @@ public:
         if (event.type != EventType::KeyDown || !hasAccessibilityFocus())
             return false;
         if (event.key == widget_detail::kReturn) {
-            if (selection_.hasSelection() && onSelect_)
-                onSelect_(selection_.selected());
+            if (selection_.hasSelection())
+                (void)widget_detail::invokeCallback(onSelect_,
+                                                     selection_.selected());
             return selection_.hasSelection();
         }
         bool changed = false;
@@ -710,7 +734,9 @@ public:
         else if (event.key == 0x22u) changed = selection_.move(visibleRows());
         else return false;
         revealSelected();
-        if (changed && onSelect_) onSelect_(selection_.selected());
+        if (changed)
+            (void)widget_detail::invokeCallback(onSelect_,
+                                                 selection_.selected());
         return true;
     }
 };
@@ -969,7 +995,7 @@ public:
             sortColumn_ = column;
             sortAscending_ = true;
         }
-        if (onSort_) onSort_(sortColumn_, sortAscending_);
+        (void)widget_detail::invokeCallback(onSort_, sortColumn_, sortAscending_);
         return true;
     }
 
@@ -1012,7 +1038,7 @@ public:
             bool changed = selection_.select(row);
             if (changed) {
                 (void)scroll_.reveal(row, 1);
-                if (onSelect_) onSelect_(row);
+                (void)widget_detail::invokeCallback(onSelect_, row);
             }
             return changed || (row >= 0 && row < rowCount_);
         }
@@ -1027,7 +1053,9 @@ public:
         else if (event.key == 0x22u) changed = selection_.move(visibleRows());
         else return false;
         if (selection_.hasSelection()) (void)scroll_.reveal(selection_.selected(), 1);
-        if (changed && onSelect_) onSelect_(selection_.selected());
+        if (changed)
+            (void)widget_detail::invokeCallback(onSelect_,
+                                                 selection_.selected());
         return true;
     }
 };
@@ -1109,7 +1137,7 @@ class Tree : public Widget {
     bool selectId(uint64_t id) {
         if (id == 0u || id == selectedId_ || !findIn(roots_, id)) return false;
         selectedId_ = id;
-        if (onSelect_) onSelect_(selectedId_);
+        (void)widget_detail::invokeCallback(onSelect_, selectedId_);
         return true;
     }
     size_t itemCount() const {
@@ -1313,7 +1341,7 @@ public:
         if (index < 0 || index >= (int32_t)tabs_.size()) return;
         if (activeTab_ == index) return;
         activeTab_ = index;
-        if (onChange_) onChange_(activeTab_);
+        (void)widget_detail::invokeCallback(onChange_, activeTab_);
     }
     int32_t activeTab() const { return activeTab_; }
     void setOnTabChange(std::function<void(int32_t)> callback) { onChange_ = callback; }
@@ -1403,7 +1431,7 @@ public:
         }
         selectedIndex_ = index;
         open_ = false;
-        if (onSelect_) onSelect_(selectedIndex_);
+        (void)widget_detail::invokeCallback(onSelect_, selectedIndex_);
         return true;
     }
     bool isOpen() const { return open_; }
@@ -1453,7 +1481,7 @@ public:
             return false;
         if (next != selectedIndex_) {
             selectedIndex_ = next;
-            if (onSelect_) onSelect_(selectedIndex_);
+            (void)widget_detail::invokeCallback(onSelect_, selectedIndex_);
         }
         return true;
     }
@@ -1493,7 +1521,7 @@ public:
     void setChecked(bool value) {
         if (checked_ == value) return;
         checked_ = value;
-        if (onChange_) onChange_(checked_);
+        (void)widget_detail::invokeCallback(onChange_, checked_);
     }
 
     AccessibilityRole accessibilityRole() const override {
@@ -1763,7 +1791,7 @@ public:
             items_[index].separator || !items_[index].enabled) return false;
         std::function<void()> action = items_[index].action;
         close();
-        if (action) action();
+        (void)widget_detail::invokeCallback(action);
         return true;
     }
 
@@ -2106,7 +2134,8 @@ public:
         }
         MenuItem item = menus_[activeMenu_].items[itemIndex];
         closeMenus();
-        if (!item.separator && item.enabled && item.action) item.action();
+        if (!item.separator && item.enabled)
+            (void)widget_detail::invokeCallback(item.action);
         return true;
     }
 
@@ -2146,7 +2175,8 @@ public:
             else if (!menus_[activeMenu_].items.empty()) {
                 MenuItem item = menus_[activeMenu_].items.front();
                 closeMenus();
-                if (!item.separator && item.enabled && item.action) item.action();
+                if (!item.separator && item.enabled)
+                    (void)widget_detail::invokeCallback(item.action);
             }
             return true;
         } else {

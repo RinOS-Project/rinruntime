@@ -254,6 +254,108 @@ int main() {
     });
     assert(!semantic.setAccessibilityValue("new"));
     assert(semantic.value() == "old");
+
+    RinRuntime::Button throwing_button("Throwing");
+    throwing_button.setBounds({0, 0, 100, 40});
+    throwing_button.setOnClick([] {
+        throw std::runtime_error("button callback failure");
+    });
+    RinRuntime::Event button_down = {};
+    button_down.type = RinRuntime::EventType::MouseDown;
+    button_down.x = 1;
+    button_down.y = 1;
+    RinRuntime::Event button_up = button_down;
+    button_up.type = RinRuntime::EventType::MouseUp;
+    assert(throwing_button.handleEvent(button_down));
+    assert(throwing_button.handleEvent(button_up));
+
+    RinRuntime::CheckBox throwing_check("Check");
+    throwing_check.setOnChange([](bool) {
+        throw std::runtime_error("checkbox callback failure");
+    });
+    assert(throwing_check.toggle());
+    assert(throwing_check.isChecked());
+
+    RinRuntime::Slider throwing_slider;
+    throwing_slider.setBounds({0, 0, 100, 20});
+    throwing_slider.setOnChange([](int32_t) {
+        throw std::runtime_error("slider callback failure");
+    });
+    assert(throwing_slider.setValueFromPosition(80));
+    assert(throwing_slider.value() == 80);
+
+    RinRuntime::Dialog throwing_dialog("Dialog");
+    throwing_dialog.setCancelAction([] {
+        throw std::runtime_error("dialog callback failure");
+    });
+    throwing_dialog.show();
+    RinRuntime::Event escape = {};
+    escape.type = RinRuntime::EventType::KeyDown;
+    escape.key = 0x1bu;
+    assert(throwing_dialog.handleEvent(escape));
+    assert(throwing_dialog.isOpen());
+
+    RinRuntime::List throwing_list;
+    assert(throwing_list.setItems({"first", "second"}));
+    throwing_list.setBounds({0, 0, 120, 64});
+    throwing_list.setOnSelect([](int32_t) {
+        throw std::runtime_error("list callback failure");
+    });
+    RinRuntime::Event list_click = {};
+    list_click.type = RinRuntime::EventType::MouseDown;
+    list_click.x = 1;
+    list_click.y = 1;
+    assert(throwing_list.handleEvent(list_click));
+    assert(throwing_list.selectedIndex() == 0);
+
+    RinRuntime::Table throwing_table;
+    assert(throwing_table.addColumn({"Name", 96, true}));
+    throwing_table.setOnSort([](int32_t, bool) {
+        throw std::runtime_error("table callback failure");
+    });
+    assert(throwing_table.sortBy(0));
+    assert(throwing_table.sortedColumn() == 0);
+
+    RinRuntime::Tree throwing_tree;
+    const uint64_t throwing_root = throwing_tree.addRoot("Root");
+    assert(throwing_root != 0u);
+    throwing_tree.setOnSelect([](uint64_t) {
+        throw std::runtime_error("tree callback failure");
+    });
+    throwing_tree.setBounds({0, 0, 120, 64});
+    assert(throwing_tree.handleEvent(list_click));
+    assert(throwing_tree.selectedItemId() == throwing_root);
+
+    RinRuntime::TabView throwing_tabs;
+    assert(throwing_tabs.setTabs({"One", "Two"}));
+    throwing_tabs.setOnTabChange([](int32_t) {
+        throw std::runtime_error("tab callback failure");
+    });
+    throwing_tabs.setActiveTab(1);
+    assert(throwing_tabs.activeTab() == 1);
+
+    RinRuntime::ComboBox throwing_combo;
+    assert(throwing_combo.setItems({"One", "Two"}));
+    throwing_combo.setOnSelect([](int32_t) {
+        throw std::runtime_error("combo callback failure");
+    });
+    assert(throwing_combo.selectIndex(0));
+    assert(throwing_combo.selectedIndex() == 0);
+
+    RinRuntime::RadioButton throwing_radio("Radio");
+    throwing_radio.setOnChange([](bool) {
+        throw std::runtime_error("radio callback failure");
+    });
+    throwing_radio.setChecked(true);
+    assert(throwing_radio.isChecked());
+
+    RinRuntime::PopupMenu throwing_popup("Popup");
+    assert(throwing_popup.addItem("Run", "", [] {
+        throw std::runtime_error("popup callback failure");
+    }) == 0);
+    assert(throwing_popup.activate(0));
+    assert(!throwing_popup.isOpen());
+
     Rin::Document document;
     assert(document.setText("Rin"));
     assert(document.insert(3u, "OS"));
