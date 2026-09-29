@@ -110,8 +110,9 @@ public:
      * a single folder containing bounded regular substreams, plus empty
      * regular files/directories with no packed stream.
      * BindPairs are validated before any coder runs.  A multi-entry folder is
-     * exposed as bounded slices of the decoded folder stream; only non-empty
-     * regular entries are admitted in that form.  This subset is useful
+     * exposed as bounded slices of the decoded folder stream, with
+     * `FilesInfo`-described empty files/directories interleaved in file order.
+     * This subset is useful
      * for caller-owned test/resource bytes and intentionally has no path,
      * filename, filesystem, or service authority.  Multi-stream coders,
      * arbitrary multi-stream graphs, encryption, multiple folders, empty

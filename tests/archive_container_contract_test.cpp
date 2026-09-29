@@ -389,7 +389,7 @@ static std::vector<std::uint8_t> make7zEmptyEntries()
     return bytes;
 }
 
-static std::vector<std::uint8_t> make7zMixedEmptyEntries()
+static std::vector<std::uint8_t> make7zMixedEmptyEntries(bool directory = false)
 {
     const std::uint8_t signature[] = {
         0x37u, 0x7au, 0xbcu, 0xafu, 0x27u, 0x1cu};
@@ -431,7 +431,7 @@ static std::vector<std::uint8_t> make7zMixedEmptyEntries()
     header.push_back(0x01u); /* file 0 has no packed stream */
     header.push_back(0x0fu); /* EmptyFile */
     put7zUInt64(header, 1u);
-    header.push_back(0x01u); /* file 0 is an empty regular file */
+    header.push_back(directory ? 0u : 1u); /* file 0 is empty regular/dir */
     header.push_back(0x00u); /* FilesInfo end */
     header.push_back(0x00u); /* Header end */
 
@@ -780,6 +780,19 @@ int main()
            reader.size() == 2u && !reader.entries()[0].directory &&
            !reader.entries()[1].directory && reader.entries()[0].size == 0u &&
            reader.entries()[1].size == 5u);
+    output = "poison";
+    assert(reader.readEntry(0u, output) ==
+           RinRuntime::ArchiveContainerResult::Ok && output.empty());
+    assert(reader.readEntry(1u, output) ==
+           RinRuntime::ArchiveContainerResult::Ok && output == "hello");
+
+    const std::vector<std::uint8_t> mixedDirectorySevenZip =
+        make7zMixedEmptyEntries(true);
+    assert(reader.parse(mixedDirectorySevenZip.data(),
+                        mixedDirectorySevenZip.size()) ==
+           RinRuntime::ArchiveContainerResult::Ok);
+    assert(reader.size() == 2u && reader.entries()[0].directory &&
+           !reader.entries()[1].directory);
     output = "poison";
     assert(reader.readEntry(0u, output) ==
            RinRuntime::ArchiveContainerResult::Ok && output.empty());
