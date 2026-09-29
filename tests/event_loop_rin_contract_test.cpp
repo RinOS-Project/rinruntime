@@ -19,6 +19,7 @@ static RinWaitItemV1 g_item;
 static uint32_t g_set_items_calls;
 static bool g_malformed_wait_result;
 static bool g_rollback_after_set;
+static bool g_fail_set_items;
 static uint64_t g_now = 100u;
 
 static uint64_t test_clock(void*) noexcept { return g_now; }
@@ -47,6 +48,7 @@ static RinResult fake_invoke(uint64_t, uint32_t library, uint32_t operation,
         memcpy(&g_item, reinterpret_cast<const void*>(static_cast<uintptr_t>(
                    args->value[1])), sizeof(g_item));
         ++g_set_items_calls;
+        if (g_fail_set_items) return RIN_ERROR_IO;
         if (g_rollback_after_set) {
             g_rollback_after_set = false;
             g_now = 90u;
@@ -164,6 +166,18 @@ int main() {
     assert(g_item.events == RinRuntime::EventLoop::WAIT_READABLE);
     assert(g_item.user_tag == valid.id);
     g_now = 1000u;
+
+    /* If item publication itself fails, the target-side wait-set is no
+     * longer a trustworthy session.  The public adapter must retire it
+     * rather than retain a mismatched local item list. */
+    g_fail_set_items = true;
+    ready = {99u, RinRuntime::EventLoop::WAIT_READABLE};
+    assert(!backend.wait(&valid, 1u, 1001u, &ready));
+    assert(ready.id == 0u && ready.events == 0u);
+    assert(!backend.initialized());
+    g_fail_set_items = false;
+    g_now = 1000u;
+    assert(backend.initialize() == RIN_SUCCESS);
 
     assert(backend.reset() == RIN_SUCCESS);
     assert(!backend.initialized());

@@ -162,8 +162,19 @@ public:
             static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(
                 items_)),
             static_cast<std::uint64_t>(count * sizeof(items_[0]))};
-        if (rin_wait_set_set_items_v1(waitSet_, itemSlice) != RIN_SUCCESS)
+        if (rin_wait_set_set_items_v1(waitSet_, itemSlice) != RIN_SUCCESS) {
+            /* A failed item publication leaves the target-side wait-set
+             * state unspecified.  Do not keep serving with local item bytes
+             * that may no longer describe the target object; retire the
+             * session and require the caller to initialize a fresh adapter. */
+            (void)rin_object_close_v1(static_cast<RinObject>(waitSet_));
+            waitSet_ = RIN_HANDLE_INVALID;
+            for (RinWaitItemV1& item : items_) item = {};
+            itemCount_ = 0u;
+            lastNow_ = 0u;
+            haveLastNow_ = false;
             return false;
+        }
         itemCount_ = count;
 
         /* The item publication is a bounded syscall and may consume time.
