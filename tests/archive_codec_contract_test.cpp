@@ -47,6 +47,11 @@ static bool rejectTar(void*, const std::uint8_t*, std::size_t)
     return false;
 }
 
+static bool throwingTarSink(void*, const std::uint8_t*, std::size_t)
+{
+    throw std::runtime_error("TAR sink callback failure");
+}
+
 static void put16(std::vector<std::uint8_t>& bytes, std::uint16_t value)
 {
     bytes.push_back(static_cast<std::uint8_t>(value));
@@ -1143,6 +1148,11 @@ int main()
     assert(deflate.decode(stored, sizeof(stored), 5u, 0x3610a686u,
                           output) == RinRuntime::ArchiveDeflateResult::Ok);
     assert(output == "hello");
+    output = "poison";
+    assert(deflate.decode(stored, sizeof(stored), 5u, 0x3610a686u, output,
+                          throwingCallback, nullptr) ==
+           RinRuntime::ArchiveDeflateResult::Malformed);
+    assert(output.empty());
 
     RinRuntime::ArchiveDeflateEncoder encoder;
     std::vector<std::uint8_t> encoded;
@@ -1169,6 +1179,11 @@ int main()
     RinRuntime::ArchiveGzipReader gzipReader;
     assert(gzipReader.decode(gzip.data(), gzip.size(), output) ==
            RinRuntime::ArchiveGzipResult::Ok && output == "hello");
+    output = "poison";
+    assert(gzipReader.decode(gzip.data(), gzip.size(), output,
+                             throwingCallback, nullptr) ==
+           RinRuntime::ArchiveGzipResult::Malformed);
+    assert(output.empty());
     deadlineExpired = 1u;
     output = "poison";
     assert(gzipReader.decodeWithDeadline(
@@ -1205,11 +1220,19 @@ int main()
     RinRuntime::ArchiveTarReader tarReader;
     assert(tarReader.parse(tar.data(), tar.size()) ==
            RinRuntime::ArchiveTarResult::Ok);
+    assert(tarReader.parseWithDeadline(tar.data(), tar.size(),
+                                       throwingCallback, nullptr) ==
+           RinRuntime::ArchiveTarResult::Malformed);
+    assert(tarReader.empty());
+    assert(tarReader.parse(tar.data(), tar.size()) ==
+           RinRuntime::ArchiveTarResult::Ok);
     assert(tarReader.size() == 1u && tarReader.entries()[0].name ==
            "docs/readme.txt");
     std::string streamed;
     assert(tarReader.readEntryToSink(0u, &collectTar, &streamed) ==
            RinRuntime::ArchiveTarResult::Ok && streamed == "hello");
+    assert(tarReader.readEntryToSink(0u, &throwingTarSink, &streamed) ==
+           RinRuntime::ArchiveTarResult::Malformed);
     deadlineExpired = 1u;
     assert(tarReader.parseWithDeadline(tar.data(), tar.size(), deadlineNow,
                                        &deadlineExpired) ==
@@ -1227,6 +1250,9 @@ int main()
                0u, &collectTar, &streamed, deadlineNow, &deadlineExpired) ==
            RinRuntime::ArchiveTarResult::Deadline);
     assert(streamed.empty());
+    assert(tarReader.readEntryToSinkWithDeadline(
+               0u, &collectTar, &streamed, throwingCallback, nullptr) ==
+           RinRuntime::ArchiveTarResult::Malformed);
     assert(tarReader.readEntryToSink(0u, &rejectTar, &streamed) ==
            RinRuntime::ArchiveTarResult::Malformed);
 

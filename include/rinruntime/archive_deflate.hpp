@@ -436,6 +436,10 @@ private:
             if (output != nullptr)
                 output->clear();
             return ArchiveDeflateResult::Limit;
+        } catch (...) {
+            if (output != nullptr)
+                output->clear();
+            return ArchiveDeflateResult::Malformed;
         }
 #endif
     }

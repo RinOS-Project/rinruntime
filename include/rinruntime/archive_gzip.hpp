@@ -84,6 +84,9 @@ public:
         } catch (const std::bad_alloc&) {
             output.clear();
             return ArchiveGzipResult::Limit;
+        } catch (...) {
+            output.clear();
+            return ArchiveGzipResult::Malformed;
         }
 #endif
     }
@@ -124,6 +127,9 @@ public:
         } catch (const std::bad_alloc&) {
             output.clear();
             return ArchiveGzipResult::Limit;
+        } catch (...) {
+            output.clear();
+            return ArchiveGzipResult::Malformed;
         }
 #endif
     }

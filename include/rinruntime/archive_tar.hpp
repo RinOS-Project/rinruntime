@@ -65,6 +65,9 @@ public:
         const std::uint8_t* bytes, std::size_t size,
         ArchiveTarDeadlineFunction deadline, void* deadlineContext)
     {
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
         clear();
         if (bytes == nullptr || size < kBlockSize * 2u)
             return ArchiveTarResult::InvalidArgument;
@@ -75,9 +78,6 @@ public:
         if (deadline != nullptr && deadline(deadlineContext))
             return ArchiveTarResult::Deadline;
 
-#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
-        try {
-#endif
         std::uint64_t total = 0u;
         std::size_t position = 0u;
         bool ended = false;
@@ -172,6 +172,9 @@ public:
         } catch (const std::bad_alloc&) {
             clear();
             return ArchiveTarResult::Limit;
+        } catch (...) {
+            clear();
+            return ArchiveTarResult::Malformed;
         }
 #endif
     }
@@ -238,6 +241,9 @@ public:
         } catch (const std::bad_alloc&) {
             output.clear();
             return ArchiveTarResult::Limit;
+        } catch (...) {
+            output.clear();
+            return ArchiveTarResult::Malformed;
         }
 #endif
     }
@@ -275,6 +281,9 @@ public:
         } catch (const std::bad_alloc&) {
             output.clear();
             return ArchiveTarResult::Limit;
+        } catch (...) {
+            output.clear();
+            return ArchiveTarResult::Malformed;
         }
 #endif
     }
@@ -288,6 +297,9 @@ public:
                                      ArchiveTarSinkFunction sink,
                                      void* context) const
     {
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
         if (index >= entries_.size() || sink == nullptr || context == nullptr)
             return ArchiveTarResult::InvalidArgument;
         if (entries_[index].directory) return ArchiveTarResult::Ok;
@@ -305,12 +317,20 @@ public:
             offset += chunk;
         }
         return ArchiveTarResult::Ok;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (...) {
+            return ArchiveTarResult::Malformed;
+        }
+#endif
     }
 
     ArchiveTarResult readEntryToSinkWithDeadline(
         std::size_t index, ArchiveTarSinkFunction sink, void* context,
         ArchiveTarDeadlineFunction deadline, void* deadlineContext) const
     {
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
         if (index >= entries_.size() || sink == nullptr || context == nullptr)
             return ArchiveTarResult::InvalidArgument;
         if (deadline != nullptr && deadline(deadlineContext))
@@ -332,6 +352,11 @@ public:
             offset += chunk;
         }
         return ArchiveTarResult::Ok;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (...) {
+            return ArchiveTarResult::Malformed;
+        }
+#endif
     }
 
 private:
