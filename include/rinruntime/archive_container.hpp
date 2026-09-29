@@ -175,7 +175,7 @@ public:
         output.clear();
         if (index >= entries_.size())
             return ArchiveContainerResult::InvalidArgument;
-        if (cancellation != nullptr && cancellation(cancellationContext))
+        if (cancellationRequested(cancellation, cancellationContext))
             return ArchiveContainerResult::Cancelled;
             switch (kind_) {
             case ArchiveContainerKind::Zip:
@@ -314,6 +314,24 @@ public:
     }
 
 private:
+    static bool cancellationRequested(
+        ArchiveDeflateCancellationFunction cancellation,
+        void* cancellationContext) noexcept
+    {
+        if (cancellation == nullptr) return false;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
+            return cancellation(cancellationContext);
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (...) {
+            /* A caller-owned callback cannot be allowed to escape the public
+             * container adapter. Map it to the existing cancellation result. */
+            return true;
+        }
+#endif
+    }
+
     static ArchiveContainerResult copyWithCancellation(
         const std::uint8_t* bytes, std::size_t size, std::string& output,
         ArchiveDeflateCancellationFunction cancellation,
@@ -321,7 +339,7 @@ private:
     {
         std::size_t copied = 0u;
         while (copied < size) {
-            if (cancellation != nullptr && cancellation(cancellationContext)) {
+            if (cancellationRequested(cancellation, cancellationContext)) {
                 output.clear();
                 return ArchiveContainerResult::Cancelled;
             }

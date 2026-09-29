@@ -1116,8 +1116,8 @@ int main()
     assert(output.empty());
     output = "poison";
     assert(reader.readEntryWithCancellation(0u, output, throwingCallback,
-                                            nullptr) ==
-           RinRuntime::ArchiveContainerResult::Malformed);
+                                             nullptr) ==
+            RinRuntime::ArchiveContainerResult::Cancelled);
     assert(output.empty());
     output = "poison";
     assert(reader.readEntryWithDeadline(0u, output, throwingCallback,

@@ -1295,7 +1295,7 @@ int main()
            RinRuntime::ArchiveZipResult::Ok && output == "hello");
     output = "poison";
     assert(zipReader.readEntry(0u, output, throwingCallback, nullptr) ==
-           RinRuntime::ArchiveZipResult::Malformed);
+           RinRuntime::ArchiveZipResult::Cancelled);
     assert(output.empty());
     deadlineExpired = 1u;
     output = "poison";
@@ -1310,6 +1310,9 @@ int main()
     assert(streamed.empty());
     assert(zipReader.readEntryToSink(0u, &throwingTarSink, &streamed) ==
            RinRuntime::ArchiveZipResult::Malformed);
+    assert(zipReader.readEntryToSink(0u, &collectTar, &streamed,
+                                     throwingCallback, nullptr) ==
+           RinRuntime::ArchiveZipResult::Cancelled);
     assert(zipReader.readEntryToSinkWithDeadline(
                0u, &collectTar, &streamed, throwingCallback, nullptr) ==
            RinRuntime::ArchiveZipResult::Malformed);

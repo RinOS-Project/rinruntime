@@ -304,7 +304,7 @@ public:
         const std::uint8_t* compressed = compressedData(index, &compressedSize);
         if (compressed == nullptr)
             return ArchiveZipResult::Malformed;
-        if (cancellation != nullptr && cancellation(cancellationContext))
+        if (cancellationRequested(cancellation, cancellationContext))
             return ArchiveZipResult::Cancelled;
         if (entry.method == 0u) {
             if (compressedSize != entry.uncompressedSize ||
@@ -436,7 +436,7 @@ public:
         const std::uint8_t* compressed = compressedData(index, &compressedSize);
         if (compressed == nullptr)
             return ArchiveZipResult::Malformed;
-        if (cancellation != nullptr && cancellation(cancellationContext))
+        if (cancellationRequested(cancellation, cancellationContext))
             return ArchiveZipResult::Cancelled;
         if (entry.method == 0u) {
             if (compressedSize != entry.uncompressedSize ||
@@ -445,7 +445,7 @@ public:
                 return ArchiveZipResult::Malformed;
             std::size_t offset = 0u;
             while (offset < compressedSize) {
-                if (cancellation != nullptr && cancellation(cancellationContext))
+                if (cancellationRequested(cancellation, cancellationContext))
                     return ArchiveZipResult::Cancelled;
                 const std::size_t chunk =
                     compressedSize - offset > 65536u
@@ -536,6 +536,25 @@ public:
     }
 
 private:
+    static bool cancellationRequested(
+        ArchiveDeflateCancellationFunction cancellation,
+        void* cancellationContext) noexcept
+    {
+        if (cancellation == nullptr) return false;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
+            return cancellation(cancellationContext);
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (...) {
+            /* A caller-owned cancellation callback is outside the decoder's
+             * control. Treat an exception as cancellation and keep the public
+             * output/result boundary failure-atomic. */
+            return true;
+        }
+#endif
+    }
+
     static bool crc32WithDeadline(
         const std::uint8_t* bytes, std::size_t size, std::uint32_t& result,
         ArchiveDeflateDeadlineFunction deadline, void* deadlineContext,
