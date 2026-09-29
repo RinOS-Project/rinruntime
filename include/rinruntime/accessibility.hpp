@@ -205,6 +205,7 @@ public:
 
     static bool getTree(uintptr_t handle, AccessibilityTree* output) {
         if (handle == 0u || !output) return false;
+        *output = AccessibilityTree();
 #if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
         try {
 #endif
@@ -216,7 +217,8 @@ public:
                 }
             }
 #if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
-        } catch (const std::bad_alloc&) {
+        } catch (...) {
+            *output = AccessibilityTree();
             return false;
         }
 #endif
@@ -228,6 +230,7 @@ public:
      * bridge, but never expose a live Widget pointer to the caller. */
     static bool findNode(uintptr_t handle, uint64_t generation,
                          uint64_t nodeId, AccessibilityNode* output) {
+        if (output != nullptr) *output = AccessibilityNode();
 #if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
         try {
 #endif
@@ -242,7 +245,8 @@ public:
                 }
             }
 #if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
-        } catch (const std::bad_alloc&) {
+        } catch (...) {
+            if (output != nullptr) *output = AccessibilityNode();
             return false;
         }
 #endif
@@ -281,7 +285,7 @@ public:
                     nodeId, action, value);
             }
 #if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
-        } catch (const std::bad_alloc&) {
+        } catch (...) {
             return false;
         }
 #endif
@@ -298,7 +302,7 @@ public:
                     return value.provider->focusAccessibilityNode(nodeId);
             }
 #if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
-        } catch (const std::bad_alloc&) {
+        } catch (...) {
             return false;
         }
 #endif
