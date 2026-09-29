@@ -438,6 +438,9 @@ public:
         } catch (const std::bad_alloc&) {
             output.clear();
             return ArchiveXzResult::Limit;
+        } catch (...) {
+            output.clear();
+            return ArchiveXzResult::Malformed;
         }
 #endif
     }
@@ -1300,6 +1303,9 @@ private:
         } catch (const std::bad_alloc&) {
             output.clear();
             return ArchiveXzResult::Limit;
+        } catch (...) {
+            output.clear();
+            return ArchiveXzResult::Malformed;
         }
 #endif
     }
@@ -1350,6 +1356,9 @@ private:
         } catch (const std::bad_alloc&) {
             output.clear();
             return ArchiveXzResult::Limit;
+        } catch (...) {
+            output.clear();
+            return ArchiveXzResult::Malformed;
         }
 #endif
     }
@@ -1975,6 +1984,9 @@ private:
         } catch (const std::bad_alloc&) {
             output.clear();
             return ArchiveXzResult::Limit;
+        } catch (...) {
+            output.clear();
+            return ArchiveXzResult::Malformed;
         }
 #endif
     }

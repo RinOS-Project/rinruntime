@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -25,6 +26,11 @@ static bool deadlineNow(void* context)
 {
     return context != nullptr &&
            *static_cast<const std::uint32_t*>(context) != 0u;
+}
+
+static bool throwingCallback(void*)
+{
+    throw std::runtime_error("callback failure");
 }
 
 static bool collectTar(void* context, const std::uint8_t* bytes,
@@ -1309,6 +1315,11 @@ int main()
     assert(xzReader.decodeStoredLzma2(storedXz.data(), storedXz.size(),
                                       xzOutput) == RinRuntime::ArchiveXzResult::Ok);
     assert(xzOutput == "hello");
+    xzOutput = "poison";
+    assert(xzReader.decodeStoredLzma2(
+               storedXz.data(), storedXz.size(), xzOutput, throwingCallback,
+               nullptr) == RinRuntime::ArchiveXzResult::Malformed);
+    assert(xzOutput.empty());
     std::vector<std::uint8_t> compressedXz = storedXz;
     compressedXz[24u] = 0x80u;
     xzOutput = "poison";
@@ -1509,6 +1520,11 @@ int main()
                                        sevenZipOutput) ==
            RinRuntime::Archive7zResult::Ok);
     assert(sevenZipOutput == "hello");
+    sevenZipOutput = "poison";
+    assert(sevenZipReader.decodeStored(
+               storedSevenZip.data(), storedSevenZip.size(), sevenZipOutput,
+               throwingCallback, nullptr) == RinRuntime::Archive7zResult::Malformed);
+    assert(sevenZipOutput.empty());
     const std::vector<std::uint8_t> multiEntrySevenZip =
         make7zStored(false, false, false, false, 0u, true);
     sevenZipOutput = "poison";

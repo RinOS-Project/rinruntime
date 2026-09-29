@@ -932,6 +932,10 @@ private:
             entry_count_ = 0u;
             output.clear();
             return Archive7zResult::Limit;
+        } catch (...) {
+            entry_count_ = 0u;
+            output.clear();
+            return Archive7zResult::Malformed;
         }
 #endif
     }
