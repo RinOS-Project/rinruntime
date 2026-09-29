@@ -969,14 +969,24 @@ private:
                (first & static_cast<std::uint8_t>(0x80u >> additional)) !=
                    0u)
             ++additional;
-        value = additional == 8u
-                    ? 0u
-                    : static_cast<std::uint64_t>(
-                          first & static_cast<std::uint8_t>(
-                                      (1u << (7u - additional)) - 1u));
-        for (unsigned index = 0u; index != additional; ++index) {
-            if (cursor >= end) return false;
-            value = (value << 8u) | bytes[cursor++];
+        if (additional == 8u) {
+            value = 0u;
+            if (end - cursor < 8u) return false;
+            for (unsigned index = 0u; index != 8u; ++index)
+                value |= static_cast<std::uint64_t>(bytes[cursor++])
+                         << (index * 8u);
+        } else {
+            const std::uint8_t payload = static_cast<std::uint8_t>(
+                first & static_cast<std::uint8_t>(
+                            (1u << (7u - additional)) - 1u));
+            value = 0u;
+            for (unsigned index = 0u; index != additional; ++index) {
+                if (cursor >= end) return false;
+                value |= static_cast<std::uint64_t>(bytes[cursor++])
+                         << (index * 8u);
+            }
+            value |= static_cast<std::uint64_t>(payload)
+                     << (additional * 8u);
         }
         if (additional != 0u &&
             value < (UINT64_C(1) << (7u * additional)))

@@ -190,16 +190,29 @@ static void put7zUInt64(std::vector<std::uint8_t>& bytes,
         bytes.push_back(static_cast<std::uint8_t>(value));
         return;
     }
-    /* The contract fixture only needs the two-byte form. */
-    assert(value < 0x4000u);
-    bytes.push_back(static_cast<std::uint8_t>(0x80u | (value >> 8u)));
-    bytes.push_back(static_cast<std::uint8_t>(value));
+    unsigned additional = 1u;
+    while (additional < 8u &&
+           value >= (UINT64_C(1) << (7u * (additional + 1u))))
+        ++additional;
+    if (additional == 8u) {
+        bytes.push_back(0xffu);
+        for (unsigned index = 0u; index != 8u; ++index)
+            bytes.push_back(static_cast<std::uint8_t>(value >> (index * 8u)));
+        return;
+    }
+    const std::uint8_t prefix = static_cast<std::uint8_t>(
+        0xffu << (8u - additional));
+    bytes.push_back(static_cast<std::uint8_t>(
+        prefix | (value >> (additional * 8u))));
+    for (unsigned index = 0u; index != additional; ++index)
+        bytes.push_back(static_cast<std::uint8_t>(value >> (index * 8u)));
 }
 
 static std::vector<std::uint8_t> make7zStored(bool copy_chain = false,
                                               bool delta_first = false,
                                               bool x86_first = false,
-                                              bool lzma2_first = false)
+                                              bool lzma2_first = false,
+                                              std::size_t pack_position = 0u)
 {
     assert((delta_first ? 1u : 0u) + (x86_first ? 1u : 0u) +
                (lzma2_first ? 1u : 0u) <=
@@ -226,7 +239,7 @@ static std::vector<std::uint8_t> make7zStored(bool copy_chain = false,
     header.push_back(0x01u); /* Header */
     header.push_back(0x04u); /* MainStreamsInfo */
     header.push_back(0x06u); /* PackInfo */
-    put7zUInt64(header, 0u); /* PackPos */
+    put7zUInt64(header, pack_position); /* PackPos */
     put7zUInt64(header, 1u); /* NumPackStreams */
     header.push_back(0x09u); /* Size */
     put7zUInt64(header, packed_size);
@@ -282,13 +295,14 @@ static std::vector<std::uint8_t> make7zStored(bool copy_chain = false,
     header.push_back(0x00u); /* FilesInfo properties end */
     header.push_back(0x00u); /* Header end */
 
-    std::vector<std::uint8_t> bytes(32u + packed_size + header.size(), 0u);
+    std::vector<std::uint8_t> bytes(
+        32u + pack_position + packed_size + header.size(), 0u);
     std::memcpy(bytes.data(), signature, sizeof(signature));
     bytes[7u] = 4u;
-    std::memcpy(bytes.data() + 32u, packed, packed_size);
-    const std::size_t header_offset = 32u + packed_size;
+    std::memcpy(bytes.data() + 32u + pack_position, packed, packed_size);
+    const std::size_t header_offset = 32u + pack_position + packed_size;
     std::memcpy(bytes.data() + header_offset, header.data(), header.size());
-    writeLe64(bytes, 12u, packed_size);
+    writeLe64(bytes, 12u, pack_position + packed_size);
     writeLe64(bytes, 20u, header.size());
     writeLe32(bytes, 28u, RinRuntime::rinruntime_archive_crc32(
                               bytes.data() + header_offset, header.size()));
@@ -1459,6 +1473,14 @@ int main()
     assert(sevenZipReader.decodeStored(storedSevenZip.data(),
                                        storedSevenZip.size(),
                                        sevenZipOutput) ==
+           RinRuntime::Archive7zResult::Ok);
+    assert(sevenZipOutput == "hello");
+    const std::vector<std::uint8_t> largePackPositionSevenZip =
+        make7zStored(false, false, false, false, 65536u);
+    sevenZipOutput = "poison";
+    assert(sevenZipReader.decodeStored(
+               largePackPositionSevenZip.data(),
+               largePackPositionSevenZip.size(), sevenZipOutput) ==
            RinRuntime::Archive7zResult::Ok);
     assert(sevenZipOutput == "hello");
     const std::vector<std::uint8_t> copyChainSevenZip =

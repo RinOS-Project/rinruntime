@@ -353,8 +353,9 @@ coders, encryption, multiple folders/entries, filesystem extraction, archive
 service IPC, and File Portal publication remain private or `Unsupported`.
 Multiple-bit `EmptyStream` bitmaps, empty directories, and malformed empty
 stream metadata remain explicit `Unsupported` results.  Its 7z VLI reader
-also rejects non-minimal encodings such as a zero value encoded with an extra
-byte, so malformed header values do not reach the stored-copy path.
+consumes multi-byte extra bytes in the format's little-endian order and rejects
+non-minimal encodings such as a zero value encoded with an extra byte, so
+malformed header values do not reach the stored-copy path.
 
 `backup_archive.hpp` adds the public `BackupArchiveReader` consumer for the
 bounded RBK1 ZIP layout (`manifest.rbk1` plus one `payload/<item_id>` entry per
