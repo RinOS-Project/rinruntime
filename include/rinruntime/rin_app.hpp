@@ -4,6 +4,9 @@
 
 #include <algorithm>
 #include <cstdint>
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+#    include <new>
+#endif
 #include <functional>
 #include <string>
 #include <utility>
@@ -101,15 +104,25 @@ public:
         rules_.push_back({std::move(field), minimum, false});
     }
     bool validate(const std::vector<std::pair<std::string, std::string>>& values) {
-        errors_.clear();
-        for (const Rule& rule : rules_) {
-            std::string value;
-            for (const auto& item : values)
-                if (item.first == rule.field) { value = item.second; break; }
-            if ((rule.required && value.empty()) || value.size() < rule.minimum)
-                errors_.push_back(rule.field);
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
+            std::vector<std::string> nextErrors;
+            for (const Rule& rule : rules_) {
+                std::string value;
+                for (const auto& item : values)
+                    if (item.first == rule.field) { value = item.second; break; }
+                if ((rule.required && value.empty()) || value.size() < rule.minimum)
+                    nextErrors.push_back(rule.field);
+            }
+            errors_.swap(nextErrors);
+            return errors_.empty();
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (const std::bad_alloc&) {
+            errors_.clear();
+            return false;
         }
-        return errors_.empty();
+#endif
     }
     const std::vector<std::string>& errors() const { return errors_; }
 };
@@ -176,9 +189,17 @@ public:
     bool add(ActivityItem item) {
         if (limit_ == 0u || item.title.empty() || item.title.size() > 256u ||
             item.description.size() > 1024u) return false;
-        items_.insert(items_.begin(), std::move(item));
-        if (items_.size() > limit_) items_.resize(limit_);
-        return true;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
+            items_.insert(items_.begin(), std::move(item));
+            if (items_.size() > limit_) items_.resize(limit_);
+            return true;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (const std::bad_alloc&) {
+            return false;
+        }
+#endif
     }
     bool markRead(size_t index) {
         if (index >= items_.size()) return false;

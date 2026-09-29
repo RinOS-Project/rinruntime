@@ -4,6 +4,9 @@
 #ifndef RINRUNTIME_SEMANTIC_WIDGET_HPP
 #define RINRUNTIME_SEMANTIC_WIDGET_HPP
 
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+#    include <new>
+#endif
 #include "widget.hpp"
 
 #include <functional>
@@ -37,14 +40,25 @@ public:
         if (!strictUtf8TextValid(name) || !strictUtf8TextValid(value) ||
             !strictUtf8TextValid(description))
             return false;
-        value_ = value;
-        extraState_ = extraState;
-        actions_ = actions;
-        keyboardFocusable_ = focusable;
-        textEditable_ = editable;
-        setAccessibilityName(name);
-        setAccessibilityDescription(description);
-        return true;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
+            std::string nextName = name;
+            std::string nextValue = value;
+            std::string nextDescription = description;
+            accessibilityName.swap(nextName);
+            value_.swap(nextValue);
+            accessibilityDescription.swap(nextDescription);
+            extraState_ = extraState;
+            actions_ = actions;
+            keyboardFocusable_ = focusable;
+            textEditable_ = editable;
+            return true;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (const std::bad_alloc&) {
+            return false;
+        }
+#endif
     }
 
     void setRole(AccessibilityRole role) { role_ = role; }
@@ -66,10 +80,20 @@ public:
     bool isTextEditable() const override { return textEditable_; }
 
     bool setAccessibilityValue(const std::string& value) override {
-        if (!textEditable_ || !strictUtf8TextValid(value) || !setValue_ ||
-            !setValue_(value)) return false;
-        value_ = value;
-        return true;
+        if (!textEditable_ || !strictUtf8TextValid(value) || !setValue_)
+            return false;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
+            std::string candidate = value;
+            if (!setValue_(value)) return false;
+            value_.swap(candidate);
+            return true;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (const std::bad_alloc&) {
+            return false;
+        }
+#endif
     }
 
     bool handleEvent(const Event& event) override {

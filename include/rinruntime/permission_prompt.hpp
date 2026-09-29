@@ -4,6 +4,9 @@
 #ifndef RINRUNTIME_PERMISSION_PROMPT_HPP
 #define RINRUNTIME_PERMISSION_PROMPT_HPP
 
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+#    include <new>
+#endif
 #include <functional>
 #include <utility>
 
@@ -80,13 +83,26 @@ public:
             !validUtf8Text(origin, kMaxOriginBytes) ||
             !validPermission(permission) ||
             !validUtf8Text(description, kMaxDescriptionBytes)) return false;
-        origin_ = origin;
-        permission_ = permission;
-        description_ = description;
-        decision_ = PermissionPromptDecision::Pending;
-        setAccessibilityDescription(promptDescriptionForAccessibility());
-        setVisible(true);
-        return true;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
+            std::string nextOrigin = origin;
+            std::string nextPermission = permission;
+            std::string nextDescription = description;
+            std::string nextAccessibility = nextDescription.empty()
+                ? nextOrigin : nextOrigin + ": " + nextDescription;
+            origin_.swap(nextOrigin);
+            permission_.swap(nextPermission);
+            description_.swap(nextDescription);
+            accessibilityDescription.swap(nextAccessibility);
+            decision_ = PermissionPromptDecision::Pending;
+            setVisible(true);
+            return true;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (const std::bad_alloc&) {
+            return false;
+        }
+#endif
     }
 
     void setDefaultDecision(PermissionPromptDecision decision) {
