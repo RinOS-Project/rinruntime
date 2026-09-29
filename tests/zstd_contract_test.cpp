@@ -5,12 +5,18 @@
 
 #include <cassert>
 #include <cstdint>
+#include <stdexcept>
 #include <vector>
 
 static bool cancelNow(void* context)
 {
     return context != nullptr &&
            *static_cast<const std::uint32_t*>(context) != 0u;
+}
+
+static bool throwingCancel(void*)
+{
+    throw std::runtime_error("cancellation callback failure");
 }
 
 int main()
@@ -44,6 +50,15 @@ int main()
     assert(encoder.encode(hello, sizeof(hello), encoded, cancelNow,
                           &cancelled) == RinCompression::ZstdResult::Cancelled &&
            encoded.empty());
+    encoded.assign(1u, 0xa5u);
+    assert(encoder.encode(hello, sizeof(hello), encoded, throwingCancel,
+                          nullptr) == RinCompression::ZstdResult::Cancelled &&
+           encoded.empty());
+    decoded.assign(1u, 0xa5u);
+    assert(decoder.decode(hello, sizeof(hello), decoded,
+                          RinCompression::kZstdMaximumBytes, throwingCancel,
+                          nullptr) == RinCompression::ZstdResult::Cancelled &&
+           decoded.empty());
     assert(decoder.decode(nullptr, 1u, decoded) ==
            RinCompression::ZstdResult::InvalidArgument);
 

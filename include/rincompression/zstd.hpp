@@ -166,9 +166,22 @@ static inline bool appendWithinLimit(std::vector<std::uint8_t>& output,
 } // namespace zstd_detail
 
 class ZstdFrameEncoder final {
-    static bool cancelled(ZstdCancellationFunction function, void* context)
+    static bool cancelled(ZstdCancellationFunction function,
+                          void* context) noexcept
     {
-        return function != nullptr && function(context);
+        if (function == nullptr) return false;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
+            return function(context);
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (...) {
+            /* A caller-owned cancellation callback is a public boundary.  An
+             * exception means the operation cannot safely continue, so make
+             * it observable as cancellation instead of letting it escape. */
+            return true;
+        }
+#endif
     }
 
     static ZstdResult fail(std::vector<std::uint8_t>& output,
@@ -302,9 +315,21 @@ class ZstdFrameDecoder final {
         bool dictionary = false;
     };
 
-    static bool cancelled(ZstdCancellationFunction function, void* context)
+    static bool cancelled(ZstdCancellationFunction function,
+                          void* context) noexcept
     {
-        return function != nullptr && function(context);
+        if (function == nullptr) return false;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
+            return function(context);
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (...) {
+            /* Decoder cancellation is also caller-owned; do not allow a
+             * throwing callback to publish partial decoded bytes. */
+            return true;
+        }
+#endif
     }
 
     static ZstdResult fail(std::vector<std::uint8_t>& output,
