@@ -12,6 +12,9 @@
 #ifndef RINRUNTIME_WIDGETS_HPP
 #define RINRUNTIME_WIDGETS_HPP
 
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+#    include <new>
+#endif
 #include "controls.hpp"
 #include "text_input.hpp"
 #include "widget.hpp"
@@ -52,8 +55,17 @@ public:
 
     bool setText(const std::string& text) {
         if (!widget_detail::validText(text)) return false;
-        text_ = text;
-        return true;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
+            std::string candidate = text;
+            text_.swap(candidate);
+            return true;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (const std::bad_alloc&) {
+            return false;
+        }
+#endif
     }
     const std::string& text() const { return text_; }
     void setOnClick(std::function<void()> callback) { onClick_ = callback; }
@@ -109,8 +121,17 @@ public:
 
     bool setText(const std::string& text) {
         if (!widget_detail::validText(text)) return false;
-        text_ = text;
-        return true;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
+            std::string candidate = text;
+            text_.swap(candidate);
+            return true;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (const std::bad_alloc&) {
+            return false;
+        }
+#endif
     }
     const std::string& text() const { return text_; }
 
@@ -135,8 +156,17 @@ public:
     std::string text() const { return input_.text(); }
     bool setPlaceholder(const std::string& text) {
         if (!widget_detail::validText(text)) return false;
-        placeholder_ = text;
-        return true;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
+            std::string candidate = text;
+            placeholder_.swap(candidate);
+            return true;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (const std::bad_alloc&) {
+            return false;
+        }
+#endif
     }
     const std::string& placeholder() const { return placeholder_; }
     void setSelection(size_t start, size_t end) { input_.setSelection(start, end); }
@@ -227,8 +257,17 @@ public:
 
     bool setLabel(const std::string& label) {
         if (!widget_detail::validText(label)) return false;
-        label_ = label;
-        return true;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
+            std::string candidate = label;
+            label_.swap(candidate);
+            return true;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (const std::bad_alloc&) {
+            return false;
+        }
+#endif
     }
     const std::string& label() const { return label_; }
     void setChecked(bool checked) { checked_ = checked; }
@@ -406,8 +445,17 @@ public:
 
     bool setTitle(const std::string& title) {
         if (!widget_detail::validText(title)) return false;
-        title_ = title;
-        return true;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
+            std::string candidate = title;
+            title_.swap(candidate);
+            return true;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (const std::bad_alloc&) {
+            return false;
+        }
+#endif
     }
     const std::string& title() const { return title_; }
     void setModal(bool modal) { modal_ = modal; }
