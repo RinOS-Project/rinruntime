@@ -2,10 +2,25 @@
 #include <rinruntime/rinruntime.hpp>
 
 #include <cassert>
+#include <cstdint>
+#include <vector>
 
 int main() {
     RinRuntime::EventLoop event_loop;
     assert(event_loop.pendingEvents() == 0u);
+
+    RinCompression::ZstdFrameEncoder zstd_encoder;
+    RinCompression::ZstdFrameDecoder zstd_decoder;
+    const std::uint8_t zstd_payload[] = {'R', 'i', 'n', 'O', 'S'};
+    std::vector<std::uint8_t> zstd_frame;
+    std::vector<std::uint8_t> zstd_decoded;
+    assert(zstd_encoder.encode(zstd_payload, sizeof(zstd_payload), zstd_frame) ==
+           RinCompression::ZstdResult::Ok);
+    assert(zstd_decoder.decode(zstd_frame.data(), zstd_frame.size(), zstd_decoded) ==
+           RinCompression::ZstdResult::Ok);
+    assert(zstd_decoded ==
+           std::vector<std::uint8_t>(zstd_payload,
+                                     zstd_payload + sizeof(zstd_payload)));
 
     RinRuntime::Button button("Open");
     assert(button.setAccessibilityName("Open"));

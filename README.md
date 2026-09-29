@@ -392,6 +392,9 @@ those algorithms without changing the public filesystem or service boundary.
 The decoder also rejects frames containing more than `kZstdMaximumBlocks`
 (65,536) blocks, including empty raw blocks, so block-count CPU amplification
 fails closed as `Limit` without changing the public/private ownership split.
+The canonical `rinruntime/rinruntime.hpp` umbrella includes this codec for
+ordinary applications and external toolkits; it does not grant filesystem,
+service, Browser, or publication authority.
 
 `firewall_conntrack.h` provides filtering and pagination for a fixed-size,
 caller-owned, immutable Firewall connection snapshot. It does not retrieve

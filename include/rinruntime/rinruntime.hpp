@@ -79,5 +79,6 @@
 #include "render_context.hpp"
 #include "window.hpp"
 #include "../rincompression/lz4.hpp"
+#include "../rincompression/zstd.hpp"
 
 #endif
