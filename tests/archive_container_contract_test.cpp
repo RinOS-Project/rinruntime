@@ -150,7 +150,7 @@ static std::vector<std::uint8_t> makeGzip(const std::uint8_t* payload,
     return bytes;
 }
 
-static std::vector<std::uint8_t> make7zStored()
+static std::vector<std::uint8_t> make7zStored(bool copy_chain = false)
 {
     const std::uint8_t signature[] = {
         0x37u, 0x7au, 0xbcu, 0xafu, 0x27u, 0x1cu};
@@ -173,11 +173,18 @@ static std::vector<std::uint8_t> make7zStored()
     header.push_back(0x0bu); /* Folder */
     put7zUInt64(header, 1u); /* NumFolders */
     header.push_back(0u); /* folders are in this header */
-    put7zUInt64(header, 1u); /* NumCoders */
+    put7zUInt64(header, copy_chain ? 2u : 1u); /* NumCoders */
     header.push_back(0x01u); /* one-byte method ID, no properties */
     header.push_back(0x00u); /* Copy coder */
+    if (copy_chain) {
+        header.push_back(0x01u); /* second one-byte Copy method ID */
+        header.push_back(0x00u);
+        put7zUInt64(header, 1u); /* second coder input <- first output */
+        put7zUInt64(header, 0u);
+    }
     header.push_back(0x0cu); /* CodersUnpackSize */
     put7zUInt64(header, sizeof(payload));
+    if (copy_chain) put7zUInt64(header, sizeof(payload));
     header.push_back(0x0au); /* Folder CRC */
     header.push_back(1u);
     header.resize(header.size() + 4u);
@@ -482,6 +489,15 @@ int main()
                                             nullptr) ==
            RinRuntime::ArchiveContainerResult::Cancelled);
     assert(output.empty());
+
+    const std::vector<std::uint8_t> sevenZipCopyChain = make7zStored(true);
+    assert(reader.parse(sevenZipCopyChain.data(), sevenZipCopyChain.size()) ==
+           RinRuntime::ArchiveContainerResult::Ok);
+    assert(reader.kind() == RinRuntime::ArchiveContainerKind::SevenZip &&
+           reader.size() == 1u && reader.entries()[0].size == 5u);
+    output = "poison";
+    assert(reader.readEntry(0u, output) ==
+           RinRuntime::ArchiveContainerResult::Ok && output == "hello");
 
     const std::vector<std::uint8_t> emptySevenZip = make7zEmpty();
     assert(reader.parse(emptySevenZip.data(), emptySevenZip.size()) ==
