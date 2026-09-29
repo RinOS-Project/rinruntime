@@ -9,6 +9,10 @@
 #include <string_view>
 #include <utility>
 
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS)
+#    include <new>
+#endif
+
 #include <rinjson/json.hpp>
 
 #include "update_metadata_catalog.hpp"
@@ -108,6 +112,9 @@ public:
         } catch (const rinjson::Error& exception) {
             error = "update catalog JSON: ";
             error += exception.what();
+            return false;
+        } catch (const std::bad_alloc&) {
+            error = "update catalog allocation";
             return false;
         }
 #endif

@@ -11,6 +11,10 @@
 #include <utility>
 #include <vector>
 
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS)
+#    include <new>
+#endif
+
 #include <rinjson/json.hpp>
 
 #include "package_metadata.hpp"
@@ -337,6 +341,9 @@ public:
         } catch (const rinjson::Error& exception) {
             error = "package metadata JSON: ";
             error += exception.what();
+            return false;
+        } catch (const std::bad_alloc&) {
+            error = "package metadata allocation";
             return false;
         }
 #endif

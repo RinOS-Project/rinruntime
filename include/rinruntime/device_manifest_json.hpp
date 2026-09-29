@@ -9,6 +9,10 @@
 #include <string_view>
 #include <utility>
 
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS)
+#    include <new>
+#endif
+
 #include <rinjson/json.hpp>
 
 #include "device_manifest.hpp"
@@ -237,6 +241,9 @@ public:
         } catch (const rinjson::Error& exception) {
             error = "device manifest JSON: ";
             error += exception.what();
+            return false;
+        } catch (const std::bad_alloc&) {
+            error = "device manifest allocation";
             return false;
         }
 #endif
