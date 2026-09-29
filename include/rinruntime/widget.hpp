@@ -8,6 +8,8 @@
 #include "event.hpp"
 #include "text_input.hpp"
 
+#include <utility>
+
 namespace RinRuntime {
 
 /* Public Accessibility strings use the same scalar-valid UTF-8 rule as
@@ -125,27 +127,44 @@ public:
         return {0u, 0u};
     }
 
+    bool tryAccessibilityMetadata(AccessibilityMetadata* output) const {
+        if (!output) return false;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
+            AccessibilityMetadata metadata = {};
+            metadata.role = accessibilityRole();
+            metadata.name = accessibilityName.empty() ? accessibilityDefaultName()
+                                                      : accessibilityName;
+            metadata.description = accessibilityDescription;
+            metadata.value = accessibilityValue();
+            metadata.state = (visible ? ACCESSIBILITY_STATE_VISIBLE : 0u) |
+                             (enabled ? ACCESSIBILITY_STATE_ENABLED : 0u) |
+                             (acceptsKeyboardFocus() ? ACCESSIBILITY_STATE_FOCUSABLE : 0u) |
+                             (accessibilityFocused ? ACCESSIBILITY_STATE_FOCUSED : 0u) |
+                             (hasAccessibilityFocusVisible() ?
+                                  ACCESSIBILITY_STATE_FOCUS_VISIBLE : 0u) |
+                             (isTextEditable() ? ACCESSIBILITY_STATE_EDITABLE : 0u) |
+                             accessibilityExtraState();
+            metadata.actions = accessibilityActions();
+            if (acceptsKeyboardFocus())
+                metadata.actions |= ACCESSIBILITY_ACTION_FOCUS;
+            metadata.bounds = bounds;
+            metadata.cursor = accessibilityCursor();
+            metadata.selection = accessibilitySelection();
+            metadata.editableRange = accessibilityEditableRange();
+            *output = std::move(metadata);
+            return true;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (const std::bad_alloc&) {
+            return false;
+        }
+#endif
+    }
+
     AccessibilityMetadata accessibilityMetadata() const {
         AccessibilityMetadata metadata = {};
-        metadata.role = accessibilityRole();
-        metadata.name = accessibilityName.empty() ? accessibilityDefaultName()
-                                                  : accessibilityName;
-        metadata.description = accessibilityDescription;
-        metadata.value = accessibilityValue();
-        metadata.state = (visible ? ACCESSIBILITY_STATE_VISIBLE : 0u) |
-                         (enabled ? ACCESSIBILITY_STATE_ENABLED : 0u) |
-                         (acceptsKeyboardFocus() ? ACCESSIBILITY_STATE_FOCUSABLE : 0u) |
-                         (accessibilityFocused ? ACCESSIBILITY_STATE_FOCUSED : 0u) |
-                         (hasAccessibilityFocusVisible() ?
-                              ACCESSIBILITY_STATE_FOCUS_VISIBLE : 0u) |
-                         (isTextEditable() ? ACCESSIBILITY_STATE_EDITABLE : 0u) |
-                         accessibilityExtraState();
-        metadata.actions = accessibilityActions();
-        if (acceptsKeyboardFocus()) metadata.actions |= ACCESSIBILITY_ACTION_FOCUS;
-        metadata.bounds = bounds;
-        metadata.cursor = accessibilityCursor();
-        metadata.selection = accessibilitySelection();
-        metadata.editableRange = accessibilityEditableRange();
+        (void)tryAccessibilityMetadata(&metadata);
         return metadata;
     }
 };
