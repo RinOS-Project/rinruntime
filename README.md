@@ -383,9 +383,10 @@ owners.
 
 `archive_7z.hpp` provides the public `Archive7zReader` envelope inspector and
 the explicitly bounded `decodeStored()` subset.  The decoder accepts one
-non-empty packed stream, one single BCJ2 coder (`03 03 01 1b`) with four
-packed input streams, or empty regular files/directories with no packed
-stream.  `FilesInfo` may also interleave those empty entries with the
+non-empty packed stream, bounded multiple folders when each folder is a
+single plain Copy coder with one regular substream, one single BCJ2 coder
+(`03 03 01 1b`) with four packed input streams, or empty regular
+files/directories with no packed stream.  `FilesInfo` may also interleave those empty entries with the
 decoded substreams.  The
 single BCJ2 path validates the MAIN／CALL／JUMP／RC stream sizes, range-coded
 branch decisions, exact output size, and complete input consumption.  Other
@@ -404,8 +405,9 @@ The shared `ArchiveXzReader::decodeRawLzma()` helper owns only the bounded raw
 range-coded codec; it does not parse 7z headers or publish bytes.  Multi-stream
 coders, encryption, multiple folders, filesystem extraction, archive
 service IPC, and File Portal publication remain private or `Unsupported`.
-Arbitrary multi-stream graphs, multiple folders, and malformed empty-stream
-metadata remain explicit `Unsupported` or malformed results.  Its 7z VLI reader
+Arbitrary multi-stream graphs, multi-folder coder chains or SubStreamsInfo,
+encryption, and malformed empty-stream metadata remain explicit `Unsupported`
+or malformed results.  Its 7z VLI reader
 consumes multi-byte extra bytes in the format's little-endian order and rejects
 non-minimal encodings such as a zero value encoded with an extra byte, so
 malformed header values do not reach the stored-copy path.

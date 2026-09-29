@@ -107,7 +107,7 @@ public:
 
     /* Decode a bounded 7z pipeline of up to four one-in/one-out Copy, Delta,
      * and LZMA coders, or one BCJ2 coder with four packed input streams, plus
-     * a single folder containing bounded regular substreams, plus empty
+     * bounded single-Copy folders containing regular substreams, plus empty
      * regular files/directories with no packed stream.
      * BindPairs are validated before any coder runs.  A multi-entry folder is
      * exposed as bounded slices of the decoded folder stream, with
@@ -115,7 +115,8 @@ public:
      * This subset is useful
      * for caller-owned test/resource bytes and intentionally has no path,
      * filename, filesystem, or service authority.  Multi-stream coders,
-     * arbitrary multi-stream graphs, encryption, multiple folders, empty
+     * arbitrary multi-stream graphs, encryption, SubStreamsInfo in the
+     * multi-folder subset, empty
      * entries in a non-empty folder, and external headers remain explicit
      * Unsupported results. */
     Archive7zResult decodeStored(const std::uint8_t* bytes, std::size_t size,
@@ -242,6 +243,8 @@ private:
             if (encoded_pack_stream_count == 0u ||
                 encoded_pack_stream_count > kMaxPackedStreams ||
                 (encoded_pack_stream_count != 1u &&
+                 encoded_pack_stream_count != 2u &&
+                 encoded_pack_stream_count != 3u &&
                  encoded_pack_stream_count != 4u))
                 return Archive7zResult::Unsupported;
             pack_stream_count =
@@ -276,9 +279,16 @@ private:
             std::uint64_t folder_count = 0u;
             if (!readEncodedUInt64(bytes, end, cursor, folder_count))
                 return Archive7zResult::Malformed;
-            if (folder_count != 1u) return Archive7zResult::Unsupported;
             if (cursor >= end) return Archive7zResult::Malformed;
             if (bytes[cursor++] != 0u) return Archive7zResult::Unsupported;
+            if (folder_count != 1u) {
+                return decodeSimpleCopyFolders(
+                    bytes, size, summary.nextHeaderOffset, end, cursor,
+                    pack_position, pack_stream_count, pack_sizes,
+                    pack_crc_defined, pack_crcs, folder_count, output,
+                    cancellation, cancellationContext, deadline,
+                    deadlineContext);
+            }
 
             if (!readEncodedUInt64(bytes, end, cursor, coder_count))
                 return Archive7zResult::Malformed;
@@ -923,6 +933,152 @@ private:
             return Archive7zResult::Limit;
         }
 #endif
+    }
+
+    Archive7zResult decodeSimpleCopyFolders(
+        const std::uint8_t* bytes, std::size_t size,
+        std::size_t next_header_offset, std::size_t end,
+        std::size_t& cursor, std::uint64_t pack_position,
+        std::size_t pack_stream_count,
+        const std::array<std::uint64_t, 4u>& pack_sizes,
+        const std::array<bool, 4u>& pack_crc_defined,
+        const std::array<std::uint32_t, 4u>& pack_crcs,
+        std::uint64_t folder_count, std::string& output,
+        ArchiveDeflateCancellationFunction cancellation,
+        void* cancellationContext, ArchiveDeflateDeadlineFunction deadline,
+        void* deadlineContext) const
+    {
+        static constexpr std::size_t kMaxFolders = 4u;
+        if (folder_count < 2u || folder_count > kMaxFolders ||
+            pack_stream_count != static_cast<std::size_t>(folder_count))
+            return Archive7zResult::Unsupported;
+
+        std::array<std::uint64_t, kMaxFolders> unpack_sizes{};
+        std::array<bool, kMaxFolders> folder_crc_defined{};
+        std::array<std::uint32_t, kMaxFolders> folder_crcs{};
+        const std::size_t folders = static_cast<std::size_t>(folder_count);
+
+        /* This deliberately bounded extension accepts only one plain Copy
+         * coder per folder.  The folder input is therefore mapped to the
+         * packed stream with the same ordinal; no BindPairs or packed-stream
+         * index table is present in this subset. */
+        for (std::size_t folder = 0u; folder < folders; ++folder) {
+            if (deadline != nullptr && deadline(deadlineContext))
+                return Archive7zResult::Deadline;
+            if (cancellation != nullptr && cancellation(cancellationContext))
+                return Archive7zResult::Cancelled;
+            std::uint64_t coder_count = 0u;
+            if (!readEncodedUInt64(bytes, end, cursor, coder_count))
+                return Archive7zResult::Malformed;
+            if (coder_count != 1u) return Archive7zResult::Unsupported;
+            if (cursor >= end) return Archive7zResult::Malformed;
+            const std::uint8_t coder_flags = bytes[cursor++];
+            if (coder_flags != 0x01u || cursor >= end || bytes[cursor++] != 0u)
+                return Archive7zResult::Unsupported;
+        }
+
+        if (!takeByte(bytes, end, cursor, 0x0cu))
+            return Archive7zResult::Malformed;
+        std::uint64_t total_unpack_size = 0u;
+        for (std::size_t folder = 0u; folder < folders; ++folder) {
+            if (!readEncodedUInt64(bytes, end, cursor,
+                                   unpack_sizes[folder]))
+                return Archive7zResult::Malformed;
+            if (unpack_sizes[folder] >
+                    static_cast<std::uint64_t>(kMaxStreamBytes) ||
+                total_unpack_size >
+                    static_cast<std::uint64_t>(kMaxStreamBytes) -
+                        unpack_sizes[folder])
+                return Archive7zResult::Limit;
+            total_unpack_size += unpack_sizes[folder];
+        }
+        if (cursor < end && bytes[cursor] == 0x0au) {
+            ++cursor;
+            if (!readCrcs(bytes, end, cursor, folders, folder_crc_defined,
+                          folder_crcs))
+                return Archive7zResult::Malformed;
+        }
+        if (!takeByte(bytes, end, cursor, 0x00u))
+            return Archive7zResult::Malformed;
+
+        /* A folder with one unpack stream needs no SubStreamsInfo.  Reject a
+         * present section instead of guessing its per-folder stream layout. */
+        if (cursor < end && bytes[cursor] == 0x08u)
+            return Archive7zResult::Unsupported;
+        if (!takeByte(bytes, end, cursor, 0x00u) ||
+            !takeByte(bytes, end, cursor, 0x05u))
+            return Archive7zResult::Malformed;
+        std::uint64_t file_count = 0u;
+        if (!readEncodedUInt64(bytes, end, cursor, file_count) ||
+            file_count != folder_count)
+            return Archive7zResult::Unsupported;
+        if (!takeByte(bytes, end, cursor, 0x00u) ||
+            !takeByte(bytes, end, cursor, 0x00u) || cursor != end)
+            return Archive7zResult::Malformed;
+
+        if (pack_position > static_cast<std::uint64_t>(
+                                size - kSignatureHeaderSize))
+            return Archive7zResult::Malformed;
+        const std::uint64_t pack_start64 =
+            static_cast<std::uint64_t>(kSignatureHeaderSize) + pack_position;
+        if (pack_start64 > static_cast<std::uint64_t>(next_header_offset))
+            return Archive7zResult::Malformed;
+        std::size_t pack_offset = static_cast<std::size_t>(pack_start64);
+        std::string combined;
+        combined.reserve(static_cast<std::size_t>(total_unpack_size));
+        for (std::size_t folder = 0u; folder < folders; ++folder) {
+            if (pack_offset > next_header_offset ||
+                pack_sizes[folder] > static_cast<std::uint64_t>(
+                                         next_header_offset - pack_offset))
+                return Archive7zResult::Malformed;
+            const std::size_t packed_size =
+                static_cast<std::size_t>(pack_sizes[folder]);
+            if (pack_sizes[folder] != unpack_sizes[folder])
+                return Archive7zResult::Malformed;
+            std::uint32_t actual_crc = 0xffffffffu;
+            for (std::size_t index = 0u; index < packed_size; ++index) {
+                if ((index & 4095u) == 0u) {
+                    if (deadline != nullptr && deadline(deadlineContext))
+                        return Archive7zResult::Deadline;
+                    if (cancellation != nullptr &&
+                        cancellation(cancellationContext))
+                        return Archive7zResult::Cancelled;
+                }
+                const std::uint8_t value = bytes[pack_offset + index];
+                actual_crc ^= value;
+                for (int bit = 0; bit < 8; ++bit)
+                    actual_crc = (actual_crc >> 1u) ^
+                                 (0xedb88320u &
+                                  (0u - (actual_crc & 1u)));
+            }
+            actual_crc ^= 0xffffffffu;
+            if (pack_crc_defined[folder] &&
+                actual_crc != pack_crcs[folder])
+                return Archive7zResult::CrcMismatch;
+            if (folder_crc_defined[folder] && actual_crc != folder_crcs[folder])
+                return Archive7zResult::CrcMismatch;
+            const std::size_t folder_start = combined.size();
+            combined.append(reinterpret_cast<const char*>(bytes + pack_offset),
+                            packed_size);
+            if (combined.size() - folder_start !=
+                static_cast<std::size_t>(unpack_sizes[folder]))
+                return Archive7zResult::Malformed;
+            pack_offset += packed_size;
+        }
+        if (pack_offset != next_header_offset ||
+            combined.size() != static_cast<std::size_t>(total_unpack_size))
+            return Archive7zResult::Malformed;
+
+        std::size_t offset = 0u;
+        for (std::size_t folder = 0u; folder < folders; ++folder) {
+            const std::size_t entry_size =
+                static_cast<std::size_t>(unpack_sizes[folder]);
+            entries_[folder] = {offset, entry_size, false};
+            offset += entry_size;
+        }
+        entry_count_ = folders;
+        output.swap(combined);
+        return Archive7zResult::Ok;
     }
 
 private:
