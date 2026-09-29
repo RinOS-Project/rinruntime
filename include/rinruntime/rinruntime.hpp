@@ -65,6 +65,7 @@
 #include "backup_archive.hpp"
 #include "backup_restore.h"
 #include "known_folders.h"
+#include "known_folders.hpp"
 #include "file_operation.h"
 #include "file_portal.h"
 #include "file_portal_startup.h"

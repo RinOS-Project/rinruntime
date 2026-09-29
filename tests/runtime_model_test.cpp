@@ -61,6 +61,17 @@ int main() {
     RinRuntime::RinEventLoopBackend* rin_backend = nullptr;
     (void)rin_backend;
     RinRuntime::BackupArchiveReader backup_reader;
+    RinRuntime::KnownFolder known_folder = RinRuntime::KnownFolder::Home;
+    RinRuntime::ApplicationDirectory application_directory =
+        RinRuntime::ApplicationDirectory::Data;
+    const std::string known_folder_path =
+        RinRuntime::knownFolder(known_folder);
+    const std::string application_directory_path =
+        RinRuntime::applicationDirectory(application_directory, "rinruntime-model");
+    (void)known_folder;
+    (void)application_directory;
+    (void)known_folder_path;
+    (void)application_directory_path;
 
     DownloadModelOwner download_owner;
     RinRuntime::DownloadRangeTransportOpsV1 download_ops;

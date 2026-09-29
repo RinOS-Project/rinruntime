@@ -62,6 +62,15 @@ include. Unicode data and locale catalog ownership remain in the public
 library snapshot/private data owner; the umbrella grants no filesystem or
 service authority.
 
+The same canonical umbrella includes `known_folders.hpp` alongside the C
+`known_folders.h` ABI. `RinRuntime::knownFolder()` and
+`RinRuntime::applicationDirectory()` are bounded location-discovery helpers
+for ordinary applications and external toolkits; they return caller-owned
+strings and do not grant file access, File Portal authority, or package/RinFS
+ownership. Sandboxed applications still use their authenticated storage
+capability rather than treating this convenience API as an ambient access
+path.
+
 `unicode.hpp` supplies the text model's bounded UTF-8 grapheme stepping. Its
 thin C adapter delegates to the public `libunicode` snapshot, so C++ editing,
 the C runtime, and `rinicud` use the same CRLF, combining/spacing mark, Hangul,
