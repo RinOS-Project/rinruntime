@@ -107,7 +107,8 @@ public:
 
     /* Decode a bounded 7z pipeline of up to four one-in/one-out Copy, Delta,
      * and LZMA coders, or one BCJ2 coder with four packed input streams, plus
-     * bounded linear Copy／raw-filter folders of up to four coders containing
+     * bounded linear Copy／Delta／raw-filter／LZMA／LZMA2 folders of up to
+     * four coders containing
      * regular substreams, plus empty
      * regular files/directories with no packed stream.
      * BindPairs are validated before any coder runs.  A multi-entry folder is
@@ -964,6 +965,18 @@ private:
                                kMaxFolderCoders>,
                    kMaxFolders>
             folder_properties{};
+        std::array<std::array<std::array<std::uint8_t, 5u>,
+                               kMaxFolderCoders>,
+                   kMaxFolders>
+            folder_lzma_properties{};
+        std::array<std::array<std::size_t, kMaxFolderCoders>, kMaxFolders>
+            folder_lzma_dictionary_sizes{};
+        std::array<std::array<std::uint8_t, kMaxFolderCoders>, kMaxFolders>
+            folder_lzma2_properties{};
+        std::array<std::array<bool, kMaxFolderCoders>, kMaxFolders>
+            folder_lzma_coders{};
+        std::array<std::array<bool, kMaxFolderCoders>, kMaxFolders>
+            folder_lzma2_coders{};
         std::array<std::array<std::size_t, kMaxFolderCoders>, kMaxFolders>
             folder_property_sizes{};
         std::array<std::array<std::uint64_t, kMaxFolderCoders>, kMaxFolders>
@@ -980,10 +993,10 @@ private:
         const std::size_t folders = static_cast<std::size_t>(folder_count);
         substream_counts.fill(1u);
 
-        /* This deliberately bounded extension accepts at most four Copy or
-         * raw filter coders per folder.  The folder input is mapped to the
-         * packed stream with the same ordinal; the only accepted bonds are
-         * the linear (coder + 1) <- coder pairs. */
+        /* This deliberately bounded extension accepts at most four Copy,
+         * Delta, raw filter, LZMA, or LZMA2 coders per folder.  The folder
+         * input is mapped to the packed stream with the same ordinal; the
+         * only accepted bonds are the linear (coder + 1) <- coder pairs. */
         for (std::size_t folder = 0u; folder < folders; ++folder) {
             if (deadline != nullptr && deadline(deadlineContext))
                 return Archive7zResult::Deadline;
@@ -1002,10 +1015,14 @@ private:
                 const std::uint8_t coder_flags = bytes[cursor++];
                 const unsigned method_size = coder_flags & 0x0fu;
                 const bool has_properties = (coder_flags & 0x20u) != 0u;
-                if (method_size != 1u || (coder_flags & 0xd0u) != 0u ||
-                    cursor >= end)
+                if (method_size == 0u || method_size > 8u ||
+                    (coder_flags & 0xd0u) != 0u ||
+                    method_size > end - cursor)
                     return Archive7zResult::Unsupported;
-                const std::uint64_t method = bytes[cursor++];
+                std::uint64_t method = 0u;
+                for (unsigned index = 0u; index != method_size; ++index)
+                    method |= static_cast<std::uint64_t>(bytes[cursor++])
+                              << (index * 8u);
                 folder_methods[folder][coder] = method;
                 std::size_t expected_property_size = 0u;
                 if (method == 0u) {
@@ -1016,6 +1033,12 @@ private:
                     expected_property_size = 4u;
                 } else if (method >= 0x05u && method <= 0x0bu) {
                     expected_property_size = 0u;
+                } else if (method == UINT64_C(0x010103)) {
+                    expected_property_size = 5u;
+                    folder_lzma_coders[folder][coder] = true;
+                } else if (method == UINT64_C(0x21)) {
+                    expected_property_size = 1u;
+                    folder_lzma2_coders[folder][coder] = true;
                 } else {
                     return Archive7zResult::Unsupported;
                 }
@@ -1024,14 +1047,43 @@ private:
                     if (!readEncodedUInt64(bytes, end, cursor,
                                            property_size) ||
                         property_size != expected_property_size ||
-                        property_size > folder_properties[folder][coder].size())
+                        ((method != UINT64_C(0x010103) &&
+                          method != UINT64_C(0x21)) &&
+                         property_size > folder_properties[folder][coder].size()))
                         return Archive7zResult::Unsupported;
                     folder_property_sizes[folder][coder] =
                         static_cast<std::size_t>(property_size);
-                    for (std::size_t index = 0u; index < property_size;
-                         ++index)
-                        folder_properties[folder][coder][index] =
+                    if (method == UINT64_C(0x010103)) {
+                        for (std::size_t index = 0u; index < property_size;
+                             ++index)
+                            folder_lzma_properties[folder][coder][index] =
+                                bytes[cursor++];
+                        const std::uint32_t dictionary =
+                            static_cast<std::uint32_t>(
+                                folder_lzma_properties[folder][coder][1u]) |
+                            static_cast<std::uint32_t>(
+                                folder_lzma_properties[folder][coder][2u])
+                                << 8u |
+                            static_cast<std::uint32_t>(
+                                folder_lzma_properties[folder][coder][3u])
+                                << 16u |
+                            static_cast<std::uint32_t>(
+                                folder_lzma_properties[folder][coder][4u])
+                                << 24u;
+                        if (dictionary == 0u) return Archive7zResult::Malformed;
+                        if (dictionary > kMaxStreamBytes)
+                            return Archive7zResult::Limit;
+                        folder_lzma_dictionary_sizes[folder][coder] =
+                            static_cast<std::size_t>(dictionary);
+                    } else if (method == UINT64_C(0x21)) {
+                        folder_lzma2_properties[folder][coder] =
                             bytes[cursor++];
+                    } else {
+                        for (std::size_t index = 0u; index < property_size;
+                             ++index)
+                            folder_properties[folder][coder][index] =
+                                bytes[cursor++];
+                    }
                 } else if (expected_property_size != 0u) {
                     return Archive7zResult::Unsupported;
                 }
@@ -1196,7 +1248,12 @@ private:
                 return Archive7zResult::Malformed;
             const std::size_t packed_size =
                 static_cast<std::size_t>(pack_sizes[folder]);
-            if (pack_sizes[folder] != unpack_sizes[folder])
+            const std::uint64_t first_method = folder_methods[folder][0u];
+            const bool first_coder_preserves_size =
+                first_method == 0u ||
+                (first_method >= 0x03u && first_method <= 0x0bu);
+            if (first_coder_preserves_size &&
+                pack_sizes[folder] != folder_coder_unpack_sizes[folder][0u])
                 return Archive7zResult::Malformed;
             std::uint32_t actual_crc = 0xffffffffu;
             for (std::size_t index = 0u; index < packed_size; ++index) {
@@ -1233,6 +1290,53 @@ private:
                 const std::uint64_t method = folder_methods[folder][coder];
                 if (method == 0u) {
                     /* Copy preserves the bounded caller-owned buffer. */
+                } else if (folder_lzma2_coders[folder][coder] &&
+                           method == UINT64_C(0x21)) {
+                    ArchiveXzReader lzma2_reader;
+                    const ArchiveXzResult lzma2_result =
+                        lzma2_reader.decodeRawLzma2(
+                            reinterpret_cast<const std::uint8_t*>(
+                                coder_input.data()),
+                            coder_input.size(),
+                            folder_lzma2_properties[folder][coder],
+                            folder_coder_unpack_sizes[folder][coder],
+                            coder_output, cancellation, cancellationContext,
+                            deadline, deadlineContext);
+                    if (lzma2_result == ArchiveXzResult::Cancelled)
+                        return Archive7zResult::Cancelled;
+                    if (lzma2_result == ArchiveXzResult::Deadline)
+                        return Archive7zResult::Deadline;
+                    if (lzma2_result == ArchiveXzResult::Limit)
+                        return Archive7zResult::Limit;
+                    if (lzma2_result == ArchiveXzResult::Unsupported)
+                        return Archive7zResult::Unsupported;
+                    if (lzma2_result != ArchiveXzResult::Ok)
+                        return Archive7zResult::Malformed;
+                    coder_input.swap(coder_output);
+                } else if (folder_lzma_coders[folder][coder] &&
+                           method == UINT64_C(0x010103)) {
+                    ArchiveXzReader lzma_reader;
+                    const ArchiveXzResult lzma_result =
+                        lzma_reader.decodeRawLzmaWithDeadline(
+                            reinterpret_cast<const std::uint8_t*>(
+                                coder_input.data()),
+                            coder_input.size(),
+                            folder_lzma_properties[folder][coder][0u],
+                            folder_lzma_dictionary_sizes[folder][coder],
+                            folder_coder_unpack_sizes[folder][coder],
+                            coder_output, cancellation, cancellationContext,
+                            deadline, deadlineContext);
+                    if (lzma_result == ArchiveXzResult::Cancelled)
+                        return Archive7zResult::Cancelled;
+                    if (lzma_result == ArchiveXzResult::Deadline)
+                        return Archive7zResult::Deadline;
+                    if (lzma_result == ArchiveXzResult::Limit)
+                        return Archive7zResult::Limit;
+                    if (lzma_result == ArchiveXzResult::Unsupported)
+                        return Archive7zResult::Unsupported;
+                    if (lzma_result != ArchiveXzResult::Ok)
+                        return Archive7zResult::Malformed;
+                    coder_input.swap(coder_output);
                 } else {
                     ArchiveXzReader filter_reader;
                     const ArchiveXzResult filter_result =
