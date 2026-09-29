@@ -196,7 +196,7 @@ static void put7zUInt64(std::vector<std::uint8_t>& bytes,
     bytes.push_back(static_cast<std::uint8_t>(value));
 }
 
-static std::vector<std::uint8_t> make7zStored()
+static std::vector<std::uint8_t> make7zStored(bool copy_chain = false)
 {
     const std::uint8_t signature[] = {
         0x37u, 0x7au, 0xbcu, 0xafu, 0x27u, 0x1cu};
@@ -218,11 +218,18 @@ static std::vector<std::uint8_t> make7zStored()
     header.push_back(0x0bu); /* Folder */
     put7zUInt64(header, 1u); /* NumFolders */
     header.push_back(0u); /* folders are in this header */
-    put7zUInt64(header, 1u); /* NumCoders */
+    put7zUInt64(header, copy_chain ? 2u : 1u); /* NumCoders */
     header.push_back(0x01u); /* one-byte method ID, no properties */
     header.push_back(0x00u); /* Copy coder */
+    if (copy_chain) {
+        header.push_back(0x01u); /* second one-byte Copy coder */
+        header.push_back(0x00u);
+        put7zUInt64(header, 1u); /* second coder input <- first output */
+        put7zUInt64(header, 0u);
+    }
     header.push_back(0x0cu); /* CodersUnpackSize */
     put7zUInt64(header, sizeof(payload));
+    if (copy_chain) put7zUInt64(header, sizeof(payload));
     header.push_back(0x0au); /* Folder CRC */
     header.push_back(1u); /* all defined */
     put32(header, RinRuntime::rinruntime_archive_crc32(
@@ -1318,6 +1325,14 @@ int main()
     std::string sevenZipOutput = "poison";
     assert(sevenZipReader.decodeStored(storedSevenZip.data(),
                                        storedSevenZip.size(),
+                                       sevenZipOutput) ==
+           RinRuntime::Archive7zResult::Ok);
+    assert(sevenZipOutput == "hello");
+    const std::vector<std::uint8_t> copyChainSevenZip =
+        make7zStored(true);
+    sevenZipOutput = "poison";
+    assert(sevenZipReader.decodeStored(copyChainSevenZip.data(),
+                                       copyChainSevenZip.size(),
                                        sevenZipOutput) ==
            RinRuntime::Archive7zResult::Ok);
     assert(sevenZipOutput == "hello");
