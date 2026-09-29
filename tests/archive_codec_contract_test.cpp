@@ -197,14 +197,23 @@ static void put7zUInt64(std::vector<std::uint8_t>& bytes,
 }
 
 static std::vector<std::uint8_t> make7zStored(bool copy_chain = false,
-                                              bool delta_first = false)
+                                              bool delta_first = false,
+                                              bool x86_first = false)
 {
+    assert(!(delta_first && x86_first));
     const std::uint8_t signature[] = {
         0x37u, 0x7au, 0xbcu, 0xafu, 0x27u, 0x1cu};
     const std::uint8_t payload[] = {'h', 'e', 'l', 'l', 'o'};
     const std::uint8_t delta_payload[] = {0x68u, 0xfdu, 0x07u, 0x00u,
                                           0x03u};
-    const std::uint8_t* packed = delta_first ? delta_payload : payload;
+    const std::uint8_t x86_payload[] = {0xe8u, 0x05u, 0x00u, 0x00u,
+                                        0x00u};
+    const std::uint8_t x86_output[] = {0xe8u, 0x00u, 0x00u, 0x00u,
+                                       0x00u};
+    const std::uint8_t* packed = x86_first
+                                     ? x86_payload
+                                     : delta_first ? delta_payload : payload;
+    const std::uint8_t* expected = x86_first ? x86_output : payload;
     const std::size_t packed_size = sizeof(payload);
     std::vector<std::uint8_t> header;
     header.push_back(0x01u); /* Header */
@@ -229,6 +238,14 @@ static std::vector<std::uint8_t> make7zStored(bool copy_chain = false,
         header.push_back(0x03u);
         header.push_back(0x01u); /* one property byte */
         header.push_back(0x00u); /* distance = 1 */
+    } else if (x86_first) {
+        header.push_back(0x21u); /* one-byte x86 BCJ method ID + properties */
+        header.push_back(0x04u);
+        header.push_back(0x04u); /* four-byte start offset property */
+        header.push_back(0x00u);
+        header.push_back(0x00u);
+        header.push_back(0x00u);
+        header.push_back(0x00u);
     } else {
         header.push_back(0x01u); /* one-byte method ID, no properties */
         header.push_back(0x00u); /* Copy coder */
@@ -245,7 +262,7 @@ static std::vector<std::uint8_t> make7zStored(bool copy_chain = false,
     header.push_back(0x0au); /* Folder CRC */
     header.push_back(1u); /* all defined */
     put32(header, RinRuntime::rinruntime_archive_crc32(
-                        payload, sizeof(payload)));
+                        expected, sizeof(payload)));
     header.push_back(0x00u); /* UnPackInfo end */
     header.push_back(0x00u); /* MainStreamsInfo end */
     header.push_back(0x05u); /* FilesInfo */
@@ -1356,6 +1373,14 @@ int main()
                                        sevenZipOutput) ==
            RinRuntime::Archive7zResult::Ok);
     assert(sevenZipOutput == "hello");
+    const std::vector<std::uint8_t> x86SevenZip =
+        make7zStored(false, false, true);
+    sevenZipOutput = "poison";
+    assert(sevenZipReader.decodeStored(x86SevenZip.data(), x86SevenZip.size(),
+                                       sevenZipOutput) ==
+           RinRuntime::Archive7zResult::Ok);
+    assert(sevenZipOutput == std::string({static_cast<char>(0xe8), '\0',
+                                          '\0', '\0', '\0'}));
     const std::vector<std::uint8_t> emptySevenZip = make7zEmpty();
     sevenZipOutput = "poison";
     assert(sevenZipReader.decodeStored(emptySevenZip.data(),
