@@ -155,11 +155,19 @@ public:
             }
 #if defined(__cpp_exceptions) || defined(__EXCEPTIONS)
         } catch (const rinjson::Error& exception) {
-            error = "metadata JSON: ";
-            error += exception.what();
+            try {
+                error = "metadata JSON: ";
+                error += exception.what();
+            } catch (...) {
+                error.clear();
+            }
             return false;
         } catch (const std::bad_alloc&) {
-            error = "metadata allocation";
+            try {
+                error = "metadata allocation";
+            } catch (...) {
+                error.clear();
+            }
             return false;
         } catch (...) {
             error.clear();

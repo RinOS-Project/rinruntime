@@ -110,11 +110,19 @@ public:
             }
 #if defined(__cpp_exceptions) || defined(__EXCEPTIONS)
         } catch (const rinjson::Error& exception) {
-            error = "update catalog JSON: ";
-            error += exception.what();
+            try {
+                error = "update catalog JSON: ";
+                error += exception.what();
+            } catch (...) {
+                error.clear();
+            }
             return false;
         } catch (const std::bad_alloc&) {
-            error = "update catalog allocation";
+            try {
+                error = "update catalog allocation";
+            } catch (...) {
+                error.clear();
+            }
             return false;
         } catch (...) {
             error.clear();

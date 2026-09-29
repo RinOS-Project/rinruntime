@@ -239,11 +239,19 @@ public:
             }
 #if defined(__cpp_exceptions) || defined(__EXCEPTIONS)
         } catch (const rinjson::Error& exception) {
-            error = "device manifest JSON: ";
-            error += exception.what();
+            try {
+                error = "device manifest JSON: ";
+                error += exception.what();
+            } catch (...) {
+                error.clear();
+            }
             return false;
         } catch (const std::bad_alloc&) {
-            error = "device manifest allocation";
+            try {
+                error = "device manifest allocation";
+            } catch (...) {
+                error.clear();
+            }
             return false;
         } catch (...) {
             error.clear();
