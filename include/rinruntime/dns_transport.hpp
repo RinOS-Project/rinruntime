@@ -7,6 +7,9 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+#    include <new>
+#endif
 #include <string>
 
 namespace RinRuntime {
@@ -37,6 +40,9 @@ public:
                       const NamespaceId& namespace_id,
                       DnsTransportEndpoint& output,
                       const std::string& http_path = std::string()) {
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
         DnsTransportEndpoint candidate;
         if (!validKind(kind) || !validAuthority(authority, candidate.authority_) ||
             port == 0u || network_generation == 0u ||
@@ -58,6 +64,11 @@ public:
 
         output = candidate;
         return true;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (const std::bad_alloc&) {
+            return false;
+        }
+#endif
     }
 
     bool valid() const {
