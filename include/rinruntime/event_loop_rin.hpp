@@ -5,7 +5,9 @@
  * EventLoop itself is a backend-independent userspace model.  This optional
  * adapter translates its bounded readiness requests to the public RinOS SDK
  * wait-set ABI; it does not contain kernel scheduler code or inspect a native
- * object.  The target/kernel owner supplies the wait-set implementation.
+ * object.  `WaitRequest::nativeHandle` is an authenticated public SDK object
+ * handle (for example `RinEvent` or `RinSocket`), not a POSIX integer FD.
+ * The target/kernel owner supplies the wait-set implementation.
  */
 
 #ifndef RINRUNTIME_EVENT_LOOP_RIN_HPP
