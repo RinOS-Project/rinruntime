@@ -77,6 +77,9 @@ public:
 
     /* Replace only after every element has passed validation. */
     bool replace(const std::vector<RemovableVolume>& next) {
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
         if (next.size() > kMaxVolumes) return false;
         for (size_t index = 0u; index < next.size(); ++index) {
             if (!valid(next[index])) return false;
@@ -86,8 +89,18 @@ public:
                     return false;
             }
         }
-        volumes_ = next;
+
+        /* Copy into a candidate before publishing it.  A public snapshot
+         * replacement must not expose a partially assigned state when a
+         * caller-provided string or vector allocation fails. */
+        std::vector<RemovableVolume> candidate = next;
+        volumes_.swap(candidate);
         return true;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (const std::bad_alloc&) {
+            return false;
+        }
+#endif
     }
 
     void clear() { volumes_.clear(); }
