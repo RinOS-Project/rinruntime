@@ -69,6 +69,9 @@ private:
              decision != PermissionPromptDecision::Dismissed)) return false;
         decision_ = decision;
         setVisible(false);
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
         auto callback = onDecision_;
         if (callback) {
 #if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
@@ -85,6 +88,14 @@ private:
 #endif
         }
         return true;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (...) {
+            /* Copying the callback can allocate before invocation.  The
+             * decision is already terminal, so allocation failure is a
+             * notification failure and must not unwind through the model. */
+            return false;
+        }
+#endif
     }
 
 public:
