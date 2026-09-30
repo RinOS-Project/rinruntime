@@ -13,10 +13,23 @@
 #ifndef RINRUNTIME_EVENT_LOOP_POLL_HPP
 #define RINRUNTIME_EVENT_LOOP_POLL_HPP
 
+#include <cstdint>
+
+/* Native RinOS userspace is freestanding and supplies its own POSIX-shaped
+ * poll ABI.  Keep this adapter public, but do not mix the hosted CRT errno,
+ * limits, and poll declarations with the native libc headers.  Kernel code
+ * never includes this header; RIN_FREESTANDING is accepted here only with
+ * RIN_USERSPACE. */
+#if defined(RIN_FREESTANDING) && RIN_FREESTANDING && \
+    defined(RIN_USERSPACE) && RIN_USERSPACE
+#include "../../../libc/errno.h"
+#include "../../../libc/limits.h"
+#include "../../../libc/poll.h"
+#else
 #include <cerrno>
 #include <climits>
-#include <cstdint>
 #include <poll.h>
+#endif
 
 #include "event_loop.hpp"
 
