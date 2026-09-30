@@ -3,6 +3,9 @@
 #define RINRUNTIME_ACCESSIBILITY_WIRE_HPP
 
 #include <cstdint>
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+#    include <new>
+#endif
 #include <string>
 
 #include "accessibility.hpp"
@@ -162,6 +165,9 @@ public:
 
     static bool decode(const AccessibilityWireSnapshotV1& source,
                        AccessibilityTree* out) {
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
         if (out == nullptr || source.struct_size != sizeof(source) ||
             source.version != kAccessibilityWireVersion || source.flags != 0u ||
             source.window == 0u || source.generation == 0u ||
@@ -209,6 +215,11 @@ public:
         }
         *out = decoded;
         return true;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (const std::bad_alloc&) {
+            return false;
+        }
+#endif
     }
 };
 
