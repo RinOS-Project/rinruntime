@@ -120,20 +120,42 @@ inline LayoutSize localizedTextMinimumLayoutSize(
     return enforceControlTarget({width, height});
 }
 
+inline bool tryEllipsizeText(const std::string& text, int32_t width,
+                             std::string* output,
+                             int32_t advance = kDefaultTextAdvance) {
+    if (output == nullptr) return false;
+    output->clear();
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+    try {
+#endif
+        if (width <= 0 || advance <= 0) return true;
+        const size_t capacity = (size_t)(width / advance);
+        const size_t count = utf8ScalarCount(text);
+        std::string candidate;
+        if (count <= capacity) {
+            candidate = text;
+        } else if (capacity <= 3u) {
+            const size_t bytes = text_detail::prefixBytes(text, capacity);
+            candidate.assign(text.data(), bytes);
+        } else {
+            const size_t bytes = text_detail::prefixBytes(text, capacity - 3u);
+            candidate.append(text.data(), bytes);
+            candidate.append("...");
+        }
+        output->swap(candidate);
+        return true;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+    } catch (const std::bad_alloc&) {
+        output->clear();
+        return false;
+    }
+#endif
+}
+
 inline std::string ellipsizeText(const std::string& text, int32_t width,
                                  int32_t advance = kDefaultTextAdvance) {
-    if (width <= 0 || advance <= 0) return "";
-    size_t capacity = (size_t)(width / advance);
-    size_t count = utf8ScalarCount(text);
-    if (count <= capacity) return text;
-    if (capacity <= 3u) {
-        size_t bytes = text_detail::prefixBytes(text, capacity);
-        return text.substr(0u, bytes);
-    }
-    size_t bytes = text_detail::prefixBytes(text, capacity - 3u);
     std::string result;
-    result.append(text.data(), bytes);
-    result.append("...");
+    (void)tryEllipsizeText(text, width, &result, advance);
     return result;
 }
 

@@ -143,6 +143,13 @@ int main() {
         RinRuntime::DnsTransportKind::Doh, "resolver.example", 443u, 1u,
         1u, dns_path_namespace, dns_path_endpoint, "/dns/../query"));
 
+    std::string ellipsized = "stale";
+    assert(RinRuntime::tryEllipsizeText("Aあいうえお", 40, &ellipsized));
+    assert(ellipsized == "Aあ...");
+    assert(RinRuntime::tryEllipsizeText("unused", 0, &ellipsized));
+    assert(ellipsized.empty());
+    assert(!RinRuntime::tryEllipsizeText("unused", 40, nullptr));
+
     DownloadModelOwner download_owner;
     RinRuntime::DownloadRangeTransportOpsV1 download_ops;
     download_ops.structSize = sizeof(download_ops);
