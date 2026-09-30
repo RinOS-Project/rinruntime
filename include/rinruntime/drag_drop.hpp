@@ -6,6 +6,9 @@
 
 #include <cstddef>
 #include <cstdint>
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+#    include <new>
+#endif
 #include <string>
 #include <utility>
 #include <vector>
@@ -213,6 +216,9 @@ inline bool DragDropSession::addPayload(const std::string& mimeType,
                                         const std::uint8_t* bytes,
                                         std::size_t size)
 {
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+    try {
+#endif
     if (!active_ || dropped_ || cancelled_ || payloads_.size() >= kMaxPayloads ||
         !mimeTypeValid(mimeType) || !utf8Valid(label, kMaxLabelBytes) ||
         (size != 0u && bytes == nullptr) || size > kMaxPayloadBytes ||
@@ -226,6 +232,11 @@ inline bool DragDropSession::addPayload(const std::string& mimeType,
     payloads_.push_back(std::move(candidate));
     totalBytes_ += size;
     return true;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+    } catch (const std::bad_alloc&) {
+        return false;
+    }
+#endif
 }
 
 inline bool DragDropSession::accept(DragDropAction action)
