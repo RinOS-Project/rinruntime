@@ -81,20 +81,32 @@ private:
 public:
     bool setDefault(const std::string& extension,
                     const std::string& application) {
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
         const std::string key = normalizeExtension(extension);
         if (!extensionValid(key) || !applicationValid(application)) return false;
         for (FileAssociation& entry : entries_) {
             if (entry.extension == key) {
-                entry.application = application;
+                std::string replacement = application;
+                entry.application.swap(replacement);
                 return true;
             }
         }
         if (entries_.size() >= kMaxAssociations) return false;
         entries_.push_back({key, application});
         return true;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (const std::bad_alloc&) {
+            return false;
+        }
+#endif
     }
 
     bool clearDefault(const std::string& extension) {
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
         const std::string key = normalizeExtension(extension);
         if (!extensionValid(key)) return false;
         for (auto iterator = entries_.begin(); iterator != entries_.end(); ++iterator) {
@@ -104,19 +116,35 @@ public:
             }
         }
         return false;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (const std::bad_alloc&) {
+            return false;
+        }
+#endif
     }
 
     const std::string* applicationForPath(const std::string& path) const {
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
         const std::string key = extensionForPath(path);
         if (!extensionValid(key)) return nullptr;
         for (const FileAssociation& entry : entries_)
             if (entry.extension == key) return &entry.application;
         return nullptr;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (const std::bad_alloc&) {
+            return nullptr;
+        }
+#endif
     }
 
     /* Resolve a user override first, then the signed-in desktop defaults.
      * Unknown extensions intentionally remain unresolved. */
     std::string applicationForPathWithDefaults(const std::string& path) const {
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
         if (const std::string* configured = applicationForPath(path))
             return *configured;
         const std::string key = extensionForPath(path);
@@ -133,6 +161,11 @@ public:
         if (key == "docx" || key == "xlsx" || key == "pptx")
             return "/apps/office/RINOFFICE.RIN";
         return {};
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (const std::bad_alloc&) {
+            return {};
+        }
+#endif
     }
 
     const std::vector<FileAssociation>& entries() const { return entries_; }
