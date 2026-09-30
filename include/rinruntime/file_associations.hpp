@@ -4,6 +4,9 @@
 #ifndef RINRUNTIME_FILE_ASSOCIATIONS_HPP
 #define RINRUNTIME_FILE_ASSOCIATIONS_HPP
 
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+#    include <new>
+#endif
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -135,22 +138,32 @@ public:
     const std::vector<FileAssociation>& entries() const { return entries_; }
 
     bool encode(std::string& output) const {
-        output = "RIN-FILE-ASSOCIATIONS-V1\n";
-        for (const FileAssociation& entry : entries_) {
-            output += entry.extension;
-            output += '\t';
-            output += entry.application;
-            output += '\n';
-            if (output.size() > kMaxSerializedBytes) {
-                output.clear();
-                return false;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
+            std::string candidate = "RIN-FILE-ASSOCIATIONS-V1\n";
+            for (const FileAssociation& entry : entries_) {
+                candidate += entry.extension;
+                candidate += '\t';
+                candidate += entry.application;
+                candidate += '\n';
+                if (candidate.size() > kMaxSerializedBytes)
+                    return false;
             }
+            output.swap(candidate);
+            return true;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (const std::bad_alloc&) {
+            return false;
         }
-        return true;
+#endif
     }
 
     bool decode(const std::uint8_t* bytes, std::size_t size) {
         if (!bytes || size == 0u || size > kMaxSerializedBytes) return false;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
         std::string text(reinterpret_cast<const char*>(bytes), size);
         if (text.compare(0u, 25u, "RIN-FILE-ASSOCIATIONS-V1\n") != 0)
             return false;
@@ -171,6 +184,11 @@ public:
         }
         entries_.swap(candidate.entries_);
         return true;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (const std::bad_alloc&) {
+            return false;
+        }
+#endif
     }
 };
 
