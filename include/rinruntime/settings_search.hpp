@@ -6,6 +6,9 @@
 
 #include <cstddef>
 #include <cstdint>
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+#    include <new>
+#endif
 #include <string>
 #include <vector>
 
@@ -117,6 +120,9 @@ public:
     }
 
     bool add(const SettingSearchMetadata& metadata) {
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
         if (entries_.size() >= kMaximumEntries ||
             !validText(metadata.id, false) ||
             !validText(metadata.title, false) ||
@@ -127,13 +133,26 @@ public:
             if (entry.id == metadata.id) return false;
         entries_.push_back(metadata);
         return true;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (const std::bad_alloc&) {
+            return false;
+        }
+#endif
     }
 
     bool setQuery(const std::string& value) {
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
         if (value.length() > kMaximumQueryBytes || !validText(value, true))
             return false;
         query_ = value;
         return true;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (const std::bad_alloc&) {
+            return false;
+        }
+#endif
     }
 
     const std::string& query() const { return query_; }
