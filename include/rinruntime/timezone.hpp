@@ -6,6 +6,9 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+#    include <new>
+#endif
 #include <string>
 #include <vector>
 
@@ -120,37 +123,56 @@ public:
 
     bool offsetAt(std::int64_t epochSeconds, std::int32_t& offsetSeconds,
                   bool& daylight, std::string& abbreviation) const {
+        offsetSeconds = 0;
+        daylight = false;
+        abbreviation.clear();
         if (!valid()) {
+            return false;
+        }
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
+        std::int32_t candidateOffset = initialOffsetSeconds;
+        bool candidateDaylight = initialDaylight;
+        std::string candidateAbbreviation = initialAbbreviation;
+        for (const TimeZoneTransition& transition : transitions) {
+            if (transition.atEpochSeconds > epochSeconds) break;
+            candidateOffset = transition.offsetSeconds;
+            candidateDaylight = transition.daylight;
+            candidateAbbreviation = transition.abbreviation;
+        }
+        offsetSeconds = candidateOffset;
+        daylight = candidateDaylight;
+        abbreviation.swap(candidateAbbreviation);
+        return true;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (const std::bad_alloc&) {
             offsetSeconds = 0;
             daylight = false;
             abbreviation.clear();
             return false;
         }
-        offsetSeconds = initialOffsetSeconds;
-        daylight = initialDaylight;
-        abbreviation = initialAbbreviation;
-        for (const TimeZoneTransition& transition : transitions) {
-            if (transition.atEpochSeconds > epochSeconds) break;
-            offsetSeconds = transition.offsetSeconds;
-            daylight = transition.daylight;
-            abbreviation = transition.abbreviation;
-        }
-        return true;
+#endif
     }
 
     bool toLocalEpochSeconds(std::int64_t epochSeconds,
                              std::int64_t& localEpochSeconds,
                              std::int32_t& offsetSeconds,
                              bool& daylight) const {
-        std::string ignoredAbbreviation;
-        if (!offsetAt(epochSeconds, offsetSeconds, daylight,
-                      ignoredAbbreviation)) {
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
+        std::string candidateAbbreviation;
+        std::int32_t candidateOffset = 0;
+        bool candidateDaylight = false;
+        if (!offsetAt(epochSeconds, candidateOffset, candidateDaylight,
+                      candidateAbbreviation)) {
             localEpochSeconds = 0;
             offsetSeconds = 0;
             daylight = false;
             return false;
         }
-        const std::int64_t offset = offsetSeconds;
+        const std::int64_t offset = candidateOffset;
         if ((offset > 0 && epochSeconds >
                               std::numeric_limits<std::int64_t>::max() - offset) ||
             (offset < 0 && epochSeconds <
@@ -161,7 +183,17 @@ public:
             return false;
         }
         localEpochSeconds = epochSeconds + offset;
+        offsetSeconds = candidateOffset;
+        daylight = candidateDaylight;
         return true;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (const std::bad_alloc&) {
+            localEpochSeconds = 0;
+            offsetSeconds = 0;
+            daylight = false;
+            return false;
+        }
+#endif
     }
 };
 

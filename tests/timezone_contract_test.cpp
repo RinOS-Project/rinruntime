@@ -49,6 +49,11 @@ int main() {
     invalid = snapshot;
     invalid.generation = 0u;
     assert(!invalid.valid());
+    offset = 123;
+    daylight = true;
+    abbreviation = "stale";
+    assert(!invalid.offsetAt(1000, offset, daylight, abbreviation));
+    assert(offset == 0 && !daylight && abbreviation.empty());
 
     TimeZoneSnapshot overflow = snapshot;
     overflow.transitions.clear();
