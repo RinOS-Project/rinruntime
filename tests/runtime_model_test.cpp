@@ -369,9 +369,14 @@ int main() {
     assert(document.insert(3u, "OS"));
     assert(document.text() == "RinOS");
     Rin::FormValidator form;
-    form.required("name");
+    assert(form.required("name"));
+    assert(form.minimumLength("name", 1u));
     assert(!form.validate({{"name", ""}}));
     assert(form.validate({{"name", "Rin"}}));
+    Rin::FormValidator boundedForm;
+    for (size_t index = 0u; index < boundedForm.maximumRules(); ++index)
+        assert(boundedForm.required("field"));
+    assert(!boundedForm.required("overflow"));
     Rin::PrintSettings print;
     assert(print.valid());
     Rin::ActivityFeed feed;

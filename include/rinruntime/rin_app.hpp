@@ -128,16 +128,40 @@ public:
 };
 
 class FormValidator final {
+    static constexpr size_t kMaxRules = 64u;
     struct Rule { std::string field; size_t minimum = 0u; bool required = false; };
     std::vector<Rule> rules_;
     std::vector<std::string> errors_;
 
 public:
-    void required(std::string field) {
-        rules_.push_back({std::move(field), 0u, true});
+    static constexpr size_t maximumRules() { return kMaxRules; }
+
+    bool required(const std::string& field) {
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
+            if (rules_.size() >= kMaxRules) return false;
+            rules_.push_back({field, 0u, true});
+            return true;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (const std::bad_alloc&) {
+            return false;
+        }
+#endif
     }
-    void minimumLength(std::string field, size_t minimum) {
-        rules_.push_back({std::move(field), minimum, false});
+
+    bool minimumLength(const std::string& field, size_t minimum) {
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
+            if (rules_.size() >= kMaxRules) return false;
+            rules_.push_back({field, minimum, false});
+            return true;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (const std::bad_alloc&) {
+            return false;
+        }
+#endif
     }
     bool validate(const std::vector<std::pair<std::string, std::string>>& values) {
 #if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
