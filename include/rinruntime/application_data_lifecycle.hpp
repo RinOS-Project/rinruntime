@@ -11,6 +11,9 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+#    include <new>
+#endif
 #include <string>
 #include <utility>
 
@@ -26,6 +29,7 @@ enum class ApplicationDataLifecycleResult : int {
     MigrationRequired = -6,
     MigrationFailed = -7,
     PublishFailed = -8,
+    AllocationFailed = -9,
 };
 
 /* The application id is the same authenticated logical id used by the
@@ -239,6 +243,11 @@ class ApplicationDataLifecycle final {
         std::uint32_t archivedSize, std::uint8_t* restoredOut,
         std::uint32_t restoredCapacity, std::uint32_t* restoredSizeOut,
         ApplicationDataRestorePublishFn publish, void* publishContext) {
+        const auto clearRestoreOutput = [&]() noexcept {
+            if (restoredOut != nullptr && restoredCapacity != 0u)
+                std::memset(restoredOut, 0, restoredCapacity);
+            if (restoredSizeOut != nullptr) *restoredSizeOut = 0u;
+        };
         RinRuntimeBackupItemV1 item{};
         std::size_t itemLength = 0u;
         if (restoredSizeOut != nullptr) *restoredSizeOut = 0u;
@@ -248,6 +257,9 @@ class ApplicationDataLifecycle final {
             (archivedSize != 0u &&
              (archivedBytes == nullptr || restoredOut == nullptr)))
             return ApplicationDataLifecycleResult::InvalidArgument;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
         RinRuntimeBackupResult result = rinruntime_backup_manifest_entry_at(
             sourceManifestBytes, sourceManifestSize, itemIndex, &item);
         if (result != RINRUNTIME_BACKUP_OK || !itemIdLength(item, itemLength))
@@ -262,14 +274,32 @@ class ApplicationDataLifecycle final {
             restoredSizeOut);
         if (result != RINRUNTIME_BACKUP_OK)
             return mapRestoreResult(result);
-        if (publish(publishContext, &plan, &item, restoredOut,
-                    *restoredSizeOut) != 0) {
-            if (restoredOut != nullptr && restoredCapacity != 0u)
-                std::memset(restoredOut, 0, restoredCapacity);
-            *restoredSizeOut = 0u;
+        int publishResult = 0;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
+            publishResult = publish(publishContext, &plan, &item, restoredOut,
+                                    *restoredSizeOut);
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (const std::bad_alloc&) {
+            clearRestoreOutput();
+            return ApplicationDataLifecycleResult::AllocationFailed;
+        } catch (...) {
+            clearRestoreOutput();
+            return ApplicationDataLifecycleResult::PublishFailed;
+        }
+#endif
+        if (publishResult != 0) {
+            clearRestoreOutput();
             return ApplicationDataLifecycleResult::PublishFailed;
         }
         return ApplicationDataLifecycleResult::Ok;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (const std::bad_alloc&) {
+            clearRestoreOutput();
+            return ApplicationDataLifecycleResult::AllocationFailed;
+        }
+#endif
     }
 
 public:
@@ -286,36 +316,45 @@ public:
         output = ApplicationDataLifecyclePlan{};
         if (!profileIdentityMatches(profile))
             return ApplicationDataLifecycleResult::InvalidArgument;
-        output.owner = profile.owner;
-        output.applicationId = profile.applicationId;
-        output.archiveGeneration = profile.owner.packageGeneration;
-        output.preserveUserData = preserveUserData;
-        output.dataAction = ApplicationDataPolicy::uninstallAction(
-            ApplicationDataKind::Data, false, preserveUserData);
-        output.cacheAction = ApplicationDataPolicy::uninstallAction(
-            ApplicationDataKind::Cache, false, false);
-        if (resolveDirectory(RINRUNTIME_APPLICATION_DIRECTORY_DATA,
-                             profile.applicationId, output.dataRoot) !=
-                ApplicationDataLifecycleResult::Ok ||
-            resolveDirectory(RINRUNTIME_APPLICATION_DIRECTORY_CACHE,
-                             profile.applicationId, output.cacheRoot) !=
-                ApplicationDataLifecycleResult::Ok ||
-            resolveDirectory(RINRUNTIME_APPLICATION_DIRECTORY_STATE,
-                             profile.applicationId, output.stateRoot) !=
-                ApplicationDataLifecycleResult::Ok ||
-            resolveDirectory(RINRUNTIME_APPLICATION_DIRECTORY_BACKUP,
-                             profile.applicationId, output.backupRoot) !=
-                ApplicationDataLifecycleResult::Ok)
-            return ApplicationDataLifecycleResult::KnownFolderUnavailable;
-        if (preserveUserData) {
-            output.archiveRoot = output.backupRoot + "/uninstall";
-            if (!appendGeneration(output.archiveRoot,
-                                  output.archiveGeneration)) {
-                output = ApplicationDataLifecyclePlan{};
-                return ApplicationDataLifecycleResult::ArchivePathUnavailable;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
+            ApplicationDataLifecyclePlan candidate;
+            candidate.owner = profile.owner;
+            candidate.applicationId = profile.applicationId;
+            candidate.archiveGeneration = profile.owner.packageGeneration;
+            candidate.preserveUserData = preserveUserData;
+            candidate.dataAction = ApplicationDataPolicy::uninstallAction(
+                ApplicationDataKind::Data, false, preserveUserData);
+            candidate.cacheAction = ApplicationDataPolicy::uninstallAction(
+                ApplicationDataKind::Cache, false, false);
+            if (resolveDirectory(RINRUNTIME_APPLICATION_DIRECTORY_DATA,
+                                 profile.applicationId, candidate.dataRoot) !=
+                    ApplicationDataLifecycleResult::Ok ||
+                resolveDirectory(RINRUNTIME_APPLICATION_DIRECTORY_CACHE,
+                                 profile.applicationId, candidate.cacheRoot) !=
+                    ApplicationDataLifecycleResult::Ok ||
+                resolveDirectory(RINRUNTIME_APPLICATION_DIRECTORY_STATE,
+                                 profile.applicationId, candidate.stateRoot) !=
+                    ApplicationDataLifecycleResult::Ok ||
+                resolveDirectory(RINRUNTIME_APPLICATION_DIRECTORY_BACKUP,
+                                 profile.applicationId, candidate.backupRoot) !=
+                    ApplicationDataLifecycleResult::Ok)
+                return ApplicationDataLifecycleResult::KnownFolderUnavailable;
+            if (preserveUserData) {
+                candidate.archiveRoot = candidate.backupRoot + "/uninstall";
+                if (!appendGeneration(candidate.archiveRoot,
+                                      candidate.archiveGeneration))
+                    return ApplicationDataLifecycleResult::ArchivePathUnavailable;
             }
+            output = std::move(candidate);
+            return ApplicationDataLifecycleResult::Ok;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (const std::bad_alloc&) {
+            output = ApplicationDataLifecyclePlan{};
+            return ApplicationDataLifecycleResult::AllocationFailed;
         }
-        return ApplicationDataLifecycleResult::Ok;
+#endif
     }
 
     /* Product lifecycle entry point.  Unlike the compatibility overload
@@ -329,6 +368,9 @@ public:
         output = ApplicationDataLifecyclePlan{};
         if (!profileIdentityMatches(profile) || !owner.validFor(profile.owner))
             return ApplicationDataLifecycleResult::InvalidArgument;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
         std::string dataRoot;
         std::string cacheRoot;
         std::string stateRoot;
@@ -351,28 +393,34 @@ public:
                 ApplicationDataLifecycleResult::Ok)
             return ApplicationDataLifecycleResult::KnownFolderUnavailable;
 
-        output.owner = profile.owner;
-        output.applicationId = profile.applicationId;
-        output.dataRoot = std::move(dataRoot);
-        output.cacheRoot = std::move(cacheRoot);
-        output.stateRoot = std::move(stateRoot);
-        output.backupRoot = std::move(backupRoot);
-        output.archiveGeneration = profile.owner.packageGeneration;
-        output.preserveUserData = preserveUserData;
-        output.ownerBound = true;
-        output.dataAction = ApplicationDataPolicy::uninstallAction(
+        ApplicationDataLifecyclePlan candidate;
+        candidate.owner = profile.owner;
+        candidate.applicationId = profile.applicationId;
+        candidate.dataRoot = std::move(dataRoot);
+        candidate.cacheRoot = std::move(cacheRoot);
+        candidate.stateRoot = std::move(stateRoot);
+        candidate.backupRoot = std::move(backupRoot);
+        candidate.archiveGeneration = profile.owner.packageGeneration;
+        candidate.preserveUserData = preserveUserData;
+        candidate.ownerBound = true;
+        candidate.dataAction = ApplicationDataPolicy::uninstallAction(
             ApplicationDataKind::Data, false, preserveUserData);
-        output.cacheAction = ApplicationDataPolicy::uninstallAction(
+        candidate.cacheAction = ApplicationDataPolicy::uninstallAction(
             ApplicationDataKind::Cache, false, false);
         if (preserveUserData) {
-            output.archiveRoot = output.backupRoot + "/uninstall";
-            if (!appendGeneration(output.archiveRoot,
-                                  output.archiveGeneration)) {
-                output = ApplicationDataLifecyclePlan{};
+            candidate.archiveRoot = candidate.backupRoot + "/uninstall";
+            if (!appendGeneration(candidate.archiveRoot,
+                                  candidate.archiveGeneration))
                 return ApplicationDataLifecycleResult::ArchivePathUnavailable;
-            }
         }
+        output = std::move(candidate);
         return ApplicationDataLifecycleResult::Ok;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (const std::bad_alloc&) {
+            output = ApplicationDataLifecyclePlan{};
+            return ApplicationDataLifecycleResult::AllocationFailed;
+        }
+#endif
     }
 
     /* Restore one logical item from a retained RBK1 archive.  The source
