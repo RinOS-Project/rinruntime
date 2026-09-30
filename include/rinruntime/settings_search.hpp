@@ -10,6 +10,7 @@
 #    include <new>
 #endif
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "cancellation.h"
@@ -51,8 +52,8 @@ class SettingSearchIndex {
                    : value;
     }
 
-    static bool containsFolded(const std::string& haystack,
-                               const std::string& needle) {
+    static bool containsFolded(std::string_view haystack,
+                               std::string_view needle) {
         if (needle.empty()) return true;
         if (needle.length() > haystack.length()) return false;
         for (size_t start = 0u;
@@ -71,7 +72,7 @@ class SettingSearchIndex {
     }
 
     static bool containsToken(const SettingSearchMetadata& entry,
-                              const std::string& token) {
+                              std::string_view token) {
         return containsFolded(entry.id, token) ||
                containsFolded(entry.title, token) ||
                containsFolded(entry.keywords, token) ||
@@ -175,8 +176,10 @@ public:
             size_t tokenEnd = tokenStart;
             while (tokenEnd < query_.length() && query_[tokenEnd] != ' ')
                 ++tokenEnd;
-            if (!containsToken(*metadata,
-                               query_.substr(tokenStart, tokenEnd - tokenStart)))
+            if (!containsToken(
+                    *metadata,
+                    std::string_view(query_.data() + tokenStart,
+                                     tokenEnd - tokenStart)))
                 return false;
             tokenStart = tokenEnd;
         }
