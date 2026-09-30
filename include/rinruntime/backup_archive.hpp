@@ -191,6 +191,9 @@ public:
         if (payloadIndices_[itemIndex] == npos)
             return BackupArchiveResult::Ineligible;
 
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
         std::string archivedBytes;
         const ArchiveZipResult readResult = zip_.readEntry(
             payloadIndices_[itemIndex], archivedBytes, cancellation,
@@ -211,6 +214,15 @@ public:
             migrateContext, archived,
             static_cast<std::uint32_t>(archivedBytes.size()), restoredOut,
             restoredCapacity, restoredSizeOut));
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (const std::bad_alloc&) {
+            clearRestoreOutput(restoredOut, restoredCapacity, restoredSizeOut);
+            return BackupArchiveResult::Limit;
+        } catch (...) {
+            clearRestoreOutput(restoredOut, restoredCapacity, restoredSizeOut);
+            return BackupArchiveResult::Malformed;
+        }
+#endif
     }
 
 private:
