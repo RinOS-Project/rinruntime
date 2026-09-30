@@ -11,6 +11,9 @@
 #include <cstdint>
 #include <cstring>
 #include <limits>
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+#    include <new>
+#endif
 #include <string>
 #include <utility>
 #include <vector>
@@ -51,6 +54,9 @@ public:
     BackupArchiveResult parse(const std::uint8_t* bytes, std::size_t size)
     {
         clear();
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
         const ArchiveZipResult archiveResult = zip_.parse(bytes, size);
         if (archiveResult != ArchiveZipResult::Ok)
             return fail(fromArchiveResult(archiveResult));
@@ -143,6 +149,13 @@ public:
 
         parsed_ = true;
         return BackupArchiveResult::Ok;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (const std::bad_alloc&) {
+            return fail(BackupArchiveResult::Limit);
+        } catch (...) {
+            return fail(BackupArchiveResult::Malformed);
+        }
+#endif
     }
 
     void clear()
