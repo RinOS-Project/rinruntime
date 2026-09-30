@@ -11,6 +11,7 @@
 #    include <new>
 #endif
 #include <string>
+#include <utility>
 
 namespace RinRuntime {
 
@@ -189,14 +190,27 @@ public:
 
     bool bind(const DnsTransportEndpoint& endpoint,
               DnsTransportExchangeFunction exchange, void* context) {
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
         if (bound_ || exchange == nullptr || context == nullptr ||
             !endpoint.valid())
             return false;
-        endpoint_ = endpoint;
+
+        /* Copy before publishing the binding.  The endpoint owns strings, so
+         * a caller-provided endpoint can make this public bool boundary
+         * allocate even after validation succeeds. */
+        DnsTransportEndpoint candidate = endpoint;
+        std::swap(endpoint_, candidate);
         exchange_ = exchange;
         context_ = context;
         bound_ = true;
         return true;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (const std::bad_alloc&) {
+            return false;
+        }
+#endif
     }
 
     bool exchange(const std::uint8_t* query, std::size_t query_length,
