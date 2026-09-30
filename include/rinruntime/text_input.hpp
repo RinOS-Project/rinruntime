@@ -259,7 +259,7 @@ public:
         if (!composition_.active) return false;
         result = replaceRange(compositionReplaceStart_, compositionReplaceEnd_,
                               composition_.text);
-        clearComposition();
+        if (result) clearComposition();
         return result;
     }
     std::string displayText() const {
