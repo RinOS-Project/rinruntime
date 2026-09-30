@@ -66,8 +66,11 @@ struct ApplicationMetadata {
         while (start < value.size()) {
             std::size_t end = value.find('/', start);
             if (end == std::string::npos) end = value.size();
-            if (end == start || value.substr(start, end - start) == "." ||
-                value.substr(start, end - start) == "..")
+            const std::size_t length = end - start;
+            const bool dot = length == 1u && value[start] == '.';
+            const bool dotDot = length == 2u && value[start] == '.' &&
+                                value[start + 1u] == '.';
+            if (end == start || dot || dotDot)
                 return false;
             for (std::size_t index = start; index < end; ++index) {
                 const unsigned char byte =

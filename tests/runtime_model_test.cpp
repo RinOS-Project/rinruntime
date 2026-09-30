@@ -132,6 +132,17 @@ int main() {
     (void)known_folder_path;
     (void)application_directory_path;
 
+    assert(!RinRuntime::ApplicationMetadata::validRelativePath(
+        "bin/../editor.rin"));
+    assert(!RinRuntime::PackageMetadata::validRelativePath(
+        "lib/./runtime.rll"));
+    RinRuntime::DnsTransportEndpoint::NamespaceId dns_path_namespace = {};
+    dns_path_namespace[0] = 1u;
+    RinRuntime::DnsTransportEndpoint dns_path_endpoint;
+    assert(!RinRuntime::DnsTransportEndpoint::build(
+        RinRuntime::DnsTransportKind::Doh, "resolver.example", 443u, 1u,
+        1u, dns_path_namespace, dns_path_endpoint, "/dns/../query"));
+
     DownloadModelOwner download_owner;
     RinRuntime::DownloadRangeTransportOpsV1 download_ops;
     download_ops.structSize = sizeof(download_ops);

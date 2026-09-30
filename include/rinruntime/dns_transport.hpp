@@ -159,9 +159,11 @@ private:
         std::size_t segment_start = 1u;
         for (std::size_t index = 0u; index <= value.size(); ++index) {
             if (index != value.size() && value[index] != '/') continue;
-            const std::string segment =
-                value.substr(segment_start, index - segment_start);
-            if (segment == "." || segment == "..") return false;
+            const std::size_t length = index - segment_start;
+            const bool dot = length == 1u && value[segment_start] == '.';
+            const bool dotDot = length == 2u && value[segment_start] == '.' &&
+                                value[segment_start + 1u] == '.';
+            if (dot || dotDot) return false;
             segment_start = index + 1u;
         }
         for (unsigned char byte : value) {
