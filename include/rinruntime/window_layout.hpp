@@ -33,6 +33,9 @@ inline bool maximizeWindowBounds(const Rect& workArea, Rect* output) {
 inline bool cascadeWindowBounds(const Rect& workArea,
                                 const std::vector<Rect>& windows,
                                 std::vector<Rect>* output) {
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+    try {
+#endif
     std::vector<Rect> result;
     int32_t step;
 
@@ -58,6 +61,11 @@ inline bool cascadeWindowBounds(const Rect& workArea,
     }
     *output = std::move(result);
     return true;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+    } catch (const std::bad_alloc&) {
+        return false;
+    }
+#endif
 }
 
 /* Partition a work area into deterministic grid-aligned tiles.  Integer
@@ -66,6 +74,9 @@ inline bool cascadeWindowBounds(const Rect& workArea,
  * each occupied grid cell. */
 inline bool tileWindowBounds(const Rect& workArea, uint32_t windowCount,
                              std::vector<Rect>* output) {
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+    try {
+#endif
     std::vector<Rect> result;
     uint32_t columns;
     uint32_t rows;
@@ -99,6 +110,11 @@ inline bool tileWindowBounds(const Rect& workArea, uint32_t windowCount,
     }
     *output = std::move(result);
     return true;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+    } catch (const std::bad_alloc&) {
+        return false;
+    }
+#endif
 }
 
 } // namespace RinRuntime
