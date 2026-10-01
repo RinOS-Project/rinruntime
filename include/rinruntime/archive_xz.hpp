@@ -968,7 +968,7 @@ private:
         ArchiveXzResult result = inspect(bytes, size, summary);
         if (result != ArchiveXzResult::Ok) return result;
         if (summary.checkType != 0u && summary.checkType != 1u &&
-            summary.checkType != 4u)
+            summary.checkType != 4u && summary.checkType != 10u)
             return ArchiveXzResult::Unsupported;
 
         std::string decoded;
@@ -1322,6 +1322,15 @@ private:
                 readLe64(bytes + checkOffset) !=
                     crc64Xz(blockOutput, blockOutputSize))
                 return ArchiveXzResult::CrcMismatch;
+            if (summary.checkType == 10u) {
+                std::uint8_t digest[32];
+                sha256Xz(blockOutput, blockOutputSize, digest);
+                for (std::size_t digestIndex = 0u; digestIndex < 32u;
+                     ++digestIndex)
+                    if (bytes[checkOffset + digestIndex] !=
+                        digest[digestIndex])
+                        return ArchiveXzResult::CrcMismatch;
+            }
             const std::size_t afterCheck =
                 checkOffset + checkSizeFor(summary.checkType);
             blockOffset = afterCheck;
@@ -2127,14 +2136,155 @@ private:
         return ~crc;
     }
 
+    static std::uint32_t sha256RotateRight(std::uint32_t value,
+                                           unsigned count)
+    {
+        return (value >> count) | (value << (32u - count));
+    }
+
+    static void sha256Compress(std::uint32_t state[8],
+                               const std::uint8_t block[64])
+    {
+        static const std::uint32_t constants[64] = {
+            UINT32_C(0x428a2f98), UINT32_C(0x71374491),
+            UINT32_C(0xb5c0fbcf), UINT32_C(0xe9b5dba5),
+            UINT32_C(0x3956c25b), UINT32_C(0x59f111f1),
+            UINT32_C(0x923f82a4), UINT32_C(0xab1c5ed5),
+            UINT32_C(0xd807aa98), UINT32_C(0x12835b01),
+            UINT32_C(0x243185be), UINT32_C(0x550c7dc3),
+            UINT32_C(0x72be5d74), UINT32_C(0x80deb1fe),
+            UINT32_C(0x9bdc06a7), UINT32_C(0xc19bf174),
+            UINT32_C(0xe49b69c1), UINT32_C(0xefbe4786),
+            UINT32_C(0x0fc19dc6), UINT32_C(0x240ca1cc),
+            UINT32_C(0x2de92c6f), UINT32_C(0x4a7484aa),
+            UINT32_C(0x5cb0a9dc), UINT32_C(0x76f988da),
+            UINT32_C(0x983e5152), UINT32_C(0xa831c66d),
+            UINT32_C(0xb00327c8), UINT32_C(0xbf597fc7),
+            UINT32_C(0xc6e00bf3), UINT32_C(0xd5a79147),
+            UINT32_C(0x06ca6351), UINT32_C(0x14292967),
+            UINT32_C(0x27b70a85), UINT32_C(0x2e1b2138),
+            UINT32_C(0x4d2c6dfc), UINT32_C(0x53380d13),
+            UINT32_C(0x650a7354), UINT32_C(0x766a0abb),
+            UINT32_C(0x81c2c92e), UINT32_C(0x92722c85),
+            UINT32_C(0xa2bfe8a1), UINT32_C(0xa81a664b),
+            UINT32_C(0xc24b8b70), UINT32_C(0xc76c51a3),
+            UINT32_C(0xd192e819), UINT32_C(0xd6990624),
+            UINT32_C(0xf40e3585), UINT32_C(0x106aa070),
+            UINT32_C(0x19a4c116), UINT32_C(0x1e376c08),
+            UINT32_C(0x2748774c), UINT32_C(0x34b0bcb5),
+            UINT32_C(0x391c0cb3), UINT32_C(0x4ed8aa4a),
+            UINT32_C(0x5b9cca4f), UINT32_C(0x682e6ff3),
+            UINT32_C(0x748f82ee), UINT32_C(0x78a5636f),
+            UINT32_C(0x84c87814), UINT32_C(0x8cc70208),
+            UINT32_C(0x90befffa), UINT32_C(0xa4506ceb),
+            UINT32_C(0xbef9a3f7), UINT32_C(0xc67178f2)};
+        std::uint32_t schedule[64];
+        for (std::size_t index = 0u; index != 16u; ++index)
+            schedule[index] =
+                (static_cast<std::uint32_t>(block[index * 4u]) << 24u) |
+                (static_cast<std::uint32_t>(block[index * 4u + 1u]) << 16u) |
+                (static_cast<std::uint32_t>(block[index * 4u + 2u]) << 8u) |
+                static_cast<std::uint32_t>(block[index * 4u + 3u]);
+        for (std::size_t index = 16u; index != 64u; ++index) {
+            const std::uint32_t first = schedule[index - 15u];
+            const std::uint32_t second = schedule[index - 2u];
+            const std::uint32_t sigma0 =
+                sha256RotateRight(first, 7u) ^
+                sha256RotateRight(first, 18u) ^ (first >> 3u);
+            const std::uint32_t sigma1 =
+                sha256RotateRight(second, 17u) ^
+                sha256RotateRight(second, 19u) ^ (second >> 10u);
+            schedule[index] = schedule[index - 16u] + sigma0 +
+                              schedule[index - 7u] + sigma1;
+        }
+
+        std::uint32_t a = state[0];
+        std::uint32_t b = state[1];
+        std::uint32_t c = state[2];
+        std::uint32_t d = state[3];
+        std::uint32_t e = state[4];
+        std::uint32_t f = state[5];
+        std::uint32_t g = state[6];
+        std::uint32_t h = state[7];
+        for (std::size_t index = 0u; index != 64u; ++index) {
+            const std::uint32_t sigma1 =
+                sha256RotateRight(e, 6u) ^ sha256RotateRight(e, 11u) ^
+                sha256RotateRight(e, 25u);
+            const std::uint32_t choose = (e & f) ^ (~e & g);
+            const std::uint32_t temporary1 = h + sigma1 + choose +
+                                             constants[index] + schedule[index];
+            const std::uint32_t sigma0 =
+                sha256RotateRight(a, 2u) ^ sha256RotateRight(a, 13u) ^
+                sha256RotateRight(a, 22u);
+            const std::uint32_t majority = (a & b) ^ (a & c) ^ (b & c);
+            const std::uint32_t temporary2 = sigma0 + majority;
+            h = g;
+            g = f;
+            f = e;
+            e = d + temporary1;
+            d = c;
+            c = b;
+            b = a;
+            a = temporary1 + temporary2;
+        }
+        state[0] += a;
+        state[1] += b;
+        state[2] += c;
+        state[3] += d;
+        state[4] += e;
+        state[5] += f;
+        state[6] += g;
+        state[7] += h;
+    }
+
+    static void sha256Xz(const std::uint8_t* bytes, std::size_t size,
+                         std::uint8_t digest[32])
+    {
+        std::uint32_t state[8] = {
+            UINT32_C(0x6a09e667), UINT32_C(0xbb67ae85),
+            UINT32_C(0x3c6ef372), UINT32_C(0xa54ff53a),
+            UINT32_C(0x510e527f), UINT32_C(0x9b05688c),
+            UINT32_C(0x1f83d9ab), UINT32_C(0x5be0cd19)};
+        std::size_t offset = 0u;
+        while (size - offset >= 64u) {
+            sha256Compress(state, bytes + offset);
+            offset += 64u;
+        }
+
+        std::uint8_t tail[128] = {};
+        const std::size_t remaining = size - offset;
+        for (std::size_t index = 0u; index != remaining; ++index)
+            tail[index] = bytes[offset + index];
+        tail[remaining] = 0x80u;
+        const std::size_t tailSize = remaining < 56u ? 64u : 128u;
+        const std::uint64_t bitLength = static_cast<std::uint64_t>(size) * 8u;
+        for (unsigned index = 0u; index != 8u; ++index)
+            tail[tailSize - 8u + index] = static_cast<std::uint8_t>(
+                bitLength >> (56u - index * 8u));
+        sha256Compress(state, tail);
+        if (tailSize == 128u) sha256Compress(state, tail + 64u);
+        for (std::size_t index = 0u; index != 8u; ++index) {
+            digest[index * 4u] = static_cast<std::uint8_t>(state[index] >> 24u);
+            digest[index * 4u + 1u] =
+                static_cast<std::uint8_t>(state[index] >> 16u);
+            digest[index * 4u + 2u] =
+                static_cast<std::uint8_t>(state[index] >> 8u);
+            digest[index * 4u + 3u] = static_cast<std::uint8_t>(state[index]);
+        }
+    }
+
     static bool checkTypeSupported(std::uint8_t checkType)
     {
-        return checkType == 0u || checkType == 1u || checkType == 4u;
+        return checkType == 0u || checkType == 1u || checkType == 4u ||
+               checkType == 10u;
     }
 
     static std::size_t checkSizeFor(std::uint8_t checkType)
     {
-        return checkType == 0u ? 0u : (checkType == 1u ? 4u : 8u);
+        return checkType == 0u ? 0u
+                               : (checkType == 1u
+                                      ? 4u
+                                      : (checkType == 4u ? 8u : 32u));
     }
 
     static bool readVli(const std::uint8_t* bytes, std::size_t end,

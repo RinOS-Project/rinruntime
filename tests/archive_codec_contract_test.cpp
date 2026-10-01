@@ -565,7 +565,8 @@ static std::vector<std::uint8_t> makeXzStoredLzma2(std::uint8_t checkType)
 {
     const char payload[] = "hello";
     const std::size_t checkSize =
-        checkType == 0u ? 0u : (checkType == 1u ? 4u : 8u);
+        checkType == 0u ? 0u
+                        : (checkType == 1u ? 4u : (checkType == 4u ? 8u : 32u));
     std::vector<std::uint8_t> bytes(56u + checkSize, 0u);
     const std::uint8_t magic[] = {0xfdu, 0x37u, 0x7au, 0x58u, 0x5au, 0x00u};
     std::memcpy(bytes.data(), magic, sizeof(magic));
@@ -596,6 +597,14 @@ static std::vector<std::uint8_t> makeXzStoredLzma2(std::uint8_t checkType)
                       bytes.data() + 27u, 5u));
     else if (checkType == 4u)
         writeLe64(bytes, checkOffset, xzCrc64(bytes.data() + 27u, 5u));
+    else if (checkType == 10u) {
+        const std::uint8_t digest[] = {
+            0x2cu, 0xf2u, 0x4du, 0xbau, 0x5fu, 0xb0u, 0xa3u, 0x0eu,
+            0x26u, 0xe8u, 0x3bu, 0x2au, 0xc5u, 0xb9u, 0xe2u, 0x9eu,
+            0x1bu, 0x16u, 0x1eu, 0x5cu, 0x1fu, 0xa7u, 0x42u, 0x5eu,
+            0x73u, 0x04u, 0x33u, 0x62u, 0x93u, 0x8bu, 0x98u, 0x24u};
+        std::memcpy(bytes.data() + checkOffset, digest, sizeof(digest));
+    }
 
     const std::size_t index = checkOffset + checkSize;
     bytes[index] = 0x00u;
@@ -1376,7 +1385,7 @@ int main()
            RinRuntime::ArchiveXzResult::CrcMismatch &&
            xzSummary.streamSize == 0u);
     badXz = xz;
-    badXz[7u] = 0x02u; /* SHA-256 check is recognized as unsupported. */
+    badXz[7u] = 0x02u; /* reserved check type remains unsupported. */
     writeLe32(badXz, 8u,
               RinRuntime::rinruntime_archive_crc32(badXz.data() + 6u, 2u));
     assert(xzReader.inspect(badXz.data(), badXz.size(), xzSummary) ==
@@ -1419,6 +1428,18 @@ int main()
                                       xzOutput) ==
            RinRuntime::ArchiveXzResult::Ok);
     assert(xzOutput == "hello");
+    const std::vector<std::uint8_t> shaXz = makeXzStoredLzma2(10u);
+    xzOutput = "poison";
+    assert(xzReader.decodeStoredLzma2(shaXz.data(), shaXz.size(), xzOutput) ==
+           RinRuntime::ArchiveXzResult::Ok);
+    assert(xzOutput == "hello");
+    std::vector<std::uint8_t> badShaXz = shaXz;
+    badShaXz[36u] ^= 0x01u;
+    xzOutput = "poison";
+    assert(xzReader.decodeStoredLzma2(badShaXz.data(), badShaXz.size(),
+                                      xzOutput) ==
+           RinRuntime::ArchiveXzResult::CrcMismatch);
+    assert(xzOutput == "poison");
     const std::vector<std::uint8_t> twoBlockXz =
         makeXzStoredLzma2TwoBlocks();
     xzOutput = "poison";
