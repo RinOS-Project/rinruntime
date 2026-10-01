@@ -447,10 +447,12 @@ LZ4 frames, open files, or publish extracted data; frame, filesystem, service,
 and portal ownership remains with the private adapter.
 
 The public `rincompression/zstd.hpp` header provides a bounded Zstandard frame
-subset for raw and RLE blocks, with content-size, optional XXH64 checksum,
-cancellation, and failure-atomic output validation. Entropy-compressed blocks
-and external dictionaries return `Unsupported`; a private frame owner may add
-those algorithms without changing the public filesystem or service boundary.
+subset for raw and RLE blocks plus direct-table, single-stream Huffman literals,
+with content-size, optional XXH64 checksum, cancellation, and failure-atomic
+output validation. FSE-compressed trees, four-stream Huffman blocks, non-zero
+sequence commands, and external dictionaries return `Unsupported`; a private
+frame owner may add those algorithms without changing the public filesystem or
+service boundary.
 The decoder also rejects frames containing more than `kZstdMaximumBlocks`
 (65,536) blocks, including empty raw blocks, so block-count CPU amplification
 fails closed as `Limit` without changing the public/private ownership split.

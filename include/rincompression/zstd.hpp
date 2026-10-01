@@ -26,12 +26,12 @@ enum class ZstdResult : int {
 };
 
 /* This public codec handles the interoperable Zstandard frame envelope with
- * raw and RLE blocks plus the bounded compressed-block form whose literals are
- * raw/RLE and whose sequence count is zero. Entropy-coded literals, non-zero
- * sequences, and external dictionaries remain explicitly Unsupported until a
- * bounded decoder for those algorithms is added; a caller must not treat
- * that result as success. The frame contains no filesystem, service, or
- * publication policy. */
+ * raw and RLE blocks plus a bounded compressed-block form. It accepts raw/RLE
+ * literals, direct-table single-stream Huffman literals, and zero sequences;
+ * FSE-compressed trees, four Huffman streams, non-zero sequences, and external
+ * dictionaries remain explicitly Unsupported until their bounded decoders are
+ * added. A caller must not treat that result as success. The frame contains
+ * no filesystem, service, or publication policy. */
 static constexpr std::size_t kZstdMaximumBytes = 268435456u;
 static constexpr std::size_t kZstdMaximumBlockBytes = 128u * 1024u;
 static constexpr std::size_t kZstdMaximumBlocks = 65536u;
@@ -163,6 +163,265 @@ static inline bool appendWithinLimit(std::vector<std::uint8_t>& output,
         return false;
     if (size != 0u) output.insert(output.end(), bytes, bytes + size);
     return true;
+}
+
+struct HuffmanCode final {
+    std::uint16_t code = 0u;
+    std::uint8_t bits = 0u;
+    std::uint8_t symbol = 0u;
+};
+
+static inline bool cancelled(ZstdCancellationFunction function,
+                             void* context) noexcept
+{
+    if (function == nullptr) return false;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+    try {
+#endif
+        return function(context);
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+    } catch (...) {
+        return true;
+    }
+#endif
+}
+
+static inline std::uint16_t reverseBits(std::uint16_t value,
+                                        unsigned bitCount)
+{
+    std::uint16_t reversed = 0u;
+    for (unsigned index = 0u; index < bitCount; ++index) {
+        reversed = static_cast<std::uint16_t>(reversed << 1u);
+        reversed = static_cast<std::uint16_t>(
+            reversed | ((value >> index) & 1u));
+    }
+    return reversed;
+}
+
+/* Decode the direct (non-FSE) form of a Zstandard Huffman tree.  The public
+ * subset intentionally keeps the FSE-compressed tree form Unsupported until
+ * its bounded decoder exists; accepting only this form must never turn an
+ * incomplete tree into a successful decode. */
+static inline bool buildDirectHuffman(
+    const std::uint8_t* weightBytes, std::size_t weightCount,
+    HuffmanCode* codes, std::size_t& codeCount)
+{
+    if (weightBytes == nullptr || codes == nullptr || weightCount == 0u ||
+        weightCount > 128u)
+        return false;
+
+    std::uint8_t weights[129] = {};
+    std::uint32_t total = 0u;
+    unsigned nonZero = 0u;
+    bool hasWeightOne = false;
+    for (std::size_t index = 0u; index < weightCount; ++index) {
+        const std::uint8_t weight = (index & 1u) == 0u
+            ? static_cast<std::uint8_t>(weightBytes[index / 2u] >> 4u)
+            : static_cast<std::uint8_t>(weightBytes[index / 2u] & 0x0fu);
+        if (weight > 11u) return false;
+        weights[index] = weight;
+        if (weight != 0u) {
+            ++nonZero;
+            hasWeightOne = hasWeightOne || weight == 1u;
+            total += UINT32_C(1) << (weight - 1u);
+        }
+    }
+
+    std::uint32_t nextPower = 1u;
+    unsigned maxBits = 0u;
+    while (nextPower <= total) {
+        if (maxBits >= 11u) return false;
+        nextPower <<= 1u;
+        ++maxBits;
+    }
+    const std::uint32_t remaining = nextPower - total;
+    if (remaining == 0u || (remaining & (remaining - 1u)) != 0u)
+        return false;
+    unsigned lastWeight = 0u;
+    std::uint32_t remainingCopy = remaining;
+    while (remainingCopy > 1u) {
+        remainingCopy >>= 1u;
+        ++lastWeight;
+    }
+    ++lastWeight;
+    if (lastWeight == 0u || lastWeight > 11u)
+        return false;
+    weights[weightCount] = static_cast<std::uint8_t>(lastWeight);
+    ++nonZero;
+    hasWeightOne = hasWeightOne || lastWeight == 1u;
+    if (nonZero < 2u || !hasWeightOne || maxBits == 0u || maxBits > 11u)
+        return false;
+
+    HuffmanCode ordered[129] = {};
+    const std::size_t symbolCount = weightCount + 1u;
+    std::size_t orderedCount = 0u;
+    for (std::size_t symbol = 0u; symbol < symbolCount; ++symbol) {
+        if (weights[symbol] == 0u) continue;
+        const unsigned bits = maxBits + 1u - weights[symbol];
+        if (bits == 0u || bits > 11u) return false;
+        std::size_t insert = orderedCount++;
+        ordered[insert].symbol = static_cast<std::uint8_t>(symbol);
+        ordered[insert].bits = static_cast<std::uint8_t>(bits);
+        while (insert != 0u) {
+            const HuffmanCode& previous = ordered[insert - 1u];
+            if (previous.bits < ordered[insert].bits ||
+                (previous.bits == ordered[insert].bits &&
+                 previous.symbol <= ordered[insert].symbol))
+                break;
+            ordered[insert] = previous;
+            --insert;
+            ordered[insert].symbol = static_cast<std::uint8_t>(symbol);
+            ordered[insert].bits = static_cast<std::uint8_t>(bits);
+        }
+    }
+
+    std::uint16_t nextCode = 0u;
+    unsigned previousBits = ordered[0].bits;
+    for (std::size_t index = 0u; index < orderedCount; ++index) {
+        if (ordered[index].bits > previousBits) return false;
+        if (ordered[index].bits < previousBits)
+            nextCode = static_cast<std::uint16_t>(
+                nextCode >> (previousBits - ordered[index].bits));
+        ordered[index].code = reverseBits(
+            nextCode, ordered[index].bits);
+        nextCode = static_cast<std::uint16_t>(nextCode + 1u);
+        previousBits = ordered[index].bits;
+    }
+    for (std::size_t index = 0u; index < orderedCount; ++index)
+        codes[index] = ordered[index];
+    codeCount = orderedCount;
+    return true;
+}
+
+static inline ZstdResult decodeHuffmanStream(
+    const std::uint8_t* bytes, std::size_t size, const HuffmanCode* codes,
+    std::size_t codeCount, std::size_t regeneratedSize,
+    std::vector<std::uint8_t>& output,
+    ZstdCancellationFunction cancellation, void* cancellationContext)
+{
+    if (bytes == nullptr || size == 0u || codes == nullptr || codeCount == 0u)
+        return ZstdResult::Malformed;
+    const std::uint8_t last = bytes[size - 1u];
+    if (last == 0u) return ZstdResult::Malformed;
+    unsigned finalBit = 0u;
+    std::uint8_t highest = last;
+    while (highest > 1u) {
+        highest = static_cast<std::uint8_t>(highest >> 1u);
+        ++finalBit;
+    }
+    std::size_t cursor = (size - 1u) * 8u + finalBit;
+    for (std::size_t outputIndex = 0u; outputIndex < regeneratedSize;
+         ++outputIndex) {
+        if ((outputIndex & 0xfffu) == 0u &&
+            cancelled(cancellation, cancellationContext))
+            return ZstdResult::Cancelled;
+        std::uint16_t value = 0u;
+        bool found = false;
+        for (unsigned bitCount = 1u; bitCount <= 11u; ++bitCount) {
+            if (cursor == 0u) return ZstdResult::Malformed;
+            --cursor;
+            const std::uint8_t bit = static_cast<std::uint8_t>(
+                (bytes[cursor / 8u] >> (cursor & 7u)) & 1u);
+            value = static_cast<std::uint16_t>(
+                value | (static_cast<std::uint16_t>(bit) <<
+                         (bitCount - 1u)));
+            for (std::size_t codeIndex = 0u; codeIndex < codeCount;
+                 ++codeIndex) {
+                if (codes[codeIndex].bits == bitCount &&
+                    codes[codeIndex].code == value) {
+                    output.push_back(codes[codeIndex].symbol);
+                    found = true;
+                    break;
+                }
+            }
+            if (found) break;
+        }
+        if (!found) return ZstdResult::Malformed;
+    }
+    return cursor == 0u ? ZstdResult::Ok : ZstdResult::Malformed;
+}
+
+static inline ZstdResult decodeLiterals(
+    const std::uint8_t* bytes, std::size_t blockEnd, std::size_t& position,
+    std::size_t maximumOutputBytes, std::vector<std::uint8_t>& output,
+    ZstdCancellationFunction cancellation, void* cancellationContext)
+{
+    if (position >= blockEnd) return ZstdResult::Malformed;
+    const std::uint8_t literalsHeader = bytes[position];
+    const unsigned literalsType = literalsHeader & 0x03u;
+    const unsigned sizeFormat = (literalsHeader >> 2u) & 0x03u;
+    if (literalsType <= 1u) {
+        std::size_t headerBytes = 1u;
+        std::size_t literalSize = 0u;
+        if (sizeFormat == 0u || sizeFormat == 2u) {
+            literalSize = literalsHeader >> 3u;
+        } else if (sizeFormat == 1u) {
+            headerBytes = 2u;
+            if (blockEnd - position < headerBytes) return ZstdResult::Malformed;
+            literalSize = (literalsHeader >> 4u) |
+                          (static_cast<std::size_t>(bytes[position + 1u]) << 4u);
+        } else {
+            headerBytes = 3u;
+            if (blockEnd - position < headerBytes) return ZstdResult::Malformed;
+            literalSize = (literalsHeader >> 4u) |
+                          (static_cast<std::size_t>(bytes[position + 1u]) << 4u) |
+                          (static_cast<std::size_t>(bytes[position + 2u]) << 12u);
+        }
+        if (literalSize > kZstdMaximumBlockBytes ||
+            literalSize > maximumOutputBytes - output.size())
+            return ZstdResult::Limit;
+        position += headerBytes;
+        if (literalsType == 0u) {
+            if (literalSize > blockEnd - position ||
+                !appendWithinLimit(output, bytes + position, literalSize))
+                return ZstdResult::Malformed;
+            position += literalSize;
+        } else {
+            if (position >= blockEnd) return ZstdResult::Malformed;
+            const std::uint8_t value = bytes[position++];
+            for (std::size_t index = 0u; index < literalSize; ++index) {
+                if ((index & 0xfffu) == 0u &&
+                    cancelled(cancellation, cancellationContext))
+                    return ZstdResult::Cancelled;
+                output.push_back(value);
+            }
+        }
+        return ZstdResult::Ok;
+    }
+
+    if (literalsType != 2u || sizeFormat != 0u)
+        return ZstdResult::Unsupported;
+    if (blockEnd - position < 3u) return ZstdResult::Malformed;
+    const std::uint32_t headerWord =
+        static_cast<std::uint32_t>(bytes[position]) |
+        (static_cast<std::uint32_t>(bytes[position + 1u]) << 8u) |
+        (static_cast<std::uint32_t>(bytes[position + 2u]) << 16u);
+    const std::size_t regeneratedSize = (headerWord >> 4u) & 0x3ffu;
+    const std::size_t compressedSize = (headerWord >> 14u) & 0x3ffu;
+    if (compressedSize == 0u || regeneratedSize > kZstdMaximumBlockBytes ||
+        regeneratedSize > maximumOutputBytes - output.size())
+        return ZstdResult::Limit;
+    position += 3u;
+    if (compressedSize > blockEnd - position)
+        return ZstdResult::Malformed;
+    const std::size_t streamEnd = position + compressedSize;
+    if (position >= streamEnd) return ZstdResult::Malformed;
+    const std::uint8_t treeHeader = bytes[position++];
+    if (treeHeader < 128u) return ZstdResult::Unsupported;
+    const std::size_t weightCount = treeHeader - 127u;
+    const std::size_t weightBytes = (weightCount + 1u) / 2u;
+    if (weightBytes > streamEnd - position) return ZstdResult::Malformed;
+    HuffmanCode codes[129] = {};
+    std::size_t codeCount = 0u;
+    if (!buildDirectHuffman(bytes + position, weightCount, codes,
+                            codeCount))
+        return ZstdResult::Malformed;
+    position += weightBytes;
+    const ZstdResult result = decodeHuffmanStream(
+        bytes + position, streamEnd - position, codes, codeCount,
+        regeneratedSize, output, cancellation, cancellationContext);
+    position = streamEnd;
+    return result;
 }
 
 } // namespace zstd_detail
@@ -490,53 +749,16 @@ public:
                 if (position >= blockEnd)
                     return fail(output, ZstdResult::Malformed);
 
-                const std::uint8_t literalsHeader = compressed[position++];
-                const unsigned literalsType = literalsHeader >> 6u;
-                const unsigned sizeFormat = (literalsHeader >> 4u) & 0x03u;
-                if (literalsType > 1u)
-                    return fail(output, ZstdResult::Unsupported);
-
-                const std::size_t literalsHeaderBytes =
-                    static_cast<std::size_t>(sizeFormat) + 1u;
-                if (literalsHeaderBytes > blockEnd - (position - 1u))
-                    return fail(output, ZstdResult::Malformed);
-                std::uint64_t literalSize =
-                    static_cast<std::uint64_t>(literalsHeader & 0x0fu);
-                for (std::size_t index = 1u; index < literalsHeaderBytes;
-                     ++index) {
-                    literalSize |= static_cast<std::uint64_t>(
-                        compressed[position++]) << (4u + 8u * (index - 1u));
-                }
-                if (literalSize > static_cast<std::uint64_t>(
-                                      kZstdMaximumBlockBytes))
-                    return fail(output, ZstdResult::Limit);
-                const std::size_t literalBytes =
-                    static_cast<std::size_t>(literalSize);
-                if (literalBytes > maximumOutputBytes - output.size())
-                    return fail(output, ZstdResult::Limit);
-                if (literalsType == 0u) {
-                    if (literalBytes > blockEnd - position)
-                        return fail(output, ZstdResult::Malformed);
-                    if (!zstd_detail::appendWithinLimit(
-                            output, compressed + position, literalBytes))
-                        return fail(output, ZstdResult::Limit);
-                    position += literalBytes;
-                } else {
-                    if (position >= blockEnd)
-                        return fail(output, ZstdResult::Malformed);
-                    const std::uint8_t value = compressed[position++];
-                    for (std::size_t index = 0u; index < literalBytes;
-                         ++index) {
-                        if ((index & 0xfffu) == 0u &&
-                            cancelled(cancellation, cancellationContext))
-                            return fail(output, ZstdResult::Cancelled);
-                        output.push_back(value);
-                    }
-                }
+                const ZstdResult literalsResult =
+                    zstd_detail::decodeLiterals(
+                        compressed, blockEnd, position, maximumOutputBytes,
+                        output, cancellation, cancellationContext);
+                if (literalsResult != ZstdResult::Ok)
+                    return fail(output, literalsResult);
 
                 /* A compressed block with no sequences is just its literals.
                  * Keep non-zero sequence streams explicit until the bounded
-                 * FSE/Huffman sequence decoder exists. */
+                 * FSE sequence decoder exists. */
                 if (position >= blockEnd)
                     return fail(output, ZstdResult::Malformed);
                 const std::uint8_t sequenceCount = compressed[position++];
