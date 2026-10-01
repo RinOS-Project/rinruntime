@@ -43,6 +43,7 @@ static int readRange(void* opaque, std::uint8_t* buffer, std::size_t capacity,
         if (capacity < 2u) return -1;
         buffer[0] = 0xa1u;
         buffer[1] = 0xa2u;
+        buffer[capacity - 1u] = 0xeeu;
         *bytesRead = 2u;
         return 0;
     }
@@ -228,6 +229,8 @@ int main() {
     std::uint8_t buffer[64u] = {};
     std::size_t bytesRead = 0u;
     assert(ordinary.read(buffer, sizeof(buffer), bytesRead) && bytesRead == 2u);
+    for (std::size_t index = 2u; index < sizeof(buffer); ++index)
+        assert(buffer[index] == 0u);
     assert(ordinary.read(buffer, sizeof(buffer), bytesRead) && bytesRead == 1u);
     std::uint8_t ordinaryEof[4u] = {0xffu, 0xffu, 0xffu, 0xffu};
     assert(ordinary.read(ordinaryEof, sizeof(ordinaryEof), bytesRead) &&

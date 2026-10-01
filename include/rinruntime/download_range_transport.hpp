@@ -74,6 +74,15 @@ private:
             buffer[index] = 0u;
     }
 
+    static void scrubBufferTail(std::uint8_t* buffer, std::size_t begin,
+                                std::size_t capacity) {
+        if (buffer == nullptr || begin >= capacity ||
+            capacity > kMaxChunkBytes)
+            return;
+        for (std::size_t index = begin; index != capacity; ++index)
+            buffer[index] = 0u;
+    }
+
     static bool requestEquivalent(const DownloadRangeRequest& first,
                                   const DownloadRangeRequest& second) {
         return first.requestId == second.requestId &&
@@ -305,6 +314,11 @@ public:
                 failAndAbort();
                 return false;
             }
+            /* The callback owns only the reported prefix.  Clear the
+             * remainder even when the owner accidentally wrote beyond that
+             * prefix, so a direct public read cannot expose unreported bytes
+             * through a caller-reused buffer. */
+            scrubBufferTail(buffer, candidate, capacity);
             remaining_ -= static_cast<std::uint64_t>(candidate);
             if (remaining_ == 0u) rangeExhausted_ = true;
             bytesRead = candidate;
