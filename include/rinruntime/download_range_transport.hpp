@@ -67,10 +67,10 @@ private:
     State state_ = State::Idle;
 
     static void scrubBuffer(std::uint8_t* buffer, std::size_t capacity) {
-        if (buffer == nullptr || capacity == 0u ||
-            capacity > kMaxChunkBytes)
-            return;
-        for (std::size_t index = 0u; index != capacity; ++index)
+        if (buffer == nullptr || capacity == 0u) return;
+        const std::size_t bounded =
+            capacity < kMaxChunkBytes ? capacity : kMaxChunkBytes;
+        for (std::size_t index = 0u; index != bounded; ++index)
             buffer[index] = 0u;
     }
 
@@ -269,6 +269,11 @@ public:
         }
         if (!opsValid(ops_) || buffer == nullptr || capacity == 0u ||
             capacity > kMaxChunkBytes) {
+            /* This is still a caller-visible failed direct read.  Scrub the
+             * bounded prefix even when the supplied buffer is larger than
+             * the adapter's maximum callback chunk; never invoke an owner
+             * callback with an unadmitted capacity. */
+            scrubBuffer(buffer, capacity);
             failAndAbort();
             return false;
         }

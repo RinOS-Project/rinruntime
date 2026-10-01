@@ -237,6 +237,29 @@ int main() {
            bytesRead == 0u);
     for (const std::uint8_t byte : ordinaryEof) assert(byte == 0u);
 
+    /* An invalid direct-read capacity is terminal too.  The public adapter
+     * must scrub the bounded prefix before returning failure, while bytes
+     * beyond its admitted maximum remain outside the adapter's scrub bound. */
+    Owner invalidCapacityOwner;
+    RinRuntime::DownloadRangeTransportOpsV1 invalidCapacityOps = ordinaryOps;
+    invalidCapacityOps.context = &invalidCapacityOwner;
+    RinRuntime::DownloadRangeTransportAdapter invalidCapacity;
+    assert(invalidCapacity.bind(invalidCapacityOps));
+    assert(invalidCapacity.begin(request, response));
+    std::uint8_t oversized[RinRuntime::DownloadRangeTransportAdapter::
+                               kMaxChunkBytes + 1u];
+    for (std::uint8_t& byte : oversized) byte = 0xffu;
+    assert(!invalidCapacity.read(oversized, sizeof(oversized), bytesRead) &&
+           bytesRead == 0u);
+    for (std::size_t index = 0u;
+         index < RinRuntime::DownloadRangeTransportAdapter::kMaxChunkBytes;
+         ++index)
+        assert(oversized[index] == 0u);
+    assert(oversized[sizeof(oversized) - 1u] == 0xffu);
+    assert(invalidCapacity.state() ==
+           RinRuntime::DownloadRangeTransportAdapter::State::Failed);
+    assert(invalidCapacityOwner.abortCalls == 1u);
+
     Owner helperOwner;
     RinRuntime::DownloadRangeTransportOpsV1 helperOps = ordinaryOps;
     helperOps.context = &helperOwner;
