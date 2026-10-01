@@ -23,6 +23,7 @@ if host_machine.system() != 'windows'
   runtime_sources += files('src/backup_payload.c')
   runtime_sources += files('src/poll_wait.c')
   runtime_sources += files('src/platform.c')
+  runtime_sources += files('src/service.c')
   runtime_sources += files('src/clipboard.c')
   runtime_sources += files('src/crash_service_client.c',
                            'src/file_portal.c',

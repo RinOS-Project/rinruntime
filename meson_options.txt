@@ -20,7 +20,7 @@ option('rll_sources', type: 'array', value: [
   'src/safe_save_posix.c', 'src/session_recovery.c', 'src/crash_service.c',
   'src/unicode_grapheme.c', 'src/unicode.c', '../libunicode/core.c', '../libunicode/locale_adapter.c',
   '../libi18n/rin_i18n.c',
-  'src/path.c', 'src/serial_portal_protocol.c', 'src/platform.c',
+  'src/path.c', 'src/serial_portal_protocol.c', 'src/platform.c', 'src/service.c',
   'src/crash_service_client.c', 'src/file_portal.c',
   'src/file_portal_startup.c',
   'src/backup_payload.c', 'src/rin_keyring_client.c',
