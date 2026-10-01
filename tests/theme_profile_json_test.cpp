@@ -21,9 +21,11 @@ static std::string validJson() {
 }
 
 static RinResourceCatalogStatus readThemePath(
-    void*, const char* path, std::uint32_t pathSize, std::uint8_t* output,
+    void* context, const char* path, std::uint32_t pathSize, std::uint8_t* output,
     std::uint64_t capacity, std::uint64_t* outputSize) {
     const std::string json = validJson();
+    if (context != nullptr)
+        *static_cast<std::uint64_t*>(context) = capacity;
     assert(path != nullptr && pathSize == 15u &&
            std::string(path, pathSize) == "/res/theme.json");
     if (output == nullptr || outputSize == nullptr ||
@@ -70,7 +72,7 @@ int main() {
     catalog.entry_count = 1u;
     catalog.generation = 1u;
     std::vector<std::uint8_t> source(
-        RinRuntime::ThemeProfileJson::kMaximumBytes);
+        RinRuntime::ThemeProfileJson::kMaximumBytes + 1u);
     std::size_t loaded = 0u;
     assert(RinRuntime::ThemeProfileJson::parseResource(
         &catalog, 7u, nullptr, nullptr, source.data(), source.size(), &loaded,
@@ -86,10 +88,12 @@ int main() {
     entry.data = nullptr;
     entry.data_size = 0u;
     loaded = 0u;
+    std::uint64_t observedCapacity = 0u;
     assert(RinRuntime::ThemeProfileJson::parseResource(
-        &catalog, 7u, readThemePath, nullptr, source.data(), source.size(),
-        &loaded, profile, error));
+        &catalog, 7u, readThemePath, &observedCapacity, source.data(),
+        source.size(), &loaded, profile, error));
     assert(loaded == resourceJson.size());
+    assert(observedCapacity == RinRuntime::ThemeProfileJson::kMaximumBytes);
     assert(profile.valid());
 
     loaded = 123u;

@@ -188,6 +188,8 @@ public:
         std::size_t* sourceSizeOut, ApplicationMetadata& output,
         std::string& error) {
         std::uint64_t loadedSize = 0u;
+        const std::size_t loadCapacity =
+            sourceCapacity < kMaximumBytes ? sourceCapacity : kMaximumBytes;
         output = {};
         error.clear();
         if (sourceSizeOut == nullptr) {
@@ -199,7 +201,7 @@ public:
             rin_resource_catalog_load(
                 catalog, RIN_RESOURCE_CATALOG_TYPE_APPLICATION, resourceId,
                 readPath, context, source,
-                static_cast<std::uint64_t>(sourceCapacity), &loadedSize);
+                static_cast<std::uint64_t>(loadCapacity), &loadedSize);
         if (resourceStatus != RIN_RESOURCE_CATALOG_OK || loadedSize == 0u ||
             loadedSize > static_cast<std::uint64_t>(SIZE_MAX)) {
             error = "metadata resource";

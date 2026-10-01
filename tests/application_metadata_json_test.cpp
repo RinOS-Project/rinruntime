@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <cstring>
 #include <string>
+#include <vector>
 
 #include "../include/rinruntime/application_metadata_json.hpp"
 
@@ -13,6 +14,7 @@ struct ResourcePath {
     const std::uint8_t* bytes = nullptr;
     std::size_t size = 0u;
     unsigned calls = 0u;
+    std::uint64_t lastCapacity = 0u;
 };
 
 RinResourceCatalogStatus readResourcePath(
@@ -25,6 +27,7 @@ RinResourceCatalogStatus readResourcePath(
                                        pathSize) != 0)
         return RIN_RESOURCE_CATALOG_INVALID_ARGUMENT;
     ++resource->calls;
+    resource->lastCapacity = outputCapacity;
     if (output == nullptr || outputCapacity < resource->size)
         return RIN_RESOURCE_CATALOG_BUFFER_TOO_SMALL;
     std::memcpy(output, resource->bytes, resource->size);
@@ -94,6 +97,17 @@ int main() {
         sizeof(source), &sourceSize, output, error));
     assert(sourceSize == resourceJson.size() && resourcePath.calls == 1u);
     assert(output.applicationId == "com.rinos.notes");
+
+    std::vector<std::uint8_t> oversizedSource(
+        RinRuntime::ApplicationMetadataJson::kMaximumBytes + 1u);
+    sourceSize = SIZE_MAX;
+    assert(RinRuntime::ApplicationMetadataJson::parseResource(
+        &catalog, 7u, readResourcePath, &resourcePath,
+        oversizedSource.data(), oversizedSource.size(), &sourceSize, output,
+        error));
+    assert(sourceSize == resourceJson.size());
+    assert(resourcePath.lastCapacity ==
+           RinRuntime::ApplicationMetadataJson::kMaximumBytes);
 
     sourceSize = SIZE_MAX;
     output.applicationId = "stale";
