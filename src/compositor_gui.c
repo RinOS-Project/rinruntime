@@ -7,11 +7,11 @@
  * buffer acquisition and presentation; it never owns drawing primitives.
  */
 #include <rinruntime/window.h>
+#include <rinruntime/poll_wait.h>
 #include "platform.h"
 #include <rin/contract_abi.h>
 #include <rin/ipc/shm_abi.h>
 #include <errno.h>
-#include <poll.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/socket.h>
@@ -312,28 +312,19 @@ static int runtime_receive_exact(void* data, uint32_t size,
     uint8_t* bytes = (uint8_t*)data;
     uint32_t offset = 0u;
     while (offset < size) {
-        struct pollfd descriptor;
         uint64_t now_ms;
         uint64_t remaining_ms;
-        int timeout_ms;
-        int ready;
+        uint32_t timeout_ms;
+        RinRuntimePollWaitResult ready;
         now_ms = rin_monotonic_ms();
         if (now_ms >= deadline_ms) return -1;
         remaining_ms = deadline_ms - now_ms;
-        timeout_ms = remaining_ms > 1000u ? 1000 : (int)remaining_ms;
-        if (timeout_ms <= 0) return -1;
-        descriptor.fd = g_compositor_fd;
-        descriptor.events = POLLIN;
-        descriptor.revents = 0;
-        ready = poll(&descriptor, 1u, timeout_ms);
-        if (ready == 0) continue;
-        if (ready < 0) {
-            if (errno == EINTR) continue;
-            return -1;
-        }
-        if ((descriptor.revents & (POLLERR | POLLNVAL)) != 0 ||
-            (descriptor.revents & POLLIN) == 0)
-            return -1;
+        timeout_ms = remaining_ms > 1000u ? 1000u : (uint32_t)remaining_ms;
+        if (timeout_ms == 0u) return -1;
+        ready = rinruntime_poll_wait(
+            g_compositor_fd, RINRUNTIME_POLL_WAIT_READABLE, timeout_ms);
+        if (ready == RINRUNTIME_POLL_WAIT_TIMEOUT) continue;
+        if (ready != RINRUNTIME_POLL_WAIT_READY) return -1;
         {
             ssize_t count = recv(g_compositor_fd, bytes + offset,
                                  size - offset, 0);
@@ -617,7 +608,7 @@ static int runtime_connect(void) {
             return -1;
         }
         close(fd);
-        (void)poll(0, 0u, 50);
+        rin_sleep(50u);
     }
     return -1;
 }
@@ -1145,28 +1136,20 @@ static void runtime_async_abort_all(int32_t status) {
     g_async_requests.reply_offset = 0u;
 }
 
-static int runtime_async_wait(short events, uint64_t deadline_ms) {
+static int runtime_async_wait(uint32_t events, uint64_t deadline_ms) {
     while (true) {
-        struct pollfd descriptor;
         uint64_t now = rin_monotonic_ms();
         uint64_t remaining;
-        int timeout_ms;
-        int ready;
+        uint32_t timeout_ms;
+        RinRuntimePollWaitResult ready;
         if (now == 0u) return -1;
         if (now >= deadline_ms) return 0;
         remaining = deadline_ms - now;
-        timeout_ms = remaining > 50u ? 50 : (int)remaining;
-        descriptor.fd = g_compositor_fd;
-        descriptor.events = events;
-        descriptor.revents = 0;
-        do { ready = poll(&descriptor, 1u, timeout_ms); }
-        while (ready < 0 && errno == EINTR);
-        if (ready == 0) continue;
-        if (ready < 0 || (descriptor.revents & (POLLERR | POLLNVAL)) != 0 ||
-            ((descriptor.revents & POLLHUP) != 0 &&
-             (descriptor.revents & events) == 0))
-            return -1;
-        if ((descriptor.revents & events) != 0) return 1;
+        timeout_ms = remaining > 50u ? 50u : (uint32_t)remaining;
+        ready = rinruntime_poll_wait(g_compositor_fd, events, timeout_ms);
+        if (ready == RINRUNTIME_POLL_WAIT_TIMEOUT) continue;
+        if (ready == RINRUNTIME_POLL_WAIT_FAILURE) return -1;
+        return 1;
     }
 }
 
@@ -1224,7 +1207,8 @@ static int runtime_async_pump(uint32_t timeout_ms) {
                 if (timeout_ms == 0u || waited != 0)
                     return (int)completed_count;
                 waited = 1;
-                ready = runtime_async_wait(POLLOUT, wait_deadline);
+                ready = runtime_async_wait(
+                    RINRUNTIME_POLL_WAIT_WRITABLE, wait_deadline);
                 if (ready > 0) continue;
                 if (ready == 0) return (int)completed_count;
                 runtime_close_connection();
@@ -1257,7 +1241,8 @@ static int runtime_async_pump(uint32_t timeout_ms) {
                 if (timeout_ms == 0u || waited != 0)
                     return (int)completed_count;
                 waited = 1;
-                ready = runtime_async_wait(POLLIN, wait_deadline);
+                ready = runtime_async_wait(
+                    RINRUNTIME_POLL_WAIT_READABLE, wait_deadline);
                 if (ready > 0) continue;
                 if (ready == 0) return (int)completed_count;
                 runtime_close_connection();
@@ -1326,7 +1311,8 @@ static int runtime_async_pump(uint32_t timeout_ms) {
                 if (timeout_ms == 0u || waited != 0)
                     return (int)completed_count;
                 waited = 1;
-                ready = runtime_async_wait(POLLIN, wait_deadline);
+                ready = runtime_async_wait(
+                    RINRUNTIME_POLL_WAIT_READABLE, wait_deadline);
                 if (ready > 0) continue;
                 if (ready == 0) return (int)completed_count;
                 runtime_close_connection();

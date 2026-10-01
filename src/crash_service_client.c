@@ -1,9 +1,9 @@
 /* SPDX-License-Identifier: MIT */
 
 #include <rinruntime/crash_service.h>
+#include <rinruntime/poll_wait.h>
 
 #include <errno.h>
-#include <poll.h>
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/un.h>
@@ -12,34 +12,18 @@
 #include <rin/socket_abi.h>
 #include <rin/contract_abi.h>
 
-#define RINRUNTIME_CRASH_SERVICE_IO_POLL_MS 1000
 #define RINRUNTIME_CRASH_SERVICE_IO_IDLE_LIMIT 5u
-#define RINRUNTIME_CRASH_SERVICE_IO_INTERRUPTION_LIMIT 32u
 #define RINRUNTIME_CRASH_SERVICE_SYSTEM_SCOPE UINT16_C(1)
 static uint64_t g_crash_service_diagnostic_request_id = UINT64_C(1);
 
-static int crash_service_wait(int fd, short events)
+static int crash_service_wait(int fd, uint32_t events)
 {
     uint32_t idle = 0u;
-    uint32_t interrupted = 0u;
     while (idle < RINRUNTIME_CRASH_SERVICE_IO_IDLE_LIMIT) {
-        struct pollfd descriptor = {0};
-        int ready;
-        descriptor.fd = fd;
-        descriptor.events = (short)(events | POLLERR | POLLHUP | POLLNVAL);
-        ready = poll(&descriptor, 1u, RINRUNTIME_CRASH_SERVICE_IO_POLL_MS);
-        if (ready > 0) {
-            if ((descriptor.revents & (POLLERR | POLLNVAL)) != 0 ||
-                (descriptor.revents & events) == 0)
-                return 0;
-            return (descriptor.revents & events) != 0;
-        }
-        if (ready < 0 && errno == EINTR) {
-            if (++interrupted >= RINRUNTIME_CRASH_SERVICE_IO_INTERRUPTION_LIMIT)
-                return 0;
-            continue;
-        }
-        if (ready < 0) return 0;
+        const RinRuntimePollWaitResult ready = rinruntime_poll_wait(
+            fd, events, 1000u);
+        if (ready == RINRUNTIME_POLL_WAIT_READY) return 1;
+        if (ready == RINRUNTIME_POLL_WAIT_FAILURE) return 0;
         ++idle;
     }
     return 0;
@@ -51,7 +35,7 @@ static int crash_service_send_exact(int fd, const void* input, size_t size)
     size_t offset = 0u;
     while (offset < size) {
         ssize_t count;
-        if (!crash_service_wait(fd, POLLOUT)) return 0;
+        if (!crash_service_wait(fd, RINRUNTIME_POLL_WAIT_WRITABLE)) return 0;
         count = send(fd, bytes + offset, size - offset, MSG_NOSIGNAL);
         if (count > 0) {
             if ((size_t)count > size - offset) return 0;
@@ -70,7 +54,7 @@ static int crash_service_receive_exact(int fd, void* output, size_t size)
     size_t offset = 0u;
     while (offset < size) {
         ssize_t count;
-        if (!crash_service_wait(fd, POLLIN)) return 0;
+        if (!crash_service_wait(fd, RINRUNTIME_POLL_WAIT_READABLE)) return 0;
         count = recv(fd, bytes + offset, size - offset, 0);
         if (count > 0) {
             if ((size_t)count > size - offset) return 0;
@@ -219,5 +203,3 @@ done:
     if (fd >= 0) close(fd);
     return result;
 }
-
-

@@ -64,10 +64,12 @@ if(NOT WIN32)
     list(APPEND RINRUNTIME_SOURCES src/backup_payload.c)
     list(APPEND RINRUNTIME_RLL_SOURCES src/backup_payload.c)
     list(APPEND RINRUNTIME_SOURCES src/platform.c)
+    list(APPEND RINRUNTIME_SOURCES src/poll_wait.c)
     list(APPEND RINRUNTIME_SOURCES src/service.c)
     list(APPEND RINRUNTIME_SOURCES src/clipboard.c)
     list(APPEND RINRUNTIME_SOURCES src/rin_keyring_client.c)
     list(APPEND RINRUNTIME_RLL_SOURCES src/rin_keyring_client.c)
+    list(APPEND RINRUNTIME_RLL_SOURCES src/poll_wait.c)
     list(APPEND RINRUNTIME_SOURCES src/crash_service_client.c)
     list(APPEND RINRUNTIME_SOURCES
         src/file_portal.c
@@ -220,6 +222,12 @@ if(RINRUNTIME_BUILD_TESTS)
     target_link_libraries(rinruntime-cursor-test PRIVATE RinRuntime::RinRuntime)
     add_test(NAME rinruntime-cursor COMMAND rinruntime-cursor-test)
     if(NOT WIN32)
+        add_executable(rinruntime-poll-wait-test
+                       tests/poll_wait_contract_test.c src/poll_wait.c)
+        target_include_directories(rinruntime-poll-wait-test
+                                   PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+        add_test(NAME rinruntime-poll-wait
+                 COMMAND rinruntime-poll-wait-test)
         add_executable(rinruntime-event-loop-poll-test
                        tests/event_loop_poll_contract_test.cpp)
         target_link_libraries(rinruntime-event-loop-poll-test

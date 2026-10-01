@@ -43,6 +43,7 @@
 #include "accessibility_wire.hpp"
 #include "event.hpp"
 #include "event_loop.hpp"
+#include "poll_wait.h"
 #if !defined(_WIN32)
 #include "event_loop_poll.hpp"
 #endif

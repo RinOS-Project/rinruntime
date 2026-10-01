@@ -21,6 +21,7 @@ runtime_sources = files('src/portal.c', 'src/crash.c', 'src/backup_restore.c',
                         'src/firewall/conntrack_query.c')
 if host_machine.system() != 'windows'
   runtime_sources += files('src/backup_payload.c')
+  runtime_sources += files('src/poll_wait.c')
   runtime_sources += files('src/platform.c')
   runtime_sources += files('src/clipboard.c')
   runtime_sources += files('src/crash_service_client.c',
@@ -135,6 +136,10 @@ if get_option('buildtype') != 'plain'
           cpp_args: ['-std=c++17'])
   endif
   if host_machine.system() != 'windows'
+    test('rinruntime-poll-wait', executable('rinruntime-poll-wait-test',
+          'tests/poll_wait_contract_test.c', 'src/poll_wait.c',
+          include_directories: inc,
+          override_options: test_override_options))
     test('rinruntime-audio-ring', executable('rinruntime-audio-ring-test',
           'tests/audio/rin_audio_service_client_ring_test.c',
           dependencies: runtime_dep, override_options: test_override_options))

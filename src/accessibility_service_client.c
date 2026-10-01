@@ -1,16 +1,14 @@
 /* SPDX-License-Identifier: MIT */
 
 #include <rinruntime/accessibility_service_client.h>
+#include <rinruntime/poll_wait.h>
 
 #include <errno.h>
-#include <limits.h>
-#include <poll.h>
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <unistd.h>
 
-#define RIN_ACCESSIBILITY_CLIENT_IO_POLL_MS 1000
 #define RIN_ACCESSIBILITY_CLIENT_IO_IDLE_LIMIT 5u
 #define RIN_ACCESSIBILITY_CLIENT_IO_INTERRUPTION_LIMIT 32u
 
@@ -21,24 +19,15 @@ static int client_receive_exact(int fd, void* output, uint32_t size)
     uint32_t idle = 0u;
     uint32_t interrupted = 0u;
     while (offset < size) {
-        struct pollfd descriptor;
-        int ready;
+        RinRuntimePollWaitResult ready;
         ssize_t count;
-        memset(&descriptor, 0, sizeof(descriptor));
-        descriptor.fd = fd;
-        descriptor.events = POLLIN | POLLERR | POLLHUP;
-        ready = poll(&descriptor, 1u, RIN_ACCESSIBILITY_CLIENT_IO_POLL_MS);
-        if (ready == 0) {
+        ready = rinruntime_poll_wait(
+            fd, RINRUNTIME_POLL_WAIT_READABLE, 1000u);
+        if (ready == RINRUNTIME_POLL_WAIT_TIMEOUT) {
             if (++idle >= RIN_ACCESSIBILITY_CLIENT_IO_IDLE_LIMIT) return 0;
             continue;
         }
-        if (ready < 0 && errno == EINTR) {
-            if (++interrupted >= RIN_ACCESSIBILITY_CLIENT_IO_INTERRUPTION_LIMIT)
-                return 0;
-            continue;
-        }
-        if (ready < 0 || (descriptor.revents & POLLERR) != 0 ||
-            (descriptor.revents & POLLIN) == 0) return 0;
+        if (ready != RINRUNTIME_POLL_WAIT_READY) return 0;
         count = recv(fd, bytes + offset, size - offset, 0);
         if (count > 0) {
             if ((uint32_t)count > size - offset) return 0;
@@ -76,25 +65,10 @@ static int client_send_exact(int fd, const void* input, uint32_t size)
 
 static RinResultCode client_wait_readable(int fd, uint32_t timeout_ms)
 {
-    struct pollfd descriptor;
-    int ready;
-    int poll_timeout;
-    uint32_t interrupted = 0u;
-    memset(&descriptor, 0, sizeof(descriptor));
-    descriptor.fd = fd;
-    descriptor.events = POLLIN | POLLERR | POLLHUP;
-    poll_timeout = timeout_ms > (uint32_t)INT_MAX ? INT_MAX : (int)timeout_ms;
-    for (;;) {
-        ready = poll(&descriptor, 1u, poll_timeout);
-        if (ready >= 0) break;
-        if (errno != EINTR ||
-            ++interrupted >= RIN_ACCESSIBILITY_CLIENT_IO_INTERRUPTION_LIMIT)
-            return RIN_RESULT_IO;
-    }
-    if (ready == 0) return RIN_RESULT_TIMED_OUT;
-    if (ready < 0 || (descriptor.revents & POLLERR) != 0 ||
-        (descriptor.revents & POLLIN) == 0) return RIN_RESULT_IO;
-    return RIN_RESULT_OK;
+    const RinRuntimePollWaitResult ready = rinruntime_poll_wait(
+        fd, RINRUNTIME_POLL_WAIT_READABLE, timeout_ms);
+    if (ready == RINRUNTIME_POLL_WAIT_TIMEOUT) return RIN_RESULT_TIMED_OUT;
+    return ready == RINRUNTIME_POLL_WAIT_READY ? RIN_RESULT_OK : RIN_RESULT_IO;
 }
 
 static RinResultCode client_next_header(RinAccessibilityServiceClientV1* client,
@@ -292,5 +266,4 @@ RinResultCode rin_accessibility_service_client_complete_action(
     client->pending_service_action_id = 0u;
     return RIN_RESULT_OK;
 }
-
 
