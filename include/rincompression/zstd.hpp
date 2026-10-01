@@ -27,10 +27,10 @@ enum class ZstdResult : int {
 
 /* This public codec handles the interoperable Zstandard frame envelope with
  * raw and RLE blocks plus a bounded compressed-block form. It accepts raw/RLE
- * literals, direct-table single- or four-stream Huffman literals, and zero
- * sequences; FSE-compressed trees, non-zero sequences, and external
- * dictionaries remain explicitly Unsupported until their bounded decoders are
- * added. A caller must not treat that result as success. The frame contains
+ * literals, direct-table or bounded-FSE single- or four-stream Huffman
+ * literals, and zero sequences; non-zero sequences and external dictionaries
+ * remain explicitly Unsupported. A caller must not treat that result as
+ * success. The frame contains
  * no filesystem, service, or publication policy. */
 static constexpr std::size_t kZstdMaximumBytes = 268435456u;
 static constexpr std::size_t kZstdMaximumBlockBytes = 128u * 1024u;
@@ -198,15 +198,13 @@ static inline std::uint16_t reverseBits(std::uint16_t value,
     return reversed;
 }
 
-/* Decode the direct (non-FSE) form of a Zstandard Huffman tree.  The public
- * subset intentionally keeps the FSE-compressed tree form Unsupported until
- * its bounded decoder exists; accepting only this form must never turn an
- * incomplete tree into a successful decode. */
-static inline bool buildDirectHuffman(
-    const std::uint8_t* weightBytes, std::size_t weightCount,
+/* Build a Huffman tree from the transmitted weights.  The final weight is
+ * derived from the power-of-two remainder, as required by Zstandard. */
+static inline bool buildHuffmanFromWeights(
+    const std::uint8_t* transmittedWeights, std::size_t weightCount,
     HuffmanCode* codes, std::size_t& codeCount)
 {
-    if (weightBytes == nullptr || codes == nullptr || weightCount == 0u ||
+    if (transmittedWeights == nullptr || codes == nullptr || weightCount == 0u ||
         weightCount > 128u)
         return false;
 
@@ -215,9 +213,7 @@ static inline bool buildDirectHuffman(
     unsigned nonZero = 0u;
     bool hasWeightOne = false;
     for (std::size_t index = 0u; index < weightCount; ++index) {
-        const std::uint8_t weight = (index & 1u) == 0u
-            ? static_cast<std::uint8_t>(weightBytes[index / 2u] >> 4u)
-            : static_cast<std::uint8_t>(weightBytes[index / 2u] & 0x0fu);
+        const std::uint8_t weight = transmittedWeights[index];
         if (weight > 11u) return false;
         weights[index] = weight;
         if (weight != 0u) {
@@ -264,7 +260,7 @@ static inline bool buildDirectHuffman(
         ordered[insert].bits = static_cast<std::uint8_t>(bits);
         while (insert != 0u) {
             const HuffmanCode& previous = ordered[insert - 1u];
-            if (previous.bits < ordered[insert].bits ||
+            if (previous.bits > ordered[insert].bits ||
                 (previous.bits == ordered[insert].bits &&
                  previous.symbol <= ordered[insert].symbol))
                 break;
@@ -291,6 +287,261 @@ static inline bool buildDirectHuffman(
         codes[index] = ordered[index];
     codeCount = orderedCount;
     return true;
+}
+
+/* Decode the direct (non-FSE) form of a Zstandard Huffman tree. */
+static inline bool buildDirectHuffman(
+    const std::uint8_t* weightBytes, std::size_t weightCount,
+    HuffmanCode* codes, std::size_t& codeCount)
+{
+    if (weightBytes == nullptr || weightCount == 0u || weightCount > 128u)
+        return false;
+    std::uint8_t weights[128] = {};
+    for (std::size_t index = 0u; index < weightCount; ++index) {
+        weights[index] = (index & 1u) == 0u
+            ? static_cast<std::uint8_t>(weightBytes[index / 2u] >> 4u)
+            : static_cast<std::uint8_t>(weightBytes[index / 2u] & 0x0fu);
+    }
+    return buildHuffmanFromWeights(weights, weightCount, codes, codeCount);
+}
+
+struct FseHuffmanTable final {
+    std::uint8_t symbols[128] = {};
+    std::uint8_t bits[128] = {};
+    std::uint16_t newStateBase[128] = {};
+};
+
+static inline unsigned highestSetBit(std::uint32_t value)
+{
+    unsigned result = 0u;
+    while (value > 1u) {
+        value >>= 1u;
+        ++result;
+    }
+    return result;
+}
+
+static inline bool readForwardBits(const std::uint8_t* bytes,
+                                   std::size_t size, std::size_t& bitOffset,
+                                   unsigned bitCount, std::uint32_t& value)
+{
+    if (bytes == nullptr || bitCount > 24u || bitOffset > size * 8u ||
+        bitCount > size * 8u - bitOffset)
+        return false;
+    value = 0u;
+    for (unsigned index = 0u; index < bitCount; ++index) {
+        const std::size_t current = bitOffset + index;
+        value |= static_cast<std::uint32_t>(
+                     (bytes[current / 8u] >> (current & 7u)) & 1u)
+                 << index;
+    }
+    bitOffset += bitCount;
+    return true;
+}
+
+static inline bool readBackwardBits(const std::uint8_t* bytes,
+                                    std::size_t size, std::int64_t& bitOffset,
+                                    unsigned bitCount, std::uint32_t& value)
+{
+    if (bytes == nullptr || bitCount > 24u) return false;
+    bitOffset -= static_cast<std::int64_t>(bitCount);
+    const std::int64_t available = bitOffset + bitCount;
+    const unsigned actualBits = bitOffset < 0
+        ? available > 0 ? static_cast<unsigned>(available) : 0u
+        : bitCount;
+    const std::size_t actualOffset = bitOffset < 0
+        ? 0u : static_cast<std::size_t>(bitOffset);
+    value = 0u;
+    if (actualBits != 0u) {
+        if (actualOffset > size * 8u ||
+            actualBits > size * 8u - actualOffset)
+            return false;
+        for (unsigned index = 0u; index < actualBits; ++index) {
+            const std::size_t current = actualOffset + index;
+            value |= static_cast<std::uint32_t>(
+                         (bytes[current / 8u] >> (current & 7u)) & 1u)
+                     << index;
+        }
+    }
+    if (bitOffset < 0)
+        value <<= static_cast<unsigned>(-bitOffset);
+    return true;
+}
+
+/* The public FSE tree subset accepts the Zstandard literal-tree accuracy range
+ * up to seven bits and caps the resulting Huffman weight stream at 128 bytes.
+ * This keeps the decoder allocation-free and bounded while leaving sequence
+ * FSE tables and dictionaries outside this public contract. */
+static inline ZstdResult decodeFseHuffmanTree(
+    const std::uint8_t* bytes, std::size_t size, HuffmanCode* codes,
+    std::size_t& codeCount)
+{
+    if (bytes == nullptr || size < 2u || codes == nullptr)
+        return ZstdResult::Malformed;
+
+    std::size_t bitOffset = 0u;
+    std::uint32_t encodedAccuracy = 0u;
+    if (!readForwardBits(bytes, size, bitOffset, 4u, encodedAccuracy))
+        return ZstdResult::Malformed;
+    const unsigned accuracy = 5u + encodedAccuracy;
+    if (accuracy > 7u) return ZstdResult::Unsupported;
+
+    const std::size_t tableSize = std::size_t(1u) << accuracy;
+    std::int16_t frequencies[256] = {};
+    int remaining = static_cast<int>(tableSize);
+    unsigned symbolCount = 0u;
+    while (remaining > 0 && symbolCount < 256u) {
+        const unsigned bits = highestSetBit(
+            static_cast<std::uint32_t>(remaining + 1)) + 1u;
+        std::uint32_t value = 0u;
+        if (!readForwardBits(bytes, size, bitOffset, bits, value))
+            return ZstdResult::Malformed;
+        const std::uint32_t lowerMask = (std::uint32_t(1u) << (bits - 1u)) -
+                                         1u;
+        const std::uint32_t threshold = (std::uint32_t(1u) << bits) - 1u -
+                                        static_cast<std::uint32_t>(remaining + 1);
+        if ((value & lowerMask) < threshold) {
+            if (bitOffset == 0u) return ZstdResult::Malformed;
+            --bitOffset;
+            value &= lowerMask;
+        } else if (value > lowerMask) {
+            value -= threshold;
+        }
+        const int probability = static_cast<int>(value) - 1;
+        if (probability < -1 || probability > remaining)
+            return ZstdResult::Malformed;
+        remaining -= probability < 0 ? -probability : probability;
+        if (remaining < 0) return ZstdResult::Malformed;
+        frequencies[symbolCount++] = static_cast<std::int16_t>(probability);
+
+        if (probability == 0) {
+            std::uint32_t repeat = 0u;
+            do {
+                if (!readForwardBits(bytes, size, bitOffset, 2u, repeat))
+                    return ZstdResult::Malformed;
+                if (repeat > 3u || repeat > 256u - symbolCount)
+                    return ZstdResult::Malformed;
+                for (std::uint32_t index = 0u; index < repeat; ++index)
+                    frequencies[symbolCount++] = 0;
+            } while (repeat == 3u);
+        }
+    }
+    if (remaining != 0 || symbolCount == 0u || symbolCount > 256u)
+        return ZstdResult::Malformed;
+
+    bitOffset = (bitOffset + 7u) & ~std::size_t(7u);
+    const std::size_t payloadOffset = bitOffset / 8u;
+    if (payloadOffset >= size) return ZstdResult::Malformed;
+
+    const std::uint16_t mask = static_cast<std::uint16_t>(tableSize - 1u);
+    const std::uint16_t step = static_cast<std::uint16_t>(
+        (tableSize >> 1u) + (tableSize >> 3u) + 3u);
+    std::uint16_t stateDescription[256] = {};
+    std::uint8_t tableSymbols[128] = {};
+    std::uint16_t highThreshold = static_cast<std::uint16_t>(tableSize);
+    for (unsigned symbol = 0u; symbol < symbolCount; ++symbol) {
+        if (frequencies[symbol] == -1) {
+            if (highThreshold == 0u) return ZstdResult::Malformed;
+            tableSymbols[--highThreshold] = static_cast<std::uint8_t>(symbol);
+            stateDescription[symbol] = 1u;
+        }
+    }
+    std::uint16_t position = 0u;
+    for (unsigned symbol = 0u; symbol < symbolCount; ++symbol) {
+        if (frequencies[symbol] <= 0) continue;
+        stateDescription[symbol] = static_cast<std::uint16_t>(
+            frequencies[symbol]);
+        for (int index = 0; index < frequencies[symbol]; ++index) {
+            if (position >= highThreshold) return ZstdResult::Malformed;
+            tableSymbols[position] = static_cast<std::uint8_t>(symbol);
+            do {
+                position = static_cast<std::uint16_t>((position + step) & mask);
+            } while (position >= highThreshold);
+        }
+    }
+    if (position != 0u) return ZstdResult::Malformed;
+
+    FseHuffmanTable table;
+    for (std::size_t index = 0u; index < tableSize; ++index) {
+        const std::uint8_t symbol = tableSymbols[index];
+        const std::uint16_t next = stateDescription[symbol]++;
+        if (next == 0u) return ZstdResult::Malformed;
+        const unsigned consumed = highestSetBit(next);
+        if (consumed > accuracy) return ZstdResult::Malformed;
+        table.symbols[index] = symbol;
+        table.bits[index] = static_cast<std::uint8_t>(accuracy - consumed);
+        table.newStateBase[index] = static_cast<std::uint16_t>(
+            (static_cast<std::uint32_t>(next) << table.bits[index]) -
+            tableSize);
+    }
+
+    const std::uint8_t last = bytes[size - 1u];
+    if (last == 0u) return ZstdResult::Malformed;
+    unsigned highest = 0u;
+    for (std::uint8_t value = last; value > 1u; value >>= 1u) ++highest;
+    std::int64_t streamOffset = static_cast<std::int64_t>(size - payloadOffset) *
+                                8 - static_cast<std::int64_t>(8u - highest);
+    std::uint32_t stateValue = 0u;
+    std::uint16_t stateOne = 0u;
+    std::uint16_t stateTwo = 0u;
+    if (!readBackwardBits(bytes + payloadOffset, size - payloadOffset,
+                          streamOffset, accuracy, stateValue))
+        return ZstdResult::Malformed;
+    stateOne = static_cast<std::uint16_t>(stateValue);
+    if (!readBackwardBits(bytes + payloadOffset, size - payloadOffset,
+                          streamOffset, accuracy, stateValue))
+        return ZstdResult::Malformed;
+    stateTwo = static_cast<std::uint16_t>(stateValue);
+    if (streamOffset < 0 || stateOne >= tableSize || stateTwo >= tableSize)
+        return ZstdResult::Malformed;
+
+    std::uint8_t weights[128] = {};
+    std::size_t weightCount = 0u;
+    while (true) {
+        if (weightCount >= sizeof(weights)) return ZstdResult::Unsupported;
+        weights[weightCount++] = table.symbols[stateOne];
+        const unsigned stateBits = table.bits[stateOne];
+        if (!readBackwardBits(bytes + payloadOffset, size - payloadOffset,
+                              streamOffset, stateBits, stateValue))
+            return ZstdResult::Malformed;
+        const std::uint32_t nextState =
+            static_cast<std::uint32_t>(table.newStateBase[stateOne]) +
+            stateValue;
+        if (nextState >= tableSize) return ZstdResult::Malformed;
+        stateOne = static_cast<std::uint16_t>(nextState);
+        if (streamOffset < 0) {
+            if (weightCount >= sizeof(weights)) return ZstdResult::Unsupported;
+            weights[weightCount++] = table.symbols[stateTwo];
+            break;
+        }
+
+        if (weightCount >= sizeof(weights)) return ZstdResult::Unsupported;
+        weights[weightCount++] = table.symbols[stateTwo];
+        const unsigned secondBits = table.bits[stateTwo];
+        if (!readBackwardBits(bytes + payloadOffset, size - payloadOffset,
+                              streamOffset, secondBits, stateValue))
+            return ZstdResult::Malformed;
+        const std::uint32_t secondState =
+            static_cast<std::uint32_t>(table.newStateBase[stateTwo]) +
+            stateValue;
+        if (secondState >= tableSize) return ZstdResult::Malformed;
+        stateTwo = static_cast<std::uint16_t>(secondState);
+        if (streamOffset < 0) {
+            if (weightCount >= sizeof(weights)) return ZstdResult::Unsupported;
+            weights[weightCount++] = table.symbols[stateOne];
+            break;
+        }
+    }
+
+    for (std::size_t index = 0u; index < weightCount; ++index) {
+        if (weights[index] > 11u) return ZstdResult::Malformed;
+    }
+    if (weightCount < 1u)
+        return ZstdResult::Malformed;
+    if (!buildHuffmanFromWeights(weights, weightCount, codes,
+                                 codeCount))
+        return ZstdResult::Malformed;
+    return ZstdResult::Ok;
 }
 
 static inline ZstdResult decodeHuffmanStream(
@@ -426,16 +677,24 @@ static inline ZstdResult decodeLiterals(
     const std::size_t streamEnd = position + compressedSize;
     if (position >= streamEnd) return ZstdResult::Malformed;
     const std::uint8_t treeHeader = bytes[position++];
-    if (treeHeader < 128u) return ZstdResult::Unsupported;
-    const std::size_t weightCount = treeHeader - 127u;
-    const std::size_t weightBytes = (weightCount + 1u) / 2u;
-    if (weightBytes > streamEnd - position) return ZstdResult::Malformed;
     HuffmanCode codes[129] = {};
     std::size_t codeCount = 0u;
-    if (!buildDirectHuffman(bytes + position, weightCount, codes,
-                            codeCount))
-        return ZstdResult::Malformed;
-    position += weightBytes;
+    if (treeHeader >= 128u) {
+        const std::size_t weightCount = treeHeader - 127u;
+        const std::size_t weightBytes = (weightCount + 1u) / 2u;
+        if (weightBytes > streamEnd - position) return ZstdResult::Malformed;
+        if (!buildDirectHuffman(bytes + position, weightCount, codes,
+                                codeCount))
+            return ZstdResult::Malformed;
+        position += weightBytes;
+    } else {
+        if (treeHeader == 0u || treeHeader > streamEnd - position)
+            return ZstdResult::Malformed;
+        const ZstdResult treeResult = decodeFseHuffmanTree(
+            bytes + position, treeHeader, codes, codeCount);
+        if (treeResult != ZstdResult::Ok) return treeResult;
+        position += treeHeader;
+    }
     ZstdResult result = ZstdResult::Ok;
     if (sizeFormat == 0u) {
         result = decodeHuffmanStream(
