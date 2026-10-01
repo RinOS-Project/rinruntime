@@ -311,8 +311,19 @@ inline bool readDownloadRangeToBuffer(DownloadRangeTransport& transport,
                                       std::size_t capacity,
                                       std::size_t& outputSize) {
     outputSize = 0u;
-    if (!request.valid() || output == nullptr || capacity == 0u)
+    const auto scrubOutput = [&]() noexcept {
+        if (output == nullptr || capacity == 0u) return;
+        const std::size_t bounded =
+            capacity < DownloadPartialReceipt::kMaxBytes
+                ? capacity
+                : static_cast<std::size_t>(DownloadPartialReceipt::kMaxBytes);
+        for (std::size_t index = 0u; index < bounded; ++index)
+            output[index] = 0u;
+    };
+    if (!request.valid() || output == nullptr || capacity == 0u) {
+        scrubOutput();
         return false;
+    }
     bool beginEntered = false;
     bool settled = false;
 #if !defined(__cpp_exceptions) && !defined(__EXCEPTIONS) && \
@@ -356,10 +367,12 @@ inline bool readDownloadRangeToBuffer(DownloadRangeTransport& transport,
      * distinct cancellation state for the caller to inspect. */
     beginEntered = true;
     if (!transport.begin(request, response)) {
+        scrubOutput();
         settled = true;
         return false;
     }
     if (!response.validFor(request) || response.contentLength > capacity) {
+        scrubOutput();
         settled = true;
         transport.abort();
         return false;
@@ -373,8 +386,7 @@ inline bool readDownloadRangeToBuffer(DownloadRangeTransport& transport,
         std::size_t bytesRead = 0u;
         if (!transport.read(output + outputSize, chunk, bytesRead) ||
             bytesRead == 0u || bytesRead > chunk) {
-            for (std::size_t index = 0u; index < expected; ++index)
-                output[index] = 0u;
+            scrubOutput();
             outputSize = 0u;
             /* A public transport may already have transitioned to its
              * terminal cancellation state and performed the upstream abort.
@@ -395,8 +407,7 @@ inline bool readDownloadRangeToBuffer(DownloadRangeTransport& transport,
     std::size_t trailingBytes = 0u;
     if (!transport.read(&trailingByte, 1u, trailingBytes) ||
         trailingBytes != 0u) {
-        for (std::size_t index = 0u; index < expected; ++index)
-            output[index] = 0u;
+        scrubOutput();
         outputSize = 0u;
         const bool cancelled = transport.wasCancelled();
         if (!cancelled) {
