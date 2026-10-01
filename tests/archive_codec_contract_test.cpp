@@ -616,6 +616,35 @@ static std::vector<std::uint8_t> makeXzStoredLzma2(std::uint8_t checkType)
     return bytes;
 }
 
+static std::vector<std::uint8_t> makeXzStoredLzma2TwoBlocks()
+{
+    const std::vector<std::uint8_t> single = makeXzStoredLzma2(0u);
+    std::vector<std::uint8_t> bytes(84u, 0u);
+    std::memcpy(bytes.data(), single.data(), 12u);
+    std::memcpy(bytes.data() + 12u, single.data() + 12u, 24u);
+    std::memcpy(bytes.data() + 36u, single.data() + 12u, 24u);
+
+    const std::size_t index = 60u;
+    bytes[index + 1u] = 0x02u;
+    bytes[index + 2u] = 0x15u;
+    bytes[index + 3u] = 0x05u;
+    bytes[index + 4u] = 0x15u;
+    bytes[index + 5u] = 0x05u;
+    writeLe32(bytes, index + 8u,
+              RinRuntime::rinruntime_archive_crc32(bytes.data() + index,
+                                                    8u));
+
+    const std::size_t footer = 72u;
+    bytes[footer + 4u] = 0x02u;
+    bytes[footer + 9u] = 0x00u;
+    bytes[footer + 10u] = static_cast<std::uint8_t>('Y');
+    bytes[footer + 11u] = static_cast<std::uint8_t>('Z');
+    writeLe32(bytes, footer,
+              RinRuntime::rinruntime_archive_crc32(bytes.data() + footer + 4u,
+                                                   6u));
+    return bytes;
+}
+
 static std::vector<std::uint8_t> makeXzDeltaStoredLzma2()
 {
     std::vector<std::uint8_t> bytes(60u, 0u);
@@ -1390,6 +1419,24 @@ int main()
                                       xzOutput) ==
            RinRuntime::ArchiveXzResult::Ok);
     assert(xzOutput == "hello");
+    const std::vector<std::uint8_t> twoBlockXz =
+        makeXzStoredLzma2TwoBlocks();
+    xzOutput = "poison";
+    assert(xzReader.decodeStoredLzma2(twoBlockXz.data(), twoBlockXz.size(),
+                                      xzOutput) ==
+           RinRuntime::ArchiveXzResult::Ok);
+    assert(xzOutput == "hellohello");
+    std::vector<std::uint8_t> mismatchedIndexXz = twoBlockXz;
+    mismatchedIndexXz[63u] = 0x04u;
+    mismatchedIndexXz[65u] = 0x06u;
+    writeLe32(mismatchedIndexXz, 68u,
+              RinRuntime::rinruntime_archive_crc32(
+                  mismatchedIndexXz.data() + 60u, 8u));
+    xzOutput = "poison";
+    assert(xzReader.decodeStoredLzma2(mismatchedIndexXz.data(),
+                                      mismatchedIndexXz.size(), xzOutput) ==
+           RinRuntime::ArchiveXzResult::Malformed);
+    assert(xzOutput == "poison");
     const std::vector<std::uint8_t> deltaXz = makeXzDeltaStoredLzma2();
     xzOutput = "poison";
     assert(xzReader.decodeStoredLzma2(deltaXz.data(), deltaXz.size(),

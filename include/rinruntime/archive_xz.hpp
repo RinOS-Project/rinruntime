@@ -41,12 +41,11 @@ struct ArchiveXzSummary {
 };
 
 /*
- * This is deliberately an inspector, not an XZ decoder.  It verifies the
- * bounded stream envelope, header/footer/index CRCs, block-header CRCs,
- * block boundaries, and size accounting without opening a path or allocating
- * according to untrusted metadata.  A caller that needs decoded bytes must
- * provide a separate XZ owner/backend; the public runtime never pretends
- * that structural validation is decompression.
+ * This is a bounded inspector and decoder.  It verifies the bounded stream
+ * envelope, header/footer/index CRCs, block-header CRCs, block boundaries,
+ * and size accounting without opening a path or allocating according to
+ * untrusted metadata.  Decoded bytes stay caller-owned; filesystem,
+ * publication, and service authority remain outside the public runtime.
  */
 class ArchiveXzReader final {
 public:
@@ -975,6 +974,8 @@ private:
         std::string decoded;
         std::array<std::uint64_t, RINRUNTIME_ARCHIVE_ENTRY_LIMIT>
             indexedUnpadded{};
+        std::array<std::uint64_t, RINRUNTIME_ARCHIVE_ENTRY_LIMIT>
+            indexedUncompressed{};
         const std::size_t footerOffset = size - kFooterSize;
         const std::size_t indexDataEnd = footerOffset - 4u;
         std::size_t indexCursor = summary.indexOffset + 1u;
@@ -983,11 +984,10 @@ private:
             recordCount != summary.blockCount)
             return ArchiveXzResult::Malformed;
         for (std::size_t index = 0u; index != recordCount; ++index) {
-            std::uint64_t ignoredUncompressed = 0u;
             if (!readVli(bytes, indexDataEnd, indexCursor,
                          indexedUnpadded[index]) ||
                 !readVli(bytes, indexDataEnd, indexCursor,
-                         ignoredUncompressed))
+                         indexedUncompressed[index]))
                 return ArchiveXzResult::Malformed;
         }
         std::size_t blockOffset = kHeaderSize;
@@ -1299,6 +1299,10 @@ private:
                     return filterResult;
                 }
             }
+            if (blockIndex >= recordCount ||
+                decoded.size() - blockOutputStart !=
+                    indexedUncompressed[blockIndex])
+                return ArchiveXzResult::Malformed;
             const std::size_t checkOffset =
                 (payloadEnd + 3u) & ~std::size_t(3u);
             if (checkOffset < payloadEnd ||
