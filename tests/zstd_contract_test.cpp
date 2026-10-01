@@ -143,6 +143,19 @@ int main()
                           sizeof(compressedHuffmanFourStreamsFormat3), decoded) ==
            RinCompression::ZstdResult::Ok && decoded == fourStreamExpected);
 
+    /* Zstandard reserves the four-stream form for at least six regenerated
+     * bytes.  A payload that happens to contain four decodable one-byte
+     * streams is still malformed when its header advertises only four. */
+    const std::uint8_t compressedHuffmanFourStreamsTooShort[] = {
+        0x28u, 0xb5u, 0x2fu, 0xfdu, 0x20u, 0x08u,
+        0x85u, 0x00u, 0x00u, 0x46u, 0xc0u, 0x00u,
+        0x80u, 0x10u, 0x01u, 0x00u, 0x01u, 0x00u,
+        0x01u, 0x00u, 0x05u, 0x05u, 0x06u, 0x06u, 0x00u};
+    decoded.assign(1u, 0xa5u);
+    assert(decoder.decode(compressedHuffmanFourStreamsTooShort,
+                          sizeof(compressedHuffmanFourStreamsTooShort), decoded) ==
+           RinCompression::ZstdResult::Malformed && decoded.empty());
+
     /* A checksum-bearing raw frame for the empty payload. The low 32 bits of
      * XXH64("") are 0x51d8e999 and are stored little-endian. */
     const std::uint8_t checksumFrame[] = {
