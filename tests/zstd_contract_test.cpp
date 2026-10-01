@@ -123,6 +123,26 @@ int main()
                           sizeof(compressedHuffmanFourStreams), decoded) ==
            RinCompression::ZstdResult::Ok && decoded == fourStreamExpected);
 
+    /* Size formats 2 and 3 use the same four-stream payload with wider
+     * regenerated/compressed-size fields. */
+    const std::uint8_t compressedHuffmanFourStreamsFormat2[] = {
+        0x28u, 0xb5u, 0x2fu, 0xfdu, 0x20u, 0x08u,
+        0x8du, 0x00u, 0x00u, 0x8au, 0x00u, 0x30u, 0x00u,
+        0x80u, 0x10u, 0x01u, 0x00u, 0x01u, 0x00u,
+        0x01u, 0x00u, 0x05u, 0x05u, 0x06u, 0x06u, 0x00u};
+    assert(decoder.decode(compressedHuffmanFourStreamsFormat2,
+                          sizeof(compressedHuffmanFourStreamsFormat2), decoded) ==
+           RinCompression::ZstdResult::Ok && decoded == fourStreamExpected);
+
+    const std::uint8_t compressedHuffmanFourStreamsFormat3[] = {
+        0x28u, 0xb5u, 0x2fu, 0xfdu, 0x20u, 0x08u,
+        0x95u, 0x00u, 0x00u, 0x8eu, 0x00u, 0x00u, 0x03u, 0x00u,
+        0x80u, 0x10u, 0x01u, 0x00u, 0x01u, 0x00u,
+        0x01u, 0x00u, 0x05u, 0x05u, 0x06u, 0x06u, 0x00u};
+    assert(decoder.decode(compressedHuffmanFourStreamsFormat3,
+                          sizeof(compressedHuffmanFourStreamsFormat3), decoded) ==
+           RinCompression::ZstdResult::Ok && decoded == fourStreamExpected);
+
     /* A checksum-bearing raw frame for the empty payload. The low 32 bits of
      * XXH64("") are 0x51d8e999 and are stored little-endian. */
     const std::uint8_t checksumFrame[] = {
