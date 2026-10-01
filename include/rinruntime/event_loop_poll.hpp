@@ -100,6 +100,17 @@ public:
     PollEventLoopBackend(const PollEventLoopBackend&) = delete;
     PollEventLoopBackend& operator=(const PollEventLoopBackend&) = delete;
 
+    /* Start a fresh monotonic-clock session without changing any caller-owned
+     * EventLoop watches.  A Poll backend owns no native wait-set handle, but it
+     * does retain the last clock sample to detect rollback.  Callers that
+     * reconnect to a restarted clock provider may reuse the backend only after
+     * retiring that sample; otherwise the first deadline in the new epoch is
+     * rejected as a rollback. */
+    void resetClock() noexcept {
+        lastNow_ = 0u;
+        haveLastNow_ = false;
+    }
+
     bool wait(const EventLoop::WaitRequest* requests, Size count,
               std::uint64_t deadline, EventLoop::WaitResult* ready) noexcept {
         if (ready == nullptr) return false;
