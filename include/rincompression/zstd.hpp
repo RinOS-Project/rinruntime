@@ -27,8 +27,8 @@ enum class ZstdResult : int {
 
 /* This public codec handles the interoperable Zstandard frame envelope with
  * raw and RLE blocks plus a bounded compressed-block form. It accepts raw/RLE
- * literals, direct-table single-stream Huffman literals, and zero sequences;
- * FSE-compressed trees, four Huffman streams, non-zero sequences, and external
+ * literals, direct-table single- or four-stream Huffman literals, and zero
+ * sequences; FSE-compressed trees, non-zero sequences, and external
  * dictionaries remain explicitly Unsupported until their bounded decoders are
  * added. A caller must not treat that result as success. The frame contains
  * no filesystem, service, or publication policy. */
@@ -389,19 +389,33 @@ static inline ZstdResult decodeLiterals(
         return ZstdResult::Ok;
     }
 
-    if (literalsType != 2u || sizeFormat != 0u)
+    if (literalsType != 2u)
         return ZstdResult::Unsupported;
-    if (blockEnd - position < 3u) return ZstdResult::Malformed;
+    const std::size_t headerBytes = sizeFormat == 0u
+        ? 3u : sizeFormat == 1u ? 3u : sizeFormat == 2u ? 4u : 5u;
+    if (blockEnd - position < headerBytes) return ZstdResult::Malformed;
     const std::uint32_t headerWord =
         static_cast<std::uint32_t>(bytes[position]) |
         (static_cast<std::uint32_t>(bytes[position + 1u]) << 8u) |
-        (static_cast<std::uint32_t>(bytes[position + 2u]) << 16u);
-    const std::size_t regeneratedSize = (headerWord >> 4u) & 0x3ffu;
-    const std::size_t compressedSize = (headerWord >> 14u) & 0x3ffu;
+        (static_cast<std::uint32_t>(bytes[position + 2u]) << 16u) |
+        (headerBytes >= 4u
+             ? (static_cast<std::uint32_t>(bytes[position + 3u]) << 24u)
+             : 0u);
+    const std::size_t regeneratedSize = sizeFormat <= 1u
+        ? (headerWord >> 4u) & 0x3ffu
+        : sizeFormat == 2u ? (headerWord >> 4u) & 0x3fffu
+                           : (headerWord >> 4u) & 0x3ffffu;
+    const std::size_t compressedSize = sizeFormat <= 1u
+        ? (headerWord >> 14u) & 0x3ffu
+        : sizeFormat == 2u ? (headerWord >> 18u) & 0x3fffu
+                           : ((headerWord >> 22u) & 0x3ffu) |
+                                 (static_cast<std::size_t>(
+                                      bytes[position + 4u])
+                                  << 10u);
     if (compressedSize == 0u || regeneratedSize > kZstdMaximumBlockBytes ||
         regeneratedSize > maximumOutputBytes - output.size())
         return ZstdResult::Limit;
-    position += 3u;
+    position += headerBytes;
     if (compressedSize > blockEnd - position)
         return ZstdResult::Malformed;
     const std::size_t streamEnd = position + compressedSize;
@@ -417,9 +431,67 @@ static inline ZstdResult decodeLiterals(
                             codeCount))
         return ZstdResult::Malformed;
     position += weightBytes;
-    const ZstdResult result = decodeHuffmanStream(
-        bytes + position, streamEnd - position, codes, codeCount,
-        regeneratedSize, output, cancellation, cancellationContext);
+    ZstdResult result = ZstdResult::Ok;
+    if (sizeFormat == 0u) {
+        result = decodeHuffmanStream(
+            bytes + position, streamEnd - position, codes, codeCount,
+            regeneratedSize, output, cancellation, cancellationContext);
+    } else {
+        if (streamEnd - position < 6u) return ZstdResult::Malformed;
+        const std::size_t streamOneSize =
+            static_cast<std::size_t>(bytes[position]) |
+            (static_cast<std::size_t>(bytes[position + 1u]) << 8u);
+        const std::size_t streamTwoSize =
+            static_cast<std::size_t>(bytes[position + 2u]) |
+            (static_cast<std::size_t>(bytes[position + 3u]) << 8u);
+        const std::size_t streamThreeSize =
+            static_cast<std::size_t>(bytes[position + 4u]) |
+            (static_cast<std::size_t>(bytes[position + 5u]) << 8u);
+        position += 6u;
+        if (streamOneSize == 0u || streamTwoSize == 0u ||
+            streamThreeSize == 0u ||
+            streamOneSize > streamEnd - position)
+            return ZstdResult::Malformed;
+        const std::size_t streamTwoOffset = position + streamOneSize;
+        if (streamTwoOffset > streamEnd ||
+            streamTwoSize > streamEnd - streamTwoOffset)
+            return ZstdResult::Malformed;
+        const std::size_t streamThreeOffset =
+            streamTwoOffset + streamTwoSize;
+        if (streamThreeOffset > streamEnd ||
+            streamThreeSize > streamEnd - streamThreeOffset)
+            return ZstdResult::Malformed;
+        const std::size_t streamFourOffset =
+            streamThreeOffset + streamThreeSize;
+        if (streamFourOffset >= streamEnd)
+            return ZstdResult::Malformed;
+        const std::size_t streamFourSize = streamEnd - streamFourOffset;
+        const std::size_t firstSize = (regeneratedSize + 3u) / 4u;
+        const std::size_t secondSize = (regeneratedSize + 2u) / 4u;
+        const std::size_t thirdSize = (regeneratedSize + 1u) / 4u;
+        if (firstSize == 0u || secondSize == 0u || thirdSize == 0u ||
+            regeneratedSize < firstSize + secondSize + thirdSize)
+            return ZstdResult::Malformed;
+        const std::size_t fourthSize = regeneratedSize - firstSize -
+                                       secondSize - thirdSize;
+        if (fourthSize == 0u)
+            return ZstdResult::Malformed;
+        result = decodeHuffmanStream(
+            bytes + position, streamOneSize, codes, codeCount, firstSize,
+            output, cancellation, cancellationContext);
+        if (result == ZstdResult::Ok)
+            result = decodeHuffmanStream(
+                bytes + streamTwoOffset, streamTwoSize, codes, codeCount,
+                secondSize, output, cancellation, cancellationContext);
+        if (result == ZstdResult::Ok)
+            result = decodeHuffmanStream(
+                bytes + streamThreeOffset, streamThreeSize, codes, codeCount,
+                thirdSize, output, cancellation, cancellationContext);
+        if (result == ZstdResult::Ok)
+            result = decodeHuffmanStream(
+                bytes + streamFourOffset, streamFourSize, codes, codeCount,
+                fourthSize, output, cancellation, cancellationContext);
+    }
     position = streamEnd;
     return result;
 }
