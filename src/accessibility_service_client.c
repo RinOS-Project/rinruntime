@@ -50,14 +50,20 @@ static int client_send_exact(int fd, const void* input, uint32_t size)
 {
     const uint8_t* bytes = (const uint8_t*)input;
     uint32_t offset = 0u;
+    uint32_t interrupted = 0u;
     while (offset < size) {
         ssize_t count = send(fd, bytes + offset, size - offset, MSG_NOSIGNAL);
         if (count > 0) {
             if ((uint32_t)count > size - offset) return 0;
             offset += (uint32_t)count;
+            interrupted = 0u;
             continue;
         }
-        if (count < 0 && errno == EINTR) continue;
+        if (count < 0 && errno == EINTR) {
+            if (++interrupted >= RIN_ACCESSIBILITY_CLIENT_IO_INTERRUPTION_LIMIT)
+                return 0;
+            continue;
+        }
         return 0;
     }
     return 1;
@@ -266,4 +272,3 @@ RinResultCode rin_accessibility_service_client_complete_action(
     client->pending_service_action_id = 0u;
     return RIN_RESULT_OK;
 }
-

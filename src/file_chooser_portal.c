@@ -574,18 +574,26 @@ RinRuntimeFileChooserResult rinruntime_file_chooser_save_destination_release_dec
 }
 
 #if !defined(_WIN32)
+#define RINRUNTIME_FILE_CHOOSER_IO_INTERRUPTION_LIMIT 32u
+
 static int chooser_write_all(int descriptor, const void* bytes, size_t size)
 {
     const uint8_t* cursor = (const uint8_t*)bytes;
+    uint32_t interrupted = 0u;
     while (size != 0u) {
         ssize_t written = send(descriptor, cursor, size, MSG_NOSIGNAL);
         if (written > 0) {
             if ((size_t)written > size) return 0;
             cursor += (size_t)written;
             size -= (size_t)written;
+            interrupted = 0u;
             continue;
         }
-        if (written < 0 && errno == EINTR) continue;
+        if (written < 0 && errno == EINTR) {
+            if (++interrupted >= RINRUNTIME_FILE_CHOOSER_IO_INTERRUPTION_LIMIT)
+                return 0;
+            continue;
+        }
         return 0;
     }
     return 1;
@@ -594,15 +602,21 @@ static int chooser_write_all(int descriptor, const void* bytes, size_t size)
 static int chooser_read_all(int descriptor, void* bytes, size_t size)
 {
     uint8_t* cursor = (uint8_t*)bytes;
+    uint32_t interrupted = 0u;
     while (size != 0u) {
         ssize_t received = recv(descriptor, cursor, size, 0);
         if (received > 0) {
             if ((size_t)received > size) return 0;
             cursor += (size_t)received;
             size -= (size_t)received;
+            interrupted = 0u;
             continue;
         }
-        if (received < 0 && errno == EINTR) continue;
+        if (received < 0 && errno == EINTR) {
+            if (++interrupted >= RINRUNTIME_FILE_CHOOSER_IO_INTERRUPTION_LIMIT)
+                return 0;
+            continue;
+        }
         return 0;
     }
     return 1;

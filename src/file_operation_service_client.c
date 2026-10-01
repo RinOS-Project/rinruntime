@@ -11,18 +11,27 @@
 #include <sys/un.h>
 #include <unistd.h>
 
+#define RINRUNTIME_FILE_OPERATION_SERVICE_IO_INTERRUPTION_LIMIT 32u
+
 static int service_client_send_all(int fd, const void* input, uint32_t size)
 {
     const uint8_t* bytes = (const uint8_t*)input;
     uint32_t offset = 0u;
+    uint32_t interrupted = 0u;
     while (offset < size) {
         ssize_t result = send(fd, bytes + offset, size - offset, MSG_NOSIGNAL);
         if (result > 0) {
             if ((uint32_t)result > size - offset) return 0;
             offset += (uint32_t)result;
+            interrupted = 0u;
             continue;
         }
-        if (result < 0 && errno == EINTR) continue;
+        if (result < 0 && errno == EINTR) {
+            if (++interrupted >=
+                RINRUNTIME_FILE_OPERATION_SERVICE_IO_INTERRUPTION_LIMIT)
+                return 0;
+            continue;
+        }
         return 0;
     }
     return 1;
@@ -32,14 +41,21 @@ static int service_client_receive_all(int fd, void* output, uint32_t size)
 {
     uint8_t* bytes = (uint8_t*)output;
     uint32_t offset = 0u;
+    uint32_t interrupted = 0u;
     while (offset < size) {
         ssize_t result = recv(fd, bytes + offset, size - offset, 0);
         if (result > 0) {
             if ((uint32_t)result > size - offset) return 0;
             offset += (uint32_t)result;
+            interrupted = 0u;
             continue;
         }
-        if (result < 0 && errno == EINTR) continue;
+        if (result < 0 && errno == EINTR) {
+            if (++interrupted >=
+                RINRUNTIME_FILE_OPERATION_SERVICE_IO_INTERRUPTION_LIMIT)
+                return 0;
+            continue;
+        }
         return 0;
     }
     return 1;
@@ -401,5 +417,4 @@ rinruntime_file_operation_service_submit_authorized(
     rinruntime_file_operation_service_broker_client_close(client);
     return status;
 }
-
 

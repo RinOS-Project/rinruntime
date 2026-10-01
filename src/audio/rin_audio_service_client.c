@@ -16,6 +16,7 @@
 
 #define CLIENT_STREAM_SLOTS 8u
 #define CLIENT_IO_RETRIES 4096u
+#define CLIENT_IO_INTERRUPTION_LIMIT 32u
 #define RIN_AUDIO_SERVICE_SOCKET_PATH "/run/rin/audiod.sock"
 
 typedef struct ClientStream {
@@ -91,15 +92,20 @@ static int send_exact(const void* data, uint32_t bytes)
 {
     const uint8_t* input = (const uint8_t*)data;
     uint32_t offset = 0u;
+    uint32_t interrupted = 0u;
     while (offset < bytes) {
         ssize_t result = send(g_client.fd, input + offset, bytes - offset,
                               MSG_NOSIGNAL);
         if (result > 0) {
             if ((uint32_t)result > bytes - offset) return -1;
             offset += (uint32_t)result;
+            interrupted = 0u;
             continue;
         }
-        if (result < 0 && errno == EINTR) continue;
+        if (result < 0 && errno == EINTR) {
+            if (++interrupted >= CLIENT_IO_INTERRUPTION_LIMIT) return -1;
+            continue;
+        }
         return -1;
     }
     return 0;
@@ -109,14 +115,19 @@ static int receive_exact(void* data, uint32_t bytes)
 {
     uint8_t* output = (uint8_t*)data;
     uint32_t offset = 0u;
+    uint32_t interrupted = 0u;
     while (offset < bytes) {
         ssize_t result = recv(g_client.fd, output + offset, bytes - offset, 0);
         if (result > 0) {
             if ((uint32_t)result > bytes - offset) return -1;
             offset += (uint32_t)result;
+            interrupted = 0u;
             continue;
         }
-        if (result < 0 && errno == EINTR) continue;
+        if (result < 0 && errno == EINTR) {
+            if (++interrupted >= CLIENT_IO_INTERRUPTION_LIMIT) return -1;
+            continue;
+        }
         return -1;
     }
     return 0;

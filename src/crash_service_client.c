@@ -13,6 +13,7 @@
 #include <rin/contract_abi.h>
 
 #define RINRUNTIME_CRASH_SERVICE_IO_IDLE_LIMIT 5u
+#define RINRUNTIME_CRASH_SERVICE_IO_INTERRUPTION_LIMIT 32u
 #define RINRUNTIME_CRASH_SERVICE_SYSTEM_SCOPE UINT16_C(1)
 static uint64_t g_crash_service_diagnostic_request_id = UINT64_C(1);
 
@@ -33,6 +34,7 @@ static int crash_service_send_exact(int fd, const void* input, size_t size)
 {
     const uint8_t* bytes = (const uint8_t*)input;
     size_t offset = 0u;
+    uint32_t interrupted = 0u;
     while (offset < size) {
         ssize_t count;
         if (!crash_service_wait(fd, RINRUNTIME_POLL_WAIT_WRITABLE)) return 0;
@@ -40,9 +42,14 @@ static int crash_service_send_exact(int fd, const void* input, size_t size)
         if (count > 0) {
             if ((size_t)count > size - offset) return 0;
             offset += (size_t)count;
+            interrupted = 0u;
             continue;
         }
-        if (count < 0 && errno == EINTR) continue;
+        if (count < 0 && errno == EINTR) {
+            if (++interrupted >= RINRUNTIME_CRASH_SERVICE_IO_INTERRUPTION_LIMIT)
+                return 0;
+            continue;
+        }
         return 0;
     }
     return 1;
@@ -52,6 +59,7 @@ static int crash_service_receive_exact(int fd, void* output, size_t size)
 {
     uint8_t* bytes = (uint8_t*)output;
     size_t offset = 0u;
+    uint32_t interrupted = 0u;
     while (offset < size) {
         ssize_t count;
         if (!crash_service_wait(fd, RINRUNTIME_POLL_WAIT_READABLE)) return 0;
@@ -59,9 +67,14 @@ static int crash_service_receive_exact(int fd, void* output, size_t size)
         if (count > 0) {
             if ((size_t)count > size - offset) return 0;
             offset += (size_t)count;
+            interrupted = 0u;
             continue;
         }
-        if (count < 0 && errno == EINTR) continue;
+        if (count < 0 && errno == EINTR) {
+            if (++interrupted >= RINRUNTIME_CRASH_SERVICE_IO_INTERRUPTION_LIMIT)
+                return 0;
+            continue;
+        }
         return 0;
     }
     return 1;

@@ -25,6 +25,7 @@
 #define RIN_RUNTIME_GUI_MAX_PAYLOAD 8192u
 #define RIN_RUNTIME_GUI_MAX_BUFFER_BYTES (64u * 1024u * 1024u)
 #define RIN_RUNTIME_GUI_REQUEST_TIMEOUT_MS 8000u
+#define RIN_RUNTIME_GUI_IO_INTERRUPTION_LIMIT 32u
 #define RIN_RUNTIME_GUI_ASYNC_QUEUE_CAPACITY 32u
 #define RIN_RUNTIME_GUI_ASYNC_SECOND_PAYLOAD_MAX 512u
 
@@ -293,15 +294,21 @@ static void runtime_close_connection(void) {
 static int runtime_send_exact(const void* data, uint32_t size) {
     const uint8_t* bytes = (const uint8_t*)data;
     uint32_t offset = 0u;
+    uint32_t interrupted = 0u;
     while (offset < size) {
         ssize_t count = send(g_compositor_fd, bytes + offset, size - offset,
                              MSG_NOSIGNAL);
         if (count > 0) {
             if ((uint32_t)count > size - offset) return -1;
             offset += (uint32_t)count;
+            interrupted = 0u;
             continue;
         }
-        if (count < 0 && errno == EINTR) continue;
+        if (count < 0 && errno == EINTR) {
+            if (++interrupted >= RIN_RUNTIME_GUI_IO_INTERRUPTION_LIMIT)
+                return -1;
+            continue;
+        }
         return -1;
     }
     return 0;
@@ -311,6 +318,7 @@ static int runtime_receive_exact(void* data, uint32_t size,
                                  uint64_t deadline_ms) {
     uint8_t* bytes = (uint8_t*)data;
     uint32_t offset = 0u;
+    uint32_t interrupted = 0u;
     while (offset < size) {
         uint64_t now_ms;
         uint64_t remaining_ms;
@@ -331,9 +339,14 @@ static int runtime_receive_exact(void* data, uint32_t size,
             if (count > 0) {
                 if ((uint32_t)count > size - offset) return -1;
                 offset += (uint32_t)count;
+                interrupted = 0u;
                 continue;
             }
-            if (count < 0 && errno == EINTR) continue;
+            if (count < 0 && errno == EINTR) {
+                if (++interrupted >= RIN_RUNTIME_GUI_IO_INTERRUPTION_LIMIT)
+                    return -1;
+                continue;
+            }
             return -1;
         }
     }
@@ -1201,7 +1214,8 @@ static int runtime_async_pump(uint32_t timeout_ms) {
             remaining = expected - g_async_requests.offset;
             sent = send(g_compositor_fd, bytes + g_async_requests.offset,
                         remaining, MSG_DONTWAIT | MSG_NOSIGNAL);
-            if (sent < 0 && errno == EINTR) continue;
+            if (sent < 0 && errno == EINTR)
+                return (int)completed_count;
             if (sent < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
                 int ready;
                 if (timeout_ms == 0u || waited != 0)
@@ -1235,7 +1249,8 @@ static int runtime_async_pump(uint32_t timeout_ms) {
                                        g_async_requests.reply_offset;
             ssize_t received = recv(g_compositor_fd,
                 bytes + g_async_requests.reply_offset, remaining, MSG_DONTWAIT);
-            if (received < 0 && errno == EINTR) continue;
+            if (received < 0 && errno == EINTR)
+                return (int)completed_count;
             if (received < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
                 int ready;
                 if (timeout_ms == 0u || waited != 0)
@@ -1305,7 +1320,8 @@ static int runtime_async_pump(uint32_t timeout_ms) {
                 g_async_requests.reply_payload +
                     g_async_requests.reply_offset,
                 remaining, MSG_DONTWAIT);
-            if (received < 0 && errno == EINTR) continue;
+            if (received < 0 && errno == EINTR)
+                return (int)completed_count;
             if (received < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
                 int ready;
                 if (timeout_ms == 0u || waited != 0)

@@ -9,6 +9,8 @@
 #include <string.h>
 #include <unistd.h>
 
+#define RINRUNTIME_SAFE_SAVE_WRITE_INTERRUPTION_LIMIT 32u
+
 #ifdef _WIN32
 #include <io.h>
 #include <process.h>
@@ -93,6 +95,7 @@ static int posix_write(void* context, uintptr_t handle, const uint8_t* bytes,
 {
     int descriptor;
     ssize_t written;
+    uint32_t interrupted = 0u;
     (void)context;
     if (bytes_written_out == NULL || (size != 0u && bytes == NULL) ||
         posix_handle_to_fd(handle, &descriptor) != 0) {
@@ -101,7 +104,11 @@ static int posix_write(void* context, uintptr_t handle, const uint8_t* bytes,
     *bytes_written_out = 0u;
     do {
         written = write(descriptor, bytes, size);
-    } while (written < 0 && errno == EINTR);
+        if (written >= 0) break;
+        if (errno != EINTR ||
+            ++interrupted >= RINRUNTIME_SAFE_SAVE_WRITE_INTERRUPTION_LIMIT)
+            break;
+    } while (1);
     if (written <= 0 || (uintmax_t)written > size) return -1;
     *bytes_written_out = (uint32_t)written;
     return 0;
@@ -202,4 +209,3 @@ RinRuntimeSafeSaveResult rinruntime_safe_save_posix(
 #endif
     return rinruntime_safe_save(&backend, target_path, data, size);
 }
-

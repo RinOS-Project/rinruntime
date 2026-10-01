@@ -12,12 +12,21 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#define RINRUNTIME_FILE_PORTAL_STARTUP_IO_INTERRUPTION_LIMIT 32u
+
 static int startup_receive_exact(int descriptor, void* output, size_t size)
 {
     unsigned char* cursor = (unsigned char*)output;
+    uint32_t interrupted = 0u;
     while (size != 0u) {
         ssize_t count = recv(descriptor, cursor, size, 0);
-        if (count < 0 && errno == EINTR) continue;
+        if (count > 0) interrupted = 0u;
+        if (count < 0 && errno == EINTR) {
+            if (++interrupted >=
+                RINRUNTIME_FILE_PORTAL_STARTUP_IO_INTERRUPTION_LIMIT)
+                return 0;
+            continue;
+        }
         if (count <= 0 || (size_t)count > size) return 0;
         cursor += (size_t)count;
         size -= (size_t)count;
@@ -28,9 +37,16 @@ static int startup_receive_exact(int descriptor, void* output, size_t size)
 static int startup_send_exact(int descriptor, const void* input, size_t size)
 {
     const unsigned char* cursor = (const unsigned char*)input;
+    uint32_t interrupted = 0u;
     while (size != 0u) {
         ssize_t count = send(descriptor, cursor, size, MSG_NOSIGNAL);
-        if (count < 0 && errno == EINTR) continue;
+        if (count > 0) interrupted = 0u;
+        if (count < 0 && errno == EINTR) {
+            if (++interrupted >=
+                RINRUNTIME_FILE_PORTAL_STARTUP_IO_INTERRUPTION_LIMIT)
+                return 0;
+            continue;
+        }
         if (count <= 0 || (size_t)count > size) return 0;
         cursor += (size_t)count;
         size -= (size_t)count;

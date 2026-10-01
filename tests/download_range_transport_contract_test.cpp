@@ -260,7 +260,7 @@ int main() {
         shortBuffer, request, shortBufferBytes, sizeof(shortBufferBytes),
         wholeSize));
     assert(wholeSize == 0u);
-    assert(shortBufferBytes[0] == 0xffu && shortBufferBytes[1] == 0xffu);
+    for (const std::uint8_t byte : shortBufferBytes) assert(byte == 0u);
 
     Owner failedReadOwner;
     failedReadOwner.failAfterFirst = true;
