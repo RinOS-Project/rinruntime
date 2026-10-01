@@ -61,6 +61,9 @@ int main()
            decoded.empty());
     assert(decoder.decode(nullptr, 1u, decoded) ==
            RinCompression::ZstdResult::InvalidArgument);
+    decoded.assign(1u, 0xa5u);
+    assert(decoder.decode(nullptr, 0u, decoded) ==
+           RinCompression::ZstdResult::InvalidArgument && decoded.empty());
 
     /* A frame carrying a compressed-block type is rejected explicitly. */
     const std::uint8_t compressedBlock[] = {

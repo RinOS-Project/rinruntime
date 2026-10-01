@@ -454,6 +454,8 @@ those algorithms without changing the public filesystem or service boundary.
 The decoder also rejects frames containing more than `kZstdMaximumBlocks`
 (65,536) blocks, including empty raw blocks, so block-count CPU amplification
 fails closed as `Limit` without changing the public/private ownership split.
+Null compressed input is rejected as `InvalidArgument`, including the zero-size
+case, before the frame header is inspected.
 The canonical `rinruntime/rinruntime.hpp` umbrella includes this codec for
 ordinary applications and external toolkits; it does not grant filesystem,
 service, Browser, or publication authority.

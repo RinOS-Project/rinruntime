@@ -428,7 +428,7 @@ public:
         try {
 #endif
         output.clear();
-        if (compressed == nullptr && compressedSize != 0u)
+        if (compressed == nullptr)
             return ZstdResult::InvalidArgument;
         if (compressedSize > kZstdMaximumBytes ||
             maximumOutputBytes > kZstdMaximumBytes)
