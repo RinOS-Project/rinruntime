@@ -65,13 +65,34 @@ static int service_id_matches(const char id[RINRUNTIME_SERVICE_ID_MAX],
     return 0;
 }
 
+static int service_result_valid(intptr_t result)
+{
+    switch (result) {
+    case RIN_SUCCESS:
+    case RIN_ERROR_INVALID_ARGUMENT:
+    case RIN_ERROR_NOT_SUPPORTED:
+    case RIN_ERROR_NOT_FOUND:
+    case RIN_ERROR_ACCESS_DENIED:
+    case RIN_ERROR_NO_MEMORY:
+    case RIN_ERROR_BUSY:
+    case RIN_ERROR_TIMEOUT:
+    case RIN_ERROR_CANCELLED:
+    case RIN_ERROR_IO:
+    case RIN_ERROR_WOULD_BLOCK:
+    case RIN_ERROR_ABI_MISMATCH:
+    case RIN_ERROR_STALE_HANDLE:
+    case RIN_ERROR_INTEGRITY:
+        return 1;
+    default:
+        return 0;
+    }
+}
+
 static RinResult service_status_result(intptr_t raw_result)
 {
     if (raw_result == 0) return RIN_SUCCESS;
-    /* RinOS syscalls use the established negative-errno status convention.
-     * Preserve known negative status values; an out-of-range or positive
-     * word is never allowed to become a successful public result. */
-    if (raw_result < 0 && raw_result >= -4095) return (RinResult)raw_result;
+    /* Only the public SDK result namespace may cross this adapter. */
+    if (service_result_valid(raw_result)) return (RinResult)raw_result;
     return RIN_ERROR_IO;
 }
 
