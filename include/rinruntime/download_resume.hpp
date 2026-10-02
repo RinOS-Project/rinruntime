@@ -233,6 +233,9 @@ struct DownloadRangeRequest {
         } catch (const std::bad_alloc&) {
             clear();
             return false;
+        } catch (...) {
+            clear();
+            return false;
         }
 #endif
     }
@@ -251,6 +254,9 @@ struct DownloadRangeRequest {
             return true;
 #if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
         } catch (const std::bad_alloc&) {
+            output.clear();
+            return false;
+        } catch (...) {
             output.clear();
             return false;
         }
@@ -475,6 +481,9 @@ inline bool makeDownloadRangeResponse(
         return true;
 #if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
     } catch (const std::bad_alloc&) {
+        output = DownloadRangeResponse{};
+        return false;
+    } catch (...) {
         output = DownloadRangeResponse{};
         return false;
     }
