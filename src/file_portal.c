@@ -43,6 +43,29 @@ static int rinruntime_token_well_formed(const RinFilePortalTokenV1* token)
                               sizeof(token->authentication_tag));
 }
 
+static int rinruntime_file_portal_open_reply_valid(
+    const RinFilePortalCallV1* call, const RinFilePortalTokenV1* token,
+    uint32_t requested_rights, int32_t minimum_fd, uint32_t descriptor_flags)
+{
+    return call != NULL && token != NULL &&
+           call->struct_size == sizeof(*call) &&
+           call->version == RIN_FILE_PORTAL_CALL_VERSION &&
+           call->operation == RIN_FILE_PORTAL_OPERATION_OPEN &&
+           call->descriptor == minimum_fd &&
+           call->requested_rights == requested_rights &&
+           call->target_process_id == 0u &&
+           call->target_process_cookie == 0u &&
+           call->descriptor_flags == descriptor_flags &&
+           call->granted_rights == requested_rights &&
+           call->process_fd >= minimum_fd &&
+           call->file_object_id == token->file_object_id &&
+           call->expires_at_epoch != 0u && call->request_id == 0u &&
+           call->new_generation == 0u && call->request_status == 0 &&
+           call->reserved_status == 0u &&
+           rinruntime_all_zero((const uint8_t*)call->reserved,
+                               sizeof(call->reserved));
+}
+
 RinRuntimeFilePortalResult rinruntime_file_portal_open(
     const RinFilePortalTokenV1* token, uint32_t requested_rights,
     int32_t minimum_fd, uint32_t descriptor_flags, int32_t* descriptor_out)
@@ -70,10 +93,8 @@ RinRuntimeFilePortalResult rinruntime_file_portal_open(
     call.token = *token;
     call.process_fd = -1;
     result = rin_file_portal_call(&call);
-    if (result == RIN_RESULT_OK && call.granted_rights == requested_rights &&
-        call.process_fd >= minimum_fd &&
-        call.file_object_id == token->file_object_id &&
-        call.expires_at_epoch != 0u) {
+    if (result == RIN_RESULT_OK && rinruntime_file_portal_open_reply_valid(
+            &call, token, requested_rights, minimum_fd, descriptor_flags)) {
         installed = call.process_fd;
     } else if (result == RIN_RESULT_OK && call.process_fd >= minimum_fd) {
         /* A successful syscall with a malformed output must not leave a
@@ -90,4 +111,3 @@ RinRuntimeFilePortalResult rinruntime_file_portal_open(
     *descriptor_out = installed;
     return RINRUNTIME_FILE_PORTAL_OK;
 }
-
