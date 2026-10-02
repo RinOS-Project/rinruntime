@@ -196,9 +196,10 @@ public:
 
 private:
     int failSign(std::uint8_t* signature, std::size_t signature_capacity) {
-        if (signature != nullptr && signature_capacity != 0u &&
-            signature_capacity <= kMaxSignatureBytes)
-            clearBytes(signature, signature_capacity);
+        if (signature != nullptr && signature_capacity != 0u)
+            clearBytes(signature, signature_capacity < kMaxSignatureBytes
+                                      ? signature_capacity
+                                      : kMaxSignatureBytes);
         clearBytes(capability_, sizeof(capability_));
         state_ = TlsClientCertificateTransportState::Failed;
         return -1;
