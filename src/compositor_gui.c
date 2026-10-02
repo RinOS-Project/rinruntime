@@ -291,6 +291,46 @@ static void runtime_close_connection(void) {
     runtime_async_abort_all(RIN_RESULT_IO);
 }
 
+/* The compositor service keeps its socket protocol private and reports
+ * errno-shaped values.  Never let those private values cross the public
+ * rinruntime ABI; translate the complete service-owned set here. */
+static int runtime_compositor_status_known(int32_t status) {
+    switch (status) {
+    case 0:
+    case -1:  /* EINVAL */
+    case -4:  /* compositor capability/authority rejection */
+    case -11: /* EAGAIN */
+    case -13: /* EACCES */
+    case -22: /* EINVAL */
+    case -71: /* EPROTO */
+    case -95: /* ENOTSUP */
+        return 1;
+    default:
+        return 0;
+    }
+}
+
+static int32_t runtime_public_result(int32_t status) {
+    switch (status) {
+    case 0:   return RIN_RESULT_OK;
+    case -1:  /* EINVAL */
+    case -22: /* EINVAL */
+        return RIN_RESULT_INVALID_ARGUMENT;
+    case -4:  /* compositor capability/authority rejection */
+        return RIN_RESULT_ACCESS_DENIED;
+    case -11: /* EAGAIN */
+        return RIN_RESULT_WOULD_BLOCK;
+    case -13: /* EACCES */
+        return RIN_RESULT_ACCESS_DENIED;
+    case -71: /* EPROTO */
+        return RIN_RESULT_VERSION_MISMATCH;
+    case -95: /* ENOTSUP */
+        return RIN_RESULT_NOT_SUPPORTED;
+    default:
+        return RIN_RESULT_CORRUPT_DATA;
+    }
+}
+
 static int runtime_send_exact(const void* data, uint32_t size) {
     const uint8_t* bytes = (const uint8_t*)data;
     uint32_t offset = 0u;
@@ -362,7 +402,7 @@ static int runtime_deadline_after(uint64_t now_ms, uint64_t timeout_ms,
     return 0;
 }
 
-/* Returns 0 for a valid transport exchange; status is the compositor status. */
+/* Returns 0 for a valid transport exchange; status is a public result. */
 static int runtime_request(uint32_t type, const void* payload,
                            uint32_t payload_size, void* reply_payload,
                            uint32_t reply_capacity, uint32_t* reply_size,
@@ -475,8 +515,19 @@ static int runtime_request(uint32_t type, const void* payload,
         }
     }
     reply_payload_ms = rin_monotonic_ms();
-    if (reply_size) *reply_size = reply.payload_size;
-    if (status_out) *status_out = (int32_t)reply.reserved;
+    {
+        const int32_t private_status = (int32_t)reply.reserved;
+        if (!runtime_compositor_status_known(private_status)) {
+            if (reply_payload && reply.payload_size != 0u)
+                memset(reply_payload, 0, reply.payload_size);
+            if (reply_size) *reply_size = 0u;
+            if (status_out) *status_out = RIN_RESULT_CORRUPT_DATA;
+            runtime_close_connection();
+            return 0;
+        }
+        if (reply_size) *reply_size = reply.payload_size;
+        if (status_out) *status_out = runtime_public_result(private_status);
+    }
     if (reply_payload_ms - request_start_ms >= 16u) {
         snprintf(diagnostic, sizeof(diagnostic),
                  "[rinruntime] compositor rpc type=%u request=%u "
@@ -486,7 +537,7 @@ static int runtime_request(uint32_t type, const void* payload,
                  (unsigned long long)(reply_header_ms - request_start_ms),
                  (unsigned long long)(reply_payload_ms - request_start_ms),
                  (unsigned long long)(reply_payload_ms - request_start_ms),
-                 (int)reply.reserved);
+                 (int)runtime_public_result((int32_t)reply.reserved));
             fputs(diagnostic, stderr);
     }
     return 0;
@@ -843,7 +894,7 @@ static void runtime_async_apply_completion(RinRuntimeGuiAsyncJob* job,
     if (job->result_kind == RIN_RUNTIME_GUI_ASYNC_RESULT_INPUT) {
         if (surface) {
             surface->input_poll_pending = 0u;
-            if (status == -11 && payload_size == 0u) {
+            if (status == RIN_RESULT_WOULD_BLOCK && payload_size == 0u) {
                 surface->input_error = 0;
             } else if (status != 0) {
                 surface->input_error = status;
@@ -930,7 +981,6 @@ static int runtime_async_enqueue(uint32_t type, const void* payload,
                                  RinRuntimeGuiHandle handle, uint64_t cookie,
                                  uint32_t result_kind) {
     RinRuntimeGuiAsyncJob* job;
-    RinRuntimeGuiSurface* surface = handle != 0u ? runtime_surface(handle) : 0;
     uint32_t slot;
     if (g_compositor_fd < 0) return RIN_RESULT_IO;
     if (payload_size > RIN_RUNTIME_GUI_MAX_PAYLOAD ||
@@ -1282,8 +1332,13 @@ static int runtime_async_pump(uint32_t timeout_ms) {
                 return -1;
             }
             {
-                const int32_t status =
+                const int32_t private_status =
                     (int32_t)g_async_requests.reply.reserved;
+                const int status_known =
+                    runtime_compositor_status_known(private_status);
+                const int32_t status = status_known
+                    ? runtime_public_result(private_status)
+                    : RIN_RESULT_CORRUPT_DATA;
                 if (g_async_requests.reply.payload_size != 0u) {
                     g_async_requests.stage =
                         RIN_RUNTIME_GUI_ASYNC_RECEIVE_PAYLOAD;
@@ -1299,6 +1354,10 @@ static int runtime_async_pump(uint32_t timeout_ms) {
                 const uint32_t result_kind = job->result_kind;
                 runtime_async_complete_head(status, 0, 0u);
                 ++completed_count;
+                if (!status_known) {
+                    runtime_close_connection();
+                    return -1;
+                }
                 if (result_kind == RIN_RUNTIME_GUI_ASYNC_RESULT_RESIZE &&
                     status != 0) {
                     runtime_close_connection();
@@ -1342,8 +1401,13 @@ static int runtime_async_pump(uint32_t timeout_ms) {
             if (g_async_requests.reply_offset <
                 g_async_requests.reply.payload_size) continue;
             {
-                const int32_t status =
+                const int32_t private_status =
                     (int32_t)g_async_requests.reply.reserved;
+                const int status_known =
+                    runtime_compositor_status_known(private_status);
+                const int32_t status = status_known
+                    ? runtime_public_result(private_status)
+                    : RIN_RESULT_CORRUPT_DATA;
                 const uint32_t reply_size =
                     g_async_requests.reply.payload_size;
                 const uint32_t result_kind = job->result_kind;
@@ -1354,8 +1418,13 @@ static int runtime_async_pump(uint32_t timeout_ms) {
                     continue;
                 }
                 runtime_async_complete_head(status,
-                    g_async_requests.reply_payload, reply_size);
+                    status_known ? g_async_requests.reply_payload : 0,
+                    status_known ? reply_size : 0u);
                 ++completed_count;
+                if (!status_known) {
+                    runtime_close_connection();
+                    return -1;
+                }
                 if ((result_kind == RIN_RUNTIME_GUI_ASYNC_RESULT_RESIZE ||
                      result_kind == RIN_RUNTIME_GUI_ASYNC_RESULT_NONE) &&
                     status != 0) {
