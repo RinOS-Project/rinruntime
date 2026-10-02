@@ -74,6 +74,15 @@ static bool throwingCallback(void*)
     throw std::runtime_error("container callback failure");
 }
 
+static bool collectSink(void* context, const std::uint8_t* bytes,
+                        std::size_t size)
+{
+    if (context == nullptr || (bytes == nullptr && size != 0u)) return false;
+    static_cast<std::string*>(context)->append(
+        reinterpret_cast<const char*>(bytes), size);
+    return true;
+}
+
 static std::vector<std::uint8_t> makeTar()
 {
     std::vector<std::uint8_t> bytes(2048u, 0u);
@@ -1109,6 +1118,14 @@ int main()
            reader.size() == 1u && reader.entries()[0].name == "a.txt");
     assert(reader.readEntry(0u, output) ==
            RinRuntime::ArchiveContainerResult::Ok && output == "hello");
+    std::string streamed;
+    assert(reader.readEntryToSink(0u, &collectSink, &streamed) ==
+           RinRuntime::ArchiveContainerResult::Ok && streamed == "hello");
+    streamed.clear();
+    DeadlineOnce sinkDeadline{};
+    assert(reader.readEntryToSinkWithDeadline(
+               0u, &collectSink, &streamed, stopOnce, &sinkDeadline) ==
+           RinRuntime::ArchiveContainerResult::Deadline && streamed.empty());
     output = "poison";
     assert(reader.readEntryWithCancellation(0u, output, stopImmediately,
                                             nullptr) ==
@@ -1160,6 +1177,9 @@ int main()
            reader.entries()[0].size == sizeof(streamPayload));
     assert(reader.readEntry(0u, output) ==
            RinRuntime::ArchiveContainerResult::Ok && output == "stream");
+    streamed.clear();
+    assert(reader.readEntryToSink(0u, &collectSink, &streamed) ==
+           RinRuntime::ArchiveContainerResult::Ok && streamed == "stream");
     output = "poison";
     assert(reader.readEntryWithCancellation(0u, output, stopImmediately,
                                             nullptr) ==

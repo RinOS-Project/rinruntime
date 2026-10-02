@@ -48,6 +48,12 @@ struct ArchiveContainerEntry {
     bool directory = false;
 };
 
+/* A caller-owned staging sink for one validated archive member.  The public
+ * container adapter never supplies filesystem or package authority; callers
+ * decide whether and where accepted chunks are stored. */
+using ArchiveContainerSinkFunction = bool (*)(
+    void* context, const std::uint8_t* bytes, std::size_t size);
+
 /*
  * Select one of the public memory-only archive readers from a bounded magic
  * probe, then expose a common metadata/read contract.  This class never opens
@@ -290,6 +296,74 @@ public:
 #endif
     }
 
+    /* Stream one validated member into a caller-owned staging sink.  The
+     * sink receives at most 64 KiB per callback.  A failed callback or any
+     * non-Ok result never publishes an extracted member; callers must discard
+     * their staging object on failure.  Directories produce no callback and
+     * are considered successful after admission. */
+    ArchiveContainerResult readEntryToSink(
+        std::size_t index, ArchiveContainerSinkFunction sink,
+        void* context) const
+    {
+        return readEntryToSinkWithDeadline(index, sink, context, nullptr,
+                                           nullptr);
+    }
+
+    ArchiveContainerResult readEntryToSinkWithDeadline(
+        std::size_t index, ArchiveContainerSinkFunction sink, void* context,
+        ArchiveDeflateDeadlineFunction deadline, void* deadlineContext) const
+    {
+        if (index >= entries_.size() || sink == nullptr || context == nullptr)
+            return ArchiveContainerResult::InvalidArgument;
+#if defined(__cpp_exceptions) || defined(_CPPUNWIND)
+        try {
+#endif
+            switch (kind_) {
+            case ArchiveContainerKind::Zip:
+                return map(std::get<ArchiveZipReader>(reader_)
+                               .readEntryToSinkWithDeadline(
+                                   index, sink, context, deadline,
+                                   deadlineContext));
+            case ArchiveContainerKind::Tar:
+                return map(std::get<ArchiveTarReader>(reader_)
+                               .readEntryToSinkWithDeadline(
+                                   index, sink, context, deadline,
+                                   deadlineContext));
+            case ArchiveContainerKind::TarGzip:
+                return map(std::get<ArchiveTarGzipReader>(reader_)
+                               .readEntryToSinkWithDeadline(
+                                   index, sink, context, deadline,
+                                   deadlineContext));
+            case ArchiveContainerKind::SevenZip: {
+                const Archive7zReader& reader =
+                    std::get<Archive7zReader>(reader_);
+                const Archive7zEntrySummary* entry = reader.entry(index);
+                if (entry == nullptr || entry->offset > stream_.size() ||
+                    entry->size > stream_.size() - entry->offset)
+                    return ArchiveContainerResult::Malformed;
+                if (entry->directory) return ArchiveContainerResult::Ok;
+                return copyToSinkWithDeadline(
+                    reinterpret_cast<const std::uint8_t*>(stream_.data()) +
+                        entry->offset,
+                    entry->size, sink, context, deadline, deadlineContext);
+            }
+            case ArchiveContainerKind::Xz:
+            case ArchiveContainerKind::Gzip:
+                return copyToSinkWithDeadline(
+                    reinterpret_cast<const std::uint8_t*>(stream_.data()),
+                    stream_.size(), sink, context, deadline, deadlineContext);
+            default:
+                return ArchiveContainerResult::Unsupported;
+            }
+#if defined(__cpp_exceptions) || defined(_CPPUNWIND)
+        } catch (const std::bad_alloc&) {
+            return ArchiveContainerResult::Limit;
+        } catch (...) {
+            return ArchiveContainerResult::Malformed;
+        }
+#endif
+    }
+
     void clear()
     {
         kind_ = ArchiveContainerKind::Unknown;
@@ -364,6 +438,26 @@ private:
             const std::size_t part =
                 (size - copied) > 65536u ? 65536u : size - copied;
             output.append(reinterpret_cast<const char*>(bytes + copied), part);
+            copied += part;
+        }
+        return ArchiveContainerResult::Ok;
+    }
+
+    static ArchiveContainerResult copyToSinkWithDeadline(
+        const std::uint8_t* bytes, std::size_t size,
+        ArchiveContainerSinkFunction sink, void* context,
+        ArchiveDeflateDeadlineFunction deadline, void* deadlineContext)
+    {
+        if (deadline != nullptr && deadline(deadlineContext))
+            return ArchiveContainerResult::Deadline;
+        std::size_t copied = 0u;
+        while (copied < size) {
+            if (deadline != nullptr && deadline(deadlineContext))
+                return ArchiveContainerResult::Deadline;
+            const std::size_t part =
+                (size - copied) > 65536u ? 65536u : size - copied;
+            if (!sink(context, bytes + copied, part))
+                return ArchiveContainerResult::Malformed;
             copied += part;
         }
         return ArchiveContainerResult::Ok;
