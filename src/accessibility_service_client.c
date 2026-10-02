@@ -93,6 +93,36 @@ static RinResultCode client_next_header(RinAccessibilityServiceClientV1* client,
     return RIN_RESULT_OK;
 }
 
+static int client_result_valid(RinResultCode result)
+{
+    switch (result) {
+    case RIN_RESULT_OK:
+    case RIN_RESULT_INVALID_ARGUMENT:
+    case RIN_RESULT_NOT_FOUND:
+    case RIN_RESULT_IO:
+    case RIN_RESULT_ACCESS_DENIED:
+    case RIN_RESULT_NO_MEMORY:
+    case RIN_RESULT_ALREADY_EXISTS:
+    case RIN_RESULT_BUSY:
+    case RIN_RESULT_TIMED_OUT:
+    case RIN_RESULT_NOT_SUPPORTED:
+    case RIN_RESULT_INVALID_HANDLE:
+    case RIN_RESULT_WRONG_TYPE:
+    case RIN_RESULT_TABLE_FULL:
+    case RIN_RESULT_WOULD_BLOCK:
+    case RIN_RESULT_INTERRUPTED:
+    case RIN_RESULT_BUFFER_TOO_SMALL:
+    case RIN_RESULT_CORRUPT_DATA:
+    case RIN_RESULT_SIGNATURE_REJECTED:
+    case RIN_RESULT_VERSION_MISMATCH:
+    case RIN_RESULT_LIMIT_EXCEEDED:
+    case RIN_RESULT_DEVICE_LOST:
+        return 1;
+    default:
+        return 0;
+    }
+}
+
 static RinResultCode client_reply_header(
     const RinAccessibilityServiceMessageHeaderV1* request,
     const RinAccessibilityServiceMessageHeaderV1* reply,
@@ -103,7 +133,8 @@ static RinResultCode client_reply_header(
         reply->version != RIN_ACCESSIBILITY_SERVICE_ABI_VERSION ||
         reply->opcode != opcode || reply->request_id != request->request_id ||
         reply->flags != 0u || reply->reserved != 0u ||
-        reply->payload_size != expected_payload_size) {
+        reply->payload_size != expected_payload_size ||
+        !client_result_valid((RinResultCode)reply->status)) {
         return RIN_RESULT_CORRUPT_DATA;
     }
     return (RinResultCode)reply->status;
@@ -175,6 +206,7 @@ RinResultCode rin_accessibility_service_client_query(
     RinAccessibilityServiceMessageHeaderV1 reply;
     RinResultCode result;
     if (query == NULL || snapshot_out == NULL) return RIN_RESULT_INVALID_ARGUMENT;
+    memset(snapshot_out, 0, sizeof(*snapshot_out));
     result = client_next_header(client, RIN_ACCESSIBILITY_SERVICE_OP_QUERY,
                                 sizeof(*query), &request);
     if (result != RIN_RESULT_OK) return result;
@@ -239,6 +271,7 @@ RinResultCode rin_accessibility_service_client_receive_action(
     RinResultCode result;
     if (client == NULL || action_out == NULL || client->socket_fd < 0 ||
         client->pending_service_action_id != 0u) return RIN_RESULT_INVALID_ARGUMENT;
+    memset(action_out, 0, sizeof(*action_out));
     result = client_wait_readable(client->socket_fd, timeout_ms);
     if (result != RIN_RESULT_OK) return result;
     memset(&request, 0, sizeof(request));
@@ -260,7 +293,9 @@ RinResultCode rin_accessibility_service_client_complete_action(
 {
     RinAccessibilityServiceMessageHeaderV1 reply;
     if (client == NULL || client->socket_fd < 0 ||
-        client->pending_service_action_id == 0u) return RIN_RESULT_INVALID_ARGUMENT;
+        client->pending_service_action_id == 0u ||
+        !client_result_valid(action_status))
+        return RIN_RESULT_INVALID_ARGUMENT;
     memset(&reply, 0, sizeof(reply));
     reply.struct_size = sizeof(reply);
     reply.version = RIN_ACCESSIBILITY_SERVICE_ABI_VERSION;
