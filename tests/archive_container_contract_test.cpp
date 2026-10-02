@@ -1122,6 +1122,9 @@ int main()
     assert(reader.readEntryToSink(0u, &collectSink, &streamed) ==
            RinRuntime::ArchiveContainerResult::Ok && streamed == "hello");
     streamed.clear();
+    assert(reader.readEntryToSinkWithCancellation(
+               0u, &collectSink, &streamed, stopImmediately, nullptr) ==
+           RinRuntime::ArchiveContainerResult::Cancelled && streamed.empty());
     DeadlineOnce sinkDeadline{};
     assert(reader.readEntryToSinkWithDeadline(
                0u, &collectSink, &streamed, stopOnce, &sinkDeadline) ==
@@ -1180,6 +1183,10 @@ int main()
     streamed.clear();
     assert(reader.readEntryToSink(0u, &collectSink, &streamed) ==
            RinRuntime::ArchiveContainerResult::Ok && streamed == "stream");
+    streamed.clear();
+    assert(reader.readEntryToSinkWithCancellation(
+               0u, &collectSink, &streamed, stopImmediately, nullptr) ==
+           RinRuntime::ArchiveContainerResult::Cancelled && streamed.empty());
     output = "poison";
     assert(reader.readEntryWithCancellation(0u, output, stopImmediately,
                                             nullptr) ==

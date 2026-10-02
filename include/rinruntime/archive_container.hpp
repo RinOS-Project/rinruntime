@@ -235,6 +235,80 @@ public:
 #endif
     }
 
+    ArchiveContainerResult readEntryToSinkWithCancellation(
+        std::size_t index, ArchiveContainerSinkFunction sink, void* context,
+        ArchiveDeflateCancellationFunction cancellation,
+        void* cancellationContext) const
+    {
+        if (index >= entries_.size() || sink == nullptr || context == nullptr)
+            return ArchiveContainerResult::InvalidArgument;
+#if defined(__cpp_exceptions) || defined(_CPPUNWIND)
+        try {
+#endif
+            if (cancellationRequested(cancellation, cancellationContext))
+                return ArchiveContainerResult::Cancelled;
+            switch (kind_) {
+            case ArchiveContainerKind::Zip:
+                return map(std::get<ArchiveZipReader>(reader_)
+                               .readEntryToSink(
+                                   index, sink, context, cancellation,
+                                   cancellationContext));
+            case ArchiveContainerKind::Tar: {
+                if (entries_[index].directory)
+                    return ArchiveContainerResult::Ok;
+                std::size_t size = 0u;
+                const std::uint8_t* bytes =
+                    std::get<ArchiveTarReader>(reader_).data(index, &size);
+                if (bytes == nullptr)
+                    return ArchiveContainerResult::Malformed;
+                return copyToSinkWithCancellation(
+                    bytes, size, sink, context, cancellation,
+                    cancellationContext);
+            }
+            case ArchiveContainerKind::TarGzip: {
+                if (entries_[index].directory)
+                    return ArchiveContainerResult::Ok;
+                std::size_t size = 0u;
+                const std::uint8_t* bytes =
+                    std::get<ArchiveTarGzipReader>(reader_).data(index, &size);
+                if (bytes == nullptr)
+                    return ArchiveContainerResult::Malformed;
+                return copyToSinkWithCancellation(
+                    bytes, size, sink, context, cancellation,
+                    cancellationContext);
+            }
+            case ArchiveContainerKind::SevenZip: {
+                const Archive7zReader& reader =
+                    std::get<Archive7zReader>(reader_);
+                const Archive7zEntrySummary* entry = reader.entry(index);
+                if (entry == nullptr || entry->offset > stream_.size() ||
+                    entry->size > stream_.size() - entry->offset)
+                    return ArchiveContainerResult::Malformed;
+                if (entry->directory) return ArchiveContainerResult::Ok;
+                return copyToSinkWithCancellation(
+                    reinterpret_cast<const std::uint8_t*>(stream_.data()) +
+                        entry->offset,
+                    entry->size, sink, context, cancellation,
+                    cancellationContext);
+            }
+            case ArchiveContainerKind::Xz:
+            case ArchiveContainerKind::Gzip:
+                return copyToSinkWithCancellation(
+                    reinterpret_cast<const std::uint8_t*>(stream_.data()),
+                    stream_.size(), sink, context, cancellation,
+                    cancellationContext);
+            default:
+                return ArchiveContainerResult::Unsupported;
+            }
+#if defined(__cpp_exceptions) || defined(_CPPUNWIND)
+        } catch (const std::bad_alloc&) {
+            return ArchiveContainerResult::Limit;
+        } catch (...) {
+            return ArchiveContainerResult::Malformed;
+        }
+#endif
+    }
+
     ArchiveContainerResult readEntryWithDeadline(
         std::size_t index, std::string& output,
         ArchiveDeflateDeadlineFunction deadline, void* deadlineContext) const
@@ -420,6 +494,25 @@ private:
             const std::size_t part =
                 (size - copied) > 65536u ? 65536u : size - copied;
             output.append(reinterpret_cast<const char*>(bytes + copied), part);
+            copied += part;
+        }
+        return ArchiveContainerResult::Ok;
+    }
+
+    static ArchiveContainerResult copyToSinkWithCancellation(
+        const std::uint8_t* bytes, std::size_t size,
+        ArchiveContainerSinkFunction sink, void* context,
+        ArchiveDeflateCancellationFunction cancellation,
+        void* cancellationContext)
+    {
+        std::size_t copied = 0u;
+        while (copied < size) {
+            if (cancellationRequested(cancellation, cancellationContext))
+                return ArchiveContainerResult::Cancelled;
+            const std::size_t part =
+                (size - copied) > 65536u ? 65536u : size - copied;
+            if (!sink(context, bytes + copied, part))
+                return ArchiveContainerResult::Malformed;
             copied += part;
         }
         return ArchiveContainerResult::Ok;
