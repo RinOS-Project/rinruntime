@@ -17,16 +17,34 @@ static void clipboard_zero(void* value, uint64_t size)
     while (size-- != 0u) *bytes++ = 0u;
 }
 
+static int clipboard_result_valid(RinRuntimeClipboardResult result)
+{
+    switch (result) {
+    case RINRUNTIME_CLIPBOARD_OK:
+    case RINRUNTIME_CLIPBOARD_INVALID_ARGUMENT:
+    case RINRUNTIME_CLIPBOARD_NOT_FOUND:
+    case RINRUNTIME_CLIPBOARD_KERNEL_REJECTED:
+    case RINRUNTIME_CLIPBOARD_BUFFER_TOO_SMALL:
+    case RINRUNTIME_CLIPBOARD_MALFORMED_REPLY:
+        return 1;
+    default:
+        return 0;
+    }
+}
+
 static RinRuntimeClipboardResult clipboard_call(
     RinGuiRequestV2* request)
 {
     intptr_t raw_result;
+    RinRuntimeClipboardResult result;
     if (request == NULL) return RINRUNTIME_CLIPBOARD_INVALID_ARGUMENT;
     raw_result = _syscall1((uintptr_t)RIN_SYS_GUI_V2_CALL,
                            (uintptr_t)request);
     if (raw_result < INT32_MIN || raw_result > INT32_MAX)
         return RINRUNTIME_CLIPBOARD_MALFORMED_REPLY;
-    return (RinRuntimeClipboardResult)(RinResultCode)raw_result;
+    result = (RinRuntimeClipboardResult)(RinResultCode)raw_result;
+    return clipboard_result_valid(result) ? result
+                                           : RINRUNTIME_CLIPBOARD_MALFORMED_REPLY;
 }
 
 static int clipboard_request_valid(uint32_t format, uint64_t data_size,
