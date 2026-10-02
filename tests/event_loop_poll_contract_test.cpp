@@ -66,6 +66,19 @@ int main() {
                      &output));
     assert(output.type == EventType::Close);
     assert(read(pipe_fds[0], &byte, sizeof(byte)) == 1);
+
+    /* A caller can retarget a live public watch without losing its
+     * generation-bound ID.  The adapter must observe the new descriptor and
+     * the new caller-owned event on its next wait. */
+    Event updated_event = {};
+    updated_event.type = EventType::Paint;
+    assert(loop.updateWatch(read_id, static_cast<uint64_t>(pipe_fds[1]),
+                            EventLoop::WAIT_WRITABLE, updated_event));
+    assert(loop.wait(g_now, PollEventLoopBackend::waitFunction, &backend,
+                     &output));
+    assert(output.type == EventType::Paint);
+    assert(!loop.updateWatch(read_id, 0u, EventLoop::WAIT_READABLE,
+                             ready_event));
     assert(loop.unwatch(read_id));
 
     const EventLoop::WaitId writable_id = loop.watch(

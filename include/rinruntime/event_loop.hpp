@@ -227,6 +227,24 @@ public:
         return 0u;
     }
 
+    /* Change the native source or notification payload without retiring the
+     * public generation-bound watch ID.  Adapters may already have published
+     * this ID to an OS wait-set, so keep the generation stable and publish a
+     * wake for the next wait turn. */
+    bool updateWatch(WaitId id, std::uint64_t nativeHandle,
+                     std::uint32_t events, const Event& event) noexcept {
+        if (nativeHandle == 0u || !validEvent(event) || events == 0u ||
+            (events & ~static_cast<std::uint32_t>(WAIT_EVENTS_ALL)) != 0u)
+            return false;
+        Watch* watch = watchForId(id);
+        if (watch == nullptr) return false;
+        watch->nativeHandle = nativeHandle;
+        watch->events = events;
+        watch->event = event;
+        wakePending_ = true;
+        return true;
+    }
+
     bool cancelTimer(TimerId id) noexcept {
         Size index = 0u;
         std::uint32_t generation = 0u;
