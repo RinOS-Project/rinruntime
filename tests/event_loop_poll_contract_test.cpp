@@ -3,6 +3,7 @@
 #include <assert.h>
 #include <chrono>
 #include <stdint.h>
+#include <stdexcept>
 #include <unistd.h>
 
 #include "../include/rinruntime/event_loop_poll.hpp"
@@ -10,6 +11,26 @@
 static uint64_t g_now = 100u;
 
 static uint64_t test_clock(void*) noexcept { return g_now; }
+
+static bool stateless_wait_backend(
+    void* context, const RinRuntime::EventLoop::WaitRequest* requests,
+    RinRuntime::EventLoop::Size count, uint64_t,
+    RinRuntime::EventLoop::WaitResult* ready) {
+    if (context != nullptr || requests == nullptr || count != 1u ||
+        ready == nullptr) return false;
+    ready->id = requests[0].id;
+    ready->events = requests[0].events;
+    return true;
+}
+
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+static bool throwing_wait_backend(
+    void*, const RinRuntime::EventLoop::WaitRequest*,
+    RinRuntime::EventLoop::Size, uint64_t,
+    RinRuntime::EventLoop::WaitResult*) {
+    throw std::runtime_error("test wait backend failure");
+}
+#endif
 
 int main() {
     using RinRuntime::Event;
@@ -157,6 +178,31 @@ int main() {
     assert(wake_loop.cancelTimer(wake_timer));
     assert(wake_loop.consumeWake());
     assert(!wake_loop.consumeWake());
+
+    /* EventLoop is also a public backend-independent model.  A stateless
+     * caller-owned adapter may use the optional context as nullptr; this
+     * must not force ordinary applications to manufacture an owner object. */
+    EventLoop stateless_loop;
+    const EventLoop::WaitId stateless_id = stateless_loop.watch(
+        1u, EventLoop::WAIT_READABLE, ready_event);
+    assert(stateless_id != 0u);
+    output = {};
+    assert(stateless_loop.wait(g_now, stateless_wait_backend, nullptr,
+                               &output));
+    assert(output.type == EventType::Close);
+
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+    /* A caller-owned backend exception must be contained at the public
+     * noexcept boundary and must not publish poisoned readiness. */
+    EventLoop throwing_loop;
+    const EventLoop::WaitId throwing_id = throwing_loop.watch(
+        1u, EventLoop::WAIT_READABLE, ready_event);
+    assert(throwing_id != 0u);
+    output.type = EventType::Close;
+    assert(!throwing_loop.wait(g_now, throwing_wait_backend, nullptr,
+                               &output));
+    assert(output.type == EventType::None);
+#endif
 
     return 0;
 }

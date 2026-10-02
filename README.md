@@ -52,7 +52,10 @@ The canonical `rinruntime/rinruntime.hpp` umbrella includes the public
 `PollEventLoopBackend` on POSIX targets. The former translates to the public
 SDK wait-set ABI; the latter owns only POSIX `poll(2)` mapping. Kernel wait
 ownership, readiness producers, and service authority remain outside the
-public runtime.
+public runtime. The generic `EventLoop::WaitFunction` seam also accepts a
+null callback context for stateless application-owned adapters; concrete
+adapters that retain clock or wait-set state still require their caller-owned
+backend object, and neither form exposes kernel wait authority.
 
 The canonical `rinruntime/rinruntime.hpp` umbrella includes both public
 Unicode adapters, `unicode.h` and `unicode.hpp`, so ordinary applications and
