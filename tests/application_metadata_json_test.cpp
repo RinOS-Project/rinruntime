@@ -109,11 +109,25 @@ int main() {
     assert(resourcePath.lastCapacity ==
            RinRuntime::ApplicationMetadataJson::kMaximumBytes);
 
+    const std::string malformedResource = "{\"application_id\":7}";
+    resourcePath.bytes = reinterpret_cast<const std::uint8_t*>(
+        malformedResource.data());
+    resourcePath.size = malformedResource.size();
+    std::memset(source, 0xa5, sizeof(source));
     sourceSize = SIZE_MAX;
     output.applicationId = "stale";
+    assert(!RinRuntime::ApplicationMetadataJson::parseResource(
+        &catalog, 7u, readResourcePath, &resourcePath, source,
+        sizeof(source), &sourceSize, output, error));
+    assert(sourceSize == 0u && output.applicationId.empty());
+    for (std::uint8_t byte : source) assert(byte == 0u);
+
+    std::memset(tooSmall, 0xa5, sizeof(tooSmall));
+    sourceSize = SIZE_MAX;
     assert(!RinRuntime::ApplicationMetadataJson::parseResource(
         &catalog, 7u, readResourcePath, &resourcePath, tooSmall,
         sizeof(tooSmall), &sourceSize, output, error));
     assert(sourceSize == 0u && output.applicationId.empty());
+    for (std::uint8_t byte : tooSmall) assert(byte == 0u);
     return 0;
 }
