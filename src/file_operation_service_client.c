@@ -213,6 +213,24 @@ static int service_client_authorization_valid(
                sizeof(authorization->capability)) == RIN_WIRE_CAPABILITY_OK;
 }
 
+static int service_client_status_valid(int32_t status)
+{
+    switch (status) {
+    case RINRUNTIME_FILE_OPERATION_SERVICE_OK:
+    case RINRUNTIME_FILE_OPERATION_SERVICE_INVALID_ARGUMENT:
+    case RINRUNTIME_FILE_OPERATION_SERVICE_UNAVAILABLE:
+    case RINRUNTIME_FILE_OPERATION_SERVICE_BUSY:
+    case RINRUNTIME_FILE_OPERATION_SERVICE_ACCESS_DENIED:
+    case RINRUNTIME_FILE_OPERATION_SERVICE_NOT_FOUND:
+    case RINRUNTIME_FILE_OPERATION_SERVICE_NOT_UNDOABLE:
+    case RINRUNTIME_FILE_OPERATION_SERVICE_IO_FAILED:
+    case RINRUNTIME_FILE_OPERATION_SERVICE_CONFLICT:
+        return 1;
+    default:
+        return 0;
+    }
+}
+
 static RinRuntimeFileOperationServiceStatus service_client_reply(
     const RinRuntimeFileOperationServiceHeaderV1* request,
     const RinRuntimeFileOperationServiceHeaderV1* reply_header,
@@ -228,7 +246,8 @@ static RinRuntimeFileOperationServiceStatus service_client_reply(
         !rin_wire_flags_valid(reply_header->flags, 0u) ||
         !rin_wire_reserved_zero(&reply_header->reserved,
                                 sizeof(reply_header->reserved)) ||
-        reply_header->payload_size != sizeof(*reply) || reply_header->status > 0 ||
+        reply_header->payload_size != sizeof(*reply) ||
+        !service_client_status_valid(reply_header->status) ||
         !rin_wire_struct_version_valid(
             reply, sizeof(*reply), reply->struct_size, reply->version,
             RINRUNTIME_FILE_OPERATION_SERVICE_VERSION) ||
@@ -417,4 +436,3 @@ rinruntime_file_operation_service_submit_authorized(
     rinruntime_file_operation_service_broker_client_close(client);
     return status;
 }
-
