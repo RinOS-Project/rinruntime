@@ -176,12 +176,20 @@ if get_option('buildtype') != 'plain'
         'tests/package_metadata_json_test.cpp', '../rinjson/src/json.cpp',
         dependencies: runtime_dep, override_options: test_override_options,
         cpp_args: ['-std=c++17']))
+  test('rinruntime-package-metadata-catalog-json', executable('rinruntime-package-metadata-catalog-json-test',
+        'tests/package_metadata_catalog_json_test.cpp', '../rinjson/src/json.cpp',
+        dependencies: runtime_dep, override_options: test_override_options,
+        cpp_args: ['-std=c++17']))
   test('rinruntime-application-metadata-json', executable('rinruntime-application-metadata-json-test',
         'tests/application_metadata_json_test.cpp', '../rinjson/src/json.cpp',
         dependencies: runtime_dep, override_options: test_override_options,
         cpp_args: ['-std=c++17']))
   test('rinruntime-application-metadata-catalog-json', executable('rinruntime-application-metadata-catalog-json-test',
         'tests/application_metadata_catalog_json_test.cpp', '../rinjson/src/json.cpp',
+        dependencies: runtime_dep, override_options: test_override_options,
+        cpp_args: ['-std=c++17']))
+  test('rinruntime-update-metadata-catalog-json', executable('rinruntime-update-metadata-catalog-json-test',
+        'tests/update_metadata_catalog_json_test.cpp', '../rinjson/src/json.cpp',
         dependencies: runtime_dep, override_options: test_override_options,
         cpp_args: ['-std=c++17']))
   test('rinruntime-theme-profile', executable('rinruntime-theme-profile-test',

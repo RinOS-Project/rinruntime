@@ -341,6 +341,18 @@ if(RINRUNTIME_BUILD_TESTS)
                           CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES)
     add_test(NAME rinruntime-package-metadata-json
              COMMAND rinruntime-package-metadata-json-test)
+    add_executable(rinruntime-package-metadata-catalog-json-test
+                   tests/package_metadata_catalog_json_test.cpp
+                   ../rinjson/src/json.cpp)
+    target_link_libraries(rinruntime-package-metadata-catalog-json-test
+                          PRIVATE RinRuntime::RinRuntime)
+    target_include_directories(rinruntime-package-metadata-catalog-json-test
+                               PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include
+                                       ${CMAKE_CURRENT_SOURCE_DIR}/../rinjson/include)
+    set_target_properties(rinruntime-package-metadata-catalog-json-test PROPERTIES
+                          CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES)
+    add_test(NAME rinruntime-package-metadata-catalog-json
+             COMMAND rinruntime-package-metadata-catalog-json-test)
     add_executable(rinruntime-application-metadata-json-test
                    tests/application_metadata_json_test.cpp
                    ../rinjson/src/json.cpp)
@@ -365,6 +377,18 @@ if(RINRUNTIME_BUILD_TESTS)
                           CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES)
     add_test(NAME rinruntime-application-metadata-catalog-json
              COMMAND rinruntime-application-metadata-catalog-json-test)
+    add_executable(rinruntime-update-metadata-catalog-json-test
+                   tests/update_metadata_catalog_json_test.cpp
+                   ../rinjson/src/json.cpp)
+    target_link_libraries(rinruntime-update-metadata-catalog-json-test
+                          PRIVATE RinRuntime::RinRuntime)
+    target_include_directories(rinruntime-update-metadata-catalog-json-test
+                               PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include
+                                       ${CMAKE_CURRENT_SOURCE_DIR}/../rinjson/include)
+    set_target_properties(rinruntime-update-metadata-catalog-json-test PROPERTIES
+                          CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES)
+    add_test(NAME rinruntime-update-metadata-catalog-json
+             COMMAND rinruntime-update-metadata-catalog-json-test)
     add_executable(rinruntime-theme-profile-test
                    tests/theme_profile_test.cpp)
     target_link_libraries(rinruntime-theme-profile-test
