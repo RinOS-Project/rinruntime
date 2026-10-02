@@ -96,6 +96,36 @@ static int crash_service_endpoint_valid(int fd, uint32_t expected_slot)
     return 1;
 }
 
+static int crash_service_result_valid(int32_t status)
+{
+    switch (status) {
+    case RIN_RESULT_OK:
+    case RIN_RESULT_INVALID_ARGUMENT:
+    case RIN_RESULT_NOT_FOUND:
+    case RIN_RESULT_IO:
+    case RIN_RESULT_ACCESS_DENIED:
+    case RIN_RESULT_NO_MEMORY:
+    case RIN_RESULT_ALREADY_EXISTS:
+    case RIN_RESULT_BUSY:
+    case RIN_RESULT_TIMED_OUT:
+    case RIN_RESULT_NOT_SUPPORTED:
+    case RIN_RESULT_INVALID_HANDLE:
+    case RIN_RESULT_WRONG_TYPE:
+    case RIN_RESULT_TABLE_FULL:
+    case RIN_RESULT_WOULD_BLOCK:
+    case RIN_RESULT_INTERRUPTED:
+    case RIN_RESULT_BUFFER_TOO_SMALL:
+    case RIN_RESULT_CORRUPT_DATA:
+    case RIN_RESULT_SIGNATURE_REJECTED:
+    case RIN_RESULT_VERSION_MISMATCH:
+    case RIN_RESULT_LIMIT_EXCEEDED:
+    case RIN_RESULT_DEVICE_LOST:
+        return 1;
+    default:
+        return 0;
+    }
+}
+
 RinRuntimeCrashServiceResult rinruntime_crash_service_register_recovery(
     const RinRuntimeSessionRecoveryMetadataV1* metadata,
     uint32_t expected_service_slot)
@@ -143,7 +173,8 @@ RinRuntimeCrashServiceResult rinruntime_crash_service_register_recovery(
     if (reply.struct_size != sizeof(reply) ||
         reply.version != RIN_CRASH_SERVICE_ABI_VERSION ||
         reply.opcode != request.opcode || reply.request_id != request.request_id ||
-        reply.payload_size != 0u || reply.flags != 0u || reply.reserved != 0u)
+        reply.payload_size != 0u || reply.flags != 0u || reply.reserved != 0u ||
+        !crash_service_result_valid(reply.status))
         return RINRUNTIME_CRASH_SERVICE_PROTOCOL_ERROR;
     return reply.status == RIN_RESULT_OK ? RINRUNTIME_CRASH_SERVICE_OK
                                          : RINRUNTIME_CRASH_SERVICE_REJECTED;
@@ -204,7 +235,8 @@ RinRuntimeCrashServiceResult rinruntime_crash_service_append_diagnostic(
     if (reply.struct_size != sizeof(reply) ||
         reply.version != RIN_CRASH_SERVICE_ABI_VERSION ||
         reply.opcode != request.opcode || reply.request_id != request.request_id ||
-        reply.payload_size != 0u || reply.flags != 0u || reply.reserved != 0u) {
+        reply.payload_size != 0u || reply.flags != 0u || reply.reserved != 0u ||
+        !crash_service_result_valid(reply.status)) {
         result = RINRUNTIME_CRASH_SERVICE_PROTOCOL_ERROR;
         goto done;
     }
