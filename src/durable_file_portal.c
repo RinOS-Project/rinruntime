@@ -167,6 +167,28 @@ static int durable_revoke_status_shape_valid(const RinFilePortalCallV1* call)
                             sizeof(call->reserved));
 }
 
+static int durable_open_call_shape_valid(
+    const RinFilePortalCallV1* call, uint64_t grant_id,
+    uint32_t requested_rights, int32_t minimum_fd, uint32_t descriptor_flags)
+{
+    return call != NULL && call->struct_size == sizeof(*call) &&
+           call->version == RIN_FILE_PORTAL_CALL_VERSION &&
+           call->operation == RIN_FILE_PORTAL_OPERATION_DURABLE_OPEN &&
+           call->descriptor == minimum_fd &&
+           call->requested_rights == requested_rights &&
+           call->target_process_id == 0u &&
+           call->target_process_cookie == 0u &&
+           call->descriptor_flags == descriptor_flags &&
+           durable_all_zero((const uint8_t*)&call->token,
+                            sizeof(call->token)) &&
+           call->granted_rights == requested_rights &&
+           call->process_fd >= minimum_fd && call->file_object_id == grant_id &&
+           call->request_id == 0u && call->new_generation == 0u &&
+           call->request_status == 0 && call->reserved_status == 0u &&
+           durable_all_zero((const uint8_t*)call->reserved,
+                            sizeof(call->reserved));
+}
+
 RinRuntimeDurableFilePortalResult rinruntime_file_portal_durable_open(
     uint64_t grant_id, uint32_t requested_rights, int32_t minimum_fd,
     uint32_t descriptor_flags, int32_t* descriptor_out)
@@ -187,11 +209,12 @@ RinRuntimeDurableFilePortalResult rinruntime_file_portal_durable_open(
     call.operation = RIN_FILE_PORTAL_OPERATION_DURABLE_OPEN;
     call.descriptor = minimum_fd;
     call.requested_rights = requested_rights;
+    call.descriptor_flags = descriptor_flags;
     call.process_fd = -1;
     call.file_object_id = grant_id;
     result = rin_file_portal_call(&call);
-    if (result == RIN_RESULT_OK && call.granted_rights == requested_rights &&
-        call.file_object_id == grant_id && call.process_fd >= minimum_fd) {
+    if (result == RIN_RESULT_OK && durable_open_call_shape_valid(
+            &call, grant_id, requested_rights, minimum_fd, descriptor_flags)) {
         *descriptor_out = call.process_fd;
         memset(&call, 0, sizeof(call));
         return RINRUNTIME_DURABLE_FILE_PORTAL_OK;
@@ -454,5 +477,3 @@ rinruntime_file_portal_settings_revoke_finish(uint64_t request_id)
         ? RINRUNTIME_DURABLE_FILE_PORTAL_MALFORMED_REPLY
         : RINRUNTIME_DURABLE_FILE_PORTAL_KERNEL_REJECTED;
 }
-
-
