@@ -171,6 +171,25 @@ public:
 
     const RinRuntimeBackupManifestInfoV1& manifestInfo() const { return info_; }
 
+    /* Read one declaration without exposing the private manifest buffer.  The
+     * returned item is a validated copy and is cleared on every failure, so a
+     * caller can select an application-owned item before requesting payload
+     * restore. */
+    BackupArchiveResult itemAt(std::uint32_t itemIndex,
+                               RinRuntimeBackupItemV1& itemOut) const
+    {
+        itemOut = RinRuntimeBackupItemV1{};
+        if (!parsed_ || itemIndex >= info_.item_count)
+            return BackupArchiveResult::InvalidArgument;
+        const RinRuntimeBackupResult result =
+            rinruntime_backup_manifest_entry_at(
+                reinterpret_cast<const std::uint8_t*>(manifestBytes_.data()),
+                manifestBytes_.size(), itemIndex, &itemOut);
+        if (result != RINRUNTIME_BACKUP_OK)
+            itemOut = RinRuntimeBackupItemV1{};
+        return fromBackupResult(result);
+    }
+
     BackupArchiveResult readItem(
         std::uint32_t itemIndex,
         const RinRuntimeBackupIdentityV1* targetIdentity,

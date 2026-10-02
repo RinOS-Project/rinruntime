@@ -436,6 +436,11 @@ backup reader as well, so ordinary applications and external toolkits can
 consume the bounded RBK1 contract without importing a private archive or File
 Portal owner.
 
+`BackupArchiveReader::itemAt()` exposes one validated declaration at a time
+without exposing the reader's manifest storage. An application can select its
+own logical item and then call `readItem()`; invalid selection clears the
+caller-owned item rather than leaving a stale declaration available.
+
 The C RBK1 manifest encoder clears `bytes_size_out` and the caller-owned
 manifest output span on validation or capacity failure (bounded by
 `RINRUNTIME_BACKUP_MANIFEST_STORAGE_MAX`), so a rejected replacement cannot

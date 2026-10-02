@@ -124,6 +124,17 @@ int main()
     assert(reader.manifestInfo().eligible_item_count == 2u);
     assert(reader.manifestInfo().excluded_item_count == 1u);
 
+    RinRuntimeBackupItemV1 selectedItem{};
+    assert(reader.itemAt(1u, selectedItem) ==
+           RinRuntime::BackupArchiveResult::Ok);
+    assert(std::strcmp(reinterpret_cast<const char*>(selectedItem.item_id),
+                       "config") == 0);
+    assert(selectedItem.storage_class == RINRUNTIME_BACKUP_STORAGE_CONFIG);
+    selectedItem.item_id[0] = 0xa5u;
+    assert(reader.itemAt(99u, selectedItem) ==
+           RinRuntime::BackupArchiveResult::InvalidArgument);
+    assert(selectedItem.struct_size == 0u && selectedItem.item_id[0] == 0u);
+
     std::uint8_t restored[64];
     std::memset(restored, 0xa5, sizeof(restored));
     std::uint32_t restoredSize = 0u;
