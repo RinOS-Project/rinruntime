@@ -45,7 +45,7 @@ RinSerialPortalResultV1 rin_serial_portal_request_encode(
 {
     if (frame_out == NULL || request_id == 0u || session_id == 0u ||
         session_generation == 0u || operation < RIN_SERIAL_PORTAL_ENUMERATE_REQUEST ||
-        operation > RIN_SERIAL_PORTAL_GET_PORTS_RESPONSE)
+        operation > RIN_SERIAL_PORTAL_REQUEST_PORT_POLL_RESPONSE)
         return RIN_SERIAL_PORTAL_INVALID_ARGUMENT;
     zero(frame_out, sizeof(*frame_out));
     frame_out->magic = RIN_SERIAL_PORTAL_MAGIC;
@@ -664,6 +664,89 @@ RinSerialPortalResultV1 rin_serial_portal_request_port_response_decode(
     if (session_generation_out != NULL)
         *session_generation_out = response->frame.session_generation;
     if (result_out != NULL) *result_out = (RinSerialPortalResultV1)response->result;
+    if (device_out != NULL) *device_out = response->device;
+    return RIN_SERIAL_PORTAL_OK;
+}
+
+RinSerialPortalResultV1 rin_serial_portal_request_port_poll_encode(
+    uint64_t request_id, uint64_t session_id, uint64_t session_generation,
+    uint64_t chooser_request_id, const char* origin,
+    RinSerialPortalRequestPortPollRequestV1* request_out)
+{
+    if (request_out == NULL || chooser_request_id == 0u ||
+        !origin_valid(origin))
+        return RIN_SERIAL_PORTAL_INVALID_ARGUMENT;
+    zero(request_out, sizeof(*request_out));
+    if (rin_serial_portal_request_encode(
+            request_id, session_id, session_generation,
+            RIN_SERIAL_PORTAL_REQUEST_PORT_POLL_REQUEST,
+            &request_out->frame) != RIN_SERIAL_PORTAL_OK)
+        return RIN_SERIAL_PORTAL_INVALID_ARGUMENT;
+    request_out->frame.frame_size = (uint32_t)sizeof(*request_out);
+    request_out->chooser_request_id = chooser_request_id;
+    memcpy(request_out->origin, origin, origin_length(origin));
+    return RIN_SERIAL_PORTAL_OK;
+}
+
+RinSerialPortalResultV1 rin_serial_portal_request_port_poll_decode(
+    const RinSerialPortalRequestPortPollRequestV1* request, size_t frame_size,
+    uint64_t* chooser_request_id_out, const char** origin_out)
+{
+    if (chooser_request_id_out != NULL) *chooser_request_id_out = 0u;
+    if (origin_out != NULL) *origin_out = NULL;
+    if (request == NULL || !frame_valid(
+            &request->frame, frame_size,
+            RIN_SERIAL_PORTAL_REQUEST_PORT_POLL_REQUEST, sizeof(*request)) ||
+        request->chooser_request_id == 0u || !origin_valid(request->origin))
+        return RIN_SERIAL_PORTAL_MALFORMED;
+    if (chooser_request_id_out != NULL)
+        *chooser_request_id_out = request->chooser_request_id;
+    if (origin_out != NULL) *origin_out = request->origin;
+    return RIN_SERIAL_PORTAL_OK;
+}
+
+RinSerialPortalResultV1 rin_serial_portal_request_port_poll_response_encode(
+    uint64_t request_id, uint64_t session_id, uint64_t session_generation,
+    RinSerialPortalResultV1 result, const RinSerialPortalDeviceV1* device,
+    RinSerialPortalRequestPortPollResponseV1* response_out)
+{
+    if (response_out == NULL ||
+        (result == RIN_SERIAL_PORTAL_OK &&
+         (device == NULL || !capability_valid(device->capability))))
+        return RIN_SERIAL_PORTAL_INVALID_ARGUMENT;
+    zero(response_out, sizeof(*response_out));
+    if (rin_serial_portal_request_encode(
+            request_id, session_id, session_generation,
+            RIN_SERIAL_PORTAL_REQUEST_PORT_POLL_RESPONSE,
+            &response_out->frame) != RIN_SERIAL_PORTAL_OK)
+        return RIN_SERIAL_PORTAL_INVALID_ARGUMENT;
+    response_out->frame.frame_size = (uint32_t)sizeof(*response_out);
+    response_out->result = result;
+    if (device != NULL) response_out->device = *device;
+    return RIN_SERIAL_PORTAL_OK;
+}
+
+RinSerialPortalResultV1 rin_serial_portal_request_port_poll_response_decode(
+    const RinSerialPortalRequestPortPollResponseV1* response, size_t frame_size,
+    RinSerialPortalResultV1* result_out, RinSerialPortalDeviceV1* device_out,
+    uint64_t* request_id_out, uint64_t* session_id_out,
+    uint64_t* session_generation_out)
+{
+    if (result_out != NULL) *result_out = RIN_SERIAL_PORTAL_MALFORMED;
+    if (device_out != NULL) zero(device_out, sizeof(*device_out));
+    if (response == NULL || !frame_valid(
+            &response->frame, frame_size,
+            RIN_SERIAL_PORTAL_REQUEST_PORT_POLL_RESPONSE, sizeof(*response)) ||
+        response->reserved != 0u ||
+        (response->result == RIN_SERIAL_PORTAL_OK &&
+         !capability_valid(response->device.capability)))
+        return RIN_SERIAL_PORTAL_MALFORMED;
+    if (request_id_out != NULL) *request_id_out = response->frame.request_id;
+    if (session_id_out != NULL) *session_id_out = response->frame.session_id;
+    if (session_generation_out != NULL)
+        *session_generation_out = response->frame.session_generation;
+    if (result_out != NULL)
+        *result_out = (RinSerialPortalResultV1)response->result;
     if (device_out != NULL) *device_out = response->device;
     return RIN_SERIAL_PORTAL_OK;
 }

@@ -51,6 +51,9 @@ typedef struct RinWebSerialFileOpsV1 {
 typedef int (*RinWebSerialPortalExchangeV1)(
     void* context, const void* request, size_t request_size,
     void* response, size_t response_capacity, size_t* response_size);
+typedef int (*RinWebSerialPortalExchangeForPageV1)(
+    void* context, uint32_t page_id, const void* request, size_t request_size,
+    void* response, size_t response_capacity, size_t* response_size);
 
 /* Authenticated Browser portal transport. Session values are captured by
  * every frame and are never caller-selected per operation. */
@@ -64,6 +67,11 @@ typedef struct RinWebSerialPortalTransportV1 {
 void rin_web_serial_set_file_ops(const RinWebSerialFileOpsV1* ops);
 void rin_web_serial_set_portal_transport(
     const RinWebSerialPortalTransportV1* transport);
+/* Install the private authenticated owner-channel adapter used by
+ * page-scoped Web Serial calls. Kept separate from the V1 transport structure
+ * so existing transport ABI layout remains unchanged. */
+void rin_web_serial_set_portal_page_exchange(
+    RinWebSerialPortalExchangeForPageV1 exchange_for_page);
 
 int rin_web_serial_enumerate(RinWebSerialDeviceV1* output, uint32_t capacity,
                              uint32_t* count_out);
@@ -76,8 +84,21 @@ int rin_web_serial_request_port(const char* origin, uint32_t user_activation,
                                 uint32_t filter_count,
                                 uint64_t selected_object_id,
                                 RinWebSerialDeviceV1* output);
+/* Begin a Browser-owned trusted chooser without blocking the WebContent event
+ * loop. RIN_SERIAL_EAGAIN means a chooser was accepted and request_id_out is
+ * the opaque id to use with rin_web_serial_request_port_poll(). */
+int rin_web_serial_request_port_begin(
+    uint32_t page_id, const char* origin, uint32_t user_activation,
+    const RinSerialPortalFilterV1* filters, uint32_t filter_count,
+    uint64_t* request_id_out);
+int rin_web_serial_request_port_poll(
+    uint32_t page_id, const char* origin, uint64_t request_id,
+    RinWebSerialDeviceV1* device_out);
 int rin_web_serial_get_ports(const char* origin, RinWebSerialDeviceV1* output,
                              uint32_t capacity, uint32_t* count_out);
+int rin_web_serial_get_ports_for_page(
+    uint32_t page_id, const char* origin, RinWebSerialDeviceV1* output,
+    uint32_t capacity, uint32_t* count_out);
 int rin_web_serial_open(RinSerialCapabilityV1 capability, uint32_t baud_rate,
                         uint8_t data_bits, uint8_t stop_bits, uint8_t parity,
                         uint8_t flow_control, uint32_t buffer_size,

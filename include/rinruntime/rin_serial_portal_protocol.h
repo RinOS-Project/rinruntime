@@ -41,7 +41,9 @@ typedef enum RinSerialPortalOperationV1 {
     RIN_SERIAL_PORTAL_REQUEST_PORT_REQUEST = 19,
     RIN_SERIAL_PORTAL_REQUEST_PORT_RESPONSE = 20,
     RIN_SERIAL_PORTAL_GET_PORTS_REQUEST = 21,
-    RIN_SERIAL_PORTAL_GET_PORTS_RESPONSE = 22
+    RIN_SERIAL_PORTAL_GET_PORTS_RESPONSE = 22,
+    RIN_SERIAL_PORTAL_REQUEST_PORT_POLL_REQUEST = 23,
+    RIN_SERIAL_PORTAL_REQUEST_PORT_POLL_RESPONSE = 24
 } RinSerialPortalOperationV1;
 
 typedef enum RinSerialPortalResultV1 {
@@ -52,7 +54,8 @@ typedef enum RinSerialPortalResultV1 {
     RIN_SERIAL_PORTAL_DENIED = -4,
     RIN_SERIAL_PORTAL_STALE = -5,
     RIN_SERIAL_PORTAL_DISCONNECTED = -6,
-    RIN_SERIAL_PORTAL_IO_FAILED = -7
+    RIN_SERIAL_PORTAL_IO_FAILED = -7,
+    RIN_SERIAL_PORTAL_PENDING = -8
 } RinSerialPortalResultV1;
 
 /* The portal service authenticates the local connection before accepting a
@@ -182,6 +185,23 @@ typedef struct __attribute__((packed)) RinSerialPortalGetPortsResponseV1 {
     RinSerialPortalDeviceV1 devices[RIN_SERIAL_PORTAL_MAX_DEVICES];
 } RinSerialPortalGetPortsResponseV1;
 
+/* requestPort is started by REQUEST_PORT_REQUEST and polled asynchronously.
+ * The chooser request id is the original begin frame's request id; the origin
+ * is repeated on every poll so the Browser can bind polling to the requesting
+ * security principal even when several pages share an authenticated channel. */
+typedef struct __attribute__((packed)) RinSerialPortalRequestPortPollRequestV1 {
+    RinSerialPortalFrameV1 frame;
+    uint64_t chooser_request_id;
+    char origin[RIN_SERIAL_PORTAL_ORIGIN_MAX];
+} RinSerialPortalRequestPortPollRequestV1;
+
+typedef struct __attribute__((packed)) RinSerialPortalRequestPortPollResponseV1 {
+    RinSerialPortalFrameV1 frame;
+    int32_t result;
+    uint32_t reserved;
+    RinSerialPortalDeviceV1 device;
+} RinSerialPortalRequestPortPollResponseV1;
+
 typedef struct RinSerialPortalDeviceViewV1 {
     RinSerialDeviceInfoV1 info;
     RinSerialCapabilityV1 capability;
@@ -307,6 +327,22 @@ RinSerialPortalResultV1 rin_serial_portal_request_port_response_decode(
     RinSerialPortalResultV1* result_out, RinSerialPortalDeviceV1* device_out,
     uint64_t* request_id_out, uint64_t* session_id_out,
     uint64_t* session_generation_out);
+RinSerialPortalResultV1 rin_serial_portal_request_port_poll_encode(
+    uint64_t request_id, uint64_t session_id, uint64_t session_generation,
+    uint64_t chooser_request_id, const char* origin,
+    RinSerialPortalRequestPortPollRequestV1* request_out);
+RinSerialPortalResultV1 rin_serial_portal_request_port_poll_decode(
+    const RinSerialPortalRequestPortPollRequestV1* request, size_t frame_size,
+    uint64_t* chooser_request_id_out, const char** origin_out);
+RinSerialPortalResultV1 rin_serial_portal_request_port_poll_response_encode(
+    uint64_t request_id, uint64_t session_id, uint64_t session_generation,
+    RinSerialPortalResultV1 result, const RinSerialPortalDeviceV1* device,
+    RinSerialPortalRequestPortPollResponseV1* response_out);
+RinSerialPortalResultV1 rin_serial_portal_request_port_poll_response_decode(
+    const RinSerialPortalRequestPortPollResponseV1* response, size_t frame_size,
+    RinSerialPortalResultV1* result_out, RinSerialPortalDeviceV1* device_out,
+    uint64_t* request_id_out, uint64_t* session_id_out,
+    uint64_t* session_generation_out);
 RinSerialPortalResultV1 rin_serial_portal_get_ports_request_encode(
     uint64_t request_id, uint64_t session_id, uint64_t session_generation,
     const char* origin, RinSerialPortalGetPortsRequestV1* request_out);
@@ -362,6 +398,10 @@ static_assert(sizeof(RinSerialPortalGetPortsRequestV1) == 1060u,
               "RinSerialPortalGetPortsRequestV1 ABI drift");
 static_assert(sizeof(RinSerialPortalGetPortsResponseV1) == 11052u,
               "RinSerialPortalGetPortsResponseV1 ABI drift");
+static_assert(sizeof(RinSerialPortalRequestPortPollRequestV1) == 1068u,
+              "RinSerialPortalRequestPortPollRequestV1 ABI drift");
+static_assert(sizeof(RinSerialPortalRequestPortPollResponseV1) == 388u,
+              "RinSerialPortalRequestPortPollResponseV1 ABI drift");
 #elif defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
 _Static_assert(sizeof(RinSerialPortalFrameV1) == 36u,
                "RinSerialPortalFrameV1 ABI drift");
@@ -391,6 +431,10 @@ _Static_assert(sizeof(RinSerialPortalGetPortsRequestV1) == 1060u,
                "RinSerialPortalGetPortsRequestV1 ABI drift");
 _Static_assert(sizeof(RinSerialPortalGetPortsResponseV1) == 11052u,
                "RinSerialPortalGetPortsResponseV1 ABI drift");
+_Static_assert(sizeof(RinSerialPortalRequestPortPollRequestV1) == 1068u,
+               "RinSerialPortalRequestPortPollRequestV1 ABI drift");
+_Static_assert(sizeof(RinSerialPortalRequestPortPollResponseV1) == 388u,
+               "RinSerialPortalRequestPortPollResponseV1 ABI drift");
 #endif
 
 #ifdef __cplusplus
