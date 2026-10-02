@@ -177,6 +177,14 @@ int main() {
     std::uint64_t contentLength = 41u;
     assert(!RinRuntime::parseDownloadContentLength("12x", contentLength));
     assert(contentLength == 0u);
+    const std::string oversizedHeader(
+        RinRuntime::DownloadRangeRequest::kMaxRangeHeaderBytes + 1u, '1');
+    assert(!RinRuntime::parseDownloadContentRange(
+        oversizedHeader, rangeStart, rangeEnd, rangeTotal));
+    assert(rangeStart == 0u && rangeEnd == 0u && rangeTotal == 0u);
+    assert(!RinRuntime::parseDownloadContentLength(
+        oversizedHeader, contentLength));
+    assert(contentLength == 0u);
 
     RinRuntime::DownloadPartialReceipt receipt;
     receipt.requestId = 9u;

@@ -502,6 +502,7 @@ inline bool parseDownloadContentRange(const std::string& value,
     std::uint64_t parsedTotal = 0u;
     const std::string prefix = "bytes ";
     if (value.size() <= prefix.size() ||
+        value.size() > DownloadRangeRequest::kMaxRangeHeaderBytes ||
         value.compare(0u, prefix.size(), prefix) != 0)
         return false;
     std::size_t index = prefix.size();
@@ -546,7 +547,9 @@ inline bool parseDownloadContentRange(const std::string& value,
 inline bool parseDownloadContentLength(const std::string& value,
                                        std::uint64_t& length) {
     length = 0u;
-    if (value.empty()) return false;
+    if (value.empty() ||
+        value.size() > DownloadRangeRequest::kMaxRangeHeaderBytes)
+        return false;
     std::uint64_t parsedLength = 0u;
     for (char character : value) {
         if (character < '0' || character > '9') return false;
