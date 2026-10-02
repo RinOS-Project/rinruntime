@@ -30,6 +30,15 @@ public:
 private:
     using Value = rinjson::Value;
 
+    static void clearSource(std::uint8_t* source, std::size_t capacity) {
+        if (source == nullptr) return;
+        const std::size_t bounded =
+            capacity < kMaximumBytes ? capacity : kMaximumBytes;
+        volatile std::uint8_t* bytes = source;
+        for (std::size_t index = 0u; index < bounded; ++index)
+            bytes[index] = 0u;
+    }
+
     static const Value* field(const Value::Object& object,
                               std::string_view name) {
         const auto found = object.find(name);
@@ -152,6 +161,7 @@ public:
             sourceCapacity < kMaximumBytes ? sourceCapacity : kMaximumBytes;
         output = {};
         error.clear();
+        clearSource(source, sourceCapacity);
         if (sourceSizeOut == nullptr) {
             error = "theme resource size";
             return false;
@@ -164,6 +174,7 @@ public:
                 static_cast<std::uint64_t>(loadCapacity), &loadedSize);
         if (resourceStatus != RIN_RESOURCE_CATALOG_OK || loadedSize == 0u ||
             loadedSize > static_cast<std::uint64_t>(SIZE_MAX)) {
+            clearSource(source, sourceCapacity);
             error = "theme resource";
             return false;
         }
@@ -171,6 +182,7 @@ public:
                                     static_cast<std::size_t>(loadedSize)),
                    output, error)) {
             output = {};
+            clearSource(source, sourceCapacity);
             return false;
         }
         *sourceSizeOut = static_cast<std::size_t>(loadedSize);

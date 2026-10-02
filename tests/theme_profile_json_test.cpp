@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: MIT */
 #include <cassert>
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -96,6 +97,26 @@ int main() {
     assert(observedCapacity == RinRuntime::ThemeProfileJson::kMaximumBytes);
     assert(profile.valid());
 
+    const std::string malformedResource = "{\"theme_id\":7}";
+    entry.flags = RIN_RESOURCE_CATALOG_SOURCE_BLOB |
+                  RIN_RESOURCE_CATALOG_FLAG_IMMUTABLE;
+    entry.data = reinterpret_cast<const std::uint8_t*>(
+        malformedResource.data());
+    entry.data_size = malformedResource.size();
+    std::fill(source.begin(), source.end(), 0xa5u);
+    loaded = 123u;
+    assert(!RinRuntime::ThemeProfileJson::parseResource(
+        &catalog, 7u, nullptr, nullptr, source.data(), source.size(), &loaded,
+        profile, error));
+    assert(loaded == 0u && !profile.valid());
+    for (std::size_t index = 0u;
+         index < RinRuntime::ThemeProfileJson::kMaximumBytes; ++index)
+        assert(source[index] == 0u);
+
+    entry.flags = RIN_RESOURCE_CATALOG_SOURCE_PATH |
+                  RIN_RESOURCE_CATALOG_FLAG_IMMUTABLE;
+    entry.data = nullptr;
+    entry.data_size = 0u;
     loaded = 123u;
     assert(!RinRuntime::ThemeProfileJson::parseResource(
         &catalog, 8u, nullptr, nullptr, source.data(), source.size(), &loaded,
