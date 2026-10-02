@@ -14,6 +14,24 @@ static int capability_valid(RinSerialCapabilityV1 capability)
     return capability.object_id != 0u && capability.generation != 0u;
 }
 
+static int result_valid(RinSerialPortalResultV1 result)
+{
+    switch (result) {
+    case RIN_SERIAL_PORTAL_OK:
+    case RIN_SERIAL_PORTAL_INVALID_ARGUMENT:
+    case RIN_SERIAL_PORTAL_MALFORMED:
+    case RIN_SERIAL_PORTAL_LIMIT:
+    case RIN_SERIAL_PORTAL_DENIED:
+    case RIN_SERIAL_PORTAL_STALE:
+    case RIN_SERIAL_PORTAL_DISCONNECTED:
+    case RIN_SERIAL_PORTAL_IO_FAILED:
+    case RIN_SERIAL_PORTAL_PENDING:
+        return 1;
+    default:
+        return 0;
+    }
+}
+
 static int wait_events_mask_valid(uint32_t events)
 {
     const uint32_t allowed = RIN_SERIAL_WAIT_READABLE |
@@ -80,7 +98,8 @@ RinSerialPortalResultV1 rin_serial_portal_enumerate_response_encode(
     RinSerialPortalResultV1 result, const RinSerialPortalDeviceV1* devices,
     size_t device_count, RinSerialPortalEnumerateResponseV1* response_out)
 {
-    if (response_out == NULL || device_count > RIN_SERIAL_PORTAL_MAX_DEVICES ||
+    if (response_out == NULL || !result_valid(result) ||
+        device_count > RIN_SERIAL_PORTAL_MAX_DEVICES ||
         (device_count != 0u && devices == NULL) || request_id == 0u ||
         session_id == 0u || session_generation == 0u)
         return RIN_SERIAL_PORTAL_INVALID_ARGUMENT;
@@ -109,16 +128,16 @@ RinSerialPortalResultV1 rin_serial_portal_enumerate_response_decode(
     if (result_out != NULL) *result_out = RIN_SERIAL_PORTAL_MALFORMED;
     if (devices_out != NULL) *devices_out = NULL;
     if (device_count_out != NULL) *device_count_out = 0u;
-    if (response == NULL || !frame_valid(&response->frame, frame_size,
-                                         RIN_SERIAL_PORTAL_ENUMERATE_RESPONSE,
-                                         sizeof(*response)))
+    if (response == NULL || !result_valid((RinSerialPortalResultV1)response->result) ||
+        !frame_valid(&response->frame, frame_size,
+                     RIN_SERIAL_PORTAL_ENUMERATE_RESPONSE,
+                     sizeof(*response)) ||
+        response->device_count > RIN_SERIAL_PORTAL_MAX_DEVICES)
         return RIN_SERIAL_PORTAL_MALFORMED;
     if (request_id_out != NULL) *request_id_out = response->frame.request_id;
     if (session_id_out != NULL) *session_id_out = response->frame.session_id;
     if (session_generation_out != NULL)
         *session_generation_out = response->frame.session_generation;
-    if (response->device_count > RIN_SERIAL_PORTAL_MAX_DEVICES)
-        return RIN_SERIAL_PORTAL_MALFORMED;
     if (result_out != NULL) *result_out = (RinSerialPortalResultV1)response->result;
     if (devices_out != NULL) *devices_out = response->devices;
     if (device_count_out != NULL) *device_count_out = response->device_count;
@@ -199,7 +218,8 @@ RinSerialPortalResultV1 rin_serial_portal_open_response_encode(
     RinSerialPortalResultV1 result, RinSerialCapabilityV1 capability,
     RinSerialPortalOpenResponseV1* response_out)
 {
-    if (response_out == NULL || (result == RIN_SERIAL_PORTAL_OK &&
+    if (response_out == NULL || !result_valid(result) ||
+        (result == RIN_SERIAL_PORTAL_OK &&
                                  !capability_valid(capability)))
         return RIN_SERIAL_PORTAL_INVALID_ARGUMENT;
     zero(response_out, sizeof(*response_out));
@@ -222,7 +242,7 @@ RinSerialPortalResultV1 rin_serial_portal_open_response_decode(
 {
     if (result_out != NULL) *result_out = RIN_SERIAL_PORTAL_MALFORMED;
     if (capability_out != NULL) zero(capability_out, sizeof(*capability_out));
-    if (response == NULL ||
+    if (response == NULL || !result_valid((RinSerialPortalResultV1)response->result) ||
         !frame_valid(&response->frame, frame_size, operation, sizeof(*response)))
         return RIN_SERIAL_PORTAL_MALFORMED;
     if (request_id_out != NULL) *request_id_out = response->frame.request_id;
@@ -299,7 +319,7 @@ RinSerialPortalResultV1 rin_serial_portal_transfer_response_encode(
     RinSerialCapabilityV1 capability, size_t byte_count,
     RinSerialPortalTransferResponseV1* response_out)
 {
-    if (response_out == NULL ||
+    if (response_out == NULL || !result_valid(result) ||
         (operation != RIN_SERIAL_PORTAL_READ_RESPONSE &&
          operation != RIN_SERIAL_PORTAL_WRITE_RESPONSE) ||
         byte_count > RIN_SERIAL_BUFFER_MAX ||
@@ -338,6 +358,7 @@ RinSerialPortalResultV1 rin_serial_portal_transfer_response_decode(
     expected = offsetof(RinSerialPortalTransferResponseV1, bytes) +
                (size_t)response->byte_count;
     if (!frame_valid(&response->frame, frame_size, operation, expected) ||
+        !result_valid((RinSerialPortalResultV1)response->result) ||
         (response->result == RIN_SERIAL_PORTAL_OK &&
          !capability_valid(response->capability)))
         return RIN_SERIAL_PORTAL_MALFORMED;
@@ -401,7 +422,7 @@ RinSerialPortalResultV1 rin_serial_portal_status_response_encode(
     const RinSerialStatusV1* status,
     RinSerialPortalStatusResponseV1* response_out)
 {
-    if (response_out == NULL ||
+    if (response_out == NULL || !result_valid(result) ||
         (result == RIN_SERIAL_PORTAL_OK &&
          (!capability_valid(capability) || status == NULL)))
         return RIN_SERIAL_PORTAL_INVALID_ARGUMENT;
@@ -427,7 +448,7 @@ RinSerialPortalResultV1 rin_serial_portal_status_response_decode(
     if (result_out != NULL) *result_out = RIN_SERIAL_PORTAL_MALFORMED;
     if (capability_out != NULL) zero(capability_out, sizeof(*capability_out));
     if (status_out != NULL) zero(status_out, sizeof(*status_out));
-    if (response == NULL ||
+    if (response == NULL || !result_valid((RinSerialPortalResultV1)response->result) ||
         !frame_valid(&response->frame, frame_size,
                      RIN_SERIAL_PORTAL_GET_SIGNALS_RESPONSE, sizeof(*response)) ||
         response->reserved != 0u)
@@ -487,7 +508,7 @@ RinSerialPortalResultV1 rin_serial_portal_wait_response_encode(
     RinSerialPortalResultV1 result, RinSerialCapabilityV1 capability,
     const RinSerialWaitResultV1* wait, RinSerialPortalWaitResponseV1* response_out)
 {
-    if (response_out == NULL ||
+    if (response_out == NULL || !result_valid(result) ||
         (result == RIN_SERIAL_PORTAL_OK &&
          (!capability_valid(capability) || wait == NULL ||
           wait->reserved0 != 0u || !wait_events_mask_valid(wait->events))))
@@ -514,7 +535,7 @@ RinSerialPortalResultV1 rin_serial_portal_wait_response_decode(
     if (result_out != NULL) *result_out = RIN_SERIAL_PORTAL_MALFORMED;
     if (capability_out != NULL) zero(capability_out, sizeof(*capability_out));
     if (wait_out != NULL) zero(wait_out, sizeof(*wait_out));
-    if (response == NULL ||
+    if (response == NULL || !result_valid((RinSerialPortalResultV1)response->result) ||
         !frame_valid(&response->frame, frame_size,
                      RIN_SERIAL_PORTAL_WAIT_RESPONSE, sizeof(*response)) ||
         response->reserved != 0u || response->wait.reserved0 != 0u ||
@@ -628,7 +649,7 @@ RinSerialPortalResultV1 rin_serial_portal_request_port_response_encode(
     RinSerialPortalResultV1 result, const RinSerialPortalDeviceV1* device,
     RinSerialPortalRequestPortResponseV1* response_out)
 {
-    if (response_out == NULL ||
+    if (response_out == NULL || !result_valid(result) ||
         (result == RIN_SERIAL_PORTAL_OK &&
          (device == NULL || !capability_valid(device->capability))))
         return RIN_SERIAL_PORTAL_INVALID_ARGUMENT;
@@ -652,7 +673,9 @@ RinSerialPortalResultV1 rin_serial_portal_request_port_response_decode(
 {
     if (result_out != NULL) *result_out = RIN_SERIAL_PORTAL_MALFORMED;
     if (device_out != NULL) zero(device_out, sizeof(*device_out));
-    if (response == NULL || !frame_valid(&response->frame, frame_size,
+    if (response == NULL ||
+        !result_valid((RinSerialPortalResultV1)response->result) ||
+        !frame_valid(&response->frame, frame_size,
                                          RIN_SERIAL_PORTAL_REQUEST_PORT_RESPONSE,
                                          sizeof(*response)) ||
         response->reserved != 0u ||
@@ -710,7 +733,7 @@ RinSerialPortalResultV1 rin_serial_portal_request_port_poll_response_encode(
     RinSerialPortalResultV1 result, const RinSerialPortalDeviceV1* device,
     RinSerialPortalRequestPortPollResponseV1* response_out)
 {
-    if (response_out == NULL ||
+    if (response_out == NULL || !result_valid(result) ||
         (result == RIN_SERIAL_PORTAL_OK &&
          (device == NULL || !capability_valid(device->capability))))
         return RIN_SERIAL_PORTAL_INVALID_ARGUMENT;
@@ -734,7 +757,8 @@ RinSerialPortalResultV1 rin_serial_portal_request_port_poll_response_decode(
 {
     if (result_out != NULL) *result_out = RIN_SERIAL_PORTAL_MALFORMED;
     if (device_out != NULL) zero(device_out, sizeof(*device_out));
-    if (response == NULL || !frame_valid(
+    if (response == NULL || !result_valid((RinSerialPortalResultV1)response->result) ||
+        !frame_valid(
             &response->frame, frame_size,
             RIN_SERIAL_PORTAL_REQUEST_PORT_POLL_RESPONSE, sizeof(*response)) ||
         response->reserved != 0u ||
@@ -787,7 +811,8 @@ RinSerialPortalResultV1 rin_serial_portal_get_ports_response_encode(
     RinSerialPortalResultV1 result, const RinSerialPortalDeviceV1* devices,
     size_t device_count, RinSerialPortalGetPortsResponseV1* response_out)
 {
-    if (response_out == NULL || device_count > RIN_SERIAL_PORTAL_MAX_DEVICES ||
+    if (response_out == NULL || !result_valid(result) ||
+        device_count > RIN_SERIAL_PORTAL_MAX_DEVICES ||
         (device_count != 0u && devices == NULL))
         return RIN_SERIAL_PORTAL_INVALID_ARGUMENT;
     zero(response_out, sizeof(*response_out));
@@ -815,9 +840,10 @@ RinSerialPortalResultV1 rin_serial_portal_get_ports_response_decode(
     if (result_out != NULL) *result_out = RIN_SERIAL_PORTAL_MALFORMED;
     if (devices_out != NULL) *devices_out = NULL;
     if (device_count_out != NULL) *device_count_out = 0u;
-    if (response == NULL || !frame_valid(&response->frame, frame_size,
-                                         RIN_SERIAL_PORTAL_GET_PORTS_RESPONSE,
-                                         sizeof(*response)) ||
+    if (response == NULL || !result_valid((RinSerialPortalResultV1)response->result) ||
+        !frame_valid(&response->frame, frame_size,
+                     RIN_SERIAL_PORTAL_GET_PORTS_RESPONSE,
+                     sizeof(*response)) ||
         response->device_count > RIN_SERIAL_PORTAL_MAX_DEVICES)
         return RIN_SERIAL_PORTAL_MALFORMED;
     if (request_id_out != NULL) *request_id_out = response->frame.request_id;
