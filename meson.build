@@ -180,6 +180,10 @@ if get_option('buildtype') != 'plain'
         'tests/application_metadata_json_test.cpp', '../rinjson/src/json.cpp',
         dependencies: runtime_dep, override_options: test_override_options,
         cpp_args: ['-std=c++17']))
+  test('rinruntime-application-metadata-catalog-json', executable('rinruntime-application-metadata-catalog-json-test',
+        'tests/application_metadata_catalog_json_test.cpp', '../rinjson/src/json.cpp',
+        dependencies: runtime_dep, override_options: test_override_options,
+        cpp_args: ['-std=c++17']))
   test('rinruntime-theme-profile', executable('rinruntime-theme-profile-test',
         'tests/theme_profile_test.cpp', dependencies: runtime_dep,
         override_options: test_override_options, cpp_args: ['-std=c++17']))

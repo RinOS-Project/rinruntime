@@ -353,6 +353,18 @@ if(RINRUNTIME_BUILD_TESTS)
                           CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES)
     add_test(NAME rinruntime-application-metadata-json
              COMMAND rinruntime-application-metadata-json-test)
+    add_executable(rinruntime-application-metadata-catalog-json-test
+                   tests/application_metadata_catalog_json_test.cpp
+                   ../rinjson/src/json.cpp)
+    target_link_libraries(rinruntime-application-metadata-catalog-json-test
+                          PRIVATE RinRuntime::RinRuntime)
+    target_include_directories(rinruntime-application-metadata-catalog-json-test
+                               PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include
+                                       ${CMAKE_CURRENT_SOURCE_DIR}/../rinjson/include)
+    set_target_properties(rinruntime-application-metadata-catalog-json-test PROPERTIES
+                          CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES)
+    add_test(NAME rinruntime-application-metadata-catalog-json
+             COMMAND rinruntime-application-metadata-catalog-json-test)
     add_executable(rinruntime-theme-profile-test
                    tests/theme_profile_test.cpp)
     target_link_libraries(rinruntime-theme-profile-test
