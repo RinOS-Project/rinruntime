@@ -370,7 +370,7 @@ inline bool readDownloadRangeToBuffer(DownloadRangeTransport& transport,
     };
     try {
 #endif
-    DownloadRangeResponse response;
+    DownloadRangeResponse response{};
     /* A failed begin() is already terminal for the transport.  In
      * particular, do not call abort() here: a public adapter may preserve a
      * distinct cancellation state for the caller to inspect. */

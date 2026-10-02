@@ -120,6 +120,24 @@ public:
     }
 };
 
+class IncompleteRangeTransport final
+    : public RinRuntime::DownloadRangeTransport {
+public:
+    bool begin(const RinRuntime::DownloadRangeRequest&,
+               RinRuntime::DownloadRangeResponse& response) override {
+        response.statusCode = 206u;
+        response.contentLength = 0u;
+        return true;
+    }
+
+    bool read(std::uint8_t*, std::size_t, std::size_t& bytesRead) override {
+        bytesRead = 0u;
+        return true;
+    }
+
+    void abort() override {}
+};
+
 static int statelessBegin(void*,
                           const RinRuntime::DownloadRangeRequest* request,
                           RinRuntime::DownloadRangeResponse* response) {
@@ -232,6 +250,15 @@ int main() {
     assert(ordinary.bind(ordinaryOps));
 
     const auto request = makeRequest();
+    IncompleteRangeTransport incomplete;
+    std::uint8_t incompleteOutput[3u] = {0xffu, 0xffu, 0xffu};
+    std::size_t incompleteSize = 99u;
+    assert(!RinRuntime::readDownloadRangeToBuffer(
+        incomplete, request, incompleteOutput, sizeof(incompleteOutput),
+        incompleteSize));
+    assert(incompleteSize == 0u);
+    for (const std::uint8_t byte : incompleteOutput) assert(byte == 0u);
+
     RinRuntime::DownloadRangeResponse response;
     assert(ordinary.begin(request, response));
     std::uint8_t buffer[64u] = {};
