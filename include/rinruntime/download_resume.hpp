@@ -132,6 +132,9 @@ struct DownloadPartialReceipt {
         } catch (const std::bad_alloc&) {
             output.clear();
             return false;
+        } catch (...) {
+            output.clear();
+            return false;
         }
 #endif
     }
