@@ -105,6 +105,27 @@ static void request_header(RinKeyringMessageHeaderV1* header,
     header->payload_size = payload_size;
 }
 
+static int keyring_result_valid(int status)
+{
+    switch (status) {
+    case RIN_KEYRING_OK:
+    case RIN_KEYRING_INVALID:
+    case RIN_KEYRING_DENIED:
+    case RIN_KEYRING_LOCKED:
+    case RIN_KEYRING_NOT_FOUND:
+    case RIN_KEYRING_CONFLICT:
+    case RIN_KEYRING_STORAGE_FAILED:
+    case RIN_KEYRING_INTEGRITY_FAILED:
+    case RIN_KEYRING_ENTROPY_UNAVAILABLE:
+    case RIN_KEYRING_TOO_LARGE:
+    case RIN_KEYRING_REPLAY:
+    case RIN_KEYRING_NOT_SUPPORTED:
+        return 1;
+    default:
+        return 0;
+    }
+}
+
 static int receive_header(int fd, uint16_t opcode,
                           RinKeyringMessageHeaderV1* response)
 {
@@ -112,7 +133,7 @@ static int receive_header(int fd, uint16_t opcode,
         response->struct_size != sizeof(*response) ||
         response->version != 1u || response->opcode != opcode ||
         response->request_id != 1u || response->flags != 0u ||
-        response->reserved != 0u) {
+        response->reserved != 0u || !keyring_result_valid(response->status)) {
         return RIN_KEYRING_STORAGE_FAILED;
     }
     return response->status;
