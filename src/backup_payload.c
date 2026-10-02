@@ -7,6 +7,35 @@
 
 #include <string.h>
 
+static int backup_payload_reply_header_valid(
+    const RinFilePortalCallV1* call, uint16_t operation, int32_t descriptor,
+    uint64_t offset, uint32_t payload_size)
+{
+    uint32_t index;
+    if (call == NULL || call->struct_size != sizeof(*call) ||
+        call->version != RIN_FILE_PORTAL_CALL_VERSION ||
+        call->operation != operation || call->descriptor != descriptor ||
+        call->requested_rights != 0u || call->target_process_id != 0u ||
+        call->target_process_cookie != 0u || call->descriptor_flags != 0u ||
+        call->granted_rights != 0u || call->process_fd != -1 ||
+        call->file_object_id != 0u || call->expires_at_epoch != 0u ||
+        call->request_id != 0u || call->new_generation != 0u ||
+        call->request_status != 0 || call->reserved_status != 0u ||
+        call->reserved[0] != 0u ||
+        call->payload.struct_size != sizeof(call->payload) ||
+        call->payload.version != RIN_FILE_PORTAL_PAYLOAD_VERSION ||
+        call->payload.flags != 0u || call->payload.reserved0 != 0u ||
+        call->payload.offset != offset ||
+        call->payload.payload_size != payload_size ||
+        call->payload.result_size > payload_size)
+        return 0;
+    for (index = (uint32_t)call->payload.result_size;
+         index < RIN_FILE_PORTAL_PAYLOAD_DATA_SIZE; ++index) {
+        if (call->payload.bytes[index] != 0u) return 0;
+    }
+    return 1;
+}
+
 static RinRuntimeBackupResult backup_payload_call(
     int32_t descriptor, uint16_t operation, uint64_t offset,
     const uint8_t* input, uint32_t input_size,
@@ -52,7 +81,10 @@ static RinRuntimeBackupResult backup_payload_call(
         memset(&call, 0, sizeof(call));
         return RINRUNTIME_BACKUP_TRANSPORT_FAILED;
     }
-    if (call.payload.result_size > call.payload.payload_size ||
+    if (!backup_payload_reply_header_valid(
+            &call, operation, descriptor, offset,
+            input_size != 0u ? input_size : output_capacity) ||
+        call.payload.result_size > call.payload.payload_size ||
         (operation == RIN_FILE_PORTAL_OPERATION_PAYLOAD_READ &&
          call.payload.result_size > output_capacity) ||
         (operation == RIN_FILE_PORTAL_OPERATION_PAYLOAD_WRITE &&

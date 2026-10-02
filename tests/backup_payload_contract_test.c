@@ -10,7 +10,8 @@
 enum {
     FAKE_PORTAL_OK = 0,
     FAKE_PORTAL_TRANSPORT_FAILURE = 1,
-    FAKE_PORTAL_MALFORMED_RESPONSE = 2
+    FAKE_PORTAL_MALFORMED_RESPONSE = 2,
+    FAKE_PORTAL_MALFORMED_HEADER = 3
 };
 
 static int fake_mode;
@@ -27,6 +28,10 @@ int rin_file_portal_call(RinFilePortalCallV1* call)
     assert(call->payload.struct_size == sizeof(call->payload));
     assert(call->payload.version == RIN_FILE_PORTAL_PAYLOAD_VERSION);
     if (fake_mode == FAKE_PORTAL_TRANSPORT_FAILURE) return -1;
+    if (fake_mode == FAKE_PORTAL_MALFORMED_HEADER) {
+        call->payload.version = 0u;
+        return 0;
+    }
     if (call->operation == RIN_FILE_PORTAL_OPERATION_PAYLOAD_READ) {
         assert(call->payload.payload_size == 4u);
         memcpy(call->payload.bytes, read_bytes, sizeof(read_bytes));
@@ -69,6 +74,15 @@ int main(void)
     memset(output, 0xa5, sizeof(output));
     transferred = 99u;
     fake_mode = FAKE_PORTAL_TRANSPORT_FAILURE;
+    assert(rinruntime_backup_payload_read(4, 0u, output, sizeof(output),
+                                           &transferred) ==
+           RINRUNTIME_BACKUP_TRANSPORT_FAILED);
+    assert(transferred == 0u);
+    assert_zero(output, sizeof(output));
+
+    memset(output, 0xa5, sizeof(output));
+    transferred = 99u;
+    fake_mode = FAKE_PORTAL_MALFORMED_HEADER;
     assert(rinruntime_backup_payload_read(4, 0u, output, sizeof(output),
                                            &transferred) ==
            RINRUNTIME_BACKUP_TRANSPORT_FAILED);
