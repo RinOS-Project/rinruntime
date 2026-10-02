@@ -158,6 +158,29 @@ static void header_init(RinAudioServiceMessageHeaderV1* header,
     header->payload_bytes = payload_bytes;
 }
 
+static int audio_service_status_valid(int status)
+{
+    switch (status) {
+    case RIN_AUDIO_SERVICE_OK:
+    case RIN_AUDIO_SERVICE_INVALID:
+    case RIN_AUDIO_SERVICE_AUTHENTICATION:
+    case RIN_AUDIO_SERVICE_LIMIT:
+    case RIN_AUDIO_SERVICE_NOT_FOUND:
+    case RIN_AUDIO_SERVICE_STALE:
+    case RIN_AUDIO_SERVICE_NO_DEVICE:
+    case RIN_AUDIO_SERVICE_NO_SPACE:
+    case RIN_AUDIO_SERVICE_UNDERRUN:
+    case RIN_AUDIO_SERVICE_POLICY:
+    case RIN_AUDIO_SERVICE_BUSY:
+    case RIN_AUDIO_SERVICE_PROTOCOL:
+    case RIN_AUDIO_SERVICE_RANGE:
+    case RIN_AUDIO_SERVICE_BACKEND:
+        return 1;
+    default:
+        return 0;
+    }
+}
+
 /* The caller must hold g_client_io_lock.  Keeping the lock-taking wrapper
  * separate lets disconnect drain streams atomically without recursively
  * acquiring the same spin lock through stream_destroy(). */
@@ -186,7 +209,7 @@ static int transact_locked(uint32_t operation, uint64_t stream_handle,
         response.version != RIN_AUDIO_SERVICE_PROTOCOL_VERSION ||
         response.operation != operation || response.request_id != header.request_id ||
         response.stream_handle != stream_handle || response.reserved0 != 0u ||
-        response.status > 0 ||
+        !audio_service_status_valid(response.status) ||
         (response.status != RIN_AUDIO_SERVICE_OK && response.payload_bytes != 0u) ||
         response.payload_bytes > reply_capacity ||
         (response.payload_bytes != 0u && reply == NULL)) {
