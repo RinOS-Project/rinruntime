@@ -101,9 +101,11 @@ public:
     bool bind(const RinRuntimeTlsClientCertificateRequestV1& request,
               TlsClientCertificateKeyOwnerSignFunction signer,
               void* signer_context) {
+        /* The capability and request identity bind the operation.  A
+         * stateless caller-owned signer may legitimately have no cookie. */
         if (state_ != TlsClientCertificateTransportState::Idle ||
             !rinruntime_tls_client_certificate_request_valid(&request) ||
-            signer == nullptr || signer_context == nullptr)
+            signer == nullptr)
             return false;
         request_ = request;
         for (std::size_t index = 0u; index < request.certificate_list_size;

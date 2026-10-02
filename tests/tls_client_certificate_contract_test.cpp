@@ -35,6 +35,25 @@ int sign(void* opaque,
     return 0;
 }
 
+int stateless_sign(
+    void* context,
+    const std::uint8_t capability[RINRUNTIME_TLS_CLIENT_CERTIFICATE_CAPABILITY_BYTES],
+    std::uint64_t, std::uint64_t, std::uint16_t signature_scheme,
+    const std::uint8_t* message, std::size_t message_length,
+    std::uint8_t* signature, std::size_t signature_capacity,
+    std::size_t* signature_length) {
+    if (context != nullptr || capability == nullptr ||
+        signature_scheme != 0x0403u || message == nullptr ||
+        message_length != 3u || signature == nullptr ||
+        signature_capacity < 3u || signature_length == nullptr)
+        return -1;
+    signature[0] = message[0] ^ capability[0];
+    signature[1] = message[1] ^ capability[1];
+    signature[2] = message[2] ^ capability[2];
+    *signature_length = 3u;
+    return 0;
+}
+
 int install(void* context, const void* certificate_list,
             std::size_t certificate_list_size,
             int (*signer)(void*, std::uint16_t, const std::uint8_t*,
@@ -102,6 +121,18 @@ int main() {
            transport.connectionGeneration() == 0u &&
            transport.certificateList() == nullptr &&
            transport.certificateListSize() == 0u);
+
+    RinRuntime::TlsClientCertificateTransport stateless_transport;
+    assert(stateless_transport.bind(request, stateless_sign, nullptr));
+    assert(stateless_transport.startHandshake());
+    signature_length = 0u;
+    assert(stateless_transport.sign(0x0403u, transcript, sizeof(transcript),
+                                    signature, sizeof(signature),
+                                    &signature_length) == 0);
+    assert(signature_length == 3u &&
+           signature[0] == (transcript[0] ^ capability[0]) &&
+           signature[1] == (transcript[1] ^ capability[1]) &&
+           signature[2] == (transcript[2] ^ capability[2]));
 
     RinRuntime::TlsClientCertificateTransport throwing_transport;
     assert(throwing_transport.bind(request, throwing_sign, &context));

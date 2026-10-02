@@ -243,7 +243,9 @@ temporary response. It volatile-clears the one-shot capability after a signing
 callback returns, whether signing succeeds or fails. Failed or rejected
 signing also clears the declared signature output when its capacity is within
 the 512-byte transport bound; `reset()` clears the copied certificate and
-capability. Private keys, certificate stores, keyrings, and HTTPS socket
+capability. The signer cookie is optional, so a stateless caller-owned signer
+may pass null while the capability and request identity still bind the
+operation. Private keys, certificate stores, keyrings, and HTTPS socket
 ownership remain outside this public signer transport.
 
 `timezone.hpp` provides the backend-independent `ClockReading`,
