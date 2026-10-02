@@ -238,6 +238,14 @@ if(RINRUNTIME_BUILD_TESTS)
                               PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES)
         add_test(NAME rinruntime-event-loop-poll
                  COMMAND rinruntime-event-loop-poll-test)
+        add_executable(rinruntime-backup-payload-test
+                       tests/backup_payload_contract_test.c
+                       src/backup_payload.c)
+        target_include_directories(rinruntime-backup-payload-test
+                                   PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include
+                                           ${CMAKE_CURRENT_SOURCE_DIR}/../../RinOS-SDK/include)
+        add_test(NAME rinruntime-backup-payload
+                 COMMAND rinruntime-backup-payload-test)
     endif()
     add_executable(rinruntime-serial-portal-test
                    tests/serial_portal_contract_test.c)

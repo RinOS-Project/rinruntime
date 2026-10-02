@@ -16,7 +16,10 @@ static RinRuntimeBackupResult backup_payload_call(
     int result;
 
     if (transferred != NULL) *transferred = 0u;
+    if (output != NULL && output_capacity != 0u)
+        memset(output, 0, output_capacity);
     if (descriptor < 0 || input_size > RIN_FILE_PORTAL_PAYLOAD_DATA_SIZE ||
+        output_capacity > RIN_FILE_PORTAL_PAYLOAD_DATA_SIZE ||
         (input_size != 0u && input == NULL) ||
         (output_capacity != 0u && output == NULL) || transferred == NULL ||
         (operation != RIN_FILE_PORTAL_OPERATION_PAYLOAD_READ &&

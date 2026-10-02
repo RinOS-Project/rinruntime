@@ -141,6 +141,10 @@ if get_option('buildtype') != 'plain'
           'tests/poll_wait_contract_test.c', 'src/poll_wait.c',
           include_directories: inc,
           override_options: test_override_options))
+    test('rinruntime-backup-payload', executable('rinruntime-backup-payload-test',
+          'tests/backup_payload_contract_test.c', 'src/backup_payload.c',
+          include_directories: inc,
+          override_options: test_override_options))
     test('rinruntime-audio-ring', executable('rinruntime-audio-ring-test',
           'tests/audio/rin_audio_service_client_ring_test.c',
           dependencies: runtime_dep, override_options: test_override_options))
