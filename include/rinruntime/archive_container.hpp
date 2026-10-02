@@ -53,6 +53,7 @@ struct ArchiveContainerEntry {
  * decide whether and where accepted chunks are stored. */
 using ArchiveContainerSinkFunction = bool (*)(
     void* context, const std::uint8_t* bytes, std::size_t size);
+/* context may be null for a stateless caller-owned sink. */
 
 /*
  * Select one of the public memory-only archive readers from a bounded magic
@@ -240,7 +241,7 @@ public:
         ArchiveDeflateCancellationFunction cancellation,
         void* cancellationContext) const
     {
-        if (index >= entries_.size() || sink == nullptr || context == nullptr)
+        if (index >= entries_.size() || sink == nullptr)
             return ArchiveContainerResult::InvalidArgument;
 #if defined(__cpp_exceptions) || defined(_CPPUNWIND)
         try {
@@ -387,7 +388,7 @@ public:
         std::size_t index, ArchiveContainerSinkFunction sink, void* context,
         ArchiveDeflateDeadlineFunction deadline, void* deadlineContext) const
     {
-        if (index >= entries_.size() || sink == nullptr || context == nullptr)
+        if (index >= entries_.size() || sink == nullptr)
             return ArchiveContainerResult::InvalidArgument;
 #if defined(__cpp_exceptions) || defined(_CPPUNWIND)
         try {

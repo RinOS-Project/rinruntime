@@ -300,7 +300,7 @@ public:
 #if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
         try {
 #endif
-        if (index >= entries_.size() || sink == nullptr || context == nullptr)
+        if (index >= entries_.size() || sink == nullptr)
             return ArchiveTarResult::InvalidArgument;
         if (entries_[index].directory) return ArchiveTarResult::Ok;
 
@@ -331,7 +331,7 @@ public:
 #if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
         try {
 #endif
-        if (index >= entries_.size() || sink == nullptr || context == nullptr)
+        if (index >= entries_.size() || sink == nullptr)
             return ArchiveTarResult::InvalidArgument;
         if (deadline != nullptr && deadline(deadlineContext))
             return ArchiveTarResult::Deadline;

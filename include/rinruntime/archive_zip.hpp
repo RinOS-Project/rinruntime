@@ -429,7 +429,7 @@ public:
 #if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
         try {
 #endif
-        if (index >= entries_.size() || sink == nullptr || context == nullptr)
+        if (index >= entries_.size() || sink == nullptr)
             return ArchiveZipResult::InvalidArgument;
         const ArchiveZipEntry& entry = entries_[index];
         std::size_t compressedSize = 0u;
@@ -483,7 +483,7 @@ public:
 #if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
         try {
 #endif
-        if (index >= entries_.size() || sink == nullptr || context == nullptr)
+        if (index >= entries_.size() || sink == nullptr)
             return ArchiveZipResult::InvalidArgument;
         if (deadline != nullptr && deadline(deadlineContext))
             return ArchiveZipResult::Deadline;

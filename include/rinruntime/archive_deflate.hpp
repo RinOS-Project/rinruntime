@@ -20,6 +20,7 @@ namespace RinRuntime {
 
 using ArchiveDeflateSinkFunction = bool (*)(
     void* context, const std::uint8_t* bytes, std::size_t size);
+/* context may be null for a stateless caller-owned sink. */
 using ArchiveDeflateCancellationFunction = bool (*)(void* context);
 using ArchiveDeflateDeadlineFunction = bool (*)(void* context);
 /* A bounded pull source for one exact raw-DEFLATE payload.  The callback may
@@ -279,8 +280,7 @@ private:
         {
             if (pendingSize_ == 0u)
                 return true;
-            if (sink_ == nullptr || context_ == nullptr ||
-                !sink_(context_, pending_, pendingSize_)) {
+            if (sink_ == nullptr || !sink_(context_, pending_, pendingSize_)) {
                 sinkFailed_ = true;
                 return false;
             }
@@ -321,7 +321,7 @@ private:
             return ArchiveDeflateResult::InvalidArgument;
         if (read == nullptr && compressed == nullptr)
             return ArchiveDeflateResult::InvalidArgument;
-        if (output == nullptr && (sink == nullptr || context == nullptr))
+        if (output == nullptr && sink == nullptr)
             return ArchiveDeflateResult::InvalidArgument;
         if (compressedSize == 0u)
             return ArchiveDeflateResult::InvalidArgument;

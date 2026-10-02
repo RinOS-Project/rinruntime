@@ -42,6 +42,16 @@ static bool collectTar(void* context, const std::uint8_t* bytes,
     return true;
 }
 
+static std::string statelessArchiveOutput;
+
+static bool collectStatelessArchive(void*, const std::uint8_t* bytes,
+                                    std::size_t size)
+{
+    if (bytes == nullptr || size == 0u) return false;
+    statelessArchiveOutput.append(reinterpret_cast<const char*>(bytes), size);
+    return true;
+}
+
 static bool rejectTar(void*, const std::uint8_t*, std::size_t)
 {
     return false;
@@ -1186,6 +1196,11 @@ int main()
     assert(deflate.decode(stored, sizeof(stored), 5u, 0x3610a686u,
                           output) == RinRuntime::ArchiveDeflateResult::Ok);
     assert(output == "hello");
+    statelessArchiveOutput.clear();
+    assert(deflate.decodeToSink(stored, sizeof(stored), 5u, 0x3610a686u,
+                                &collectStatelessArchive, nullptr) ==
+           RinRuntime::ArchiveDeflateResult::Ok);
+    assert(statelessArchiveOutput == "hello");
     output = "poison";
     assert(deflate.decode(stored, sizeof(stored), 5u, 0x3610a686u, output,
                           throwingCallback, nullptr) ==

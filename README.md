@@ -354,9 +354,10 @@ boundary for strict ustar parsing, GZIP-to-TAR composition, and sink delivery.
 `ArchiveTarReader::readEntryToSink()` provides the same bounded, at-most-64 KiB
 caller-owned staging path for regular TAR entries, and
 `ArchiveTarGzipReader` delegates to it after its bounded GZIP staging step. A
-sink failure is not publication and directories produce no data callback.
-Filesystem extraction, archive service IPC, and File Portal publication remain
-private RinOS adapters.
+sink failure is not publication and directories produce no data callback. Sink
+contexts are optional, so stateless general-application callbacks may pass a
+null cookie; filesystem extraction, archive service IPC, and File Portal
+publication remain private RinOS adapters.
 
 `archive_container.hpp` maps a standalone GZIP member to one bounded
 caller-owned `<stream>` entry, while TAR.GZ remains a TAR entry container.  The

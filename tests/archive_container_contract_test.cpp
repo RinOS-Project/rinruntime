@@ -83,6 +83,16 @@ static bool collectSink(void* context, const std::uint8_t* bytes,
     return true;
 }
 
+static std::string statelessSinkOutput;
+
+static bool collectStatelessSink(void*, const std::uint8_t* bytes,
+                                 std::size_t size)
+{
+    if (bytes == nullptr && size != 0u) return false;
+    statelessSinkOutput.append(reinterpret_cast<const char*>(bytes), size);
+    return true;
+}
+
 static std::vector<std::uint8_t> makeTar()
 {
     std::vector<std::uint8_t> bytes(2048u, 0u);
@@ -1121,6 +1131,10 @@ int main()
     std::string streamed;
     assert(reader.readEntryToSink(0u, &collectSink, &streamed) ==
            RinRuntime::ArchiveContainerResult::Ok && streamed == "hello");
+    statelessSinkOutput.clear();
+    assert(reader.readEntryToSink(0u, &collectStatelessSink, nullptr) ==
+           RinRuntime::ArchiveContainerResult::Ok &&
+           statelessSinkOutput == "hello");
     streamed.clear();
     assert(reader.readEntryToSinkWithCancellation(
                0u, &collectSink, &streamed, stopImmediately, nullptr) ==
@@ -1183,6 +1197,11 @@ int main()
     streamed.clear();
     assert(reader.readEntryToSink(0u, &collectSink, &streamed) ==
            RinRuntime::ArchiveContainerResult::Ok && streamed == "stream");
+    statelessSinkOutput.clear();
+    assert(reader.readEntryToSinkWithCancellation(
+               0u, &collectStatelessSink, nullptr, nullptr, nullptr) ==
+           RinRuntime::ArchiveContainerResult::Ok &&
+           statelessSinkOutput == "stream");
     streamed.clear();
     assert(reader.readEntryToSinkWithCancellation(
                0u, &collectSink, &streamed, stopImmediately, nullptr) ==
