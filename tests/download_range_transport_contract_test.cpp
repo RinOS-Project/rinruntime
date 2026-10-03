@@ -144,6 +144,42 @@ public:
     void abort() override {}
 };
 
+class ReentrantGenericRangeTransport final
+    : public RinRuntime::DownloadRangeTransport {
+public:
+    bool cancelFromBegin = false;
+    bool cancelFromRead = false;
+    bool cancelled = false;
+    unsigned readCalls = 0u;
+
+    bool begin(const RinRuntime::DownloadRangeRequest& request,
+               RinRuntime::DownloadRangeResponse& response) override {
+        response.statusCode = 206u;
+        response.contentRangeStart = request.offset;
+        response.contentRangeEnd = request.totalBytes - 1u;
+        response.contentRangeTotal = request.totalBytes;
+        response.contentLength = request.totalBytes - request.offset;
+        response.generation = request.generation;
+        response.validator = request.validator;
+        if (cancelFromBegin) cancelled = true;
+        return true;
+    }
+
+    bool read(std::uint8_t* buffer, std::size_t capacity,
+              std::size_t& bytesRead) override {
+        if (buffer == nullptr || capacity == 0u) return false;
+        ++readCalls;
+        buffer[0] = 0xd2u;
+        bytesRead = 1u;
+        if (cancelFromRead) cancelled = true;
+        return true;
+    }
+
+    void abort() override { cancelled = true; }
+
+    bool wasCancelled() const override { return cancelled; }
+};
+
 static int statelessBegin(void*,
                           const RinRuntime::DownloadRangeRequest* request,
                           RinRuntime::DownloadRangeResponse* response) {
@@ -335,6 +371,27 @@ int main() {
         incompleteSize));
     assert(incompleteSize == 0u);
     for (const std::uint8_t byte : incompleteOutput) assert(byte == 0u);
+
+    ReentrantGenericRangeTransport genericBeginCancelled;
+    genericBeginCancelled.cancelFromBegin = true;
+    std::uint8_t genericCancelledOutput[3u] = {0xffu, 0xffu, 0xffu};
+    std::size_t genericCancelledSize = 99u;
+    assert(!RinRuntime::readDownloadRangeToBuffer(
+        genericBeginCancelled, request, genericCancelledOutput,
+        sizeof(genericCancelledOutput), genericCancelledSize));
+    assert(genericCancelledSize == 0u);
+    for (const std::uint8_t byte : genericCancelledOutput) assert(byte == 0u);
+    assert(genericBeginCancelled.readCalls == 0u);
+
+    ReentrantGenericRangeTransport genericReadCancelled;
+    genericReadCancelled.cancelFromRead = true;
+    genericCancelledSize = 99u;
+    assert(!RinRuntime::readDownloadRangeToBuffer(
+        genericReadCancelled, request, genericCancelledOutput,
+        sizeof(genericCancelledOutput), genericCancelledSize));
+    assert(genericCancelledSize == 0u);
+    for (const std::uint8_t byte : genericCancelledOutput) assert(byte == 0u);
+    assert(genericReadCancelled.readCalls == 1u);
 
     RinRuntime::DownloadRangeResponse response;
     assert(ordinary.begin(request, response));

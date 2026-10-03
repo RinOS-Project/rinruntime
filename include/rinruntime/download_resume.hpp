@@ -380,6 +380,14 @@ inline bool readDownloadRangeToBuffer(DownloadRangeTransport& transport,
         settled = true;
         return false;
     }
+    /* A transport may re-enter its own public abort/cancel path while
+     * begin() is executing and still return a syntactically valid response.
+     * Observe the terminal cancellation before admitting that response. */
+    if (transport.wasCancelled()) {
+        scrubOutput();
+        settled = true;
+        return false;
+    }
     if (!response.validFor(request) || response.contentLength > capacity) {
         scrubOutput();
         settled = true;
@@ -411,6 +419,14 @@ inline bool readDownloadRangeToBuffer(DownloadRangeTransport& transport,
             return false;
         }
         outputSize += bytesRead;
+        /* A successful callback return must not resurrect a transport that
+         * cancelled itself reentrantly after producing a byte. */
+        if (transport.wasCancelled()) {
+            scrubOutput();
+            outputSize = 0u;
+            settled = true;
+            return false;
+        }
     }
     std::uint8_t trailingByte = 0u;
     std::size_t trailingBytes = 0u;
@@ -425,6 +441,12 @@ inline bool readDownloadRangeToBuffer(DownloadRangeTransport& transport,
         } else {
             settled = true;
         }
+        return false;
+    }
+    if (transport.wasCancelled()) {
+        scrubOutput();
+        outputSize = 0u;
+        settled = true;
         return false;
     }
     settled = true;
