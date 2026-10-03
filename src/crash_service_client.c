@@ -126,58 +126,100 @@ static int crash_service_result_valid(int32_t status)
     }
 }
 
-RinRuntimeCrashServiceResult rinruntime_crash_service_register_recovery(
-    const RinRuntimeSessionRecoveryMetadataV1* metadata,
+static RinRuntimeCrashServiceResult crash_service_recovery_request(
+    uint16_t opcode, const RinCrashRecoveryRegistrationV1* registration,
     uint32_t expected_service_slot)
 {
-    RinCrashRecoveryRegistrationV1 registration;
     RinCrashServiceMessageHeaderV1 request = {};
     RinCrashServiceMessageHeaderV1 reply = {};
     struct sockaddr_un address = {};
     size_t path_size = sizeof(RINRUNTIME_CRASH_SERVICE_PATH) - 1u;
     int fd = -1;
-    RinRuntimeCrashServiceResult result;
+    RinRuntimeCrashServiceResult result =
+        RINRUNTIME_CRASH_SERVICE_UNAVAILABLE;
 
-    result = rinruntime_crash_service_registration_from_metadata(
-        metadata, &registration);
-    if (result != RINRUNTIME_CRASH_SERVICE_OK || expected_service_slot == 0u)
-        return result == RINRUNTIME_CRASH_SERVICE_OK
-            ? RINRUNTIME_CRASH_SERVICE_INVALID_ARGUMENT
-            : result;
-    if (path_size >= sizeof(address.sun_path))
+    if (registration == NULL || expected_service_slot == 0u ||
+        path_size >= sizeof(address.sun_path) ||
+        (opcode != RIN_CRASH_SERVICE_OP_REGISTER_RECOVERY &&
+         opcode != RIN_CRASH_SERVICE_OP_QUERY_RECOVERY_CRASH))
         return RINRUNTIME_CRASH_SERVICE_INVALID_ARGUMENT;
     fd = socket(AF_UNIX, SOCK_STREAM, 0);
-    if (fd < 0) return RINRUNTIME_CRASH_SERVICE_UNAVAILABLE;
+    if (fd < 0) goto done;
     address.sun_family = AF_UNIX;
     memcpy(address.sun_path, RINRUNTIME_CRASH_SERVICE_PATH, path_size);
     if (connect(fd, (const struct sockaddr*)&address, sizeof(address)) != 0 ||
-        !crash_service_endpoint_valid(fd, expected_service_slot)) {
-        close(fd);
-        return RINRUNTIME_CRASH_SERVICE_UNAVAILABLE;
-    }
+        !crash_service_endpoint_valid(fd, expected_service_slot))
+        goto done;
 
     request.struct_size = sizeof(request);
     request.version = RIN_CRASH_SERVICE_ABI_VERSION;
-    request.opcode = RIN_CRASH_SERVICE_OP_REGISTER_RECOVERY;
+    request.opcode = opcode;
     request.request_id = 1u;
-    request.payload_size = sizeof(registration);
+    request.payload_size = sizeof(*registration);
     if (!crash_service_send_exact(fd, &request, sizeof(request)) ||
-        !crash_service_send_exact(fd, &registration, sizeof(registration)) ||
-        !crash_service_receive_exact(fd, &reply, sizeof(reply))) {
-        memset(&registration, 0, sizeof(registration));
-        close(fd);
-        return RINRUNTIME_CRASH_SERVICE_UNAVAILABLE;
-    }
-    memset(&registration, 0, sizeof(registration));
-    close(fd);
+        !crash_service_send_exact(fd, registration, sizeof(*registration)) ||
+        !crash_service_receive_exact(fd, &reply, sizeof(reply)))
+        goto done;
     if (reply.struct_size != sizeof(reply) ||
         reply.version != RIN_CRASH_SERVICE_ABI_VERSION ||
-        reply.opcode != request.opcode || reply.request_id != request.request_id ||
-        reply.payload_size != 0u || reply.flags != 0u || reply.reserved != 0u ||
-        !crash_service_result_valid(reply.status))
-        return RINRUNTIME_CRASH_SERVICE_PROTOCOL_ERROR;
-    return reply.status == RIN_RESULT_OK ? RINRUNTIME_CRASH_SERVICE_OK
-                                         : RINRUNTIME_CRASH_SERVICE_REJECTED;
+        reply.opcode != request.opcode ||
+        reply.request_id != request.request_id || reply.payload_size != 0u ||
+        reply.flags != 0u || reply.reserved != 0u ||
+        !crash_service_result_valid(reply.status)) {
+        result = RINRUNTIME_CRASH_SERVICE_PROTOCOL_ERROR;
+        goto done;
+    }
+    if (opcode == RIN_CRASH_SERVICE_OP_QUERY_RECOVERY_CRASH) {
+        if (reply.status == RIN_RESULT_OK)
+            result = RINRUNTIME_CRASH_SERVICE_CRASH_DETECTED;
+        else if (reply.status == RIN_RESULT_NOT_FOUND)
+            result = RINRUNTIME_CRASH_SERVICE_OK;
+        else
+            result = RINRUNTIME_CRASH_SERVICE_REJECTED;
+    } else {
+        result = reply.status == RIN_RESULT_OK
+            ? RINRUNTIME_CRASH_SERVICE_OK
+            : RINRUNTIME_CRASH_SERVICE_REJECTED;
+    }
+done:
+    memset(&request, 0, sizeof(request));
+    memset(&reply, 0, sizeof(reply));
+    memset(&address, 0, sizeof(address));
+    if (fd >= 0) close(fd);
+    return result;
+}
+
+RinRuntimeCrashServiceResult rinruntime_crash_service_register_recovery(
+    const RinRuntimeSessionRecoveryMetadataV1* metadata,
+    uint32_t expected_service_slot)
+{
+    RinCrashRecoveryRegistrationV1 registration;
+    RinRuntimeCrashServiceResult result =
+        rinruntime_crash_service_registration_from_metadata(
+        metadata, &registration);
+    if (result == RINRUNTIME_CRASH_SERVICE_OK)
+        result = crash_service_recovery_request(
+            RIN_CRASH_SERVICE_OP_REGISTER_RECOVERY, &registration,
+            expected_service_slot);
+    memset(&registration, 0, sizeof(registration));
+    return result;
+}
+
+RinRuntimeCrashServiceResult
+rinruntime_crash_service_query_recovery_crash(
+    const RinRuntimeSessionRecoveryMetadataV1* metadata,
+    uint32_t expected_service_slot)
+{
+    RinCrashRecoveryRegistrationV1 registration;
+    RinRuntimeCrashServiceResult result =
+        rinruntime_crash_service_registration_from_metadata(
+            metadata, &registration);
+    if (result == RINRUNTIME_CRASH_SERVICE_OK)
+        result = crash_service_recovery_request(
+            RIN_CRASH_SERVICE_OP_QUERY_RECOVERY_CRASH, &registration,
+            expected_service_slot);
+    memset(&registration, 0, sizeof(registration));
+    return result;
 }
 
 RinRuntimeCrashServiceResult rinruntime_crash_service_append_diagnostic(
