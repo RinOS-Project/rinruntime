@@ -22,8 +22,7 @@ typedef enum RinRuntimeCrashServiceResult {
     RINRUNTIME_CRASH_SERVICE_INVALID_ARGUMENT = -1,
     RINRUNTIME_CRASH_SERVICE_UNAVAILABLE = -2,
     RINRUNTIME_CRASH_SERVICE_PROTOCOL_ERROR = -3,
-    RINRUNTIME_CRASH_SERVICE_REJECTED = -4,
-    RINRUNTIME_CRASH_SERVICE_CRASH_DETECTED = 1
+    RINRUNTIME_CRASH_SERVICE_REJECTED = -4
 } RinRuntimeCrashServiceResult;
 
 /* Convert the public session metadata into the path-free crashd wire record.
@@ -41,14 +40,6 @@ RinRuntimeCrashServiceResult rinruntime_crash_service_register_recovery(
     const RinRuntimeSessionRecoveryMetadataV1* metadata,
     uint32_t expected_service_slot);
 
-/* Ask crashd whether this exact authenticated local recovery record was
- * matched to a kernel-captured crash from its original process instance.
- * Unavailable or malformed service state never suppresses normal recovery. */
-RinRuntimeCrashServiceResult
-rinruntime_crash_service_query_recovery_crash(
-    const RinRuntimeSessionRecoveryMetadataV1* metadata,
-    uint32_t expected_service_slot);
-
 /* Send one already-redacted, bounded diagnostic to crashd. The service slot
  * must come from the authenticated service manager; a path alone is not an
  * acceptable identity. */
@@ -60,4 +51,5 @@ RinRuntimeCrashServiceResult rinruntime_crash_service_append_diagnostic(
 #endif
 
 #endif /* RINRUNTIME_CRASH_SERVICE_H */
+
 
