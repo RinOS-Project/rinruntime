@@ -184,7 +184,7 @@ public:
             return ArchiveContainerResult::InvalidArgument;
         if (cancellationRequested(cancellation, cancellationContext))
             return ArchiveContainerResult::Cancelled;
-            switch (kind_) {
+        switch (kind_) {
             case ArchiveContainerKind::Zip:
                 return map(std::get<ArchiveZipReader>(reader_)
                                .readEntry(index, output, cancellation,
