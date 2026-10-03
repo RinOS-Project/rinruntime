@@ -234,11 +234,13 @@ static std::vector<std::uint8_t> make7zStored(bool copy_chain = false,
                                               bool x86_first = false,
                                               bool lzma2_first = false,
                                               std::size_t pack_position = 0u,
-                                              bool multi_entry = false)
+                                              bool multi_entry = false,
+                                              bool deflate_first = false)
 {
-    assert(!multi_entry || (!delta_first && !x86_first && !lzma2_first));
+    assert(!multi_entry ||
+           (!delta_first && !x86_first && !lzma2_first && !deflate_first));
     assert((delta_first ? 1u : 0u) + (x86_first ? 1u : 0u) +
-               (lzma2_first ? 1u : 0u) <=
+               (lzma2_first ? 1u : 0u) + (deflate_first ? 1u : 0u) <=
            1u);
     const std::uint8_t signature[] = {
         0x37u, 0x7au, 0xbcu, 0xafu, 0x27u, 0x1cu};
@@ -253,17 +255,23 @@ static std::vector<std::uint8_t> make7zStored(bool copy_chain = false,
                                        0x00u};
     const std::uint8_t lzma2_payload[] = {
         0x01u, 0x04u, 0x00u, 'h', 'e', 'l', 'l', 'o', 0x00u};
+    const std::uint8_t deflate_payload[] = {
+        0x01u, 0x05u, 0x00u, 0xfau, 0xffu, 'h', 'e', 'l', 'l', 'o'};
     const std::uint8_t* packed =
         multi_entry ? multi_payload
-                    : lzma2_first ? lzma2_payload
-                                  : x86_first ? x86_payload
-                                              : delta_first ? delta_payload
-                                                            : payload;
+                    : deflate_first ? deflate_payload
+                                    : lzma2_first ? lzma2_payload
+                                                  : x86_first ? x86_payload
+                                                              : delta_first
+                                                                    ? delta_payload
+                                                                    : payload;
     const std::uint8_t* expected =
         multi_entry ? multi_payload : x86_first ? x86_output : payload;
     const std::size_t packed_size =
         multi_entry ? sizeof(multi_payload)
-                    : lzma2_first ? sizeof(lzma2_payload) : sizeof(payload);
+                    : deflate_first ? sizeof(deflate_payload)
+                                    : lzma2_first ? sizeof(lzma2_payload)
+                                                  : sizeof(payload);
     const std::size_t expected_size =
         multi_entry ? sizeof(multi_payload) : sizeof(payload);
     std::vector<std::uint8_t> header;
@@ -284,7 +292,12 @@ static std::vector<std::uint8_t> make7zStored(bool copy_chain = false,
     put7zUInt64(header, 1u); /* NumFolders */
     header.push_back(0u); /* folders are in this header */
     put7zUInt64(header, copy_chain ? 2u : 1u); /* NumCoders */
-    if (delta_first) {
+    if (deflate_first) {
+        header.push_back(0x03u); /* three-byte raw DEFLATE method ID */
+        header.push_back(0x08u);
+        header.push_back(0x01u);
+        header.push_back(0x04u);
+    } else if (delta_first) {
         header.push_back(0x21u); /* one-byte Delta method ID + properties */
         header.push_back(0x03u);
         header.push_back(0x01u); /* one property byte */
@@ -1652,6 +1665,13 @@ int main()
                                        storedSevenZip.size(),
                                        sevenZipOutput) ==
            RinRuntime::Archive7zResult::Ok);
+    assert(sevenZipOutput == "hello");
+    const std::vector<std::uint8_t> deflateSevenZip =
+        make7zStored(false, false, false, false, 0u, false, true);
+    sevenZipOutput = "poison";
+    assert(sevenZipReader.decodeStored(
+               deflateSevenZip.data(), deflateSevenZip.size(),
+               sevenZipOutput) == RinRuntime::Archive7zResult::Ok);
     assert(sevenZipOutput == "hello");
     sevenZipOutput = "poison";
     assert(sevenZipReader.decodeStored(

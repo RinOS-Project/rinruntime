@@ -106,9 +106,9 @@ public:
     }
 
     /* Decode a bounded 7z pipeline of up to four one-in/one-out Copy, Delta,
-     * and LZMA coders, or one BCJ2 coder with four packed input streams, plus
-     * bounded linear Copy／Delta／raw-filter／LZMA／LZMA2 folders of up to
-     * four coders containing
+     * raw-DEFLATE, and LZMA coders, or one BCJ2 coder with four packed input
+     * streams, plus bounded linear Copy／Delta／raw-filter／DEFLATE／LZMA／LZMA2
+     * folders of up to four coders containing
      * regular substreams, plus empty
      * regular files/directories with no packed stream.
      * BindPairs are validated before any coder runs.  A multi-entry folder is
@@ -222,6 +222,7 @@ private:
         std::array<bool, kMaxCoders> lzma_coders{};
         std::array<bool, kMaxCoders> lzma2_coders{};
         std::array<std::uint8_t, kMaxCoders> lzma2_properties{};
+        std::array<bool, kMaxCoders> deflate_coders{};
         std::array<bool, kMaxCoders> raw_filter_coders{};
         std::array<std::array<std::uint8_t, 4u>, kMaxCoders>
             filter_properties{};
@@ -387,6 +388,9 @@ private:
                                property_size == 1u) {
                         lzma2_properties[coder] = bytes[cursor++];
                         lzma2_coders[coder] = true;
+                    } else if (method == UINT64_C(0x040108) &&
+                               property_size == 0u) {
+                        deflate_coders[coder] = true;
                     } else if (method >= 0x03u && method <= 0x0bu &&
                                property_size ==
                                    (method == 0x03u
@@ -409,6 +413,8 @@ private:
                         return Archive7zResult::Unsupported;
                 } else if (method >= 0x05u && method <= 0x0bu) {
                     raw_filter_coders[coder] = true;
+                } else if (method == UINT64_C(0x040108)) {
+                    deflate_coders[coder] = true;
                 } else if (method != 0u) {
                     return Archive7zResult::Unsupported;
                 }
@@ -892,6 +898,36 @@ private:
                         return Archive7zResult::Unsupported;
                     if (lzma2_result != ArchiveXzResult::Ok)
                         return Archive7zResult::Malformed;
+                } else if (deflate_coders[coder] &&
+                           coder_methods[coder] == UINT64_C(0x040108)) {
+                    /* The public subset only exposes raw DEFLATE as the
+                     * final linear coder.  ArchiveDeflateDecoder requires
+                     * the 7z folder CRC, which keeps publication
+                     * failure-atomic without broadening this reader into a
+                     * general multi-stream graph executor. */
+                    if (coder != final_output_index || !folder_crc_defined)
+                        return Archive7zResult::Unsupported;
+                    ArchiveDeflateDecoder deflate_reader;
+                    ArchiveDeflateResult deflate_result;
+                    if (deadline != nullptr) {
+                        deflate_result = deflate_reader.decodeWithDeadline(
+                            input, input_size, expected_size, folder_crc,
+                            coder_output, deadline, deadlineContext);
+                    } else {
+                        deflate_result = deflate_reader.decode(
+                            input, input_size, expected_size, folder_crc,
+                            coder_output, cancellation, cancellationContext);
+                    }
+                    if (deflate_result == ArchiveDeflateResult::Cancelled)
+                        return Archive7zResult::Cancelled;
+                    if (deflate_result == ArchiveDeflateResult::Deadline)
+                        return Archive7zResult::Deadline;
+                    if (deflate_result == ArchiveDeflateResult::Limit)
+                        return Archive7zResult::Limit;
+                    if (deflate_result == ArchiveDeflateResult::CrcMismatch)
+                        return Archive7zResult::CrcMismatch;
+                    if (deflate_result != ArchiveDeflateResult::Ok)
+                        return Archive7zResult::Malformed;
                 } else if (raw_filter_coders[coder]) {
                     if (input_size != expected_size)
                         return Archive7zResult::Malformed;
@@ -1014,6 +1050,8 @@ private:
             folder_lzma_coders{};
         std::array<std::array<bool, kMaxFolderCoders>, kMaxFolders>
             folder_lzma2_coders{};
+        std::array<std::array<bool, kMaxFolderCoders>, kMaxFolders>
+            folder_deflate_coders{};
         std::array<std::array<std::size_t, kMaxFolderCoders>, kMaxFolders>
             folder_property_sizes{};
         std::array<std::array<std::uint64_t, kMaxFolderCoders>, kMaxFolders>
@@ -1040,9 +1078,10 @@ private:
         substream_counts.fill(1u);
 
         /* This deliberately bounded extension accepts at most four Copy,
-         * Delta, raw filter, LZMA, or LZMA2 coders per folder.  The folder
-         * input is mapped to the packed stream with the same ordinal; the
-         * only accepted bonds are the linear (coder + 1) <- coder pairs. */
+         * Delta, raw filter, raw-DEFLATE, LZMA, or LZMA2 coders per folder.
+         * The folder input is mapped to the packed stream with the same
+         * ordinal; the only accepted bonds are the linear (coder + 1) <-
+         * coder pairs. */
         for (std::size_t folder = 0u; folder < folders; ++folder) {
             if (deadline != nullptr && deadline(deadlineContext))
                 return Archive7zResult::Deadline;
@@ -1086,6 +1125,9 @@ private:
                 } else if (method == UINT64_C(0x21)) {
                     expected_property_size = 1u;
                     folder_lzma2_coders[folder][coder] = true;
+                } else if (method == UINT64_C(0x040108)) {
+                    expected_property_size = 0u;
+                    folder_deflate_coders[folder][coder] = true;
                 } else {
                     return Archive7zResult::Unsupported;
                 }
@@ -1443,6 +1485,46 @@ private:
                     if (lzma2_result == ArchiveXzResult::Unsupported)
                         return Archive7zResult::Unsupported;
                     if (lzma2_result != ArchiveXzResult::Ok)
+                        return Archive7zResult::Malformed;
+                    coder_input.swap(coder_output);
+                } else if (folder_deflate_coders[folder][coder] &&
+                           method == UINT64_C(0x040108)) {
+                    /* As in the one-folder path, keep raw DEFLATE bounded to
+                     * the final coder and require the folder CRC so the
+                     * public decoder never publishes unverified bytes. */
+                    if (coder + 1u != folder_coder_counts[folder] ||
+                        !folder_crc_defined[folder])
+                        return Archive7zResult::Unsupported;
+                    ArchiveDeflateDecoder deflate_reader;
+                    ArchiveDeflateResult deflate_result;
+                    if (deadline != nullptr) {
+                        deflate_result = deflate_reader.decodeWithDeadline(
+                            reinterpret_cast<const std::uint8_t*>(
+                                coder_input.data()),
+                            coder_input.size(),
+                            static_cast<std::size_t>(
+                                folder_coder_unpack_sizes[folder][coder]),
+                            folder_crcs[folder], coder_output, deadline,
+                            deadlineContext);
+                    } else {
+                        deflate_result = deflate_reader.decode(
+                            reinterpret_cast<const std::uint8_t*>(
+                                coder_input.data()),
+                            coder_input.size(),
+                            static_cast<std::size_t>(
+                                folder_coder_unpack_sizes[folder][coder]),
+                            folder_crcs[folder], coder_output, cancellation,
+                            cancellationContext);
+                    }
+                    if (deflate_result == ArchiveDeflateResult::Cancelled)
+                        return Archive7zResult::Cancelled;
+                    if (deflate_result == ArchiveDeflateResult::Deadline)
+                        return Archive7zResult::Deadline;
+                    if (deflate_result == ArchiveDeflateResult::Limit)
+                        return Archive7zResult::Limit;
+                    if (deflate_result == ArchiveDeflateResult::CrcMismatch)
+                        return Archive7zResult::CrcMismatch;
+                    if (deflate_result != ArchiveDeflateResult::Ok)
                         return Archive7zResult::Malformed;
                     coder_input.swap(coder_output);
                 } else if (folder_lzma_coders[folder][coder] &&

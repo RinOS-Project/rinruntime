@@ -375,7 +375,7 @@ publication remain private RinOS adapters.
 
 `archive_container.hpp` maps a standalone GZIP member to one bounded
 caller-owned `<stream>` entry, while TAR.GZ remains a TAR entry container.  The
-adapter also maps the bounded 7z Copy／Delta／BCJ／BCJ2／LZMA／LZMA2 subset and XZ
+adapter also maps the bounded 7z Copy／Delta／BCJ／BCJ2／raw-DEFLATE／LZMA／LZMA2 subset and XZ
 decoded stream to the same `<stream>` contract.  It does not infer package
 trust or publish the stream to a filesystem.
 
@@ -411,7 +411,8 @@ files/directories with no packed stream.  `FilesInfo` may also interleave those 
 decoded substreams.  The
 single BCJ2 path validates the MAIN／CALL／JUMP／RC stream sizes, range-coded
 branch decisions, exact output size, and complete input consumption.  Other
-pipelines use a linear pipeline of up to four one-in/one-out Copy (`0x00`), Delta
+pipelines use a linear pipeline of up to four one-in/one-out Copy (`0x00`), raw
+DEFLATE (`08 01 04`, only as the final coder with a folder CRC), Delta
 (`0x03`, one-byte distance property), the XZ-compatible BCJ subset (`0x04`
 through `0x0b`, with the x86 four-byte start-offset property), and LZMA
 (`03 01 01` with its five-byte properties) or LZMA2 (`0x21`, one-byte
@@ -419,6 +420,7 @@ dictionary property) coders.  BindPairs, packed/final stream selection,
 intermediate sizes, and optional single-file metadata/CRC records are
 validated before failure-atomic caller-owned output is published.
 The raw BCJ/Delta transforms reuse the public `ArchiveXzReader` filter helper;
+raw-DEFLATE uses the public `ArchiveDeflateDecoder` with the 7z folder CRC;
 arbitrary multi-stream coders, multi-folder coder chains, encryption,
 filesystem extraction, archive service IPC, and File Portal publication remain
 private or explicit `Unsupported` results.
