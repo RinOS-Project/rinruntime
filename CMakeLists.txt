@@ -183,6 +183,60 @@ if(RINRUNTIME_BUILD_TESTS)
     target_include_directories(rinruntime-model-test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
     set_target_properties(rinruntime-model-test PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES)
     add_test(NAME rinruntime-model COMMAND rinruntime-model-test)
+    add_executable(rinruntime-abi-feature-manifest-test
+                   tests/abi_feature_manifest_test.cpp)
+    target_link_libraries(rinruntime-abi-feature-manifest-test
+                          PRIVATE RinRuntime::RinRuntime)
+    target_include_directories(rinruntime-abi-feature-manifest-test
+                               PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    set_target_properties(rinruntime-abi-feature-manifest-test PROPERTIES
+                          CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES)
+    add_test(NAME rinruntime-abi-feature-manifest
+             COMMAND rinruntime-abi-feature-manifest-test)
+    add_executable(rinruntime-application-metadata-test
+                   tests/application_metadata_test.cpp)
+    target_link_libraries(rinruntime-application-metadata-test
+                          PRIVATE RinRuntime::RinRuntime)
+    target_include_directories(rinruntime-application-metadata-test
+                               PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    set_target_properties(rinruntime-application-metadata-test PROPERTIES
+                          CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES)
+    add_test(NAME rinruntime-application-metadata
+             COMMAND rinruntime-application-metadata-test)
+    add_executable(rinruntime-package-metadata-test
+                   tests/package_metadata_test.cpp)
+    target_link_libraries(rinruntime-package-metadata-test
+                          PRIVATE RinRuntime::RinRuntime)
+    target_include_directories(rinruntime-package-metadata-test
+                               PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    set_target_properties(rinruntime-package-metadata-test PROPERTIES
+                          CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES)
+    add_test(NAME rinruntime-package-metadata
+             COMMAND rinruntime-package-metadata-test)
+    add_executable(rinruntime-service-configuration-test
+                   tests/service_configuration_test.cpp)
+    target_link_libraries(rinruntime-service-configuration-test
+                          PRIVATE RinRuntime::RinRuntime)
+    target_include_directories(rinruntime-service-configuration-test
+                               PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    set_target_properties(rinruntime-service-configuration-test PROPERTIES
+                          CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES)
+    add_test(NAME rinruntime-service-configuration
+             COMMAND rinruntime-service-configuration-test)
+    add_executable(rinruntime-update-metadata-test
+                   tests/update_metadata_test.cpp)
+    target_link_libraries(rinruntime-update-metadata-test
+                          PRIVATE RinRuntime::RinRuntime)
+    target_include_directories(rinruntime-update-metadata-test
+                               PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    set_target_properties(rinruntime-update-metadata-test PROPERTIES
+                          CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES)
+    add_test(NAME rinruntime-update-metadata
+             COMMAND rinruntime-update-metadata-test)
+    find_package(Python3 COMPONENTS Interpreter REQUIRED)
+    add_test(NAME rinruntime-public-io-retry-boundary
+             COMMAND ${Python3_EXECUTABLE}
+                     ${CMAKE_CURRENT_SOURCE_DIR}/tests/public_io_retry_boundary_test.py)
     add_executable(rinruntime-portal-test tests/portal_contract_test.c)
     target_link_libraries(rinruntime-portal-test PRIVATE RinRuntime::RinRuntime)
     add_test(NAME rinruntime-portal COMMAND rinruntime-portal-test)

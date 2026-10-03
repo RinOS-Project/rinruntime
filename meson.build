@@ -121,6 +121,23 @@ if get_option('buildtype') != 'plain'
   test('rinruntime-model', executable('rinruntime-model-test',
         'tests/runtime_model_test.cpp', dependencies: runtime_dep,
         override_options: test_override_options))
+  test('rinruntime-abi-feature-manifest', executable('rinruntime-abi-feature-manifest-test',
+        'tests/abi_feature_manifest_test.cpp', dependencies: runtime_dep,
+        override_options: test_override_options, cpp_args: ['-std=c++17']))
+  test('rinruntime-application-metadata', executable('rinruntime-application-metadata-test',
+        'tests/application_metadata_test.cpp', dependencies: runtime_dep,
+        override_options: test_override_options, cpp_args: ['-std=c++17']))
+  test('rinruntime-package-metadata', executable('rinruntime-package-metadata-test',
+        'tests/package_metadata_test.cpp', dependencies: runtime_dep,
+        override_options: test_override_options, cpp_args: ['-std=c++17']))
+  test('rinruntime-service-configuration', executable('rinruntime-service-configuration-test',
+        'tests/service_configuration_test.cpp', dependencies: runtime_dep,
+        override_options: test_override_options, cpp_args: ['-std=c++17']))
+  test('rinruntime-update-metadata', executable('rinruntime-update-metadata-test',
+        'tests/update_metadata_test.cpp', dependencies: runtime_dep,
+        override_options: test_override_options, cpp_args: ['-std=c++17']))
+  test('rinruntime-public-io-retry-boundary', python,
+        args: [files('tests/public_io_retry_boundary_test.py')])
   test('rinruntime-portal', executable('rinruntime-portal-test',
         'tests/portal_contract_test.c', dependencies: runtime_dep,
         override_options: test_override_options))
