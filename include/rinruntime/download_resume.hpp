@@ -215,6 +215,8 @@ struct DownloadRangeRequest {
             return false;
 #if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
         try {
+#else
+        {
 #endif
             DownloadRangeRequest candidate;
             candidate.requestId = receipt.requestId;
@@ -236,6 +238,8 @@ struct DownloadRangeRequest {
         } catch (...) {
             clear();
             return false;
+        }
+#else
         }
 #endif
     }
