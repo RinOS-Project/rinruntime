@@ -52,6 +52,14 @@ public:
     static constexpr std::uint16_t kVersion = 1u;
     static constexpr std::size_t kMaxChunkBytes = 64u * 1024u;
 
+    DownloadRangeTransportAdapter() = default;
+    ~DownloadRangeTransportAdapter() override { abort(); }
+    DownloadRangeTransportAdapter(const DownloadRangeTransportAdapter&) = delete;
+    DownloadRangeTransportAdapter& operator=(
+        const DownloadRangeTransportAdapter&) = delete;
+    DownloadRangeTransportAdapter(DownloadRangeTransportAdapter&&) = delete;
+    DownloadRangeTransportAdapter& operator=(DownloadRangeTransportAdapter&&) = delete;
+
     enum class State : std::uint8_t {
         Idle = 0,
         Streaming = 1,

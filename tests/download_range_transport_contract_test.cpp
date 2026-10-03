@@ -6,8 +6,14 @@
 #include <new>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 
 #include "../include/rinruntime/download_range_transport.hpp"
+
+static_assert(!std::is_copy_constructible<
+                  RinRuntime::DownloadRangeTransportAdapter>::value);
+static_assert(!std::is_copy_assignable<
+                  RinRuntime::DownloadRangeTransportAdapter>::value);
 
 struct Owner {
     unsigned beginCalls = 0u;
@@ -185,6 +191,25 @@ static RinRuntime::DownloadRangeRequest makeRequest() {
 }
 
 int main() {
+    {
+        Owner lifetimeOwner;
+        RinRuntime::DownloadRangeTransportOpsV1 lifetimeOps;
+        lifetimeOps.structSize = sizeof(lifetimeOps);
+        lifetimeOps.context = &lifetimeOwner;
+        lifetimeOps.begin = beginRange;
+        lifetimeOps.read = readRange;
+        lifetimeOps.abort = abortRange;
+        {
+            RinRuntime::DownloadRangeTransportAdapter lifetime;
+            assert(lifetime.bind(lifetimeOps));
+            RinRuntime::DownloadRangeResponse lifetimeResponse;
+            assert(lifetime.begin(makeRequest(), lifetimeResponse));
+            assert(lifetime.state() ==
+                   RinRuntime::DownloadRangeTransportAdapter::State::Streaming);
+        }
+        assert(lifetimeOwner.abortCalls == 1u);
+    }
+
     std::uint64_t rangeStart = 41u;
     std::uint64_t rangeEnd = 42u;
     std::uint64_t rangeTotal = 43u;
