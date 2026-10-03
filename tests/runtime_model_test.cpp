@@ -55,6 +55,33 @@ static bool throwingEventLoopBackend(
     throw std::runtime_error("event loop backend failure");
 }
 
+struct EventLoopWatchMutationContext {
+    RinRuntime::EventLoop* loop = nullptr;
+    bool mutate = true;
+};
+
+static bool mutateEventLoopWatch(
+    void* context, const RinRuntime::EventLoop::WaitRequest* requests,
+    RinRuntime::EventLoop::Size count, std::uint64_t,
+    RinRuntime::EventLoop::WaitResult* ready) {
+    auto* mutation = static_cast<EventLoopWatchMutationContext*>(context);
+    if (mutation == nullptr || mutation->loop == nullptr || requests == nullptr ||
+        count != 1u || ready == nullptr) return false;
+    if (mutation->mutate) {
+        RinRuntime::Event replacement = {};
+        replacement.type = RinRuntime::EventType::KeyDown;
+        replacement.key = 0x41u;
+        if (!mutation->loop->updateWatch(requests[0].id, 99u,
+                                         RinRuntime::EventLoop::WAIT_READABLE,
+                                         replacement))
+            return false;
+        mutation->mutate = false;
+    }
+    ready->id = requests[0].id;
+    ready->events = requests[0].events;
+    return true;
+}
+
 static int throwingDnsExchange(
     void*, const RinRuntime::DnsTransportEndpoint&, const std::uint8_t*,
     std::size_t, std::uint8_t*, std::size_t, std::size_t*) {
@@ -85,6 +112,22 @@ int main() {
     assert(!backend_loop.wait(0u, throwingEventLoopBackend, nullptr,
                               &backend_output));
     assert(backend_output.type == RinRuntime::EventType::None);
+
+    RinRuntime::EventLoop watch_loop;
+    RinRuntime::Event watched_event = {};
+    watched_event.type = RinRuntime::EventType::Close;
+    const RinRuntime::EventLoop::WaitId watched_id = watch_loop.watch(
+        7u, RinRuntime::EventLoop::WAIT_READABLE, watched_event);
+    assert(watched_id != 0u);
+    EventLoopWatchMutationContext watch_mutation{&watch_loop};
+    RinRuntime::Event watch_output = {};
+    assert(!watch_loop.wait(0u, mutateEventLoopWatch, &watch_mutation,
+                            &watch_output));
+    assert(watch_output.type == RinRuntime::EventType::None);
+    assert(watch_loop.wait(0u, mutateEventLoopWatch, &watch_mutation,
+                           &watch_output));
+    assert(watch_output.type == RinRuntime::EventType::KeyDown);
+    assert(watch_output.key == 0x41u);
 
     RinRuntime::DnsTransportEndpoint::NamespaceId dns_namespace = {};
     dns_namespace[0] = 1u;

@@ -82,6 +82,21 @@ private:
                (event.compositionSize == 0u || event.compositionText != nullptr);
     }
 
+    static bool sameEvent(const Event& left, const Event& right) noexcept {
+        return left.type == right.type && left.x == right.x &&
+               left.y == right.y && left.wheelX == right.wheelX &&
+               left.wheelY == right.wheelY && left.button == right.button &&
+               left.key == right.key &&
+               left.nativeScancode == right.nativeScancode &&
+               left.codepoint == right.codepoint &&
+               left.modifiers == right.modifiers && left.flags == right.flags &&
+               left.compositionText == right.compositionText &&
+               left.compositionSize == right.compositionSize &&
+               left.compositionSelectionStart ==
+                   right.compositionSelectionStart &&
+               left.compositionSelectionEnd == right.compositionSelectionEnd;
+    }
+
     static TimerId makeTimerId(Size index, std::uint32_t generation) {
         return (static_cast<TimerId>(generation) << 32u) |
                static_cast<TimerId>(index + 1u);
@@ -317,6 +332,7 @@ public:
         if (runOne(now, output)) return true;
 
         WaitRequest requests[kWaitCapacity] = {};
+        Event requestEvents[kWaitCapacity] = {};
         Size count = 0u;
         for (Size index = 0u; index < kWaitCapacity; ++index) {
             const Watch& watch = watches_[index];
@@ -324,6 +340,7 @@ public:
             requests[count].id = makeWaitId(index, watch.generation);
             requests[count].nativeHandle = watch.nativeHandle;
             requests[count].events = watch.events;
+            requestEvents[count] = watch.event;
             ++count;
         }
         std::uint64_t deadline = UINT64_MAX;
@@ -345,7 +362,11 @@ public:
                 (ready.events & ~requests[index].events) != 0u)
                 return false;
             Watch* watch = watchForId(ready.id);
-            if (watch == nullptr) return false;
+            if (watch == nullptr ||
+                watch->nativeHandle != requests[index].nativeHandle ||
+                watch->events != requests[index].events ||
+                !sameEvent(watch->event, requestEvents[index]))
+                return false;
             *output = watch->event;
             return true;
         }
