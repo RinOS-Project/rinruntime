@@ -143,7 +143,7 @@ private:
         }
         if (selected == kTimerCapacity) return false;
         *output = timers_[selected].event;
-        timers_[selected].active = false;
+        timers_[selected] = Timer{};
         return true;
     }
 
@@ -251,7 +251,7 @@ public:
         if (!decodeTimerId(id, &index, &generation)) return false;
         Timer& timer = timers_[index];
         if (!timer.active || timer.generation != generation) return false;
-        timer.active = false;
+        timer = Timer{};
         /* Cancelling a timer changes the deadline observed by an adapter.
          * Preserve the same wake contract as unwatch(): a caller that has
          * already consumed the notification from scheduleAt() must still be
@@ -263,7 +263,7 @@ public:
     bool unwatch(WaitId id) noexcept {
         Watch* watch = watchForId(id);
         if (watch == nullptr) return false;
-        watch->active = false;
+        *watch = Watch{};
         wakePending_ = true;
         return true;
     }
@@ -274,6 +274,7 @@ public:
         if (takeDueTimer(now, output)) return true;
         if (eventCount_ == 0u) return false;
         *output = events_[eventHead_];
+        events_[eventHead_] = Event{};
         eventHead_ = (eventHead_ + 1u) % kEventCapacity;
         --eventCount_;
         return true;
@@ -388,8 +389,9 @@ public:
         eventHead_ = 0u;
         eventCount_ = 0u;
         wakePending_ = false;
-        for (Timer& timer : timers_) timer.active = false;
-        for (Watch& watch : watches_) watch.active = false;
+        for (Event& event : events_) event = Event{};
+        for (Timer& timer : timers_) timer = Timer{};
+        for (Watch& watch : watches_) watch = Watch{};
     }
 };
 
