@@ -263,6 +263,8 @@ public:
             return false;
 #if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
         try {
+#else
+        {
 #endif
             for (const auto& registration : registrations()) {
                 if (registration.handle != handle || !registration.provider)
@@ -287,6 +289,8 @@ public:
 #if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
         } catch (...) {
             return false;
+        }
+#else
         }
 #endif
         return false;

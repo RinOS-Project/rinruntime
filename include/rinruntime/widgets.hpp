@@ -925,6 +925,8 @@ public:
             return false;
 #if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
         try {
+#else
+        {
 #endif
             std::vector<Column> candidate = columns_;
             candidate[static_cast<std::size_t>(index)] = column;
@@ -934,6 +936,8 @@ public:
         } catch (const std::bad_alloc&) {
             return false;
         }
+#else
+        }
 #endif
     }
     bool removeColumn(int32_t index) {
@@ -941,6 +945,8 @@ public:
             return false;
 #if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
         try {
+#else
+        {
 #endif
             std::vector<Column> candidate = columns_;
             candidate.erase(candidate.begin() + index);
@@ -955,6 +961,8 @@ public:
 #if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
         } catch (const std::bad_alloc&) {
             return false;
+        }
+#else
         }
 #endif
     }
@@ -1692,6 +1700,8 @@ public:
             return false;
 #if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
         try {
+#else
+        {
 #endif
             std::vector<MenuItem> candidate = items_;
             candidate[static_cast<std::size_t>(index)] = item;
@@ -1708,6 +1718,8 @@ public:
         } catch (const std::bad_alloc&) {
             return false;
         }
+#else
+        }
 #endif
     }
     bool removeItem(int32_t index) {
@@ -1715,6 +1727,8 @@ public:
             return false;
 #if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
         try {
+#else
+        {
 #endif
             std::vector<MenuItem> candidate = items_;
             candidate.erase(candidate.begin() + index);
@@ -1727,6 +1741,8 @@ public:
 #if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
         } catch (const std::bad_alloc&) {
             return false;
+        }
+#else
         }
 #endif
     }
@@ -1962,6 +1978,8 @@ public:
             return false;
 #if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
         try {
+#else
+        {
 #endif
             std::vector<Menu> candidate = menus_;
             Menu normalized = menu;
@@ -1975,6 +1993,8 @@ public:
         } catch (const std::bad_alloc&) {
             return false;
         }
+#else
+        }
 #endif
     }
     bool removeMenu(int32_t index) {
@@ -1982,6 +2002,8 @@ public:
             return false;
 #if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
         try {
+#else
+        {
 #endif
             std::vector<Menu> candidate = menus_;
             candidate.erase(candidate.begin() + index);
@@ -1995,6 +2017,8 @@ public:
         } catch (const std::bad_alloc&) {
             return false;
         }
+#else
+        }
 #endif
     }
     bool setMenuItems(int32_t menuIndex,
@@ -2007,6 +2031,8 @@ public:
                 return false;
 #if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
         try {
+#else
+        {
 #endif
             std::vector<Menu> candidate = menus_;
             candidate[static_cast<std::size_t>(menuIndex)].items = items;
@@ -2019,6 +2045,8 @@ public:
 #if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
         } catch (const std::bad_alloc&) {
             return false;
+        }
+#else
         }
 #endif
     }
