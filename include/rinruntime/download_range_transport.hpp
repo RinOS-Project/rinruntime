@@ -202,6 +202,10 @@ public:
         request_ = request;
         state_ = State::Streaming;
         const int beforeBegin = cancellationStatus();
+        if (state_ != State::Streaming) {
+            response = DownloadRangeResponse{};
+            return false;
+        }
         if (beforeBegin == 1) {
             request_.clear();
             state_ = State::Cancelled;
@@ -215,7 +219,8 @@ public:
         const DownloadRangeRequest requestBaseline = request_;
         DownloadRangeResponse candidate{};
         const int result = ops_.begin(ops_.context, &request_, &candidate);
-        if (result != 0 || !requestEquivalent(request_, requestBaseline) ||
+        if (state_ != State::Streaming || result != 0 ||
+            !requestEquivalent(request_, requestBaseline) ||
             !candidate.validFor(requestBaseline)) {
             abortOwner();
             request_.clear();
@@ -225,6 +230,10 @@ public:
             return false;
         }
         const int afterBegin = cancellationStatus();
+        if (state_ != State::Streaming) {
+            response = DownloadRangeResponse{};
+            return false;
+        }
         if (afterBegin == 1) {
             cancelAndAbort();
             return false;
@@ -265,6 +274,10 @@ public:
         try {
 #endif
         const int beforeRead = cancellationStatus();
+        if (state_ != State::Streaming) {
+            scrubBuffer(buffer, capacity);
+            return false;
+        }
         if (beforeRead == 1) {
             scrubBuffer(buffer, capacity);
             cancelAndAbort();
@@ -296,7 +309,15 @@ public:
         std::size_t candidate = 0u;
         const int readResult = ops_.read(ops_.context, buffer, readCapacity,
                                          &candidate);
+        if (state_ != State::Streaming) {
+            scrubBuffer(buffer, capacity);
+            return false;
+        }
         const int afterRead = cancellationStatus();
+        if (state_ != State::Streaming) {
+            scrubBuffer(buffer, capacity);
+            return false;
+        }
         if (afterRead == 1) {
             scrubBuffer(buffer, capacity);
             cancelAndAbort();
@@ -343,7 +364,7 @@ public:
 #if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
         } catch (...) {
             scrubBuffer(buffer, capacity);
-            failAndAbort();
+            if (state_ == State::Streaming) failAndAbort();
             return false;
         }
 #endif

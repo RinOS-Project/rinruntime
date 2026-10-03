@@ -172,6 +172,58 @@ static int statelessRead(void*, std::uint8_t*, std::size_t,
 
 static void statelessAbort(void*) {}
 
+struct ReentrantOwner {
+    RinRuntime::DownloadRangeTransportAdapter* adapter = nullptr;
+    unsigned beginCalls = 0u;
+    unsigned readCalls = 0u;
+    unsigned cancelCalls = 0u;
+    unsigned abortCalls = 0u;
+    bool abortOnRead = false;
+    bool abortOnSecondCancellation = false;
+};
+
+static int reentrantBegin(
+    void* opaque, const RinRuntime::DownloadRangeRequest* request,
+    RinRuntime::DownloadRangeResponse* response) {
+    auto* owner = static_cast<ReentrantOwner*>(opaque);
+    ++owner->beginCalls;
+    if (request == nullptr || response == nullptr) return -1;
+    response->statusCode = 206u;
+    response->contentRangeStart = request->offset;
+    response->contentRangeEnd = request->totalBytes - 1u;
+    response->contentRangeTotal = request->totalBytes;
+    response->contentLength = request->totalBytes - request->offset;
+    response->generation = request->generation;
+    response->validator = request->validator;
+    return 0;
+}
+
+static int reentrantRead(void* opaque, std::uint8_t* buffer,
+                         std::size_t capacity, std::size_t* bytesRead) {
+    auto* owner = static_cast<ReentrantOwner*>(opaque);
+    ++owner->readCalls;
+    if (buffer == nullptr || capacity == 0u || bytesRead == nullptr)
+        return -1;
+    if (owner->abortOnRead && owner->adapter != nullptr)
+        owner->adapter->abort();
+    buffer[0] = 0xd1u;
+    *bytesRead = 1u;
+    return 0;
+}
+
+static int reentrantCancellation(void* opaque) {
+    auto* owner = static_cast<ReentrantOwner*>(opaque);
+    ++owner->cancelCalls;
+    if (owner->abortOnSecondCancellation && owner->cancelCalls == 2u &&
+        owner->adapter != nullptr)
+        owner->adapter->abort();
+    return 0;
+}
+
+static void reentrantAbort(void* opaque) {
+    ++static_cast<ReentrantOwner*>(opaque)->abortCalls;
+}
+
 static int cancelAfterBegin(void* opaque) {
     return static_cast<Owner*>(opaque)->beginCalls == 0u ? 0 : 1;
 }
@@ -296,6 +348,50 @@ int main() {
     assert(ordinary.read(ordinaryEof, sizeof(ordinaryEof), bytesRead) &&
            bytesRead == 0u);
     for (const std::uint8_t byte : ordinaryEof) assert(byte == 0u);
+
+    /* An owner callback may re-enter the public adapter and abort the active
+     * range.  Callback return values must not resurrect that range or publish
+     * bytes after the adapter has transitioned to Idle. */
+    ReentrantOwner reentrantReadOwner;
+    RinRuntime::DownloadRangeTransportOpsV1 reentrantReadOps;
+    reentrantReadOps.structSize = sizeof(reentrantReadOps);
+    reentrantReadOps.context = &reentrantReadOwner;
+    reentrantReadOps.begin = reentrantBegin;
+    reentrantReadOps.read = reentrantRead;
+    reentrantReadOps.abort = reentrantAbort;
+    RinRuntime::DownloadRangeTransportAdapter reentrantReadAdapter;
+    reentrantReadOwner.adapter = &reentrantReadAdapter;
+    reentrantReadOwner.abortOnRead = true;
+    assert(reentrantReadAdapter.bind(reentrantReadOps));
+    assert(reentrantReadAdapter.begin(request, response));
+    std::uint8_t reentrantBytes[4u] = {0xffu, 0xffu, 0xffu, 0xffu};
+    assert(!reentrantReadAdapter.read(reentrantBytes, sizeof(reentrantBytes),
+                                      bytesRead) &&
+           bytesRead == 0u);
+    for (const std::uint8_t byte : reentrantBytes) assert(byte == 0u);
+    assert(reentrantReadAdapter.state() ==
+           RinRuntime::DownloadRangeTransportAdapter::State::Idle);
+    assert(reentrantReadOwner.readCalls == 1u &&
+           reentrantReadOwner.abortCalls == 1u);
+
+    ReentrantOwner reentrantBeginOwner;
+    RinRuntime::DownloadRangeTransportOpsV1 reentrantBeginOps;
+    reentrantBeginOps.structSize = sizeof(reentrantBeginOps);
+    reentrantBeginOps.context = &reentrantBeginOwner;
+    reentrantBeginOps.begin = reentrantBegin;
+    reentrantBeginOps.read = reentrantRead;
+    reentrantBeginOps.abort = reentrantAbort;
+    reentrantBeginOps.cancelled = reentrantCancellation;
+    reentrantBeginOwner.abortOnSecondCancellation = true;
+    RinRuntime::DownloadRangeTransportAdapter reentrantBeginAdapter;
+    reentrantBeginOwner.adapter = &reentrantBeginAdapter;
+    assert(reentrantBeginAdapter.bind(reentrantBeginOps));
+    assert(!reentrantBeginAdapter.begin(request, response));
+    assert(reentrantBeginAdapter.state() ==
+           RinRuntime::DownloadRangeTransportAdapter::State::Idle);
+    assert(reentrantBeginOwner.cancelCalls == 2u &&
+           reentrantBeginOwner.beginCalls == 1u &&
+           reentrantBeginOwner.abortCalls == 1u);
 
     /* An invalid direct-read capacity is terminal too.  The public adapter
      * must scrub the bounded prefix before returning failure, while bytes
