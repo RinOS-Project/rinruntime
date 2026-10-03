@@ -157,6 +157,10 @@ the wait-set rather than leaving a stale target-side request usable.
 `RinEventLoopBackend::reset()` also clears the retired wait-item bytes and
 clock sample before a new wait-set session is initialized, so a reconnect with
 a fresh clock epoch cannot be rejected as an intra-session rollback.
+The public `EventLoop` also clears retired timer, queued-event, and watch
+metadata after consumption, cancellation, unwatch, or `clear()`, so borrowed
+IME payload pointers and stale native handles are not retained in reusable
+slots.
 
 Private RinOS services may compose `PollEventLoopBackend` for local POSIX fd
 readiness (the archive service does so for its authenticated server socket).
