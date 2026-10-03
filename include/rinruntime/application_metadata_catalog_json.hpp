@@ -138,6 +138,66 @@ public:
         output = std::move(candidate);
         return true;
     }
+
+    /* Resolve one public TYPE_APPLICATION resource into caller-owned storage
+     * before parsing it.  The callback remains the filesystem/service owner;
+     * this helper performs no allocation or path access of its own. */
+    static bool parseResource(
+        const RinResourceCatalogV1* catalog, std::uint32_t resourceId,
+        RinResourceCatalogReadPathFunction readPath, void* context,
+        std::uint8_t* source, std::size_t sourceCapacity,
+        std::size_t* sourceSizeOut, ApplicationMetadataCatalog& output,
+        std::string& error) {
+        std::uint64_t loadedSize = 0u;
+        const std::size_t loadCapacity =
+            sourceCapacity < kMaximumBytes ? sourceCapacity : kMaximumBytes;
+        output = {};
+        error.clear();
+        if (source != nullptr) {
+            const std::size_t bounded =
+                sourceCapacity < kMaximumBytes ? sourceCapacity : kMaximumBytes;
+            volatile std::uint8_t* bytes = source;
+            for (std::size_t index = 0u; index < bounded; ++index)
+                bytes[index] = 0u;
+        }
+        if (sourceSizeOut == nullptr) {
+            error = "application catalog resource size";
+            return false;
+        }
+        *sourceSizeOut = 0u;
+        const RinResourceCatalogStatus resourceStatus =
+            rin_resource_catalog_load(
+                catalog, RIN_RESOURCE_CATALOG_TYPE_APPLICATION, resourceId,
+                readPath, context, source,
+                static_cast<std::uint64_t>(loadCapacity), &loadedSize);
+        if (resourceStatus != RIN_RESOURCE_CATALOG_OK || loadedSize == 0u ||
+            loadedSize > static_cast<std::uint64_t>(SIZE_MAX)) {
+            if (source != nullptr) {
+                const std::size_t bounded =
+                    sourceCapacity < kMaximumBytes ? sourceCapacity : kMaximumBytes;
+                volatile std::uint8_t* bytes = source;
+                for (std::size_t index = 0u; index < bounded; ++index)
+                    bytes[index] = 0u;
+            }
+            error = "application catalog resource";
+            return false;
+        }
+        if (!parse(std::string_view(reinterpret_cast<const char*>(source),
+                                    static_cast<std::size_t>(loadedSize)),
+                    output, error)) {
+            output = {};
+            if (source != nullptr) {
+                const std::size_t bounded =
+                    sourceCapacity < kMaximumBytes ? sourceCapacity : kMaximumBytes;
+                volatile std::uint8_t* bytes = source;
+                for (std::size_t index = 0u; index < bounded; ++index)
+                    bytes[index] = 0u;
+            }
+            return false;
+        }
+        *sourceSizeOut = static_cast<std::size_t>(loadedSize);
+        return true;
+    }
 };
 
 } // namespace RinRuntime
