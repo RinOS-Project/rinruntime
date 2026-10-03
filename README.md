@@ -189,6 +189,13 @@ The canonical `rinruntime/rinruntime.hpp` umbrella exposes the same adapter;
 the `rinruntime-model` host contract exercises it with a caller-owned range
 source without importing any Browser or service owner.
 
+`DownloadRangeTransportAdapter` is non-copyable and non-movable because its
+callback table carries caller-owned streaming state. Destroying an adapter
+while a range is active performs the same best-effort owner abort as an
+explicit `abort()`; idle, failed, and cancelled adapters do not invoke the
+owner again. This lifetime rule is part of the reusable public adapter and
+does not expose Browser, keyring, TLS, or kernel authority.
+
 `DownloadPartialReceipt::encode()` also clears the caller-owned output range
 on failure, bounded to the receipt wire size. This prevents stale durable
 receipt bytes from being reused after an invalid or undersized encode.
