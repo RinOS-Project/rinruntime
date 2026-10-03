@@ -165,7 +165,8 @@ public:
             result != 0 || written == 0u || written > signature_capacity) {
             clearBytes(signature, signature_capacity);
             clearBytes(capability_, sizeof(capability_));
-            state_ = TlsClientCertificateTransportState::Failed;
+            if (state_ == TlsClientCertificateTransportState::HandshakeStarted)
+                state_ = TlsClientCertificateTransportState::Failed;
             return -1;
         }
         *signature_length = written;

@@ -83,6 +83,28 @@ int throwing_install(void*, const void*, std::size_t,
     throw std::runtime_error("TLS installer callback failure");
 }
 
+struct ReentrantSignContext {
+    RinRuntime::TlsClientCertificateTransport* transport = nullptr;
+};
+
+int reset_from_signer(
+    void* opaque,
+    const std::uint8_t[
+        RINRUNTIME_TLS_CLIENT_CERTIFICATE_CAPABILITY_BYTES], std::uint64_t,
+    std::uint64_t, std::uint16_t, const std::uint8_t*, std::size_t,
+    std::uint8_t* signature, std::size_t signature_capacity,
+    std::size_t* signature_length) {
+    auto* context = static_cast<ReentrantSignContext*>(opaque);
+    if (context == nullptr || context->transport == nullptr ||
+        signature == nullptr || signature_capacity == 0u ||
+        signature_length == nullptr)
+        return -1;
+    context->transport->reset();
+    signature[0] = 0xa5u;
+    *signature_length = 1u;
+    return 0;
+}
+
 } // namespace
 
 int main() {
@@ -152,5 +174,22 @@ int main() {
     for (std::uint8_t byte : failed_signature) assert(byte == 0u);
     assert(throwing_transport.state() ==
            RinRuntime::TlsClientCertificateTransportState::Failed);
+
+    RinRuntime::TlsClientCertificateTransport reentrant_transport;
+    ReentrantSignContext reentrant_context {&reentrant_transport};
+    assert(reentrant_transport.bind(request, reset_from_signer,
+                                    &reentrant_context));
+    assert(reentrant_transport.startHandshake());
+    std::uint8_t reentrant_signature[8u] = {
+        0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu};
+    std::size_t reentrant_signature_length = 99u;
+    assert(reentrant_transport.sign(
+               0x0403u, transcript, sizeof(transcript), reentrant_signature,
+               sizeof(reentrant_signature), &reentrant_signature_length) == -1);
+    assert(reentrant_signature_length == 0u);
+    for (std::uint8_t byte : reentrant_signature) assert(byte == 0u);
+    assert(reentrant_transport.state() ==
+           RinRuntime::TlsClientCertificateTransportState::Idle);
+    assert(reentrant_transport.requestId() == 0u);
     return 0;
 }
