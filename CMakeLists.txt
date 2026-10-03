@@ -118,6 +118,8 @@ install(TARGETS RinRuntime EXPORT RinRuntimeTargets
         LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
         RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 install(DIRECTORY include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/../rinpath/include/rinpath
+        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 install(EXPORT RinRuntimeTargets
         FILE RinRuntimeTargets.cmake
         NAMESPACE RinRuntime::
@@ -154,6 +156,7 @@ if(RINRUNTIME_BUILD_RLL)
         --source-root ${CMAKE_CURRENT_SOURCE_DIR}
         --output ${CMAKE_CURRENT_BINARY_DIR}/RinRuntime.rll
         --include ${CMAKE_CURRENT_SOURCE_DIR}/include
+        --include ${CMAKE_CURRENT_SOURCE_DIR}/../rinpath/include
         --include ${CMAKE_CURRENT_SOURCE_DIR}/../../RinOS-SDK/include)
     foreach(rll_source IN LISTS RINRUNTIME_RLL_SOURCES)
         list(APPEND RINRUNTIME_RLL_COMMAND --source ${rll_source})

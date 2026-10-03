@@ -65,6 +65,7 @@ runtime = library('RinRuntime', runtime_sources, include_directories: inc,
 runtime_dep = declare_dependency(link_with: runtime, include_directories: inc,
                                  dependencies: runtime_deps)
 install_subdir('include/rinruntime', install_dir: get_option('includedir'))
+install_headers('../rinpath/include/rinpath/path.h', subdir: 'rinpath')
 install_subdir('include/rincompression', install_dir: get_option('includedir'))
 
 if get_option('build_rll')
@@ -96,6 +97,7 @@ if get_option('build_rll')
     '--source-root', meson.current_source_dir(),
     '--output', '@OUTPUT@',
     '--include', join_paths(meson.current_source_dir(), 'include'),
+    '--include', join_paths(meson.current_source_dir(), '../rinpath/include'),
     '--include', join_paths(meson.current_source_dir(), '../../RinOS-SDK/include'),
   ]
   foreach rll_source : rll_sources
