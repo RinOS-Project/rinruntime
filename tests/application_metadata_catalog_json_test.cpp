@@ -9,6 +9,33 @@
 
 #include "../include/rinruntime/application_metadata_catalog_json.hpp"
 
+struct PathSource {
+    const std::uint8_t* bytes = nullptr;
+    std::size_t size = 0u;
+    std::uint32_t calls = 0u;
+    bool fail = false;
+};
+
+static RinResourceCatalogStatus readCatalogPath(
+    void* context, const char* path, std::uint32_t pathSize,
+    std::uint8_t* output, std::uint64_t outputCapacity,
+    std::uint64_t* outputSize)
+{
+    auto* source = static_cast<PathSource*>(context);
+    assert(source != nullptr && path != nullptr && outputSize != nullptr);
+    assert(pathSize == 26u &&
+           std::memcmp(path, "/applications/catalog.json", pathSize) == 0);
+    ++source->calls;
+    *outputSize = 0u;
+    if (source->fail) return RIN_RESOURCE_CATALOG_IO_ERROR;
+    if (source->bytes == nullptr || source->size > outputCapacity ||
+        (source->size != 0u && output == nullptr))
+        return RIN_RESOURCE_CATALOG_BUFFER_TOO_SMALL;
+    std::memcpy(output, source->bytes, source->size);
+    *outputSize = source->size;
+    return RIN_RESOURCE_CATALOG_OK;
+}
+
 int main()
 {
     RinRuntime::ApplicationMetadataCatalog output;
@@ -87,6 +114,48 @@ int main()
         &sourceSize, output, error));
     assert(sourceSize == resourceJson.size());
     assert(output.generation == 9u && output.find("com.rinos.notes") != nullptr);
+
+    RinResourceCatalogEntryV1 pathEntry = entry;
+    pathEntry.flags = RIN_RESOURCE_CATALOG_SOURCE_PATH |
+                      RIN_RESOURCE_CATALOG_FLAG_IMMUTABLE;
+    pathEntry.path = "/applications/catalog.json";
+    pathEntry.path_size = 26u;
+    pathEntry.data = nullptr;
+    pathEntry.data_size = 0u;
+    resourceCatalog.entries = &pathEntry;
+    PathSource pathSource = {
+        reinterpret_cast<const std::uint8_t*>(resourceJson.data()),
+        resourceJson.size(), 0u, false};
+    std::fill(source.begin(), source.end(), 0xa5u);
+    sourceSize = 0u;
+    assert(RinRuntime::ApplicationMetadataCatalogJson::parseResource(
+        &resourceCatalog, 7u, readCatalogPath, &pathSource, source.data(),
+        source.size(), &sourceSize, output, error));
+    assert(pathSource.calls == 1u && sourceSize == resourceJson.size());
+    assert(output.generation == 9u && output.find("com.rinos.notes") != nullptr);
+
+    pathSource.fail = true;
+    std::fill(source.begin(), source.end(), 0xa5u);
+    sourceSize = SIZE_MAX;
+    output.generation = 99u;
+    assert(!RinRuntime::ApplicationMetadataCatalogJson::parseResource(
+        &resourceCatalog, 7u, readCatalogPath, &pathSource, source.data(),
+        source.size(), &sourceSize, output, error));
+    assert(pathSource.calls == 2u && sourceSize == 0u &&
+           output.generation == 0u && output.applications.empty());
+    for (std::uint8_t byte : source) assert(byte == 0u);
+
+    pathSource.fail = false;
+    std::vector<std::uint8_t> tooSmall(resourceJson.size() - 1u, 0xa5u);
+    sourceSize = SIZE_MAX;
+    assert(!RinRuntime::ApplicationMetadataCatalogJson::parseResource(
+        &resourceCatalog, 7u, readCatalogPath, &pathSource, tooSmall.data(),
+        tooSmall.size(), &sourceSize, output, error));
+    assert(pathSource.calls == 3u && sourceSize == 0u &&
+           output.generation == 0u && output.applications.empty());
+    for (std::uint8_t byte : tooSmall) assert(byte == 0u);
+
+    resourceCatalog.entries = &entry;
 
     const std::string malformedResource =
         R"json({"generation":10,"applications":[{"application_id":7}]})json";
