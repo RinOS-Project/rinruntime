@@ -325,6 +325,10 @@ private:
             return ArchiveDeflateResult::InvalidArgument;
         if (compressedSize == 0u)
             return ArchiveDeflateResult::InvalidArgument;
+        if (output != nullptr && compressed != nullptr &&
+            rinruntime_archive_byte_ranges_overlap(
+                compressed, compressedSize, output->data(), output->capacity()))
+            return ArchiveDeflateResult::InvalidArgument;
         if (expectedSize > static_cast<std::size_t>(
                                RINRUNTIME_ARCHIVE_CONTENT_LIMIT))
             return ArchiveDeflateResult::Limit;

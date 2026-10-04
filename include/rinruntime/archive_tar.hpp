@@ -218,6 +218,10 @@ public:
 #endif
         std::size_t size = 0u;
         const std::uint8_t* bytes = data(index, &size);
+        if (bytes != nullptr &&
+            rinruntime_archive_byte_ranges_overlap(
+                bytes, size, output.data(), output.capacity()))
+            return ArchiveTarResult::InvalidArgument;
         output.clear();
         if (index >= entries_.size()) return ArchiveTarResult::InvalidArgument;
         if (cancellationRequested(cancellation, cancellationContext))
@@ -255,14 +259,26 @@ public:
 #if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
         try {
 #endif
-        output.clear();
-        if (index >= entries_.size()) return ArchiveTarResult::InvalidArgument;
-        if (deadline != nullptr && deadline(deadlineContext))
+        if (index >= entries_.size()) {
+            output.clear();
+            return ArchiveTarResult::InvalidArgument;
+        }
+        if (deadline != nullptr && deadline(deadlineContext)) {
+            output.clear();
             return ArchiveTarResult::Deadline;
-        if (entries_[index].directory) return ArchiveTarResult::Ok;
+        }
+        if (entries_[index].directory) {
+            output.clear();
+            return ArchiveTarResult::Ok;
+        }
 
         std::size_t size = 0u;
         const std::uint8_t* bytes = data(index, &size);
+        if (bytes != nullptr &&
+            rinruntime_archive_byte_ranges_overlap(
+                bytes, size, output.data(), output.capacity()))
+            return ArchiveTarResult::InvalidArgument;
+        output.clear();
         if (bytes == nullptr) return ArchiveTarResult::Malformed;
         std::size_t offset = 0u;
         while (offset < size) {

@@ -296,14 +296,19 @@ public:
 #if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
         try {
 #endif
-        output.clear();
-        if (index >= entries_.size())
+        if (index >= entries_.size()) {
+            output.clear();
             return ArchiveZipResult::InvalidArgument;
+        }
         const ArchiveZipEntry& entry = entries_[index];
         std::size_t compressedSize = 0u;
         const std::uint8_t* compressed = compressedData(index, &compressedSize);
         if (compressed == nullptr)
             return ArchiveZipResult::Malformed;
+        if (rinruntime_archive_byte_ranges_overlap(
+                compressed, compressedSize, output.data(), output.capacity()))
+            return ArchiveZipResult::InvalidArgument;
+        output.clear();
         if (cancellationRequested(cancellation, cancellationContext))
             return ArchiveZipResult::Cancelled;
         if (entry.method == 0u) {
@@ -349,16 +354,23 @@ public:
 #if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
         try {
 #endif
-        output.clear();
-        if (index >= entries_.size())
+        if (index >= entries_.size()) {
+            output.clear();
             return ArchiveZipResult::InvalidArgument;
-        if (deadline != nullptr && deadline(deadlineContext))
+        }
+        if (deadline != nullptr && deadline(deadlineContext)) {
+            output.clear();
             return ArchiveZipResult::Deadline;
+        }
         const ArchiveZipEntry& entry = entries_[index];
         std::size_t compressedSize = 0u;
         const std::uint8_t* compressed = compressedData(index, &compressedSize);
         if (compressed == nullptr)
             return ArchiveZipResult::Malformed;
+        if (rinruntime_archive_byte_ranges_overlap(
+                compressed, compressedSize, output.data(), output.capacity()))
+            return ArchiveZipResult::InvalidArgument;
+        output.clear();
         if (entry.method == 0u) {
             bool deadlineExpired = false;
             std::uint32_t crc = 0u;

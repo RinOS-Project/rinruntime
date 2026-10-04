@@ -363,6 +363,11 @@ contract through header staging and raw DEFLATE decoding. The existing
 cancellation overloads remain source-compatible. `ArchiveZipReader` adds
 deadline-aware central-directory parsing plus memory and sink entry reads;
 stored-entry CRC/copy and DEFLATE entry work are checked before publication.
+All public memory-decoder entry points reject input ranges that overlap the
+caller-owned output string (including spare output capacity) before clearing or
+appending. The alias is reported as `InvalidArgument`, so a caller that uses
+one string as both its archive image and destination keeps the image intact;
+the same boundary applies to raw DEFLATE, GZIP, TAR, ZIP, XZ, and 7z helpers.
 `ArchiveTarReader` and `ArchiveTarGzipReader` provide the same deadline
 boundary for strict ustar parsing, GZIP-to-TAR composition, and sink delivery.
 `ArchiveTarReader::readEntryToSink()` provides the same bounded, at-most-64 KiB

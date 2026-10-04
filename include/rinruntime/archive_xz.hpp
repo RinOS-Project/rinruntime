@@ -351,6 +351,9 @@ public:
 #endif
         if (input == nullptr && inputSize != 0u)
             return ArchiveXzResult::InvalidArgument;
+        if (rinruntime_archive_byte_ranges_overlap(
+                input, inputSize, output.data(), output.capacity()))
+            return ArchiveXzResult::InvalidArgument;
         if (inputSize > RINRUNTIME_ARCHIVE_CONTENT_LIMIT)
             return ArchiveXzResult::Limit;
         if (deadline != nullptr && deadline(deadlineContext))
@@ -959,6 +962,9 @@ private:
 #if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
         try {
 #endif
+        if (rinruntime_archive_byte_ranges_overlap(
+                bytes, size, output.data(), output.capacity()))
+            return ArchiveXzResult::InvalidArgument;
         if (deadline != nullptr && deadline(deadlineContext))
             return ArchiveXzResult::Deadline;
         if (cancellationRequested(cancellation, cancellationContext)) {
@@ -1367,6 +1373,9 @@ private:
         try {
 #endif
         if (compressed == nullptr || compressedSize < 5u)
+            return ArchiveXzResult::InvalidArgument;
+        if (rinruntime_archive_byte_ranges_overlap(
+                compressed, compressedSize, output.data(), output.capacity()))
             return ArchiveXzResult::InvalidArgument;
         if (expectedSize > kMaxStreamBytes) return ArchiveXzResult::Limit;
         if (dictionarySize == 0u) return ArchiveXzResult::Malformed;
@@ -1907,6 +1916,9 @@ private:
         try {
 #endif
         if (compressed == nullptr && compressedSize != 0u)
+            return ArchiveXzResult::InvalidArgument;
+        if (rinruntime_archive_byte_ranges_overlap(
+                compressed, compressedSize, output.data(), output.capacity()))
             return ArchiveXzResult::InvalidArgument;
         if (compressedSize > kMaxStreamBytes || expectedSize > kMaxStreamBytes)
             return ArchiveXzResult::Limit;

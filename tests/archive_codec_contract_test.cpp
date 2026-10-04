@@ -1209,6 +1209,14 @@ int main()
     assert(deflate.decode(stored, sizeof(stored), 5u, 0x3610a686u,
                           output) == RinRuntime::ArchiveDeflateResult::Ok);
     assert(output == "hello");
+    std::string aliasedDeflate(reinterpret_cast<const char*>(stored),
+                               sizeof(stored));
+    const std::string aliasedDeflateBefore = aliasedDeflate;
+    assert(deflate.decode(
+               reinterpret_cast<const std::uint8_t*>(aliasedDeflate.data()),
+               aliasedDeflate.size(), 5u, 0x3610a686u, aliasedDeflate) ==
+           RinRuntime::ArchiveDeflateResult::InvalidArgument);
+    assert(aliasedDeflate == aliasedDeflateBefore);
     statelessArchiveOutput.clear();
     assert(deflate.decodeToSink(stored, sizeof(stored), 5u, 0x3610a686u,
                                 &collectStatelessArchive, nullptr) ==
@@ -1245,6 +1253,14 @@ int main()
     RinRuntime::ArchiveGzipReader gzipReader;
     assert(gzipReader.decode(gzip.data(), gzip.size(), output) ==
            RinRuntime::ArchiveGzipResult::Ok && output == "hello");
+    std::string aliasedGzip(reinterpret_cast<const char*>(gzip.data()),
+                             gzip.size());
+    const std::string aliasedGzipBefore = aliasedGzip;
+    assert(gzipReader.decode(
+               reinterpret_cast<const std::uint8_t*>(aliasedGzip.data()),
+               aliasedGzip.size(), aliasedGzip) ==
+           RinRuntime::ArchiveGzipResult::InvalidArgument);
+    assert(aliasedGzip == aliasedGzipBefore);
     output = "poison";
     assert(gzipReader.decode(gzip.data(), gzip.size(), output,
                              throwingCallback, nullptr) ==
@@ -1302,6 +1318,16 @@ int main()
            RinRuntime::ArchiveTarResult::Ok);
     assert(tarReader.size() == 1u && tarReader.entries()[0].name ==
            "docs/readme.txt");
+    std::string aliasedTar(reinterpret_cast<const char*>(tar.data()),
+                            tar.size());
+    RinRuntime::ArchiveTarReader aliasedTarReader;
+    assert(aliasedTarReader.parse(
+               reinterpret_cast<const std::uint8_t*>(aliasedTar.data()),
+               aliasedTar.size()) == RinRuntime::ArchiveTarResult::Ok);
+    const std::string aliasedTarBefore = aliasedTar;
+    assert(aliasedTarReader.readEntry(0u, aliasedTar) ==
+           RinRuntime::ArchiveTarResult::InvalidArgument);
+    assert(aliasedTar == aliasedTarBefore);
     std::string streamed;
     assert(tarReader.readEntryToSink(0u, &collectTar, &streamed) ==
            RinRuntime::ArchiveTarResult::Ok && streamed == "hello");
@@ -1359,6 +1385,16 @@ int main()
            "docs/readme.txt");
     assert(zipReader.readEntry(0u, output) ==
            RinRuntime::ArchiveZipResult::Ok && output == "hello");
+    std::string aliasedZip(reinterpret_cast<const char*>(zip.data()),
+                            zip.size());
+    RinRuntime::ArchiveZipReader aliasedZipReader;
+    assert(aliasedZipReader.parse(
+               reinterpret_cast<const std::uint8_t*>(aliasedZip.data()),
+               aliasedZip.size()) == RinRuntime::ArchiveZipResult::Ok);
+    const std::string aliasedZipBefore = aliasedZip;
+    assert(aliasedZipReader.readEntry(0u, aliasedZip) ==
+           RinRuntime::ArchiveZipResult::InvalidArgument);
+    assert(aliasedZip == aliasedZipBefore);
     output = "poison";
     assert(zipReader.readEntry(0u, output, throwingCallback, nullptr) ==
            RinRuntime::ArchiveZipResult::Cancelled);
@@ -1431,6 +1467,14 @@ int main()
     assert(xzReader.decodeStoredLzma2(storedXz.data(), storedXz.size(),
                                       xzOutput) == RinRuntime::ArchiveXzResult::Ok);
     assert(xzOutput == "hello");
+    std::string aliasedXz(reinterpret_cast<const char*>(storedXz.data()),
+                           storedXz.size());
+    const std::string aliasedXzBefore = aliasedXz;
+    assert(xzReader.decodeStoredLzma2(
+               reinterpret_cast<const std::uint8_t*>(aliasedXz.data()),
+               aliasedXz.size(), aliasedXz) ==
+           RinRuntime::ArchiveXzResult::InvalidArgument);
+    assert(aliasedXz == aliasedXzBefore);
     xzOutput = "poison";
     assert(xzReader.decodeStoredLzma2(
                storedXz.data(), storedXz.size(), xzOutput, throwingCallback,
@@ -1666,6 +1710,15 @@ int main()
                                        sevenZipOutput) ==
            RinRuntime::Archive7zResult::Ok);
     assert(sevenZipOutput == "hello");
+    std::string aliasedSevenZip(
+        reinterpret_cast<const char*>(storedSevenZip.data()),
+        storedSevenZip.size());
+    const std::string aliasedSevenZipBefore = aliasedSevenZip;
+    assert(sevenZipReader.decodeStored(
+               reinterpret_cast<const std::uint8_t*>(aliasedSevenZip.data()),
+               aliasedSevenZip.size(), aliasedSevenZip) ==
+           RinRuntime::Archive7zResult::InvalidArgument);
+    assert(aliasedSevenZip == aliasedSevenZipBefore);
     const std::vector<std::uint8_t> deflateSevenZip =
         make7zStored(false, false, false, false, 0u, false, true);
     sevenZipOutput = "poison";

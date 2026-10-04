@@ -183,6 +183,9 @@ private:
 #if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
         try {
 #endif
+        if (rinruntime_archive_byte_ranges_overlap(
+                bytes, size, output.data(), output.capacity()))
+            return Archive7zResult::InvalidArgument;
         entry_count_ = 0u;
         if (deadline != nullptr && deadline(deadlineContext))
             return Archive7zResult::Deadline;

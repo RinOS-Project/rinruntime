@@ -114,6 +114,27 @@ static inline int rinruntime_archive_range_within(uint64_t offset,
     return offset <= limit && size <= limit - offset;
 }
 
+/* Public decoders fail closed when caller-owned input and output storage
+ * overlap.  Integer intervals avoid relational comparisons between unrelated
+ * pointers; an address overflow is conservatively treated as overlap. */
+static inline int rinruntime_archive_byte_ranges_overlap(const void* left,
+                                                          size_t left_size,
+                                                          const void* right,
+                                                          size_t right_size)
+{
+    uintptr_t left_begin;
+    uintptr_t right_begin;
+    if (left == NULL || right == NULL || left_size == 0u || right_size == 0u)
+        return 0;
+    left_begin = (uintptr_t)left;
+    right_begin = (uintptr_t)right;
+    if (left_begin > UINTPTR_MAX - left_size ||
+        right_begin > UINTPTR_MAX - right_size)
+        return 1;
+    return left_begin < right_begin + right_size &&
+           right_begin < left_begin + left_size;
+}
+
 static inline int rinruntime_archive_method_supported(uint16_t method)
 {
     return method == 0u || method == 8u;

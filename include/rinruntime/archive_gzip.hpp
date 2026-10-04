@@ -52,6 +52,10 @@ public:
 #if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
         try {
 #endif
+        if (bytes != nullptr &&
+            rinruntime_archive_byte_ranges_overlap(
+                bytes, size, output.data(), output.capacity()))
+            return ArchiveGzipResult::InvalidArgument;
         Header header;
         /* A failed parse or admission must not leave a previous successful
          * decode visible to the caller.  This is also required for the
@@ -98,6 +102,10 @@ public:
 #if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
         try {
 #endif
+        if (bytes != nullptr &&
+            rinruntime_archive_byte_ranges_overlap(
+                bytes, size, output.data(), output.capacity()))
+            return ArchiveGzipResult::InvalidArgument;
         Header header;
         output.clear();
         const ArchiveGzipResult headerResult = parseHeader(
@@ -149,6 +157,11 @@ public:
         ArchiveDeflateCancellationFunction cancellation,
         void* cancellationContext) const
     {
+        if (compressedBuffer != nullptr &&
+            rinruntime_archive_byte_ranges_overlap(
+                compressedBuffer, compressedCapacity, output.data(),
+                output.capacity()))
+            return ArchiveGzipResult::InvalidArgument;
         output.clear();
         const ArchiveGzipResult sourceResult = stageSource(
             source, compressedBuffer, compressedCapacity, cancellation,
@@ -163,6 +176,11 @@ public:
         std::size_t compressedCapacity, std::string& output,
         ArchiveDeflateDeadlineFunction deadline, void* deadlineContext) const
     {
+        if (compressedBuffer != nullptr &&
+            rinruntime_archive_byte_ranges_overlap(
+                compressedBuffer, compressedCapacity, output.data(),
+                output.capacity()))
+            return ArchiveGzipResult::InvalidArgument;
         output.clear();
         const ArchiveGzipResult sourceResult = stageSource(
             source, compressedBuffer, compressedCapacity, nullptr, nullptr,
