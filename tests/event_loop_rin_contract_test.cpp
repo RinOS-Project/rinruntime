@@ -188,6 +188,16 @@ int main() {
     assert(ready.id == valid.id &&
            ready.events == RinRuntime::EventLoop::WAIT_READABLE);
 
+    /* UINT64_MAX is EventLoop's no-deadline sentinel, not a valid clock
+     * sample.  The RinOS adapter must fail before mutating the target
+     * wait-set or publishing a ready result for a finite deadline. */
+    const uint32_t set_items_before_sentinel = g_set_items_calls;
+    g_now = UINT64_MAX;
+    ready = {99u, RinRuntime::EventLoop::WAIT_READABLE};
+    assert(!backend.wait(&valid, 1u, UINT64_MAX - 1u, &ready));
+    assert(ready.id == 0u && ready.events == 0u);
+    assert(g_set_items_calls == set_items_before_sentinel);
+
     /* Cancellation must wake a caller that already consumed the scheduling
      * notification; otherwise a backend can sleep until a stale deadline. */
     RinRuntime::EventLoop wake_loop;

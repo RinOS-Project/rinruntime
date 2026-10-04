@@ -180,6 +180,22 @@ int main() {
     assert(close(reset_pipe[1]) == 0);
     assert(close(reset_pipe[0]) == 0);
 
+    /* UINT64_MAX is EventLoop's no-deadline sentinel, not a valid clock
+     * sample.  A finite deadline must fail closed even when the descriptor
+     * is already readable; it must not be converted into timeout=0 and
+     * published as a ready event. */
+    int sentinel_pipe[2] = {-1, -1};
+    assert(pipe(sentinel_pipe) == 0);
+    assert(write(sentinel_pipe[1], &byte, sizeof(byte)) == 1);
+    backend.resetClock();
+    g_now = UINT64_MAX;
+    timeout_request.nativeHandle = static_cast<uint64_t>(sentinel_pipe[0]);
+    ready = {99u, EventLoop::WAIT_READABLE};
+    assert(!backend.wait(&timeout_request, 1u, UINT64_MAX - 1u, &ready));
+    assert(ready.id == 0u && ready.events == 0u);
+    assert(close(sentinel_pipe[1]) == 0);
+    assert(close(sentinel_pipe[0]) == 0);
+
     /* Cancelling a deadline after its scheduling wake was consumed must
      * publish a second wake so an adapter does not sleep on a stale deadline. */
     EventLoop wake_loop;

@@ -77,6 +77,11 @@ private:
             return true;
         }
         const std::uint64_t now = clock_(clockContext_);
+        /* UINT64_MAX is reserved by EventLoop as the no-deadline sentinel,
+         * not a usable monotonic timestamp.  Fail before publishing a new
+         * item list or issuing a wait syscall when the clock provider reports
+         * that sentinel for a finite deadline. */
+        if (now == UINT64_MAX) return false;
         if (haveLastNow_ && now < lastNow_) return false;
         lastNow_ = now;
         haveLastNow_ = true;
