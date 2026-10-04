@@ -56,6 +56,11 @@ int main() {
     assert(!RinRuntime::ThemeProfileJson::parse(malformed, profile, error));
     assert(!profile.valid());
 
+    error = validJson();
+    const std::string aliasedError = error;
+    assert(!RinRuntime::ThemeProfileJson::parse(error, profile, error));
+    assert(error == aliasedError);
+
     const std::string resourceJson = validJson();
     RinResourceCatalogEntryV1 entry = {};
     entry.struct_size = sizeof(entry);

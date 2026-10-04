@@ -16,6 +16,7 @@
 #include <rinjson/json.hpp>
 
 #include "device_manifest.hpp"
+#include "json_input_alias.hpp"
 
 namespace RinRuntime {
 
@@ -166,11 +167,31 @@ private:
         return true;
     }
 
+    static bool inputOverlaps(std::string_view input,
+                              const DeviceManifest& output,
+                              const std::string& error) {
+        if (detail::jsonInputOverlaps(input, &output, sizeof(output)) ||
+            detail::jsonInputOverlaps(input, error) ||
+            detail::jsonInputOverlaps(input, output.manifestId))
+            return true;
+        for (const DeviceManifestDevice& device : output.devices) {
+            if (detail::jsonInputOverlaps(input, &device, sizeof(device)) ||
+                detail::jsonInputOverlaps(input, device.id) ||
+                detail::jsonInputOverlaps(input, device.displayName) ||
+                detail::jsonInputOverlaps(input, device.parentId))
+                return true;
+            for (const std::string& capability : device.capabilities)
+                if (detail::jsonInputOverlaps(input, capability)) return true;
+        }
+        return false;
+    }
+
 public:
     /* output is cleared before parsing and remains empty on every failure. */
     static bool parse(std::string_view input, DeviceManifest& output,
                       std::string& error) {
         DeviceManifest candidate = {};
+        if (inputOverlaps(input, output, error)) return false;
         output = {};
         error.clear();
         if (input.empty() || input.size() > kMaximumBytes) {

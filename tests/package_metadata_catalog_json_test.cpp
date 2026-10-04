@@ -53,5 +53,15 @@ int main()
         "{\"generation\":0,\"packages\":[]}", output, error));
     assert(error == "package catalog generation");
     assert(output.generation == 0u && output.packages.empty());
+
+    assert(RinRuntime::PackageMetadataCatalogJson::parse(
+        valid, output, error));
+    output.packages.front().packageId = valid;
+    const std::string aliasedPackageId = output.packages.front().packageId;
+    error = "retained";
+    assert(!RinRuntime::PackageMetadataCatalogJson::parse(
+        output.packages.front().packageId, output, error));
+    assert(output.packages.front().packageId == aliasedPackageId);
+    assert(error == "retained");
     return 0;
 }

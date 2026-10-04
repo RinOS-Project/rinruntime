@@ -36,5 +36,13 @@ int main() {
         "\"display_name\":\"Broken\",\"version\":\"1\","
         "\"license\":\"MIT\",\"flags\":8}", output, error));
     assert(error == "package metadata flags");
+
+    output.packageId = valid;
+    const std::string aliasedPackageId = output.packageId;
+    error = "retained";
+    assert(!RinRuntime::PackageMetadataJson::parse(
+        output.packageId, output, error));
+    assert(output.packageId == aliasedPackageId);
+    assert(error == "retained");
     return 0;
 }

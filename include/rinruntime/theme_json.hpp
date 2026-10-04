@@ -15,6 +15,7 @@
 #include <rinjson/json.hpp>
 
 #include "../../../rinresource/include/rinresource/loader.h"
+#include "json_input_alias.hpp"
 #include "theme.hpp"
 
 namespace RinRuntime {
@@ -74,11 +75,19 @@ private:
         return true;
     }
 
+    static bool inputOverlaps(std::string_view input,
+                              const ThemeProfile& output,
+                              const std::string& error) {
+        return detail::jsonInputOverlaps(input, &output, sizeof(output)) ||
+               detail::jsonInputOverlaps(input, error);
+    }
+
 public:
     /* output is cleared before parsing and remains invalid on every failure. */
     static bool parse(std::string_view input, ThemeProfile& output,
                       std::string& error) {
         ThemeProfile candidate = {};
+        if (inputOverlaps(input, output, error)) return false;
         output = {};
         error.clear();
         if (input.empty() || input.size() > kMaximumBytes) {

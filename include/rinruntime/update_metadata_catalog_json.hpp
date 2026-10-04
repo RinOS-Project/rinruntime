@@ -16,6 +16,7 @@
 #include <rinjson/json.hpp>
 
 #include "update_metadata_catalog.hpp"
+#include "json_input_alias.hpp"
 #include "update_metadata_json.hpp"
 
 namespace RinRuntime {
@@ -53,11 +54,24 @@ private:
         return true;
     }
 
+    static bool inputOverlaps(std::string_view input,
+                              const UpdateMetadataCatalog& output,
+                              const std::string& error) {
+        if (detail::jsonInputOverlaps(input, &output, sizeof(output)) ||
+            detail::jsonInputOverlaps(input, error))
+            return true;
+        for (const UpdateMetadata& update : output.updates)
+            if (UpdateMetadataJson::inputOverlaps(input, update, error))
+                return true;
+        return false;
+    }
+
 public:
     /* output is cleared before parsing and remains empty on every failure. */
     static bool parse(std::string_view input, UpdateMetadataCatalog& output,
                       std::string& error) {
         UpdateMetadataCatalog candidate = {};
+        if (inputOverlaps(input, output, error)) return false;
         error.clear();
         output = {};
         if (input.empty() || input.size() > kMaximumBytes) {

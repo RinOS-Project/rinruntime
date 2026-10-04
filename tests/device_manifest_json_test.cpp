@@ -61,5 +61,13 @@ int main() {
         output, error));
     assert(error == "device manifest field type");
     assert(output.manifestId.empty());
+
+    output.manifestId = valid;
+    const std::string aliasedManifest = output.manifestId;
+    error = "retained";
+    assert(!RinRuntime::DeviceManifestJson::parse(
+        output.manifestId, output, error));
+    assert(output.manifestId == aliasedManifest);
+    assert(error == "retained");
     return 0;
 }

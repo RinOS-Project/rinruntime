@@ -17,6 +17,7 @@
 
 #include <rinjson/json.hpp>
 
+#include "json_input_alias.hpp"
 #include "package_metadata.hpp"
 
 namespace RinRuntime {
@@ -285,6 +286,32 @@ private:
         return DecodeResult::Success;
     }
 
+    static bool inputOverlaps(std::string_view input,
+                              const PackageMetadata& output,
+                              const std::string& error) {
+        if (detail::jsonInputOverlaps(input, &output, sizeof(output)) ||
+            detail::jsonInputOverlaps(input, error) ||
+            detail::jsonInputOverlaps(input, output.packageId) ||
+            detail::jsonInputOverlaps(input, output.displayName) ||
+            detail::jsonInputOverlaps(input, output.description) ||
+            detail::jsonInputOverlaps(input, output.license) ||
+            detail::jsonInputOverlaps(input, output.homepage))
+            return true;
+        for (const PackageDependency& dependency : output.dependencies)
+            if (detail::jsonInputOverlaps(input, dependency.name)) return true;
+        for (const PackageDependency& dependency : output.optionalDependencies)
+            if (detail::jsonInputOverlaps(input, dependency.name)) return true;
+        for (const std::string& conflict : output.conflicts)
+            if (detail::jsonInputOverlaps(input, conflict)) return true;
+        for (const std::string& provide : output.provides)
+            if (detail::jsonInputOverlaps(input, provide)) return true;
+        for (const PackageEntryPoint& entry : output.entryPoints)
+            if (detail::jsonInputOverlaps(input, entry.name) ||
+                detail::jsonInputOverlaps(input, entry.path))
+                return true;
+        return false;
+    }
+
     friend class PackageMetadataCatalogJson;
 
 public:
@@ -292,6 +319,7 @@ public:
     static bool parse(std::string_view input, PackageMetadata& output,
                       std::string& error) {
         PackageMetadata candidate = {};
+        if (inputOverlaps(input, output, error)) return false;
         error.clear();
         output = {};
         if (input.empty() || input.size() > kMaximumBytes) {

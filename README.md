@@ -327,6 +327,14 @@ overlaps existing caller-owned output or error-string storage before clearing
 either object. The alias returns `false` without changing the aliased state,
 so public metadata snapshots remain safe for general application callers.
 
+The public `DeviceManifestJson`, `ThemeProfileJson`, `PackageMetadataJson`,
+`PackageMetadataCatalogJson`, `UpdateMetadataJson`, and
+`UpdateMetadataCatalogJson` adapters apply the same alias boundary: an input
+`string_view` that overlaps caller-owned model storage or the error string is
+rejected before either is cleared. This preserves failure-atomic state for
+ordinary applications; device admission, repository trust, update transport,
+and install authority remain private owners.
+
 `update_metadata.hpp` provides the corresponding bounded update description:
 product/update identity, target version, channel, applicability floor, release
 notes, and sorted package artifacts with exact sizes and SHA-256 digests. It has

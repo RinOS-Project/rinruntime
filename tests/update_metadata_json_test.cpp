@@ -51,5 +51,13 @@ int main() {
                                                   error));
     assert(metadata.artifacts.empty());
     assert(!error.empty());
+
+    metadata.updateId = document;
+    const std::string aliasedUpdateId = metadata.updateId;
+    error = "retained";
+    assert(!RinRuntime::UpdateMetadataJson::parse(
+        metadata.updateId, metadata, error));
+    assert(metadata.updateId == aliasedUpdateId);
+    assert(error == "retained");
     return 0;
 }

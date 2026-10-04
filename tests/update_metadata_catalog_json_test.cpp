@@ -59,5 +59,14 @@ int main()
         "{\"generation\":0,\"updates\":[]}", output, error));
     assert(error == "update catalog generation");
     assert(output.generation == 0u && output.updates.empty());
+
+    assert(RinRuntime::UpdateMetadataCatalogJson::parse(valid, output, error));
+    output.updates.front().updateId = valid;
+    const std::string aliasedUpdateId = output.updates.front().updateId;
+    error = "retained";
+    assert(!RinRuntime::UpdateMetadataCatalogJson::parse(
+        output.updates.front().updateId, output, error));
+    assert(output.updates.front().updateId == aliasedUpdateId);
+    assert(error == "retained");
     return 0;
 }

@@ -17,6 +17,7 @@
 
 #include <rinjson/json.hpp>
 
+#include "json_input_alias.hpp"
 #include "update_metadata.hpp"
 
 namespace RinRuntime {
@@ -210,6 +211,21 @@ private:
         return DecodeResult::Success;
     }
 
+    static bool inputOverlaps(std::string_view input,
+                              const UpdateMetadata& output,
+                              const std::string& error) {
+        if (detail::jsonInputOverlaps(input, &output, sizeof(output)) ||
+            detail::jsonInputOverlaps(input, error) ||
+            detail::jsonInputOverlaps(input, output.updateId) ||
+            detail::jsonInputOverlaps(input, output.productId) ||
+            detail::jsonInputOverlaps(input, output.releaseNotes))
+            return true;
+        for (const UpdateArtifact& artifact : output.artifacts)
+            if (detail::jsonInputOverlaps(input, artifact.packageId))
+                return true;
+        return false;
+    }
+
     friend class UpdateMetadataCatalogJson;
 
 public:
@@ -217,6 +233,7 @@ public:
     static bool parse(std::string_view input, UpdateMetadata& output,
                       std::string& error) {
         UpdateMetadata candidate = {};
+        if (inputOverlaps(input, output, error)) return false;
         error.clear();
         output = {};
         if (input.empty() || input.size() > kMaximumBytes) {
