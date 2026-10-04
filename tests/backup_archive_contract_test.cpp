@@ -116,6 +116,83 @@ int main()
     const std::vector<std::uint8_t> archive =
         makeArchive(manifest, true, true, false, false);
 
+    RinRuntimeBackupManifestV1 encodeManifestAlias{};
+    encodeManifestAlias.struct_size = sizeof(encodeManifestAlias);
+    encodeManifestAlias.version = RINRUNTIME_BACKUP_VERSION;
+    encodeManifestAlias.identity = identity;
+    encodeManifestAlias.manifest_generation = 11u;
+    encodeManifestAlias.created_at_ns = 22u;
+    encodeManifestAlias.items = items;
+    encodeManifestAlias.item_count = 3u;
+    const RinRuntimeBackupManifestV1 encodeManifestBefore =
+        encodeManifestAlias;
+    std::size_t aliasedEncodeSize = 0x13579bdfu;
+    assert(rinruntime_backup_manifest_encode(
+               &encodeManifestAlias,
+               reinterpret_cast<std::uint8_t*>(&encodeManifestAlias),
+               sizeof(encodeManifestAlias), &aliasedEncodeSize) ==
+           RINRUNTIME_BACKUP_INVALID_ARGUMENT);
+    assert(aliasedEncodeSize == 0x13579bdfu);
+    assert(std::memcmp(&encodeManifestAlias, &encodeManifestBefore,
+                       sizeof(encodeManifestAlias)) == 0);
+
+    const RinRuntimeBackupItemV1 encodeItemsBefore[3] = {
+        items[0], items[1], items[2]};
+    aliasedEncodeSize = 0x2468ace0u;
+    assert(rinruntime_backup_manifest_encode(
+               &encodeManifestAlias,
+               reinterpret_cast<std::uint8_t*>(items), sizeof(items),
+               &aliasedEncodeSize) == RINRUNTIME_BACKUP_INVALID_ARGUMENT);
+    assert(aliasedEncodeSize == 0x2468ace0u);
+    assert(std::memcmp(items, encodeItemsBefore, sizeof(items)) == 0);
+
+    union EncodeSizeAlias {
+        std::size_t size;
+        std::uint8_t bytes[sizeof(RinRuntimeBackupManifestV1)];
+    } encodeSizeAlias{};
+    encodeSizeAlias.size = 0xabcdef01u;
+    assert(rinruntime_backup_manifest_encode(
+               &encodeManifestAlias, encodeSizeAlias.bytes,
+               sizeof(encodeSizeAlias.bytes), &encodeSizeAlias.size) ==
+           RINRUNTIME_BACKUP_INVALID_ARGUMENT);
+    assert(encodeSizeAlias.size == 0xabcdef01u);
+
+    alignas(RinRuntimeBackupManifestInfoV1)
+        std::uint8_t inspectAliasStorage[RINRUNTIME_BACKUP_MANIFEST_STORAGE_MAX]{};
+    std::memcpy(inspectAliasStorage, manifest.data(), manifest.size());
+    const std::vector<std::uint8_t> inspectAliasBefore(
+        inspectAliasStorage, inspectAliasStorage + manifest.size());
+    assert(rinruntime_backup_manifest_inspect(
+               inspectAliasStorage, manifest.size(),
+               reinterpret_cast<RinRuntimeBackupManifestInfoV1*>(
+                   inspectAliasStorage)) == RINRUNTIME_BACKUP_INVALID_ARGUMENT);
+    assert(std::memcmp(inspectAliasStorage, inspectAliasBefore.data(),
+                       manifest.size()) == 0);
+
+    alignas(RinRuntimeBackupItemV1)
+        std::uint8_t entryAliasStorage[RINRUNTIME_BACKUP_MANIFEST_STORAGE_MAX]{};
+    std::memcpy(entryAliasStorage, manifest.data(), manifest.size());
+    const std::vector<std::uint8_t> entryAliasBefore(
+        entryAliasStorage, entryAliasStorage + manifest.size());
+    assert(rinruntime_backup_manifest_entry_at(
+               entryAliasStorage, manifest.size(), 0u,
+               reinterpret_cast<RinRuntimeBackupItemV1*>(entryAliasStorage)) ==
+           RINRUNTIME_BACKUP_INVALID_ARGUMENT);
+    assert(std::memcmp(entryAliasStorage, entryAliasBefore.data(),
+                       manifest.size()) == 0);
+
+    alignas(RinRuntimeBackupStatusV1)
+        std::uint8_t statusAliasStorage[RINRUNTIME_BACKUP_MANIFEST_STORAGE_MAX]{};
+    std::memcpy(statusAliasStorage, manifest.data(), manifest.size());
+    const std::vector<std::uint8_t> statusAliasBefore(
+        statusAliasStorage, statusAliasStorage + manifest.size());
+    assert(rinruntime_backup_status_from_manifest(
+               statusAliasStorage, manifest.size(),
+               reinterpret_cast<RinRuntimeBackupStatusV1*>(
+                   statusAliasStorage)) == RINRUNTIME_BACKUP_INVALID_ARGUMENT);
+    assert(std::memcmp(statusAliasStorage, statusAliasBefore.data(),
+                       manifest.size()) == 0);
+
     RinRuntime::BackupArchiveReader reader;
     assert(reader.parse(archive.data(), archive.size()) ==
            RinRuntime::BackupArchiveResult::Ok);

@@ -478,6 +478,10 @@ The C RBK1 manifest encoder clears `bytes_size_out` and the caller-owned
 manifest output span on validation or capacity failure (bounded by
 `RINRUNTIME_BACKUP_MANIFEST_STORAGE_MAX`), so a rejected replacement cannot
 leave a previous manifest available to a caller.
+The encoder, manifest inspector, entry accessor, and status-from-manifest
+helper reject input/output storage overlap before that clear; this preserves
+the caller's manifest bytes when a public application accidentally aliases a
+wire image with its result object or output buffer.
 
 The standalone `rincompression/deflate.hpp` header provides the generic
 bounded deterministic stored-DEFLATE encoder. `rinruntime/archive_deflate.hpp`

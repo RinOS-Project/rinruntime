@@ -72,6 +72,50 @@ static void backup_manifest_clear_output(uint8_t* bytes, size_t capacity)
     }
 }
 
+/* Public backup encoders/inspectors clear caller-owned outputs.  Reject an
+ * input/output overlap before that clear so a caller cannot destroy the
+ * manifest it is asking us to encode or inspect.  Integer intervals avoid
+ * relational comparisons between unrelated pointers; address overflow is
+ * treated conservatively as overlap. */
+static int backup_ranges_overlap(const void* left, size_t left_size,
+                                 const void* right, size_t right_size)
+{
+    uintptr_t left_address;
+    uintptr_t right_address;
+    uintptr_t left_end;
+    uintptr_t right_end;
+    if (left == NULL || right == NULL || left_size == 0u ||
+        right_size == 0u)
+        return 0;
+    left_address = (uintptr_t)left;
+    right_address = (uintptr_t)right;
+    if (left_address > UINTPTR_MAX - (uintptr_t)left_size ||
+        right_address > UINTPTR_MAX - (uintptr_t)right_size)
+        return 1;
+    left_end = left_address + (uintptr_t)left_size;
+    right_end = right_address + (uintptr_t)right_size;
+    return left_address < right_end && right_address < left_end;
+}
+
+static int backup_manifest_overlaps(const RinRuntimeBackupManifestV1* manifest,
+                                    const void* storage, size_t storage_size)
+{
+    size_t items_size;
+    if (manifest == NULL || storage == NULL || storage_size == 0u)
+        return 0;
+    if (backup_ranges_overlap(manifest, sizeof(*manifest), storage,
+                              storage_size))
+        return 1;
+    if (manifest->item_count == 0u || manifest->items == NULL)
+        return 0;
+    items_size = (size_t)manifest->item_count * sizeof(*manifest->items);
+    if (manifest->item_count != 0u &&
+        items_size / (size_t)manifest->item_count != sizeof(*manifest->items))
+        return 1;
+    return backup_ranges_overlap(manifest->items, items_size, storage,
+                                 storage_size);
+}
+
 static int backup_storage_class_valid(uint16_t storage_class)
 {
     return storage_class >= RINRUNTIME_BACKUP_STORAGE_CONFIG &&
@@ -232,6 +276,12 @@ RinRuntimeBackupResult rinruntime_backup_manifest_encode(
     size_t item_bytes_size;
     size_t total_size;
     uint32_t index;
+    if (backup_manifest_overlaps(manifest, bytes_out, bytes_capacity) ||
+        backup_manifest_overlaps(manifest, bytes_size_out,
+                                 sizeof(*bytes_size_out)) ||
+        backup_ranges_overlap(bytes_out, bytes_capacity, bytes_size_out,
+                              sizeof(*bytes_size_out)))
+        return RINRUNTIME_BACKUP_INVALID_ARGUMENT;
     if (bytes_size_out != NULL) *bytes_size_out = 0u;
     backup_manifest_clear_output(bytes_out, bytes_capacity);
     result = backup_manifest_validate(manifest);
@@ -361,6 +411,9 @@ RinRuntimeBackupResult rinruntime_backup_manifest_inspect(
     RinRuntimeBackupManifestInfoV1* info_out)
 {
     if (info_out == NULL) return RINRUNTIME_BACKUP_INVALID_ARGUMENT;
+    if (backup_ranges_overlap(bytes, bytes_size, info_out,
+                              sizeof(*info_out)))
+        return RINRUNTIME_BACKUP_INVALID_ARGUMENT;
     memset(info_out, 0, sizeof(*info_out));
     return backup_wire_validate(bytes, bytes_size, NULL, info_out);
 }
@@ -373,6 +426,9 @@ RinRuntimeBackupResult rinruntime_backup_manifest_entry_at(
     RinRuntimeBackupWireItemV1 wire_item;
     RinRuntimeBackupResult result;
     if (item_out == NULL) return RINRUNTIME_BACKUP_INVALID_ARGUMENT;
+    if (backup_ranges_overlap(bytes, bytes_size, item_out,
+                              sizeof(*item_out)))
+        return RINRUNTIME_BACKUP_INVALID_ARGUMENT;
     memset(item_out, 0, sizeof(*item_out));
     result = backup_wire_validate(bytes, bytes_size, &header, NULL);
     if (result != RINRUNTIME_BACKUP_OK) return result;
@@ -407,6 +463,9 @@ RinRuntimeBackupResult rinruntime_backup_status_from_manifest(
 {
     RinRuntimeBackupResult result;
     if (status_out == NULL) return RINRUNTIME_BACKUP_INVALID_ARGUMENT;
+    if (backup_ranges_overlap(bytes, bytes_size, status_out,
+                              sizeof(*status_out)))
+        return RINRUNTIME_BACKUP_INVALID_ARGUMENT;
     backup_status_initialize(status_out);
     result = rinruntime_backup_manifest_inspect(bytes, bytes_size,
                                                 &status_out->manifest);
