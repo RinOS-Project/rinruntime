@@ -483,6 +483,12 @@ helper reject input/output storage overlap before that clear; this preserves
 the caller's manifest bytes when a public application accidentally aliases a
 wire image with its result object or output buffer.
 
+The public session-recovery serializer and resolver apply the same boundary:
+snapshot payloads, wire images, metadata, restored payloads, and size outputs
+must use separate caller-owned storage. An alias is rejected before state is
+cleared, so session recovery remains a bounded public record adapter rather
+than a filesystem, crashd, or authenticated launch owner.
+
 The standalone `rincompression/deflate.hpp` header provides the generic
 bounded deterministic stored-DEFLATE encoder. `rinruntime/archive_deflate.hpp`
 keeps archive-specific source and authoring adapters as a compatibility layer;

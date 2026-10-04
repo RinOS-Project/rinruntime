@@ -52,6 +52,42 @@ static uint32_t recovery_crc32(uint32_t value, const uint8_t* bytes,
     return value;
 }
 
+/* Recovery helpers clear caller-owned result storage.  Reject input/output
+ * overlap before that clear so a caller cannot destroy a snapshot or wire
+ * image while asking the public API to encode, inspect, or resolve it. */
+static int recovery_ranges_overlap(const void* left, size_t left_size,
+                                   const void* right, size_t right_size)
+{
+    uintptr_t left_address;
+    uintptr_t right_address;
+    uintptr_t left_end;
+    uintptr_t right_end;
+    if (left == NULL || right == NULL || left_size == 0u ||
+        right_size == 0u)
+        return 0;
+    left_address = (uintptr_t)left;
+    right_address = (uintptr_t)right;
+    if (left_address > UINTPTR_MAX - (uintptr_t)left_size ||
+        right_address > UINTPTR_MAX - (uintptr_t)right_size)
+        return 1;
+    left_end = left_address + (uintptr_t)left_size;
+    right_end = right_address + (uintptr_t)right_size;
+    return left_address < right_end && right_address < left_end;
+}
+
+static int recovery_snapshot_overlaps(
+    const RinRuntimeSessionRecoverySnapshotV1* snapshot,
+    const void* storage, size_t storage_size)
+{
+    if (snapshot == NULL || storage == NULL || storage_size == 0u)
+        return 0;
+    if (recovery_ranges_overlap(snapshot, sizeof(*snapshot), storage,
+                                storage_size))
+        return 1;
+    return recovery_ranges_overlap(snapshot->payload, snapshot->payload_size,
+                                   storage, storage_size);
+}
+
 static uint32_t recovery_integrity(const RinRuntimeSessionRecoveryWireV1* wire,
                                    const uint8_t* payload)
 {
@@ -200,6 +236,12 @@ RinRuntimeSessionRecoveryResult rinruntime_session_recovery_encode(
     RinRuntimeSessionRecoveryWireV1 wire;
     size_t size;
 
+    if (recovery_snapshot_overlaps(snapshot, bytes_out, bytes_capacity) ||
+        recovery_snapshot_overlaps(snapshot, bytes_size_out,
+                                   sizeof(*bytes_size_out)) ||
+        recovery_ranges_overlap(bytes_out, bytes_capacity, bytes_size_out,
+                                sizeof(*bytes_size_out)))
+        return RINRUNTIME_SESSION_RECOVERY_INVALID_ARGUMENT;
     if (bytes_size_out != NULL) *bytes_size_out = 0u;
     if (!recovery_snapshot_valid(snapshot) || bytes_out == NULL ||
         bytes_size_out == NULL)
@@ -264,6 +306,9 @@ RinRuntimeSessionRecoveryResult rinruntime_session_recovery_inspect(
     RinRuntimeSessionRecoveryResult result;
     if (metadata_out == NULL)
         return RINRUNTIME_SESSION_RECOVERY_INVALID_ARGUMENT;
+    if (recovery_ranges_overlap(bytes, bytes_size, metadata_out,
+                                sizeof(*metadata_out)))
+        return RINRUNTIME_SESSION_RECOVERY_INVALID_ARGUMENT;
     memset(metadata_out, 0, sizeof(*metadata_out));
     result = recovery_wire_validate(bytes, bytes_size, &wire);
     if (result != RINRUNTIME_SESSION_RECOVERY_OK) return result;
@@ -280,6 +325,11 @@ RinRuntimeSessionRecoveryResult rinruntime_session_recovery_save_atomic(
     RinRuntimeSafeSaveResult save_result;
     size_t size;
     RinRuntimeSessionRecoveryResult result;
+    if (recovery_snapshot_overlaps(snapshot, metadata_out,
+                                   sizeof(*metadata_out)) ||
+        recovery_ranges_overlap(serialization_buffer, serialization_capacity,
+                                metadata_out, sizeof(*metadata_out)))
+        return RINRUNTIME_SESSION_RECOVERY_INVALID_ARGUMENT;
     if (metadata_out != NULL) memset(metadata_out, 0, sizeof(*metadata_out));
     result = rinruntime_session_recovery_encode(snapshot, serialization_buffer,
                                                 serialization_capacity, &size);
@@ -314,6 +364,24 @@ RinRuntimeSessionRecoveryResult rinruntime_session_recovery_resolve(
     RinRuntimeSessionRecoveryWireV1 wire;
     RinRuntimeSessionRecoveryMetadataV1 metadata;
     RinRuntimeSessionRecoveryResult result;
+    if (recovery_ranges_overlap(bytes, bytes_size, payload_out,
+                                payload_capacity) ||
+        recovery_ranges_overlap(bytes, bytes_size, payload_size_out,
+                                sizeof(*payload_size_out)) ||
+        recovery_ranges_overlap(bytes, bytes_size, metadata_out,
+                                sizeof(*metadata_out)) ||
+        recovery_ranges_overlap(expected_identity, sizeof(*expected_identity),
+                                payload_out, payload_capacity) ||
+        recovery_ranges_overlap(expected_identity, sizeof(*expected_identity),
+                                payload_size_out,
+                                sizeof(*payload_size_out)) ||
+        recovery_ranges_overlap(expected_identity, sizeof(*expected_identity),
+                                metadata_out, sizeof(*metadata_out)) ||
+        recovery_ranges_overlap(payload_out, payload_capacity, payload_size_out,
+                                sizeof(*payload_size_out)) ||
+        recovery_ranges_overlap(payload_out, payload_capacity, metadata_out,
+                                sizeof(*metadata_out)))
+        return RINRUNTIME_SESSION_RECOVERY_INVALID_ARGUMENT;
     if (payload_size_out != NULL) *payload_size_out = 0u;
     if (metadata_out != NULL) memset(metadata_out, 0, sizeof(*metadata_out));
     if (!rinruntime_session_recovery_identity_valid(expected_identity) ||

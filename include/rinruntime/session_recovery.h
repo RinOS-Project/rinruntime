@@ -115,7 +115,9 @@ int rinruntime_session_recovery_get_authenticated_identity(
     RinRuntimeSessionRecoveryIdentityV1* identity_out);
 
 /* Serialize/parse one self-contained snapshot. Parsing rejects trailing data,
- * malformed reserved fields, bound violations, and checksum mismatches. */
+ * malformed reserved fields, bound violations, and checksum mismatches. The
+ * encode/inspect result storage must not overlap the snapshot or wire image;
+ * the public functions reject that alias before clearing caller-owned state. */
 RinRuntimeSessionRecoveryResult rinruntime_session_recovery_encode(
     const RinRuntimeSessionRecoverySnapshotV1* snapshot, uint8_t* bytes_out,
     size_t bytes_capacity, size_t* bytes_size_out);
@@ -135,7 +137,8 @@ RinRuntimeSessionRecoveryResult rinruntime_session_recovery_save_atomic(
 /* A caller must first inspect the record and render a choice in its own UI.
  * This routine deliberately refuses automatic restoration when `decision` is
  * NONE; DISCARDED does not copy payload bytes. `current_document_generation`
- * is zero only for a new/untitled document. */
+ * is zero only for a new/untitled document. Input and output storage must not
+ * overlap; aliases are rejected before output clearing or payload copying. */
 RinRuntimeSessionRecoveryResult rinruntime_session_recovery_resolve(
     const uint8_t* bytes, size_t bytes_size,
     const RinRuntimeSessionRecoveryIdentityV1* expected_identity,
@@ -157,4 +160,3 @@ RinRuntimeSessionRecoveryResult rinruntime_session_recovery_register_crashd(
 #endif
 
 #endif /* RINRUNTIME_SESSION_RECOVERY_H */
-
