@@ -445,6 +445,16 @@ int main() {
         prepared.validator, madeResponse));
     assert(madeResponse.validFor(prepared));
 
+    {
+        RinRuntime::DownloadRangeResponse aliasedResponse;
+        aliasedResponse.validator = prepared.validator;
+        const auto before = aliasedResponse.validator;
+        assert(!RinRuntime::makeDownloadRangeResponse(
+            prepared, 206u, "bytes 2-4/5", "3", prepared.generation,
+            aliasedResponse.validator, aliasedResponse));
+        assert(aliasedResponse.validator == before);
+    }
+
     Owner ordinaryOwner;
     RinRuntime::DownloadRangeTransportOpsV1 ordinaryOps;
     ordinaryOps.structSize = sizeof(ordinaryOps);

@@ -534,6 +534,10 @@ inline bool makeDownloadRangeResponse(
     const std::string& contentRange, const std::string& contentLength,
     std::uint64_t generation, const std::string& validator,
     DownloadRangeResponse& output) {
+    if (&output.validator == &contentRange ||
+        &output.validator == &contentLength ||
+        &output.validator == &validator)
+        return false;
     output = DownloadRangeResponse{};
     std::uint64_t start = 0u;
     std::uint64_t end = 0u;

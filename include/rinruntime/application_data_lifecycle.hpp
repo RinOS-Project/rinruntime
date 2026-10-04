@@ -188,24 +188,11 @@ class ApplicationDataLifecycle final {
         const ApplicationDataKnownFolderOwner& owner,
         RinRuntimeApplicationDirectory directory, std::string& output) {
         char path[RINRUNTIME_KNOWN_FOLDER_PATH_MAX] = {};
-        int resolveResult = -1;
         output.clear();
-        if (!profileIdentityMatches(profile) ||
-            !owner.validFor(profile.owner))
-            return ApplicationDataLifecycleResult::KnownFolderUnavailable;
-#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
-        try {
-#endif
-            resolveResult = owner.resolve(
-                owner.context, &profile.owner, profile.applicationId.c_str(),
-                directory, path, sizeof(path));
-#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
-        } catch (...) {
-            output.clear();
-            return ApplicationDataLifecycleResult::KnownFolderUnavailable;
-        }
-#endif
-        if (resolveResult != 0 ||
+        if (!profileIdentityMatches(profile) || !owner.validFor(profile.owner) ||
+            owner.resolve(owner.context, &profile.owner,
+                          profile.applicationId.c_str(), directory, path,
+                          sizeof(path)) != 0 ||
             std::memchr(path, '\0', sizeof(path)) == nullptr)
             return ApplicationDataLifecycleResult::KnownFolderUnavailable;
         output.assign(path);
