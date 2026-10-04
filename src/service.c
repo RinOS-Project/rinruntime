@@ -53,16 +53,29 @@ static size_t service_id_size(const char* id)
     return 0u;
 }
 
+static int service_id_record_valid(
+    const char id[RINRUNTIME_SERVICE_ID_MAX])
+{
+    size_t index;
+    if (id == NULL) return 0;
+    for (index = 0u; index < RINRUNTIME_SERVICE_ID_MAX; ++index)
+        if (id[index] == '\0') break;
+    if (index == RINRUNTIME_SERVICE_ID_MAX) return 0;
+    for (++index; index < RINRUNTIME_SERVICE_ID_MAX; ++index)
+        if (id[index] != '\0') return 0;
+    return 1;
+}
+
 static int service_id_matches(const char id[RINRUNTIME_SERVICE_ID_MAX],
                               const char* expected)
 {
     size_t index;
-    if (id == NULL || service_id_size(expected) == 0u) return 0;
-    for (index = 0u; index < RINRUNTIME_SERVICE_ID_MAX; ++index) {
+    const size_t expected_size = service_id_size(expected);
+    if (!service_id_record_valid(id) || expected_size == 0u) return 0;
+    for (index = 0u; index < expected_size; ++index) {
         if (id[index] != expected[index]) return 0;
-        if (expected[index] == '\0') return 1;
     }
-    return 0;
+    return id[expected_size] == '\0';
 }
 
 static int service_result_valid(intptr_t result)
