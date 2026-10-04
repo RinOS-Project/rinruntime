@@ -5,6 +5,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -97,6 +98,39 @@ private:
         return true;
     }
 
+    static bool inputOverlaps(std::string_view input,
+                              const std::string& value) {
+        if (input.empty() || value.empty()) return false;
+        const std::uintptr_t inputBegin =
+            reinterpret_cast<std::uintptr_t>(input.data());
+        const std::uintptr_t valueBegin =
+            reinterpret_cast<std::uintptr_t>(value.data());
+        const std::uintptr_t maximum =
+            std::numeric_limits<std::uintptr_t>::max();
+        if (inputBegin > maximum - input.size() ||
+            valueBegin > maximum - value.capacity())
+            return true;
+        return inputBegin < valueBegin + value.capacity() &&
+               valueBegin < inputBegin + input.size();
+    }
+
+    static bool inputOverlaps(std::string_view input,
+                              const ApplicationMetadata& metadata,
+                              const std::string& error) {
+        if (inputOverlaps(input, error) ||
+            inputOverlaps(input, metadata.applicationId) ||
+            inputOverlaps(input, metadata.displayName) ||
+            inputOverlaps(input, metadata.entryPoint) ||
+            inputOverlaps(input, metadata.iconId) ||
+            inputOverlaps(input, metadata.description))
+            return true;
+        for (const std::string& value : metadata.categories)
+            if (inputOverlaps(input, value)) return true;
+        for (const std::string& value : metadata.mimeTypes)
+            if (inputOverlaps(input, value)) return true;
+        return false;
+    }
+
     static DecodeResult decodeValue(const Value& value,
                                     ApplicationMetadata& output) {
         if (!value.isObject()) return DecodeResult::FieldType;
@@ -127,6 +161,7 @@ public:
     static bool parse(std::string_view input, ApplicationMetadata& output,
                       std::string& error) {
         ApplicationMetadata candidate = {};
+        if (inputOverlaps(input, output, error)) return false;
         error.clear();
         output = {};
         if (input.empty() || input.size() > kMaximumBytes) {

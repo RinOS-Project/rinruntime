@@ -322,6 +322,10 @@ must be valid and sorted uniquely by application ID, and failed parsing clears
 the output. The catalog generation is only an opaque snapshot value; repository
 URLs, authentication, signatures, installed roots, trust provisioning, and
 launch authority remain private repository/installer/launcher owners.
+Both descriptor and catalog JSON parsers reject an input `string_view` that
+overlaps existing caller-owned output or error-string storage before clearing
+either object. The alias returns `false` without changing the aliased state,
+so public metadata snapshots remain safe for general application callers.
 
 `update_metadata.hpp` provides the corresponding bounded update description:
 product/update identity, target version, channel, applicability floor, release

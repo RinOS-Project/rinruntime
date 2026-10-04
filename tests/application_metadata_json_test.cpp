@@ -54,6 +54,22 @@ int main() {
     assert(output.entryPoint == "bin/editor.rin");
     assert(output.gui);
 
+    output.applicationId = valid;
+    error = "preserve metadata alias";
+    const std::string metadataAliasBefore = output.applicationId;
+    const std::string errorAliasBefore = error;
+    assert(!RinRuntime::ApplicationMetadataJson::parse(
+        std::string_view(output.applicationId), output, error));
+    assert(output.applicationId == metadataAliasBefore &&
+           error == errorAliasBefore);
+
+    output = {};
+    error = valid;
+    const std::string errorAliasBeforeParse = error;
+    assert(!RinRuntime::ApplicationMetadataJson::parse(
+        std::string_view(error), output, error));
+    assert(error == errorAliasBeforeParse && output.applicationId.empty());
+
     assert(!RinRuntime::ApplicationMetadataJson::parse(
         "{\"application_id\":\"com.rinos.editor\","
         "\"display_name\":\"Broken\","

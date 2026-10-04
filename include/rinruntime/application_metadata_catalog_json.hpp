@@ -62,6 +62,12 @@ public:
                       ApplicationMetadataCatalog& output,
                       std::string& error) {
         ApplicationMetadataCatalog candidate = {};
+        if (ApplicationMetadataJson::inputOverlaps(input, error))
+            return false;
+        for (const ApplicationMetadata& application : output.applications)
+            if (ApplicationMetadataJson::inputOverlaps(input, application,
+                                                       error))
+                return false;
         error.clear();
         output = {};
         if (input.empty() || input.size() > kMaximumBytes) {
