@@ -20,8 +20,11 @@
 static int make_deadline(uint64_t now_ms, uint32_t timeout_ms,
                          uint64_t* deadline_out)
 {
+    /* UINT64_MAX is the public EventLoop adapter's "no deadline" sentinel.
+     * A finite wait that lands exactly on it must fail closed rather than
+     * allowing the C adapter to manufacture an ambiguous deadline. */
     if (deadline_out == NULL || now_ms == UINT64_MAX ||
-        (uint64_t)timeout_ms > UINT64_MAX - now_ms)
+        (uint64_t)timeout_ms >= UINT64_MAX - now_ms)
         return 0;
     *deadline_out = now_ms + (uint64_t)timeout_ms;
     return 1;
