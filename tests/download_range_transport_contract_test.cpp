@@ -392,6 +392,22 @@ int main() {
     assert(prepared.makeRangeHeader(rangeHeader));
     assert(rangeHeader == "bytes=2-");
 
+    {
+        RinRuntime::DownloadRangeRequest aliasedPrepared;
+        aliasedPrepared.validator = receipt.validator;
+        assert(aliasedPrepared.prepare(
+            receipt, receipt.requestId, receipt.generation,
+            aliasedPrepared.validator));
+        assert(aliasedPrepared.validator == receipt.validator);
+    }
+
+    {
+        RinRuntime::DownloadRangeRequest aliasedHeader = makeRequest();
+        const std::string before = aliasedHeader.validator;
+        assert(!aliasedHeader.makeRangeHeader(aliasedHeader.validator));
+        assert(aliasedHeader.validator == before);
+    }
+
     RinRuntime::DownloadRangeResponse madeResponse;
     assert(RinRuntime::makeDownloadRangeResponse(
         prepared, 206u, "bytes 2-4/5", "3", prepared.generation,

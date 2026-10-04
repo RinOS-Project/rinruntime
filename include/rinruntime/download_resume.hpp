@@ -243,10 +243,12 @@ struct DownloadRangeRequest {
                  std::uint64_t expectedRequestId,
                  std::uint64_t expectedGeneration,
                  const std::string& expectedValidator) {
-        clear();
         if (!receipt.matches(expectedRequestId, expectedGeneration,
-                             expectedValidator, receipt.committedBytes))
+                             expectedValidator, receipt.committedBytes)) {
+            clear();
             return false;
+        }
+        clear();
 #if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
         try {
 #else
@@ -279,6 +281,7 @@ struct DownloadRangeRequest {
     }
 
     bool makeRangeHeader(std::string& output) const {
+        if (&output == &validator) return false;
         output.clear();
         if (!valid()) return false;
 #if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
