@@ -763,6 +763,27 @@ int rin_audio_service_client_set_policy(
     return result;
 }
 
+int rin_audio_service_client_policy_generation(uint64_t* generation_out)
+{
+    RinAudioServicePolicyGenerationV1 generation = {0};
+    int result;
+    if (generation_out != NULL) *generation_out = 0u;
+    if (generation_out == NULL) return RIN_AUDIO_SERVICE_INVALID;
+    client_io_lock();
+    if (client_connect_locked() != 0) {
+        client_io_unlock();
+        return RIN_AUDIO_SERVICE_AUTHENTICATION;
+    }
+    result = transact_locked(RIN_AUDIO_SERVICE_OP_GET_POLICY_GENERATION, 0u,
+                             NULL, 0u, &generation, sizeof(generation));
+    if (result == 0 &&
+        !rin_audio_service_policy_generation_valid(&generation))
+        result = RIN_AUDIO_SERVICE_PROTOCOL;
+    if (result == 0) *generation_out = generation.generation;
+    client_io_unlock();
+    return result;
+}
+
 static int connection_value(uint32_t operation, uint32_t value)
 {
     RinAudioServiceValueRequestV1 request = {value, 0u};

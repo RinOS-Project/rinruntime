@@ -53,6 +53,7 @@ int rin_audio_service_stream_set_mute(int stream, uint32_t muted);
 int rin_audio_service_stream_set_pan(int stream, int32_t pan);
 int rin_audio_service_client_set_policy(
     const RinRuntimeAudioPolicyCatalogV1* policy);
+int rin_audio_service_client_policy_generation(uint64_t* generation_out);
 int rin_audio_service_client_set_application_volume(uint32_t volume);
 int rin_audio_service_client_set_application_mute(uint32_t muted);
 int rin_audio_service_client_set_master_volume(uint32_t volume);
