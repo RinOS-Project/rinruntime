@@ -250,6 +250,16 @@ the descriptor with an opaque document identity. The parent handshake is
 explicit; paths and launcher authority are not passed through argv or the
 environment.
 
+`file_operation.h` provides the public bounded copy/move/restore plan and
+state model. `rinruntime_file_operation_start()` validates every plan entry
+before clearing caller-owned `SKIP` flags, so a rejected later entry cannot
+partially mutate an earlier plan entry. The public `CONFLICT_RENAME` callback
+also receives a separate candidate buffer; a renamed destination is copied
+into the plan only after it is valid and available. Filesystem mutation,
+rollback ownership, and private service authorization remain outside this
+public model, while ordinary applications and external toolkits may use the
+same plan/state contract.
+
 The public TLS client-certificate transport keeps only the bounded TLS wire
 certificate list and opaque signer capability. `bind()` copies both into
 transport-owned storage, so the request retains no pointers into the caller's

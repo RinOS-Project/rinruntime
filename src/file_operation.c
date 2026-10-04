@@ -305,6 +305,7 @@ static RinRuntimeFileOperationResult file_operation_finish_failure(
 static RinRuntimeFileOperationResult file_operation_conflict(
     RinRuntimeFileOperationV1* operation, RinRuntimeFileOperationEntryV1* entry)
 {
+    char renamed_destination[RINRUNTIME_FILE_OPERATION_PATH_MAX];
     int state = operation->backend.path_state(operation->backend.context,
                                               entry->destination_path);
     if (state == 0) return RINRUNTIME_FILE_OPERATION_OK;
@@ -335,16 +336,26 @@ static RinRuntimeFileOperationResult file_operation_conflict(
         operation->entry_count != 1u ||
         operation->backend.choose_renamed_destination == 0)
         return RINRUNTIME_FILE_OPERATION_UNSUPPORTED;
+    if (!file_operation_copy(renamed_destination,
+                             sizeof(renamed_destination),
+                             entry->destination_path))
+        return RINRUNTIME_FILE_OPERATION_INVALID_ARGUMENT;
     if (operation->backend.choose_renamed_destination(
             operation->backend.context, entry->source_path, entry->destination_path,
-            entry->destination_path, sizeof(entry->destination_path)) != 0 ||
-        !rinruntime_file_operation_path_valid(entry->destination_path))
+            renamed_destination, sizeof(renamed_destination)) != 0 ||
+        !rinruntime_file_operation_path_valid(renamed_destination))
         return RINRUNTIME_FILE_OPERATION_IO_FAILED;
     state = operation->backend.path_state(operation->backend.context,
-                                          entry->destination_path);
-    return state == 0 ? RINRUNTIME_FILE_OPERATION_OK
-                      : state == 1 ? RINRUNTIME_FILE_OPERATION_CONFLICT
-                                   : file_operation_result(state);
+                                          renamed_destination);
+    if (state == 0) {
+        if (!file_operation_copy(entry->destination_path,
+                                 sizeof(entry->destination_path),
+                                 renamed_destination))
+            return RINRUNTIME_FILE_OPERATION_INVALID_ARGUMENT;
+        return RINRUNTIME_FILE_OPERATION_OK;
+    }
+    return state == 1 ? RINRUNTIME_FILE_OPERATION_CONFLICT
+                      : file_operation_result(state);
 }
 
 RinRuntimeFileOperationResult rinruntime_file_operation_start(
@@ -373,7 +384,6 @@ RinRuntimeFileOperationResult rinruntime_file_operation_start(
         if ((entry->flags & RINRUNTIME_FILE_OPERATION_ENTRY_FLAG_CREATED) != 0u ||
             (entry->flags & RINRUNTIME_FILE_OPERATION_ENTRY_FLAG_APPLIED) != 0u)
             return RINRUNTIME_FILE_OPERATION_INVALID_ARGUMENT;
-        entry->flags &= ~RINRUNTIME_FILE_OPERATION_ENTRY_FLAG_SKIP;
         if (kind == RINRUNTIME_FILE_OPERATION_COPY &&
             entry->kind == RINRUNTIME_FILE_OPERATION_ENTRY_DIRECTORY &&
             file_operation_descendant(entry->source_path, entry->destination_path))
@@ -403,6 +413,8 @@ RinRuntimeFileOperationResult rinruntime_file_operation_start(
                                backend->create_symlink == 0)) ||
         (has_hardlink != 0u && backend->link_no_replace == 0))
         return RINRUNTIME_FILE_OPERATION_UNSUPPORTED;
+    for (index = 0u; index < entry_count; ++index)
+        entries[index].flags &= ~RINRUNTIME_FILE_OPERATION_ENTRY_FLAG_SKIP;
     operation->backend = *backend;
     operation->entries = entries;
     operation->entry_count = entry_count;
