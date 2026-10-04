@@ -8,10 +8,12 @@
     defined(RINCXX_STRING_H)
 #include "../../../../libs/libcxx/cstddef.h"
 #include "../../../../libs/libcxx/cstdint.h"
+#include "../../../../libs/libcxx/limits.h"
 #include "../../../../libs/libcxx/string.h"
 #else
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <string>
 #include <cstring>
 #endif
@@ -76,6 +78,10 @@ struct DownloadPartialReceipt {
 
     bool encode(std::uint8_t* output, std::size_t capacity,
                 std::size_t& outputSize) const {
+        if (overlapsStorage(output, capacity) ||
+            overlapsStorage(&outputSize, sizeof(outputSize)) ||
+            rangesOverlap(output, capacity, &outputSize, sizeof(outputSize)))
+            return false;
         outputSize = 0u;
         if (output == nullptr || capacity < kWireSize || !valid()) {
             if (output != nullptr && capacity != 0u)
@@ -99,6 +105,7 @@ struct DownloadPartialReceipt {
 
     static bool decode(const std::uint8_t* input, std::size_t inputSize,
                        DownloadPartialReceipt& output) {
+        if (output.overlapsStorage(input, inputSize)) return false;
         output.clear();
         if (input == nullptr || inputSize != kWireSize ||
             get32(input + 0u) != kMagic || get16(input + 4u) != kVersion ||
@@ -140,6 +147,33 @@ struct DownloadPartialReceipt {
     }
 
 private:
+    static bool rangesOverlap(const void* left, std::size_t leftSize,
+                              const void* right, std::size_t rightSize) {
+        if (left == nullptr || right == nullptr || leftSize == 0u ||
+            rightSize == 0u)
+            return false;
+        const std::uintptr_t leftBegin =
+            reinterpret_cast<std::uintptr_t>(left);
+        const std::uintptr_t rightBegin =
+            reinterpret_cast<std::uintptr_t>(right);
+        const std::uintptr_t maxValue =
+            std::numeric_limits<std::uintptr_t>::max();
+        if (leftBegin > maxValue - static_cast<std::uintptr_t>(leftSize) ||
+            rightBegin > maxValue - static_cast<std::uintptr_t>(rightSize))
+            return true;
+        const std::uintptr_t leftEnd =
+            leftBegin + static_cast<std::uintptr_t>(leftSize);
+        const std::uintptr_t rightEnd =
+            rightBegin + static_cast<std::uintptr_t>(rightSize);
+        return leftBegin < rightEnd && rightBegin < leftEnd;
+    }
+
+    bool overlapsStorage(const void* address, std::size_t size) const {
+        return rangesOverlap(address, size, this, sizeof(*this)) ||
+               rangesOverlap(address, size, validator.data(),
+                             validator.capacity());
+    }
+
     static bool validValidator(const std::string& value) {
         if (value.empty() || value.size() > kMaxValidatorBytes) return false;
         for (unsigned char byte : value)

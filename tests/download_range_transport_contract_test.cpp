@@ -3,6 +3,7 @@
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <new>
 #include <stdexcept>
 #include <string>
@@ -329,6 +330,51 @@ int main() {
     RinRuntime::DownloadPartialReceipt decodedReceipt;
     assert(RinRuntime::DownloadPartialReceipt::decode(
         receiptWire, receiptSize, decodedReceipt));
+
+    {
+        RinRuntime::DownloadPartialReceipt aliasedReceipt = receipt;
+        const RinRuntime::DownloadPartialReceipt before = aliasedReceipt;
+        std::size_t aliasedSize = 0x13579bdfu;
+        assert(!aliasedReceipt.encode(
+            reinterpret_cast<std::uint8_t*>(&aliasedReceipt),
+            sizeof(aliasedReceipt), aliasedSize));
+        assert(aliasedSize == 0x13579bdfu);
+        assert(aliasedReceipt.requestId == before.requestId &&
+               aliasedReceipt.totalBytes == before.totalBytes &&
+               aliasedReceipt.committedBytes == before.committedBytes &&
+               aliasedReceipt.generation == before.generation &&
+               aliasedReceipt.validator == before.validator);
+    }
+
+    {
+        std::uint8_t aliasedWire[RinRuntime::DownloadPartialReceipt::kWireSize];
+        std::size_t aliasedSize = 0u;
+        assert(receipt.encode(aliasedWire, sizeof(aliasedWire), aliasedSize));
+        RinRuntime::DownloadPartialReceipt aliasedOutput;
+        aliasedOutput.validator.assign(
+            reinterpret_cast<const char*>(aliasedWire), aliasedSize);
+        const std::string before = aliasedOutput.validator;
+        assert(!RinRuntime::DownloadPartialReceipt::decode(
+            reinterpret_cast<const std::uint8_t*>(
+                aliasedOutput.validator.data()),
+            aliasedOutput.validator.size(), aliasedOutput));
+        assert(aliasedOutput.validator == before);
+    }
+
+    {
+        union {
+            std::uint8_t bytes[RinRuntime::DownloadPartialReceipt::kWireSize];
+            std::size_t size;
+        } outputAlias = {};
+        outputAlias.size = 0x2468ace0u;
+        const auto before = outputAlias;
+        assert(!receipt.encode(outputAlias.bytes, sizeof(outputAlias.bytes),
+                               outputAlias.size));
+        assert(outputAlias.size == 0x2468ace0u);
+        assert(std::memcmp(outputAlias.bytes, before.bytes,
+                           sizeof(outputAlias.bytes)) == 0);
+    }
+
     receiptWire[42u] = 1u;
     assert(!RinRuntime::DownloadPartialReceipt::decode(
         receiptWire, receiptSize, decodedReceipt));
