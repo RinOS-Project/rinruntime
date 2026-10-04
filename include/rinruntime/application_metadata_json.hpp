@@ -5,7 +5,6 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <limits>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -19,6 +18,7 @@
 
 #include "../../../rinresource/include/rinresource/loader.h"
 #include "application_metadata.hpp"
+#include "json_input_alias.hpp"
 
 namespace RinRuntime {
 
@@ -100,29 +100,21 @@ private:
 
     static bool inputOverlaps(std::string_view input,
                               const std::string& value) {
-        if (input.empty() || value.empty()) return false;
-        const std::uintptr_t inputBegin =
-            reinterpret_cast<std::uintptr_t>(input.data());
-        const std::uintptr_t valueBegin =
-            reinterpret_cast<std::uintptr_t>(value.data());
-        const std::uintptr_t maximum =
-            std::numeric_limits<std::uintptr_t>::max();
-        if (inputBegin > maximum - input.size() ||
-            valueBegin > maximum - value.capacity())
-            return true;
-        return inputBegin < valueBegin + value.capacity() &&
-               valueBegin < inputBegin + input.size();
+        return detail::jsonInputOverlaps(input, value);
     }
 
     static bool inputOverlaps(std::string_view input,
                               const ApplicationMetadata& metadata,
                               const std::string& error) {
-        if (inputOverlaps(input, error) ||
+        if (detail::jsonInputOverlaps(input, &metadata, sizeof(metadata)) ||
+            inputOverlaps(input, error) ||
             inputOverlaps(input, metadata.applicationId) ||
             inputOverlaps(input, metadata.displayName) ||
             inputOverlaps(input, metadata.entryPoint) ||
             inputOverlaps(input, metadata.iconId) ||
-            inputOverlaps(input, metadata.description))
+            inputOverlaps(input, metadata.description) ||
+            detail::jsonInputOverlaps(input, metadata.categories) ||
+            detail::jsonInputOverlaps(input, metadata.mimeTypes))
             return true;
         for (const std::string& value : metadata.categories)
             if (inputOverlaps(input, value)) return true;
