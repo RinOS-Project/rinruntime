@@ -295,7 +295,12 @@ private:
             detail::jsonInputOverlaps(input, output.displayName) ||
             detail::jsonInputOverlaps(input, output.description) ||
             detail::jsonInputOverlaps(input, output.license) ||
-            detail::jsonInputOverlaps(input, output.homepage))
+            detail::jsonInputOverlaps(input, output.homepage) ||
+            detail::jsonInputOverlaps(input, output.dependencies) ||
+            detail::jsonInputOverlaps(input, output.optionalDependencies) ||
+            detail::jsonInputOverlaps(input, output.conflicts) ||
+            detail::jsonInputOverlaps(input, output.provides) ||
+            detail::jsonInputOverlaps(input, output.entryPoints))
             return true;
         for (const PackageDependency& dependency : output.dependencies)
             if (detail::jsonInputOverlaps(input, dependency.name)) return true;

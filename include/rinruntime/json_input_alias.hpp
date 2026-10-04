@@ -8,6 +8,7 @@
 #include <limits>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace RinRuntime {
 namespace detail {
@@ -33,6 +34,17 @@ inline bool jsonInputOverlaps(std::string_view input,
                               const std::string& value) {
     return !value.empty() &&
            jsonInputOverlaps(input, value.data(), value.capacity());
+}
+
+template <typename T>
+inline bool jsonInputOverlaps(std::string_view input,
+                              const std::vector<T>& values) {
+    if (values.empty()) return false;
+    if (values.size() >
+        std::numeric_limits<std::size_t>::max() / sizeof(T))
+        return true;
+    return jsonInputOverlaps(input, values.data(),
+                             values.size() * sizeof(T));
 }
 
 } // namespace detail

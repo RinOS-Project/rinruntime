@@ -172,13 +172,15 @@ private:
                               const std::string& error) {
         if (detail::jsonInputOverlaps(input, &output, sizeof(output)) ||
             detail::jsonInputOverlaps(input, error) ||
-            detail::jsonInputOverlaps(input, output.manifestId))
+            detail::jsonInputOverlaps(input, output.manifestId) ||
+            detail::jsonInputOverlaps(input, output.devices))
             return true;
         for (const DeviceManifestDevice& device : output.devices) {
             if (detail::jsonInputOverlaps(input, &device, sizeof(device)) ||
                 detail::jsonInputOverlaps(input, device.id) ||
                 detail::jsonInputOverlaps(input, device.displayName) ||
-                detail::jsonInputOverlaps(input, device.parentId))
+                detail::jsonInputOverlaps(input, device.parentId) ||
+                detail::jsonInputOverlaps(input, device.capabilities))
                 return true;
             for (const std::string& capability : device.capabilities)
                 if (detail::jsonInputOverlaps(input, capability)) return true;

@@ -61,7 +61,8 @@ private:
                               const PackageMetadataCatalog& output,
                               const std::string& error) {
         if (detail::jsonInputOverlaps(input, &output, sizeof(output)) ||
-            detail::jsonInputOverlaps(input, error))
+            detail::jsonInputOverlaps(input, error) ||
+            detail::jsonInputOverlaps(input, output.packages))
             return true;
         for (const PackageMetadata& package : output.packages)
             if (PackageMetadataJson::inputOverlaps(input, package, error))

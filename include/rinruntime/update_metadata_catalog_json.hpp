@@ -58,7 +58,8 @@ private:
                               const UpdateMetadataCatalog& output,
                               const std::string& error) {
         if (detail::jsonInputOverlaps(input, &output, sizeof(output)) ||
-            detail::jsonInputOverlaps(input, error))
+            detail::jsonInputOverlaps(input, error) ||
+            detail::jsonInputOverlaps(input, output.updates))
             return true;
         for (const UpdateMetadata& update : output.updates)
             if (UpdateMetadataJson::inputOverlaps(input, update, error))

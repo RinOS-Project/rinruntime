@@ -218,10 +218,12 @@ private:
             detail::jsonInputOverlaps(input, error) ||
             detail::jsonInputOverlaps(input, output.updateId) ||
             detail::jsonInputOverlaps(input, output.productId) ||
-            detail::jsonInputOverlaps(input, output.releaseNotes))
+            detail::jsonInputOverlaps(input, output.releaseNotes) ||
+            detail::jsonInputOverlaps(input, output.artifacts))
             return true;
         for (const UpdateArtifact& artifact : output.artifacts)
-            if (detail::jsonInputOverlaps(input, artifact.packageId))
+            if (detail::jsonInputOverlaps(input, &artifact, sizeof(artifact)) ||
+                detail::jsonInputOverlaps(input, artifact.packageId))
                 return true;
         return false;
     }
