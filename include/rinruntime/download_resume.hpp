@@ -24,6 +24,31 @@
 
 namespace RinRuntime {
 
+namespace detail {
+
+inline bool downloadRangesOverlap(const void* left, std::size_t leftSize,
+                                  const void* right, std::size_t rightSize) {
+    if (left == nullptr || right == nullptr || leftSize == 0u ||
+        rightSize == 0u)
+        return false;
+    const std::uintptr_t leftBegin =
+        reinterpret_cast<std::uintptr_t>(left);
+    const std::uintptr_t rightBegin =
+        reinterpret_cast<std::uintptr_t>(right);
+    const std::uintptr_t maxValue =
+        std::numeric_limits<std::uintptr_t>::max();
+    if (leftBegin > maxValue - static_cast<std::uintptr_t>(leftSize) ||
+        rightBegin > maxValue - static_cast<std::uintptr_t>(rightSize))
+        return true;
+    const std::uintptr_t leftEnd =
+        leftBegin + static_cast<std::uintptr_t>(leftSize);
+    const std::uintptr_t rightEnd =
+        rightBegin + static_cast<std::uintptr_t>(rightSize);
+    return leftBegin < rightEnd && rightBegin < leftEnd;
+}
+
+} // namespace detail
+
 /*
  * A receipt is metadata only: it does not contain a pathname, descriptor, or
  * portal handle.  The authenticated HTTP owner supplies requestId,
@@ -80,7 +105,8 @@ struct DownloadPartialReceipt {
                 std::size_t& outputSize) const {
         if (overlapsStorage(output, capacity) ||
             overlapsStorage(&outputSize, sizeof(outputSize)) ||
-            rangesOverlap(output, capacity, &outputSize, sizeof(outputSize)))
+            detail::downloadRangesOverlap(output, capacity, &outputSize,
+                                          sizeof(outputSize)))
             return false;
         outputSize = 0u;
         if (output == nullptr || capacity < kWireSize || !valid()) {
@@ -147,31 +173,11 @@ struct DownloadPartialReceipt {
     }
 
 private:
-    static bool rangesOverlap(const void* left, std::size_t leftSize,
-                              const void* right, std::size_t rightSize) {
-        if (left == nullptr || right == nullptr || leftSize == 0u ||
-            rightSize == 0u)
-            return false;
-        const std::uintptr_t leftBegin =
-            reinterpret_cast<std::uintptr_t>(left);
-        const std::uintptr_t rightBegin =
-            reinterpret_cast<std::uintptr_t>(right);
-        const std::uintptr_t maxValue =
-            std::numeric_limits<std::uintptr_t>::max();
-        if (leftBegin > maxValue - static_cast<std::uintptr_t>(leftSize) ||
-            rightBegin > maxValue - static_cast<std::uintptr_t>(rightSize))
-            return true;
-        const std::uintptr_t leftEnd =
-            leftBegin + static_cast<std::uintptr_t>(leftSize);
-        const std::uintptr_t rightEnd =
-            rightBegin + static_cast<std::uintptr_t>(rightSize);
-        return leftBegin < rightEnd && rightBegin < leftEnd;
-    }
-
     bool overlapsStorage(const void* address, std::size_t size) const {
-        return rangesOverlap(address, size, this, sizeof(*this)) ||
-               rangesOverlap(address, size, validator.data(),
-                             validator.capacity());
+        return detail::downloadRangesOverlap(address, size, this,
+                                             sizeof(*this)) ||
+               detail::downloadRangesOverlap(address, size, validator.data(),
+                                             validator.capacity());
     }
 
     static bool validValidator(const std::string& value) {
@@ -360,6 +366,21 @@ inline bool readDownloadRangeToBuffer(DownloadRangeTransport& transport,
                                       std::uint8_t* output,
                                       std::size_t capacity,
                                       std::size_t& outputSize) {
+    const bool outputAliasesRequest =
+        detail::downloadRangesOverlap(output, capacity, &request,
+                                      sizeof(request)) ||
+        detail::downloadRangesOverlap(output, capacity, request.validator.data(),
+                                      request.validator.capacity());
+    const bool sizeAliasesRequest =
+        detail::downloadRangesOverlap(&outputSize, sizeof(outputSize),
+                                      &request, sizeof(request)) ||
+        detail::downloadRangesOverlap(&outputSize, sizeof(outputSize),
+                                      request.validator.data(),
+                                      request.validator.capacity());
+    if (outputAliasesRequest || sizeAliasesRequest ||
+        detail::downloadRangesOverlap(output, capacity, &outputSize,
+                                      sizeof(outputSize)))
+        return false;
     outputSize = 0u;
     const auto scrubOutput = [&]() noexcept {
         if (output == nullptr || capacity == 0u) return;

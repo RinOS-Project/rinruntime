@@ -408,6 +408,23 @@ int main() {
         assert(aliasedHeader.validator == before);
     }
 
+    {
+        IncompleteRangeTransport aliasTransport;
+        RinRuntime::DownloadRangeRequest aliasedRequest = makeRequest();
+        const RinRuntime::DownloadRangeRequest before = aliasedRequest;
+        std::size_t aliasedOutputSize = 0x2468ace0u;
+        assert(!RinRuntime::readDownloadRangeToBuffer(
+            aliasTransport, aliasedRequest,
+            reinterpret_cast<std::uint8_t*>(&aliasedRequest), 1u,
+            aliasedOutputSize));
+        assert(aliasedOutputSize == 0x2468ace0u);
+        assert(aliasedRequest.requestId == before.requestId &&
+               aliasedRequest.generation == before.generation &&
+               aliasedRequest.offset == before.offset &&
+               aliasedRequest.totalBytes == before.totalBytes &&
+               aliasedRequest.validator == before.validator);
+    }
+
     RinRuntime::DownloadRangeResponse madeResponse;
     assert(RinRuntime::makeDownloadRangeResponse(
         prepared, 206u, "bytes 2-4/5", "3", prepared.generation,
