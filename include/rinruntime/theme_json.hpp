@@ -82,6 +82,14 @@ private:
                detail::jsonInputOverlaps(input, error);
     }
 
+    static bool storageOverlaps(const void* storage, std::size_t storageSize,
+                                const ThemeProfile& output,
+                                const std::string& error) {
+        return detail::jsonStorageRangesOverlap(storage, storageSize, &output,
+                                                sizeof(output)) ||
+               detail::jsonStorageOverlaps(storage, storageSize, error);
+    }
+
 public:
     /* output is cleared before parsing and remains invalid on every failure. */
     static bool parse(std::string_view input, ThemeProfile& output,
@@ -168,6 +176,11 @@ public:
         std::uint64_t loadedSize = 0u;
         const std::size_t loadCapacity =
             sourceCapacity < kMaximumBytes ? sourceCapacity : kMaximumBytes;
+        if (detail::jsonStorageRangesOverlap(source, sourceCapacity,
+                                             sourceSizeOut,
+                                             sizeof(*sourceSizeOut)) ||
+            storageOverlaps(source, sourceCapacity, output, error))
+            return false;
         output = {};
         error.clear();
         clearSource(source, sourceCapacity);

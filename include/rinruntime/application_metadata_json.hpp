@@ -123,6 +123,35 @@ private:
         return false;
     }
 
+    static bool storageOverlaps(const void* storage, std::size_t storageSize,
+                                const ApplicationMetadata& metadata,
+                                const std::string& error) {
+        if (detail::jsonStorageRangesOverlap(storage, storageSize, &metadata,
+                                             sizeof(metadata)) ||
+            detail::jsonStorageOverlaps(storage, storageSize, error) ||
+            detail::jsonStorageOverlaps(storage, storageSize,
+                                        metadata.applicationId) ||
+            detail::jsonStorageOverlaps(storage, storageSize,
+                                        metadata.displayName) ||
+            detail::jsonStorageOverlaps(storage, storageSize,
+                                        metadata.entryPoint) ||
+            detail::jsonStorageOverlaps(storage, storageSize, metadata.iconId) ||
+            detail::jsonStorageOverlaps(storage, storageSize,
+                                        metadata.description) ||
+            detail::jsonStorageOverlaps(storage, storageSize,
+                                        metadata.categories) ||
+            detail::jsonStorageOverlaps(storage, storageSize,
+                                        metadata.mimeTypes))
+            return true;
+        for (const std::string& value : metadata.categories)
+            if (detail::jsonStorageOverlaps(storage, storageSize, value))
+                return true;
+        for (const std::string& value : metadata.mimeTypes)
+            if (detail::jsonStorageOverlaps(storage, storageSize, value))
+                return true;
+        return false;
+    }
+
     static DecodeResult decodeValue(const Value& value,
                                     ApplicationMetadata& output) {
         if (!value.isObject()) return DecodeResult::FieldType;
@@ -226,6 +255,11 @@ public:
         std::uint64_t loadedSize = 0u;
         const std::size_t loadCapacity =
             sourceCapacity < kMaximumBytes ? sourceCapacity : kMaximumBytes;
+        if (detail::jsonStorageRangesOverlap(source, sourceCapacity,
+                                             sourceSizeOut,
+                                             sizeof(*sourceSizeOut)) ||
+            storageOverlaps(source, sourceCapacity, output, error))
+            return false;
         output = {};
         error.clear();
         clearSource(source, sourceCapacity);

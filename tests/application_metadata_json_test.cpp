@@ -114,6 +114,15 @@ int main() {
     assert(sourceSize == resourceJson.size() && resourcePath.calls == 1u);
     assert(output.applicationId == "com.rinos.notes");
 
+    error = resourceJson;
+    const std::string aliasedResourceError = error;
+    sourceSize = 777u;
+    assert(!RinRuntime::ApplicationMetadataJson::parseResource(
+        &catalog, 7u, readResourcePath, &resourcePath,
+        reinterpret_cast<std::uint8_t*>(error.data()), error.capacity(),
+        &sourceSize, output, error));
+    assert(error == aliasedResourceError && sourceSize == 777u);
+
     std::vector<std::uint8_t> oversizedSource(
         RinRuntime::ApplicationMetadataJson::kMaximumBytes + 1u);
     sourceSize = SIZE_MAX;

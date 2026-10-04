@@ -56,6 +56,22 @@ private:
         return true;
     }
 
+    static bool storageOverlaps(const void* storage, std::size_t storageSize,
+                                const ApplicationMetadataCatalog& output,
+                                const std::string& error) {
+        if (detail::jsonStorageRangesOverlap(storage, storageSize, &output,
+                                             sizeof(output)) ||
+            detail::jsonStorageOverlaps(storage, storageSize, error) ||
+            detail::jsonStorageOverlaps(storage, storageSize,
+                                        output.applications))
+            return true;
+        for (const ApplicationMetadata& application : output.applications)
+            if (ApplicationMetadataJson::storageOverlaps(
+                    storage, storageSize, application, error))
+                return true;
+        return false;
+    }
+
 public:
     /* output is cleared before parsing and remains empty on every failure. */
     static bool parse(std::string_view input,
@@ -157,6 +173,11 @@ public:
         std::uint64_t loadedSize = 0u;
         const std::size_t loadCapacity =
             sourceCapacity < kMaximumBytes ? sourceCapacity : kMaximumBytes;
+        if (detail::jsonStorageRangesOverlap(source, sourceCapacity,
+                                             sourceSizeOut,
+                                             sizeof(*sourceSizeOut)) ||
+            storageOverlaps(source, sourceCapacity, output, error))
+            return false;
         output = {};
         error.clear();
         if (source != nullptr) {

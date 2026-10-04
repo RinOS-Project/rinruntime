@@ -86,6 +86,15 @@ int main() {
     assert(loaded == resourceJson.size());
     assert(profile.valid());
 
+    error = resourceJson;
+    const std::string aliasedResourceError = error;
+    loaded = 777u;
+    assert(!RinRuntime::ThemeProfileJson::parseResource(
+        &catalog, 7u, nullptr, nullptr,
+        reinterpret_cast<std::uint8_t*>(error.data()), error.capacity(),
+        &loaded, profile, error));
+    assert(error == aliasedResourceError && loaded == 777u);
+
     const char path[] = "/res/theme.json";
     entry.flags = RIN_RESOURCE_CATALOG_SOURCE_PATH |
                   RIN_RESOURCE_CATALOG_FLAG_IMMUTABLE;

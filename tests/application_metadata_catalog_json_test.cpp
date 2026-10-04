@@ -124,6 +124,15 @@ int main()
     assert(sourceSize == resourceJson.size());
     assert(output.generation == 9u && output.find("com.rinos.notes") != nullptr);
 
+    error = resourceJson;
+    const std::string aliasedResourceError = error;
+    sourceSize = 777u;
+    assert(!RinRuntime::ApplicationMetadataCatalogJson::parseResource(
+        &resourceCatalog, 7u, nullptr, nullptr,
+        reinterpret_cast<std::uint8_t*>(error.data()), error.capacity(),
+        &sourceSize, output, error));
+    assert(error == aliasedResourceError && sourceSize == 777u);
+
     RinResourceCatalogEntryV1 pathEntry = entry;
     pathEntry.flags = RIN_RESOURCE_CATALOG_SOURCE_PATH |
                       RIN_RESOURCE_CATALOG_FLAG_IMMUTABLE;
