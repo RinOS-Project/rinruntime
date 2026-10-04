@@ -119,6 +119,15 @@ int main() {
     assert(!backend.wait(&timeout_request, 1u, g_now, &ready));
     assert(ready.id == 0u && ready.events == 0u);
 
+    EventLoop::WaitRequest aliased_request = timeout_request;
+    const EventLoop::WaitRequest aliased_before = aliased_request;
+    auto* aliased_ready = reinterpret_cast<EventLoop::WaitResult*>(
+        &aliased_request);
+    assert(!backend.wait(&aliased_request, 1u, g_now, aliased_ready));
+    assert(aliased_request.id == aliased_before.id &&
+           aliased_request.nativeHandle == aliased_before.nativeHandle &&
+           aliased_request.events == aliased_before.events);
+
     const auto timeout_start = std::chrono::steady_clock::now();
     ready = {99u, EventLoop::WAIT_READABLE};
     assert(!backend.wait(&timeout_request, 1u, g_now + 2000000u, &ready));

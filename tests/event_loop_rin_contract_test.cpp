@@ -112,6 +112,15 @@ int main() {
     assert(ready.id == 0u && ready.events == 0u);
     g_malformed_wait_result = false;
 
+    RinRuntime::EventLoop::WaitRequest aliased = valid;
+    const RinRuntime::EventLoop::WaitRequest aliased_before = aliased;
+    auto* aliased_ready = reinterpret_cast<RinRuntime::EventLoop::WaitResult*>(
+        &aliased);
+    assert(!backend.wait(&aliased, 1u, g_now, aliased_ready));
+    assert(aliased.id == aliased_before.id &&
+           aliased.nativeHandle == aliased_before.nativeHandle &&
+           aliased.events == aliased_before.events);
+
     RinRuntime::EventLoop::WaitRequest invalid = {};
     invalid.id = 1u;
     invalid.nativeHandle = 0u;

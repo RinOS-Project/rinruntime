@@ -139,10 +139,15 @@ public:
               std::uint64_t deadline,
               EventLoop::WaitResult* ready) noexcept {
         if (ready == nullptr) return false;
+        if (count > EventLoop::kWaitCapacity ||
+            detail::eventLoopByteRangesOverlap(
+                requests, count * sizeof(EventLoop::WaitRequest), ready,
+                sizeof(*ready)))
+            return false;
         ready->id = 0u;
         ready->events = 0u;
         if (waitSet_ == RIN_HANDLE_INVALID ||
-            count > EventLoop::kWaitCapacity || !requestsValid(requests, count) ||
+            !requestsValid(requests, count) ||
             (count == 0u && deadline == UINT64_MAX))
             return false;
 

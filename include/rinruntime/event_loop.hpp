@@ -10,12 +10,33 @@
 #ifndef RINRUNTIME_EVENT_LOOP_HPP
 #define RINRUNTIME_EVENT_LOOP_HPP
 
+#include <cstddef>
 #include <cstdint>
 
 #include "cancellation.h"
 #include "event.hpp"
 
 namespace RinRuntime {
+
+namespace detail {
+
+inline bool eventLoopByteRangesOverlap(const void* left, std::size_t leftSize,
+                                       const void* right,
+                                       std::size_t rightSize) noexcept {
+    if (left == nullptr || right == nullptr || leftSize == 0u ||
+        rightSize == 0u)
+        return false;
+    const std::uintptr_t leftStart =
+        reinterpret_cast<std::uintptr_t>(left);
+    const std::uintptr_t rightStart =
+        reinterpret_cast<std::uintptr_t>(right);
+    const std::uintptr_t leftEnd = leftStart + leftSize;
+    const std::uintptr_t rightEnd = rightStart + rightSize;
+    if (leftEnd < leftStart || rightEnd < rightStart) return true;
+    return leftStart < rightEnd && rightStart < leftEnd;
+}
+
+} // namespace detail
 
 class EventLoop final {
 public:
