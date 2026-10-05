@@ -12,7 +12,7 @@ extern "C" {
 
 /* Includes the terminating NUL.  Callers may supply a larger buffer. */
 #define RINRUNTIME_KNOWN_FOLDER_PATH_MAX 512u
-#define RINRUNTIME_APPLICATION_ID_MAX 64u
+#define RINRUNTIME_APPLICATION_ID_MAX 64u /* bytes, excluding the NUL */
 
 typedef enum RinRuntimeKnownFolder {
     RINRUNTIME_KNOWN_FOLDER_HOME = 0,

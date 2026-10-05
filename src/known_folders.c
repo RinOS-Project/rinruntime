@@ -58,21 +58,25 @@ static int rinruntime_home_is_canonical(const char* home, size_t* length_out)
 static int rinruntime_application_id_is_valid(const char* value, size_t* length_out)
 {
     size_t index = 0u;
-    if (value == NULL || value[0] == '\0') return 0;
-    while (index < RINRUNTIME_APPLICATION_ID_MAX && value[index] != '\0') {
+    int previous_dot = 0;
+    if (value == NULL || value[0] == '\0' || value[0] == '.') return 0;
+    while (index <= RINRUNTIME_APPLICATION_ID_MAX) {
+        if (value[index] == '\0') {
+            if (index == 0u || previous_dot) return 0;
+            if (length_out != NULL) *length_out = index;
+            return 1;
+        }
+        if (index == RINRUNTIME_APPLICATION_ID_MAX) return 0;
         unsigned char character = (unsigned char)value[index];
         int allowed = (character >= 'a' && character <= 'z') ||
                       (character >= 'A' && character <= 'Z') ||
                       (character >= '0' && character <= '9') ||
                       character == '.' || character == '_' || character == '-';
-        if (!allowed) return 0;
+        if (!allowed || (character == '.' && previous_dot)) return 0;
+        previous_dot = character == '.';
         ++index;
     }
-    if (index == RINRUNTIME_APPLICATION_ID_MAX) return 0;
-    if ((index == 1u && value[0] == '.') ||
-        (index == 2u && value[0] == '.' && value[1] == '.')) return 0;
-    if (length_out != NULL) *length_out = index;
-    return 1;
+    return 0;
 }
 
 static const char* rinruntime_folder_suffix(RinRuntimeKnownFolder folder)
