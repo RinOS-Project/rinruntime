@@ -171,17 +171,22 @@ public:
     }
 
     int dispatch() const noexcept {
+        if (event_callback_in_flight_) return RIN_ERROR_BUSY;
         WindowEvent event;
         const int result = poll(&event);
         if (result > 0 && event_handler_) {
+            event_callback_in_flight_ = true;
 #if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
             try {
 #endif
-                return event_handler_(event) ? 1 : 0;
+                const int handled = event_handler_(event) ? 1 : 0;
+                event_callback_in_flight_ = false;
+                return handled;
 #if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
             } catch (...) {
                 /* The native event was already dequeued.  Do not let
                  * application code unwind through this noexcept adapter. */
+                event_callback_in_flight_ = false;
                 return RIN_ERROR_IO;
             }
 #endif
@@ -261,6 +266,7 @@ private:
 
     Handle handle_ = RIN_WINDOW_HANDLE_INVALID;
     EventHandler event_handler_;
+    mutable bool event_callback_in_flight_ = false;
     PaintHandler paint_handler_;
     PaintHandlerNoArgs paint_handler_no_args_;
     CompletionHandler completion_handler_;

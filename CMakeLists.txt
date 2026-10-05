@@ -253,6 +253,16 @@ if(RINRUNTIME_BUILD_TESTS)
         add_executable(rinruntime-window-abi-test tests/window_abi_compile_test.c)
         target_link_libraries(rinruntime-window-abi-test PRIVATE RinRuntime::RinRuntime)
         add_test(NAME rinruntime-window-abi COMMAND rinruntime-window-abi-test)
+        add_executable(rinruntime-window-callback-test
+                       tests/window_callback_contract_test.cpp)
+        target_include_directories(rinruntime-window-callback-test
+                                   PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include
+                                           ${CMAKE_CURRENT_SOURCE_DIR}/../../RinOS-SDK/include
+                                           ${CMAKE_CURRENT_SOURCE_DIR}/../aquamarine)
+        set_target_properties(rinruntime-window-callback-test
+                              PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES)
+        add_test(NAME rinruntime-window-callback
+                 COMMAND rinruntime-window-callback-test)
         add_library(rinruntime-render-context-abi-test OBJECT
                     tests/render_context_abi_compile_test.cpp)
         target_link_libraries(rinruntime-render-context-abi-test
