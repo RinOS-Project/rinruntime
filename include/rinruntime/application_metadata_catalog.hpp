@@ -26,7 +26,7 @@ struct ApplicationMetadataCatalog {
     std::vector<ApplicationMetadata> applications;
 
     bool valid() const {
-        if (generation == 0u ||
+        if (generation == 0u || generation == UINT64_MAX ||
             applications.size() > kApplicationMetadataCatalogMaxApplications)
             return false;
         for (std::size_t index = 0u; index < applications.size(); ++index) {

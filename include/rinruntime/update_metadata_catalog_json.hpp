@@ -98,7 +98,7 @@ public:
             const Value::Object& object = document.asObject();
             std::uint64_t generation = 0u;
             if (!readUnsigned(field(object, "generation"), generation) ||
-                generation == 0u) {
+                generation == 0u || generation == UINT64_MAX) {
                 error = "update catalog generation";
                 return false;
             }

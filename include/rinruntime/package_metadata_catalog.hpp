@@ -25,7 +25,7 @@ struct PackageMetadataCatalog {
     std::vector<PackageMetadata> packages;
 
     bool valid() const {
-        if (generation == 0u ||
+        if (generation == 0u || generation == UINT64_MAX ||
             packages.size() > kPackageMetadataCatalogMaxPackages)
             return false;
         for (std::size_t index = 0u; index < packages.size(); ++index) {

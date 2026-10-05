@@ -24,7 +24,7 @@ struct UpdateMetadataCatalog {
     std::vector<UpdateMetadata> updates;
 
     bool valid() const {
-        if (generation == 0u ||
+        if (generation == 0u || generation == UINT64_MAX ||
             updates.size() > kUpdateMetadataCatalogMaxUpdates)
             return false;
         for (std::size_t index = 0u; index < updates.size(); ++index) {

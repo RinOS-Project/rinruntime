@@ -60,6 +60,14 @@ int main()
     assert(error == "update catalog generation");
     assert(output.generation == 0u && output.updates.empty());
 
+    assert(!RinRuntime::UpdateMetadataCatalogJson::parse(
+        "{\"generation\":18446744073709551615,\"updates\":[]}",
+        output, error));
+    assert(error == "update catalog generation");
+    output.generation = UINT64_MAX;
+    assert(!output.valid());
+    output.generation = 0u;
+
     assert(RinRuntime::UpdateMetadataCatalogJson::parse(valid, output, error));
     output.updates.front().updateId = valid;
     const std::string aliasedUpdateId = output.updates.front().updateId;

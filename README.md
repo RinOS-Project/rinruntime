@@ -327,7 +327,9 @@ must be valid and sorted uniquely by package ID, and malformed or unordered
 snapshots clear the output. The catalog is repository-neutral: URLs,
 authentication, signatures, trust provisioning, artifact selection, installed
 roots, and install/launch authority remain private repository and installer
-owners.
+owners. Catalog generations must be neither zero nor `UINT64_MAX`; the
+terminal value is reserved so a wrapped snapshot identity cannot be accepted
+as a live catalog.
 
 `application_metadata.hpp` and `application_metadata_json.hpp` provide the
 same split for application descriptors. The public parser validates bounded
@@ -342,7 +344,9 @@ descriptors for ordinary applications and external tooling. Entries
 must be valid and sorted uniquely by application ID, and failed parsing clears
 the output. The catalog generation is only an opaque snapshot value; repository
 URLs, authentication, signatures, installed roots, trust provisioning, and
-launch authority remain private repository/installer/launcher owners.
+launch authority remain private repository/installer/launcher owners. The
+generation must be neither zero nor `UINT64_MAX`; the terminal value is
+reserved so a wrapped snapshot identity cannot be accepted as live metadata.
 Both descriptor and catalog JSON parsers reject an input `string_view` that
 overlaps existing caller-owned output or error-string storage before clearing
 either object. The alias returns `false` without changing the aliased state,
@@ -388,7 +392,9 @@ entry reuses `UpdateMetadata` artifact/version/digest validation, and the
 catalog requires sorted-unique update IDs with failure-atomic output. It does
 not authenticate a repository, select a download URL, verify a signature,
 stage bytes, or authorize installation/reboot; those remain private updater
-owners.
+owners. Update catalog generations must be neither zero nor `UINT64_MAX`; the
+terminal value is reserved so a wrapped snapshot identity cannot be accepted
+as a live update snapshot.
 
 The archive headers are public, backend-independent codec contracts.  The
 DEFLATE, standalone GZIP, strict ustar TAR, TAR.GZ, and ordinary ZIP readers consume

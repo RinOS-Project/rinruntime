@@ -110,6 +110,14 @@ int main()
     assert(error == "application catalog generation");
     assert(output.generation == 0u && output.applications.empty());
 
+    assert(!RinRuntime::ApplicationMetadataCatalogJson::parse(
+        "{\"generation\":18446744073709551615,\"applications\":[]}",
+        output, error));
+    assert(error == "application catalog generation");
+    output.generation = UINT64_MAX;
+    assert(!output.valid());
+    output.generation = 0u;
+
     const std::string resourceJson = R"json({
         "generation":9,
         "applications":[

@@ -54,6 +54,14 @@ int main()
     assert(error == "package catalog generation");
     assert(output.generation == 0u && output.packages.empty());
 
+    assert(!RinRuntime::PackageMetadataCatalogJson::parse(
+        "{\"generation\":18446744073709551615,\"packages\":[]}",
+        output, error));
+    assert(error == "package catalog generation");
+    output.generation = UINT64_MAX;
+    assert(!output.valid());
+    output.generation = 0u;
+
     assert(RinRuntime::PackageMetadataCatalogJson::parse(
         valid, output, error));
     output.packages.front().packageId = valid;
