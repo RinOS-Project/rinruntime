@@ -21,6 +21,26 @@ extern "C" int wnd_poll_native(RinRuntimeGuiHandle,
 
 extern "C" void wnd_close(RinRuntimeGuiHandle) {}
 
+static RinRuntimeGuiCompletionCallback completion_callback = nullptr;
+static void* completion_context = nullptr;
+
+extern "C" int wnd_set_compositor_completion_callback(
+    RinRuntimeGuiHandle, RinRuntimeGuiCompletionCallback callback,
+    void* context) {
+    completion_callback = callback;
+    completion_context = context;
+    return RIN_SUCCESS;
+}
+
+extern "C" int wnd_dispatch_compositor(std::uint32_t, std::uint32_t) {
+    if (!completion_callback) return 0;
+    RinRuntimeGuiCompletionV1 completion{};
+    completion.struct_size = sizeof(completion);
+    completion.version = RIN_SDK_STRUCT_VERSION_1;
+    completion_callback(&completion, completion_context);
+    return 1;
+}
+
 namespace RinRuntime {
 
 int beginNativeFrame(RinRuntimeGuiHandle) noexcept {
@@ -67,5 +87,17 @@ int main() {
     assert(nestedPaintResult == RIN_ERROR_BUSY);
     assert(window.paint() == RIN_SUCCESS);
     assert(paintCallbackCount == 2);
+
+    int completionCallbackCount = 0;
+    int nestedCompletionResult = RIN_SUCCESS;
+    window.onCompositorCompletion([&](const RinRuntimeGuiCompletionV1&) {
+        ++completionCallbackCount;
+        nestedCompletionResult = wnd_dispatch_compositor(0u, 1u);
+    });
+    assert(wnd_dispatch_compositor(0u, 1u) == 1);
+    assert(completionCallbackCount == 1);
+    assert(nestedCompletionResult == 1);
+    assert(wnd_dispatch_compositor(0u, 1u) == 1);
+    assert(completionCallbackCount == 2);
     return 0;
 }

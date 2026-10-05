@@ -246,7 +246,10 @@ private:
     static void dispatchCompletion(
         const RinRuntimeGuiCompletionV1* completion, void* context) {
         auto* window = static_cast<Window*>(context);
-        if (!window || !completion || !window->completion_handler_) return;
+        if (!window || !completion || !window->completion_handler_ ||
+            window->completion_callback_in_flight_)
+            return;
+        window->completion_callback_in_flight_ = true;
 #if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
         try {
 #endif
@@ -257,6 +260,7 @@ private:
              * consume application callback failure at the public boundary. */
         }
 #endif
+        window->completion_callback_in_flight_ = false;
     }
 
     void updateCompletionCallback() noexcept {
@@ -274,6 +278,7 @@ private:
     PaintHandlerNoArgs paint_handler_no_args_;
     bool paint_callback_in_flight_ = false;
     CompletionHandler completion_handler_;
+    bool completion_callback_in_flight_ = false;
 };
 
 } // namespace RinRuntime
