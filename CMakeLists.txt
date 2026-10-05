@@ -249,6 +249,9 @@ if(RINRUNTIME_BUILD_TESTS)
     add_test(NAME rinruntime-compositor-request-identity-boundary
              COMMAND ${Python3_EXECUTABLE}
                      ${CMAKE_CURRENT_SOURCE_DIR}/tests/compositor_request_identity_boundary_test.py)
+    add_test(NAME rinruntime-audio-service-request-identity-boundary
+             COMMAND ${Python3_EXECUTABLE}
+                     ${CMAKE_CURRENT_SOURCE_DIR}/tests/audio_service_request_identity_boundary_test.py)
     add_executable(rinruntime-portal-test tests/portal_contract_test.c)
     target_link_libraries(rinruntime-portal-test PRIVATE RinRuntime::RinRuntime)
     add_test(NAME rinruntime-portal COMMAND rinruntime-portal-test)

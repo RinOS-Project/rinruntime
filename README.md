@@ -689,3 +689,8 @@ authority remain private.
 and asynchronous public window RPC request allocators. Compositor transport
 and kernel/window authority remain private adapters behind the public window
 API.
+
+`rin_audio_service_client.c` reserves zero and `UINT64_MAX` in the public
+audio service request allocator. Audio format/ring/client contracts remain
+public, while audiod ownership and physical audio backend authority remain
+private.

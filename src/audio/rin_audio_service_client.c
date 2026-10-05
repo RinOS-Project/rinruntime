@@ -41,6 +41,11 @@ typedef struct ClientState {
 static ClientState g_client = {-1, 1u, 0u, {{0}}};
 static volatile int g_client_io_lock = 0;
 
+static int audio_request_id_valid(uint64_t request_id)
+{
+    return request_id != 0u && request_id != UINT64_MAX;
+}
+
 static void client_io_lock(void)
 {
     while (__sync_lock_test_and_set(&g_client_io_lock, 1) != 0)
@@ -152,8 +157,11 @@ static void header_init(RinAudioServiceMessageHeaderV1* header,
     header->magic = RIN_AUDIO_SERVICE_PROTOCOL_MAGIC;
     header->version = RIN_AUDIO_SERVICE_PROTOCOL_VERSION;
     header->operation = operation;
+    if (!audio_request_id_valid(g_client.next_request_id))
+        g_client.next_request_id = 1u;
     header->request_id = g_client.next_request_id++;
-    if (g_client.next_request_id == 0u) g_client.next_request_id = 1u;
+    if (!audio_request_id_valid(g_client.next_request_id))
+        g_client.next_request_id = 1u;
     header->stream_handle = stream_handle;
     header->payload_bytes = payload_bytes;
 }
