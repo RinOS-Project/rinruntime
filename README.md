@@ -535,7 +535,11 @@ The public session-recovery serializer and resolver apply the same boundary:
 snapshot payloads, wire images, metadata, restored payloads, and size outputs
 must use separate caller-owned storage. An alias is rejected before state is
 cleared, so session recovery remains a bounded public record adapter rather
-than a filesystem, crashd, or authenticated launch owner.
+than a filesystem, crashd, or authenticated launch owner. Authenticated
+package generations and snapshot generations must be neither zero nor
+`UINT64_MAX`; the terminal value is reserved for exhaustion. Document
+generation remains an application document/version comparison, and saved time
+keeps its separate nonzero timestamp contract.
 
 The standalone `rincompression/deflate.hpp` header provides the generic
 bounded deterministic stored-DEFLATE encoder. `rinruntime/archive_deflate.hpp`

@@ -111,6 +111,7 @@ int rinruntime_session_recovery_identity_valid(
     return identity != NULL && identity->struct_size == sizeof(*identity) &&
            identity->version == RINRUNTIME_SESSION_RECOVERY_VERSION &&
            identity->reserved0 == 0u && identity->package_generation != 0u &&
+           identity->package_generation != UINT64_MAX &&
            recovery_nonzero(identity->application_id,
                             sizeof(identity->application_id)) &&
            recovery_nonzero(identity->package_digest,
@@ -184,7 +185,9 @@ static int recovery_snapshot_valid(
            rinruntime_session_recovery_identity_valid(&snapshot->identity) &&
            recovery_nonzero(snapshot->document_id,
                             sizeof(snapshot->document_id)) &&
-           snapshot->snapshot_generation != 0u && snapshot->saved_at_ns != 0u &&
+           snapshot->snapshot_generation != 0u &&
+           snapshot->snapshot_generation != UINT64_MAX &&
+           snapshot->saved_at_ns != 0u &&
            snapshot->payload_size <= RINRUNTIME_SESSION_RECOVERY_PAYLOAD_MAX &&
            (snapshot->payload_size == 0u || snapshot->payload != NULL) &&
            snapshot->reserved0 == 0u && snapshot->reserved[0] == 0u &&
@@ -223,7 +226,9 @@ static int recovery_metadata_valid(
            rinruntime_session_recovery_identity_valid(&metadata->identity) &&
            recovery_nonzero(metadata->document_id,
                             sizeof(metadata->document_id)) &&
-           metadata->snapshot_generation != 0u && metadata->saved_at_ns != 0u &&
+           metadata->snapshot_generation != 0u &&
+           metadata->snapshot_generation != UINT64_MAX &&
+           metadata->saved_at_ns != 0u &&
            metadata->payload_size <= RINRUNTIME_SESSION_RECOVERY_PAYLOAD_MAX &&
            metadata->reserved0 == 0u && metadata->reserved[0] == 0u &&
            metadata->reserved[1] == 0u;
