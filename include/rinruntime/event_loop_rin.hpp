@@ -63,8 +63,15 @@ private:
                 (request.events & ~static_cast<std::uint32_t>(
                                       EventLoop::WAIT_EVENTS_ALL)) != 0u)
                 return false;
-            for (Size prior = 0u; prior < index; ++prior)
+            for (Size prior = 0u; prior < index; ++prior) {
                 if (requests[prior].id == request.id) return false;
+                /* The SDK wait-set owner uses the opaque handle as the
+                 * readiness identity. Two tags for one handle would make a
+                 * returned index ambiguous; reject it before mutating the
+                 * target-side item list. */
+                if (requests[prior].nativeHandle == request.nativeHandle)
+                    return false;
+            }
         }
         return true;
     }

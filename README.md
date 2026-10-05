@@ -150,8 +150,9 @@ adapter. The adapter has compile-time checks against the public
 cannot silently drift into different masks. The EventLoop model and both
 userspace adapters are public runtime; the kernel owns only the wait-set
 syscall and IPC readiness producers. Direct adapter callers also get
-fail-closed validation for zero handles, unsupported event bits, and duplicate
-wait IDs before any wait-set items are published. Both deadline adapters also
+fail-closed validation for zero handles, unsupported event bits, duplicate wait
+IDs, and duplicate opaque handles before any wait-set items are published. Both
+deadline adapters also
 reject a monotonic-clock rollback before publishing a new SDK wait-set item
 list and before recomputing a timeout, so a stale deadline cannot become an
 unbounded sleep after a repeated or interrupted wait. The SDK adapter repeats
