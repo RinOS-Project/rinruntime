@@ -63,6 +63,19 @@ using ArchiveContainerSinkFunction = bool (*)(
  * public codec layer.
  */
 class ArchiveContainerReader final {
+private:
+    mutable bool sinkInFlight_ = false;
+
+    class SinkInvocationGuard final {
+        bool& flag_;
+
+    public:
+        explicit SinkInvocationGuard(bool& flag) : flag_(flag) {
+            flag_ = true;
+        }
+        ~SinkInvocationGuard() { flag_ = false; }
+    };
+
 public:
     ArchiveContainerReader() = default;
 
@@ -75,6 +88,8 @@ public:
         const std::uint8_t* bytes, std::size_t size,
         ArchiveDeflateDeadlineFunction deadline, void* deadlineContext)
     {
+        if (sinkInFlight_)
+            return ArchiveContainerResult::Malformed;
         clear();
         if (bytes == nullptr || size == 0u)
             return ArchiveContainerResult::InvalidArgument;
@@ -243,6 +258,9 @@ public:
     {
         if (index >= entries_.size() || sink == nullptr)
             return ArchiveContainerResult::InvalidArgument;
+        if (sinkInFlight_)
+            return ArchiveContainerResult::Malformed;
+        SinkInvocationGuard sinkGuard(sinkInFlight_);
 #if defined(__cpp_exceptions) || defined(_CPPUNWIND)
         try {
 #endif
@@ -390,6 +408,9 @@ public:
     {
         if (index >= entries_.size() || sink == nullptr)
             return ArchiveContainerResult::InvalidArgument;
+        if (sinkInFlight_)
+            return ArchiveContainerResult::Malformed;
+        SinkInvocationGuard sinkGuard(sinkInFlight_);
 #if defined(__cpp_exceptions) || defined(_CPPUNWIND)
         try {
 #endif
@@ -441,6 +462,8 @@ public:
 
     void clear()
     {
+        if (sinkInFlight_)
+            return;
         kind_ = ArchiveContainerKind::Unknown;
         reader_.emplace<std::monostate>();
         stream_.clear();

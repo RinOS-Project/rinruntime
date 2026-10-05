@@ -83,6 +83,28 @@ static bool collectSink(void* context, const std::uint8_t* bytes,
     return true;
 }
 
+struct ReentrantContainerSinkContext {
+    RinRuntime::ArchiveContainerReader* reader = nullptr;
+    RinRuntime::ArchiveContainerResult nestedResult =
+        RinRuntime::ArchiveContainerResult::Ok;
+    RinRuntime::ArchiveContainerResult parseResult =
+        RinRuntime::ArchiveContainerResult::Ok;
+};
+
+static bool reentrantContainerSink(void* opaque, const std::uint8_t* bytes,
+                                   std::size_t size)
+{
+    auto* context = static_cast<ReentrantContainerSinkContext*>(opaque);
+    if (context == nullptr || context->reader == nullptr ||
+        (bytes == nullptr && size != 0u))
+        return false;
+    context->nestedResult = context->reader->readEntryToSink(
+        0u, &reentrantContainerSink, context);
+    context->parseResult = context->reader->parse(nullptr, 0u);
+    context->reader->clear();
+    return true;
+}
+
 static std::string statelessSinkOutput;
 
 static bool collectStatelessSink(void*, const std::uint8_t* bytes,
@@ -1131,6 +1153,18 @@ int main()
     std::string streamed;
     assert(reader.readEntryToSink(0u, &collectSink, &streamed) ==
            RinRuntime::ArchiveContainerResult::Ok && streamed == "hello");
+    ReentrantContainerSinkContext reentrantSinkContext;
+    reentrantSinkContext.reader = &reader;
+    assert(reader.readEntryToSink(0u, &reentrantContainerSink,
+                                  &reentrantSinkContext) ==
+           RinRuntime::ArchiveContainerResult::Ok);
+    assert(reentrantSinkContext.nestedResult ==
+               RinRuntime::ArchiveContainerResult::Malformed &&
+           reentrantSinkContext.parseResult ==
+               RinRuntime::ArchiveContainerResult::Malformed);
+    assert(reader.kind() == RinRuntime::ArchiveContainerKind::Zip &&
+           reader.readEntry(0u, output) ==
+               RinRuntime::ArchiveContainerResult::Ok && output == "hello");
     statelessSinkOutput.clear();
     assert(reader.readEntryToSink(0u, &collectStatelessSink, nullptr) ==
            RinRuntime::ArchiveContainerResult::Ok &&
