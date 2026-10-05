@@ -51,7 +51,8 @@ static inline int rinruntime_setting_provenance_init(
 {
     if (output == NULL || source_mask == 0u ||
         (source_mask & ~RINRUNTIME_SETTING_SOURCE_MASK) != 0u ||
-        (mutable_mask & ~source_mask) != 0u || generation == 0u)
+        (mutable_mask & ~source_mask) != 0u || generation == 0u ||
+        generation == UINT64_MAX)
         return 0;
     output->struct_size = (uint32_t)sizeof(*output);
     output->version = RINRUNTIME_SETTING_PROVENANCE_VERSION;
@@ -68,7 +69,8 @@ static inline int rinruntime_setting_provenance_valid(
 {
     return value != NULL && value->struct_size >= sizeof(*value) &&
            value->version == RINRUNTIME_SETTING_PROVENANCE_VERSION &&
-           value->generation != 0u && value->source_mask != 0u &&
+           value->generation != 0u && value->generation != UINT64_MAX &&
+           value->source_mask != 0u &&
            (value->source_mask & ~RINRUNTIME_SETTING_SOURCE_MASK) == 0u &&
            (value->mutable_mask & ~value->source_mask) == 0u &&
            value->effective_source ==

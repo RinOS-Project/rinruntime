@@ -616,3 +616,8 @@ The public `ArchiveXzReader` rejects non-minimal XZ VLI encodings as malformed
 input. XZ VLI values are required to use the minimum number of bytes; this
 check is part of the bounded envelope inspector and does not add a decoder or
 private archive owner to the public runtime.
+
+`setting_provenance.h` reserves both zero and `UINT64_MAX` for the public
+settings provenance generation.  A wrapped generation therefore cannot be
+accepted as a live user/administrator/hardware layer, while the settings
+presenter, persistence, and privileged policy owners remain private adapters.
