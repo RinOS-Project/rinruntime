@@ -46,6 +46,23 @@ int main() {
     Event ready_event = {};
     ready_event.type = EventType::Close;
 
+    EventLoop event_validation_loop;
+    char composition[] = "x";
+    Event invalid_composition = {};
+    invalid_composition.type = EventType::TextComposition;
+    invalid_composition.compositionText = composition;
+    invalid_composition.compositionSize =
+        EventLoop::kMaxCompositionBytes + 1u;
+    assert(!event_validation_loop.post(invalid_composition));
+    invalid_composition.compositionSize = 1u;
+    invalid_composition.compositionSelectionEnd = 2u;
+    assert(!event_validation_loop.post(invalid_composition));
+    invalid_composition.compositionSelectionEnd = 1u;
+    assert(event_validation_loop.post(invalid_composition));
+    Event validation_output = {};
+    assert(event_validation_loop.runOne(0u, &validation_output));
+    assert(validation_output.type == EventType::TextComposition);
+
     assert(loop.scheduleAt(UINT64_MAX, ready_event) == 0u);
     assert(loop.scheduleAt(g_now + 1u, ready_event) != 0u);
     Event output = {};
