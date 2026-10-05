@@ -640,3 +640,7 @@ hotplug, and driver ownership remain private.
 application identity policy.  The policy remains an identity comparison
 helper for ordinary applications; authenticated launch, storage roots, and
 filesystem authority remain private owners.
+
+`tls_client_certificate.h` rejects both zero and `UINT64_MAX` request and
+connection generations before the public callback transport binds.  Certificate
+and signer ownership, private keys, and keyring authority remain private.

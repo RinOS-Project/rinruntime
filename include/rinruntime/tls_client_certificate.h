@@ -102,7 +102,9 @@ static inline int rinruntime_tls_client_certificate_request_valid(
 {
     if (request == NULL || request->struct_size < sizeof(*request) ||
         request->version != RINRUNTIME_TLS_CLIENT_CERTIFICATE_VERSION ||
-        request->request_id == 0u || request->connection_generation == 0u ||
+        request->request_id == 0u || request->request_id == UINT64_MAX ||
+        request->connection_generation == 0u ||
+        request->connection_generation == UINT64_MAX ||
         !rinruntime_tls_client_certificate_list_valid(
             request->certificate_list, request->certificate_list_size) ||
         request->signer_capability_size !=

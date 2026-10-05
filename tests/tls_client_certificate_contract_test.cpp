@@ -120,6 +120,12 @@ int main() {
     };
     SignContext context { capability[0], request.request_id,
                           request.connection_generation };
+    RinRuntimeTlsClientCertificateRequestV1 terminal_request = request;
+    terminal_request.request_id = UINT64_MAX;
+    assert(!rinruntime_tls_client_certificate_request_valid(&terminal_request));
+    terminal_request = request;
+    terminal_request.connection_generation = UINT64_MAX;
+    assert(!rinruntime_tls_client_certificate_request_valid(&terminal_request));
     RinRuntime::TlsClientCertificateTransport transport;
     assert(transport.bind(request, sign, &context));
     assert(transport.state() ==
