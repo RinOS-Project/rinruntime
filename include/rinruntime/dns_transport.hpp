@@ -10,6 +10,7 @@
 #if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
 #    include <new>
 #endif
+#include <limits>
 #include <string>
 #include <utility>
 
@@ -218,6 +219,13 @@ public:
     bool exchange(const std::uint8_t* query, std::size_t query_length,
                   std::uint8_t* response, std::size_t response_capacity,
                   std::size_t* response_length) {
+        if (byteRangesOverlap(query, query_length, response,
+                              response_capacity) ||
+            byteRangesOverlap(query, query_length, response_length,
+                              sizeof(*response_length)) ||
+            byteRangesOverlap(response, response_capacity, response_length,
+                              sizeof(*response_length)))
+            return false;
         if (response_length != nullptr) *response_length = 0u;
         if (!bound_ || in_flight_ || exchange_ == nullptr || query == nullptr ||
             query_length == 0u || query_length > kMaxQueryBytes ||
@@ -259,6 +267,28 @@ private:
     void* context_ = nullptr;
     bool in_flight_ = false;
     bool bound_ = false;
+
+    static bool byteRangesOverlap(const void* left, std::size_t left_size,
+                                  const void* right,
+                                  std::size_t right_size) noexcept {
+        if (left == nullptr || right == nullptr || left_size == 0u ||
+            right_size == 0u)
+            return false;
+        const std::uintptr_t left_begin =
+            reinterpret_cast<std::uintptr_t>(left);
+        const std::uintptr_t right_begin =
+            reinterpret_cast<std::uintptr_t>(right);
+        const std::uintptr_t max_value =
+            std::numeric_limits<std::uintptr_t>::max();
+        if (left_begin > max_value - static_cast<std::uintptr_t>(left_size) ||
+            right_begin > max_value - static_cast<std::uintptr_t>(right_size))
+            return true;
+        const std::uintptr_t left_end =
+            left_begin + static_cast<std::uintptr_t>(left_size);
+        const std::uintptr_t right_end =
+            right_begin + static_cast<std::uintptr_t>(right_size);
+        return left_begin < right_end && right_begin < left_end;
+    }
 
     static int invokeExchange(
         DnsTransportExchangeFunction exchange, void* context,

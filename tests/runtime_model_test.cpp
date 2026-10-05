@@ -146,6 +146,32 @@ int main() {
                                   &dns_response_length));
     assert(dns_response_length == 0u);
     for (std::uint8_t byte : dns_response) assert(byte == 0u);
+
+    std::uint8_t aliased_dns_storage[4u] = {0xa1u, 0xa2u, 0xa3u, 0xa4u};
+    const std::uint8_t aliased_dns_before[4u] = {0xa1u, 0xa2u, 0xa3u, 0xa4u};
+    std::size_t aliased_dns_length = 0x13579bdfu;
+    assert(!dns_session.exchange(aliased_dns_storage, 1u,
+                                 aliased_dns_storage,
+                                 sizeof(aliased_dns_storage),
+                                 &aliased_dns_length));
+    assert(aliased_dns_length == 0x13579bdfu);
+    for (std::size_t index = 0u; index < sizeof(aliased_dns_storage); ++index)
+        assert(aliased_dns_storage[index] == aliased_dns_before[index]);
+
+    union {
+        std::uint8_t bytes[sizeof(std::size_t)];
+        std::size_t length;
+    } aliased_dns_length_storage = {};
+    aliased_dns_length_storage.length = 0x2468ace0u;
+    const auto aliased_dns_length_before = aliased_dns_length_storage;
+    assert(!dns_session.exchange(aliased_dns_length_storage.bytes,
+                                 sizeof(aliased_dns_length_storage.bytes),
+                                 dns_response, sizeof(dns_response),
+                                 &aliased_dns_length_storage.length));
+    assert(aliased_dns_length_storage.length ==
+           aliased_dns_length_before.length);
+    assert(aliased_dns_length_storage.bytes[0] ==
+           aliased_dns_length_before.bytes[0]);
     assert(dns_session.bound());
 
     static_assert(RIN_I18N_RMSG_VERSION == 1u,
