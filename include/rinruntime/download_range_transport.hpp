@@ -72,6 +72,7 @@ private:
     DownloadRangeRequest request_{};
     std::uint64_t remaining_ = 0u;
     bool rangeExhausted_ = false;
+    bool abortInFlight_ = false;
     State state_ = State::Idle;
 
     static void scrubBuffer(std::uint8_t* buffer, std::size_t capacity) {
@@ -146,7 +147,10 @@ private:
     }
 
     void abortOwner() noexcept {
-        if (state_ != State::Streaming || ops_.abort == nullptr) return;
+        if (state_ != State::Streaming || ops_.abort == nullptr ||
+            abortInFlight_)
+            return;
+        abortInFlight_ = true;
 #if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
         try {
 #endif
@@ -157,6 +161,7 @@ private:
              * decided to fail.  Do not leak an owner exception to the caller. */
         }
 #endif
+        abortInFlight_ = false;
     }
 
     void cancelAndAbort() noexcept {

@@ -216,6 +216,7 @@ struct ReentrantOwner {
     unsigned cancelCalls = 0u;
     unsigned abortCalls = 0u;
     bool abortOnRead = false;
+    bool reenterAbort = false;
     bool abortOnSecondCancellation = false;
 };
 
@@ -258,7 +259,11 @@ static int reentrantCancellation(void* opaque) {
 }
 
 static void reentrantAbort(void* opaque) {
-    ++static_cast<ReentrantOwner*>(opaque)->abortCalls;
+    auto* owner = static_cast<ReentrantOwner*>(opaque);
+    ++owner->abortCalls;
+    if (owner->reenterAbort && owner->abortCalls == 1u &&
+        owner->adapter != nullptr)
+        owner->adapter->abort();
 }
 
 static int cancelAfterBegin(void* opaque) {
@@ -533,6 +538,23 @@ int main() {
            RinRuntime::DownloadRangeTransportAdapter::State::Idle);
     assert(reentrantReadOwner.readCalls == 1u &&
            reentrantReadOwner.abortCalls == 1u);
+
+    ReentrantOwner reentrantAbortOwner;
+    RinRuntime::DownloadRangeTransportOpsV1 reentrantAbortOps;
+    reentrantAbortOps.structSize = sizeof(reentrantAbortOps);
+    reentrantAbortOps.context = &reentrantAbortOwner;
+    reentrantAbortOps.begin = reentrantBegin;
+    reentrantAbortOps.read = reentrantRead;
+    reentrantAbortOps.abort = reentrantAbort;
+    RinRuntime::DownloadRangeTransportAdapter reentrantAbortAdapter;
+    reentrantAbortOwner.adapter = &reentrantAbortAdapter;
+    reentrantAbortOwner.reenterAbort = true;
+    assert(reentrantAbortAdapter.bind(reentrantAbortOps));
+    assert(reentrantAbortAdapter.begin(request, response));
+    reentrantAbortAdapter.abort();
+    assert(reentrantAbortAdapter.state() ==
+           RinRuntime::DownloadRangeTransportAdapter::State::Idle);
+    assert(reentrantAbortOwner.abortCalls == 1u);
 
     ReentrantOwner reentrantBeginOwner;
     RinRuntime::DownloadRangeTransportOpsV1 reentrantBeginOps;
