@@ -211,6 +211,7 @@ public:
     int paint() noexcept {
         if (!valid() || (!paint_handler_ && !paint_handler_no_args_))
             return RIN_ERROR_INVALID_ARGUMENT;
+        if (paint_callback_in_flight_) return RIN_ERROR_BUSY;
         const int begin_result = beginNativeFrame(handle_);
         if (begin_result != RIN_SUCCESS) return begin_result;
         AqSurface* surface = currentRenderSurface();
@@ -218,6 +219,7 @@ public:
             (void)endNativeFrame();
             return RIN_ERROR_ABI_MISMATCH;
         }
+        paint_callback_in_flight_ = true;
         bool callback_failed = false;
 #if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
         try {
@@ -229,6 +231,7 @@ public:
             callback_failed = true;
         }
 #endif
+        paint_callback_in_flight_ = false;
         const int end_result = endNativeFrame();
         return callback_failed ? RIN_ERROR_IO : end_result;
     }
@@ -269,6 +272,7 @@ private:
     mutable bool event_callback_in_flight_ = false;
     PaintHandler paint_handler_;
     PaintHandlerNoArgs paint_handler_no_args_;
+    bool paint_callback_in_flight_ = false;
     CompletionHandler completion_handler_;
 };
 

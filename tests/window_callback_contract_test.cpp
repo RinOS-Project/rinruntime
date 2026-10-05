@@ -21,6 +21,23 @@ extern "C" int wnd_poll_native(RinRuntimeGuiHandle,
 
 extern "C" void wnd_close(RinRuntimeGuiHandle) {}
 
+namespace RinRuntime {
+
+int beginNativeFrame(RinRuntimeGuiHandle) noexcept {
+    return RIN_SUCCESS;
+}
+
+AqSurface* currentRenderSurface() noexcept {
+    static AqSurface surface{};
+    return &surface;
+}
+
+int endNativeFrame() noexcept {
+    return RIN_SUCCESS;
+}
+
+} // namespace RinRuntime
+
 int main() {
     RinRuntime::Window window("callback-test", 0, 0, 320, 200);
     assert(window.valid());
@@ -38,5 +55,17 @@ int main() {
     assert(nestedResult == RIN_ERROR_BUSY);
     assert(window.dispatch() == 1);
     assert(callbackCount == 2);
+
+    int paintCallbackCount = 0;
+    int nestedPaintResult = RIN_SUCCESS;
+    window.onPaint([&] {
+        ++paintCallbackCount;
+        nestedPaintResult = window.paint();
+    });
+    assert(window.paint() == RIN_SUCCESS);
+    assert(paintCallbackCount == 1);
+    assert(nestedPaintResult == RIN_ERROR_BUSY);
+    assert(window.paint() == RIN_SUCCESS);
+    assert(paintCallbackCount == 2);
     return 0;
 }
