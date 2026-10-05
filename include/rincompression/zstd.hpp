@@ -774,12 +774,20 @@ static inline ZstdResult decodeRleSequences(
 {
     if (position >= blockEnd) return ZstdResult::Malformed;
     const std::uint8_t countHeader = bytes[position++];
-    std::size_t sequenceCount = countHeader;
-    if (countHeader >= 128u) {
+    std::size_t sequenceCount = 0u;
+    if (countHeader < 128u) {
+        sequenceCount = countHeader;
+    } else if (countHeader < 255u) {
         if (position >= blockEnd) return ZstdResult::Malformed;
-        sequenceCount = (static_cast<std::size_t>(countHeader) - 128u) *
-                            256u +
-                        static_cast<std::size_t>(bytes[position++]);
+        sequenceCount =
+            (static_cast<std::size_t>(countHeader) - 128u) * 256u +
+            static_cast<std::size_t>(bytes[position++]);
+    } else {
+        if (blockEnd - position < 2u) return ZstdResult::Malformed;
+        sequenceCount = static_cast<std::size_t>(bytes[position]) |
+                        (static_cast<std::size_t>(bytes[position + 1u]) << 8u);
+        position += 2u;
+        sequenceCount += 0x7f00u;
     }
     if (sequenceCount == 0u || sequenceCount > 256u)
         return sequenceCount > 256u ? ZstdResult::Limit
