@@ -12,6 +12,10 @@ int rinruntime_portal_token_validate(
     int nonzero = 0;
     if (!token || token->struct_size < sizeof(*token) ||
         token->version != RINRUNTIME_PORTAL_TOKEN_VERSION ||
+        token->owner_id == 0u || token->owner_id == UINT64_MAX ||
+        token->generation == 0u || token->generation == UINT64_MAX ||
+        expected_owner == 0u || expected_owner == UINT64_MAX ||
+        expected_generation == 0u || expected_generation == UINT64_MAX ||
         token->owner_id != expected_owner ||
         token->generation != expected_generation ||
         (required_rights & ~RINRUNTIME_PORTAL_RIGHT_KNOWN) != 0u ||
@@ -30,6 +34,7 @@ int rinruntime_portal_request_validate(
     if (request == NULL || request->struct_size != sizeof(*request) ||
         request->version != RINRUNTIME_PORTAL_IPC_PROTOCOL_VERSION ||
         request->operation == 0u || request->request_id == 0u ||
+        request->request_id == UINT64_MAX ||
         request->timeout_ns == 0u ||
         request->timeout_ns > RINRUNTIME_PORTAL_MAX_TIMEOUT_NS ||
         (request->flags & ~RINRUNTIME_PORTAL_REQUEST_FLAG_CANCELABLE) != 0u ||

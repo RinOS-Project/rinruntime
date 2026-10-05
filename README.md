@@ -654,3 +654,7 @@ TLS verification, and network authority remain private.
 session, capability, and chooser identities at the public frame boundary.  The
 wire codec remains usable by application-owned adapters; serial probing,
 driver, portal, and physical-device authority remain private.
+
+`portal.h` rejects terminal owner/generation values and terminal request IDs
+before a public opaque capability request is accepted.  File Portal brokering,
+filesystem access, and authority ownership remain private.
