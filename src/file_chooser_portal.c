@@ -80,6 +80,14 @@ static int chooser_result_valid(RinRuntimeFileChooserResult result)
            result == RINRUNTIME_FILE_CHOOSER_COMMITTED_UNSYNCED;
 }
 
+/* Zero is the uninitialized value and UINT64_MAX is reserved as the
+ * terminal/sentinel request identity. Neither value may cross the public
+ * chooser wire contract. */
+static int chooser_request_id_valid(uint64_t request_id)
+{
+    return request_id != 0u && request_id != UINT64_MAX;
+}
+
 int rinruntime_file_chooser_save_capability_valid(
     const RinRuntimeFileChooserSaveCapabilityV1* capability)
 {
@@ -181,7 +189,7 @@ RinRuntimeFileChooserResult rinruntime_file_chooser_request_encode(
     size_t frame_size;
     if (frame_size_out != NULL) *frame_size_out = 0u;
     chooser_zero(frame_out, frame_capacity);
-    if (request_id == 0u || !chooser_request_valid(request) ||
+    if (!chooser_request_id_valid(request_id) || !chooser_request_valid(request) ||
         frame_out == NULL || frame_size_out == NULL ||
         request->suggested_name_size > SIZE_MAX - sizeof(header)) {
         return RINRUNTIME_FILE_CHOOSER_INVALID_ARGUMENT;
@@ -222,7 +230,8 @@ RinRuntimeFileChooserResult rinruntime_file_chooser_request_decode(
     if (header.frame.magic != RINRUNTIME_FILE_CHOOSER_MAGIC ||
         header.frame.version != RINRUNTIME_FILE_CHOOSER_VERSION ||
         header.frame.operation != RINRUNTIME_FILE_CHOOSER_OPERATION_REQUEST ||
-        header.frame.request_id == 0u || header.frame.frame_size != frame_size ||
+        !chooser_request_id_valid(header.frame.request_id) ||
+        header.frame.frame_size != frame_size ||
         header.reserved != 0u ||
         header.suggested_name_size > RINRUNTIME_FILE_CHOOSER_MAX_SUGGESTED_NAME ||
         header.suggested_name_size != frame_size - sizeof(header)) {
@@ -253,7 +262,8 @@ RinRuntimeFileChooserResult rinruntime_file_chooser_grant_encode(
     const RinFilePortalTokenV1* token, RinRuntimeFileChooserGrantV1* grant_out)
 {
     if (grant_out != NULL) chooser_zero(grant_out, sizeof(*grant_out));
-    if (grant_out == NULL || request_id == 0u || !chooser_result_valid(result) ||
+    if (grant_out == NULL || !chooser_request_id_valid(request_id) ||
+        !chooser_result_valid(result) ||
         (result == RINRUNTIME_FILE_CHOOSER_OK &&
          !chooser_token_structural_valid(token)) ||
         (result != RINRUNTIME_FILE_CHOOSER_OK && token != NULL)) {
@@ -283,7 +293,8 @@ RinRuntimeFileChooserResult rinruntime_file_chooser_grant_decode(
         grant->frame.magic != RINRUNTIME_FILE_CHOOSER_MAGIC ||
         grant->frame.version != RINRUNTIME_FILE_CHOOSER_VERSION ||
         grant->frame.operation != RINRUNTIME_FILE_CHOOSER_OPERATION_GRANT ||
-        grant->frame.frame_size != sizeof(*grant) || grant->frame.request_id == 0u ||
+        grant->frame.frame_size != sizeof(*grant) ||
+        !chooser_request_id_valid(grant->frame.request_id) ||
         grant->reserved != 0u) {
         return RINRUNTIME_FILE_CHOOSER_MALFORMED_REPLY;
     }
@@ -324,7 +335,8 @@ RinRuntimeFileChooserResult rinruntime_file_chooser_save_destination_grant_encod
     RinRuntimeFileChooserSaveDestinationGrantV1* grant_out)
 {
     if (grant_out != NULL) chooser_zero(grant_out, sizeof(*grant_out));
-    if (grant_out == NULL || request_id == 0u || !chooser_result_valid(result) ||
+    if (grant_out == NULL || !chooser_request_id_valid(request_id) ||
+        !chooser_result_valid(result) ||
         (result == RINRUNTIME_FILE_CHOOSER_OK &&
          !rinruntime_file_chooser_save_capability_valid(capability)) ||
         (result != RINRUNTIME_FILE_CHOOSER_OK && capability != NULL)) {
@@ -357,7 +369,8 @@ RinRuntimeFileChooserResult rinruntime_file_chooser_save_destination_grant_decod
         grant->frame.version != RINRUNTIME_FILE_CHOOSER_VERSION ||
         grant->frame.operation !=
             RINRUNTIME_FILE_CHOOSER_OPERATION_SAVE_DESTINATION_GRANT ||
-        grant->frame.frame_size != sizeof(*grant) || grant->frame.request_id == 0u ||
+        grant->frame.frame_size != sizeof(*grant) ||
+        !chooser_request_id_valid(grant->frame.request_id) ||
         grant->reserved != 0u) {
         return RINRUNTIME_FILE_CHOOSER_MALFORMED_REPLY;
     }
@@ -380,7 +393,7 @@ RinRuntimeFileChooserResult rinruntime_file_chooser_atomic_save_request_encode(
     uint64_t data_size, RinRuntimeFileChooserAtomicSaveRequestV1* request_out)
 {
     if (request_out != NULL) chooser_zero(request_out, sizeof(*request_out));
-    if (request_out == NULL || request_id == 0u ||
+    if (request_out == NULL || !chooser_request_id_valid(request_id) ||
         !rinruntime_file_chooser_save_capability_valid(capability) ||
         data_size > RINRUNTIME_FILE_CHOOSER_ATOMIC_SAVE_MAX_BYTES) {
         return RINRUNTIME_FILE_CHOOSER_INVALID_ARGUMENT;
@@ -408,7 +421,8 @@ RinRuntimeFileChooserResult rinruntime_file_chooser_atomic_save_request_decode(
         request->frame.magic != RINRUNTIME_FILE_CHOOSER_MAGIC ||
         request->frame.version != RINRUNTIME_FILE_CHOOSER_VERSION ||
         request->frame.operation != RINRUNTIME_FILE_CHOOSER_OPERATION_ATOMIC_SAVE_REQUEST ||
-        request->frame.frame_size != sizeof(*request) || request->frame.request_id == 0u ||
+        request->frame.frame_size != sizeof(*request) ||
+        !chooser_request_id_valid(request->frame.request_id) ||
         request->reserved != 0u ||
         !rinruntime_file_chooser_save_capability_valid(&request->capability) ||
         request->data_size > RINRUNTIME_FILE_CHOOSER_ATOMIC_SAVE_MAX_BYTES) {
@@ -428,7 +442,7 @@ rinruntime_file_chooser_delegated_atomic_save_request_encode(
     RinRuntimeFileChooserDelegatedAtomicSaveRequestV1* request_out)
 {
     if (request_out != NULL) chooser_zero(request_out, sizeof(*request_out));
-    if (request_out == NULL || request_id == 0u ||
+    if (request_out == NULL || !chooser_request_id_valid(request_id) ||
         !rinruntime_file_chooser_save_capability_valid(capability) ||
         !rin_unix_peer_app_identity_valid(origin_peer) ||
         data_size > RINRUNTIME_FILE_CHOOSER_ATOMIC_SAVE_MAX_BYTES) {
@@ -467,7 +481,8 @@ rinruntime_file_chooser_delegated_atomic_save_request_decode(
         request->frame.operation !=
             RINRUNTIME_FILE_CHOOSER_OPERATION_DELEGATED_ATOMIC_SAVE_REQUEST ||
         request->frame.frame_size != sizeof(*request) ||
-        request->frame.request_id == 0u || request->reserved != 0u ||
+        !chooser_request_id_valid(request->frame.request_id) ||
+        request->reserved != 0u ||
         !rinruntime_file_chooser_save_capability_valid(&request->capability) ||
         request->data_size > RINRUNTIME_FILE_CHOOSER_ATOMIC_SAVE_MAX_BYTES) {
         return RINRUNTIME_FILE_CHOOSER_MALFORMED_REPLY;
@@ -495,7 +510,7 @@ RinRuntimeFileChooserResult rinruntime_file_chooser_status_encode(
     RinRuntimeFileChooserStatusV1* status_out)
 {
     if (status_out != NULL) chooser_zero(status_out, sizeof(*status_out));
-    if (status_out == NULL || request_id == 0u ||
+    if (status_out == NULL || !chooser_request_id_valid(request_id) ||
         !chooser_status_operation_valid(operation) || !chooser_result_valid(result)) {
         return RINRUNTIME_FILE_CHOOSER_INVALID_ARGUMENT;
     }
@@ -522,7 +537,8 @@ RinRuntimeFileChooserResult rinruntime_file_chooser_status_decode(
         status->frame.magic != RINRUNTIME_FILE_CHOOSER_MAGIC ||
         status->frame.version != RINRUNTIME_FILE_CHOOSER_VERSION ||
         status->frame.operation != expected_operation ||
-        status->frame.frame_size != sizeof(*status) || status->frame.request_id == 0u ||
+        status->frame.frame_size != sizeof(*status) ||
+        !chooser_request_id_valid(status->frame.request_id) ||
         status->reserved != 0u) return RINRUNTIME_FILE_CHOOSER_MALFORMED_REPLY;
     result = (RinRuntimeFileChooserResult)status->result;
     if (!chooser_result_valid(result)) return RINRUNTIME_FILE_CHOOSER_MALFORMED_REPLY;
@@ -536,7 +552,7 @@ RinRuntimeFileChooserResult rinruntime_file_chooser_save_destination_release_enc
     RinRuntimeFileChooserSaveDestinationReleaseV1* release_out)
 {
     if (release_out != NULL) chooser_zero(release_out, sizeof(*release_out));
-    if (release_out == NULL || request_id == 0u ||
+    if (release_out == NULL || !chooser_request_id_valid(request_id) ||
         !rinruntime_file_chooser_save_capability_valid(capability)) {
         return RINRUNTIME_FILE_CHOOSER_INVALID_ARGUMENT;
     }
@@ -564,7 +580,7 @@ RinRuntimeFileChooserResult rinruntime_file_chooser_save_destination_release_dec
         release->frame.operation !=
             RINRUNTIME_FILE_CHOOSER_OPERATION_SAVE_DESTINATION_RELEASE ||
         release->frame.frame_size != sizeof(*release) ||
-        release->frame.request_id == 0u ||
+        !chooser_request_id_valid(release->frame.request_id) ||
         !rinruntime_file_chooser_save_capability_valid(&release->capability)) {
         return RINRUNTIME_FILE_CHOOSER_MALFORMED_REPLY;
     }
@@ -626,8 +642,11 @@ static uint64_t chooser_next_request_id(void)
 {
     uint64_t request_id = __atomic_add_fetch(&g_file_chooser_request_id, 1u,
                                              __ATOMIC_RELAXED);
-    if (request_id == 0u) request_id = __atomic_add_fetch(
+    if (!chooser_request_id_valid(request_id)) request_id = __atomic_add_fetch(
         &g_file_chooser_request_id, 1u, __ATOMIC_RELAXED);
+    if (!chooser_request_id_valid(request_id)) request_id = __atomic_add_fetch(
+        &g_file_chooser_request_id, 1u, __ATOMIC_RELAXED);
+    if (!chooser_request_id_valid(request_id)) return 0u;
     return request_id;
 }
 
@@ -688,7 +707,8 @@ RinRuntimeFileChooserResult rinruntime_file_chooser_multiple_grant_encode(
     RinRuntimeFileChooserMultipleGrantV1* grant_out)
 {
     if (grant_out != NULL) chooser_zero(grant_out, sizeof(*grant_out));
-    if (grant_out == NULL || request_id == 0u || !chooser_result_valid(result) ||
+    if (grant_out == NULL || !chooser_request_id_valid(request_id) ||
+        !chooser_result_valid(result) ||
         selection_count > RINRUNTIME_FILE_CHOOSER_MAX_SELECTIONS ||
         (result == RINRUNTIME_FILE_CHOOSER_OK &&
          (selection_count == 0u || selections == NULL)) ||
@@ -728,7 +748,8 @@ RinRuntimeFileChooserResult rinruntime_file_chooser_multiple_grant_decode(
         frame_size != sizeof(*grant) || grant->frame.magic != RINRUNTIME_FILE_CHOOSER_MAGIC ||
         grant->frame.version != RINRUNTIME_FILE_CHOOSER_VERSION ||
         grant->frame.operation != RINRUNTIME_FILE_CHOOSER_OPERATION_MULTIPLE_GRANT ||
-        grant->frame.frame_size != sizeof(*grant) || grant->frame.request_id == 0u ||
+        grant->frame.frame_size != sizeof(*grant) ||
+        !chooser_request_id_valid(grant->frame.request_id) ||
         grant->selection_count > RINRUNTIME_FILE_CHOOSER_MAX_SELECTIONS ||
         !chooser_result_valid((RinRuntimeFileChooserResult)grant->result))
         return RINRUNTIME_FILE_CHOOSER_MALFORMED_REPLY;

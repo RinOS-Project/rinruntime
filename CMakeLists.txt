@@ -259,6 +259,12 @@ if(RINRUNTIME_BUILD_TESTS)
     add_executable(rinruntime-file-portal-abi-test tests/file_portal_abi_compile_test.c)
     target_link_libraries(rinruntime-file-portal-abi-test PRIVATE RinRuntime::RinRuntime)
     add_test(NAME rinruntime-file-portal-abi COMMAND rinruntime-file-portal-abi-test)
+    add_executable(rinruntime-file-chooser-identity-test
+                   tests/file_chooser_identity_contract_test.c)
+    target_link_libraries(rinruntime-file-chooser-identity-test
+                          PRIVATE RinRuntime::RinRuntime)
+    add_test(NAME rinruntime-file-chooser-identity
+             COMMAND rinruntime-file-chooser-identity-test)
     if(RINRUNTIME_BUILD_GUI)
         add_executable(rinruntime-window-abi-test tests/window_abi_compile_test.c)
         target_link_libraries(rinruntime-window-abi-test PRIVATE RinRuntime::RinRuntime)

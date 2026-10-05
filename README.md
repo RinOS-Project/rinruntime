@@ -658,3 +658,9 @@ driver, portal, and physical-device authority remain private.
 `portal.h` rejects terminal owner/generation values and terminal request IDs
 before a public opaque capability request is accepted.  File Portal brokering,
 filesystem access, and authority ownership remain private.
+
+`file_chooser_portal.c` applies the same public boundary to chooser request
+identities: zero and `UINT64_MAX` are rejected for every request/grant/status
+wire codec, and generated IDs skip both reserved values.  The path-free
+chooser adapter remains available to ordinary applications; File Manager
+authority, broker ownership, and filesystem access remain private.

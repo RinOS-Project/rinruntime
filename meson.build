@@ -141,6 +141,10 @@ if get_option('buildtype') != 'plain'
   test('rinruntime-portal', executable('rinruntime-portal-test',
         'tests/portal_contract_test.c', dependencies: runtime_dep,
         override_options: test_override_options))
+  test('rinruntime-file-chooser-identity', executable(
+        'rinruntime-file-chooser-identity-test',
+        'tests/file_chooser_identity_contract_test.c', dependencies: runtime_dep,
+        override_options: test_override_options))
   test('rinruntime-policy', executable('rinruntime-policy-test',
         'tests/policy_contract_test.c', dependencies: runtime_dep,
         override_options: test_override_options))
