@@ -243,6 +243,9 @@ if(RINRUNTIME_BUILD_TESTS)
     add_test(NAME rinruntime-file-operation-service-request-identity-boundary
              COMMAND ${Python3_EXECUTABLE}
                      ${CMAKE_CURRENT_SOURCE_DIR}/tests/file_operation_service_request_identity_boundary_test.py)
+    add_test(NAME rinruntime-accessibility-service-request-identity-boundary
+             COMMAND ${Python3_EXECUTABLE}
+                     ${CMAKE_CURRENT_SOURCE_DIR}/tests/accessibility_service_request_identity_boundary_test.py)
     add_executable(rinruntime-portal-test tests/portal_contract_test.c)
     target_link_libraries(rinruntime-portal-test PRIVATE RinRuntime::RinRuntime)
     add_test(NAME rinruntime-portal COMMAND rinruntime-portal-test)

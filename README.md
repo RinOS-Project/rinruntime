@@ -679,3 +679,8 @@ remain private.
 FileOperation request IDs and resets the counter to 1 before either value can
 be sent. Ordinary user-scoped client calls remain public; privileged broker
 authorization and filesystem mutation remain private.
+
+`accessibility_service_client.c` applies the same terminal boundary to its
+public request counter. Accessibility model/wire and client adapters remain
+public, while presenter, WebContent, desktop-service ownership, and actual UI
+authority remain private.

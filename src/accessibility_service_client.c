@@ -12,6 +12,11 @@
 #define RIN_ACCESSIBILITY_CLIENT_IO_IDLE_LIMIT 5u
 #define RIN_ACCESSIBILITY_CLIENT_IO_INTERRUPTION_LIMIT 32u
 
+static int client_request_id_valid(uint64_t request_id)
+{
+    return request_id != 0u && request_id != UINT64_MAX;
+}
+
 static int client_receive_exact(int fd, void* output, uint32_t size)
 {
     uint8_t* bytes = (uint8_t*)output;
@@ -82,13 +87,15 @@ static RinResultCode client_next_header(RinAccessibilityServiceClientV1* client,
                                         RinAccessibilityServiceMessageHeaderV1* header)
 {
     if (client == NULL || header == NULL || client->socket_fd < 0 ||
-        client->next_request_id == 0u) return RIN_RESULT_INVALID_ARGUMENT;
+        !client_request_id_valid(client->next_request_id))
+        return RIN_RESULT_INVALID_ARGUMENT;
     memset(header, 0, sizeof(*header));
     header->struct_size = sizeof(*header);
     header->version = RIN_ACCESSIBILITY_SERVICE_ABI_VERSION;
     header->opcode = opcode;
     header->request_id = client->next_request_id++;
-    if (client->next_request_id == 0u) client->next_request_id = 1u;
+    if (!client_request_id_valid(client->next_request_id))
+        client->next_request_id = 1u;
     header->payload_size = payload_size;
     return RIN_RESULT_OK;
 }
@@ -154,7 +161,8 @@ RinResultCode rin_accessibility_service_client_open(
     struct sockaddr_un address;
     int fd;
     if (client == NULL || client->socket_fd >= 0 ||
-        client->next_request_id == 0u) return RIN_RESULT_INVALID_ARGUMENT;
+        !client_request_id_valid(client->next_request_id))
+        return RIN_RESULT_INVALID_ARGUMENT;
     memset(&address, 0, sizeof(address));
     address.sun_family = AF_UNIX;
     if (strlen(RIN_ACCESSIBILITY_SERVICE_SOCKET_PATH) >=
