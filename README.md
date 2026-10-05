@@ -370,6 +370,11 @@ by ordinary applications and external package tooling; repository
 authentication, HTTPS/TLS, signature verification, staging, and installation
 remain private updater owners.
 
+The public JSON adapters share `json_input_alias.hpp` for caller-input/output
+overlap checks. It is an implementation helper in the public include tree, not
+a service or filesystem capability, and is classified explicitly so consumer
+include audits cannot mistake it for a private provider.
+
 `update_metadata_catalog.hpp` and `update_metadata_catalog_json.hpp` (also
 exported by the `rinruntime.hpp` umbrella) provide a bounded, generation-tagged
 update snapshot for ordinary applications and external package tooling. Each
