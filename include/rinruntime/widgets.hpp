@@ -122,6 +122,16 @@ class Button : public Widget {
     std::function<void()> onClick_;
     bool hovered_ = false;
     bool pressed_ = false;
+    bool clickInFlight_ = false;
+
+    bool activateClick() noexcept {
+        if (clickInFlight_)
+            return false;
+        clickInFlight_ = true;
+        (void)widget_detail::invokeCallback(onClick_);
+        clickInFlight_ = false;
+        return true;
+    }
 
 public:
     explicit Button(const std::string& text = "") {
@@ -174,13 +184,13 @@ public:
         if (event.type == EventType::MouseUp && pressed_) {
             pressed_ = false;
             if (getBounds().contains(event.x, event.y))
-                (void)widget_detail::invokeCallback(onClick_);
+                (void)activateClick();
             return true;
         }
         if (event.type == EventType::KeyDown && hasAccessibilityFocus() &&
             (event.key == widget_detail::kReturn ||
              event.key == widget_detail::kSpace)) {
-            (void)widget_detail::invokeCallback(onClick_);
+            (void)activateClick();
             return true;
         }
         return false;
@@ -325,6 +335,7 @@ class CheckBox : public Widget {
     std::string label_;
     bool checked_ = false;
     std::function<void(bool)> onChange_;
+    bool changeInFlight_ = false;
 
 public:
     explicit CheckBox(const std::string& label = "") {
@@ -371,9 +382,11 @@ public:
     }
 
     bool toggle() {
-        if (!isEnabled()) return false;
+        if (!isEnabled() || changeInFlight_) return false;
         checked_ = !checked_;
+        changeInFlight_ = true;
         (void)widget_detail::invokeCallback(onChange_, checked_);
+        changeInFlight_ = false;
         return true;
     }
 

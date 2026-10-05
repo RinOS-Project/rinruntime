@@ -418,12 +418,34 @@ int main() {
     assert(throwing_button.handleEvent(button_down));
     assert(throwing_button.handleEvent(button_up));
 
+    RinRuntime::Button reentrant_button("Reentrant");
+    reentrant_button.setAccessibilityFocused(true);
+    RinRuntime::Event activate_button = {};
+    activate_button.type = RinRuntime::EventType::KeyDown;
+    activate_button.key = 0x0du;
+    unsigned reentrant_button_calls = 0u;
+    reentrant_button.setOnClick([&] {
+        ++reentrant_button_calls;
+        assert(reentrant_button.handleEvent(activate_button));
+    });
+    assert(reentrant_button.handleEvent(activate_button));
+    assert(reentrant_button_calls == 1u);
+
     RinRuntime::CheckBox throwing_check("Check");
     throwing_check.setOnChange([](bool) {
         throw std::runtime_error("checkbox callback failure");
     });
     assert(throwing_check.toggle());
     assert(throwing_check.isChecked());
+
+    RinRuntime::CheckBox reentrant_check("Reentrant");
+    bool reentrant_check_called = false;
+    reentrant_check.setOnChange([&](bool) {
+        reentrant_check_called = true;
+        assert(!reentrant_check.toggle());
+    });
+    assert(reentrant_check.toggle());
+    assert(reentrant_check_called && reentrant_check.isChecked());
 
     RinRuntime::Slider throwing_slider;
     throwing_slider.setBounds({0, 0, 100, 20});
