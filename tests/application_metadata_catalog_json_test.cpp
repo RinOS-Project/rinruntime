@@ -65,6 +65,19 @@ int main()
     assert(output.find("com.rinos.notes") != nullptr);
     assert(output.find("com.rinos.missing") == nullptr);
 
+    error = "preserve catalog object alias";
+    const std::uint64_t catalogGenerationBefore = output.generation;
+    const std::size_t catalogApplicationCountBefore =
+        output.applications.size();
+    const std::string catalogObjectAliasBefore = error;
+    const std::string_view catalogObjectAlias(
+        reinterpret_cast<const char*>(&output), sizeof(output));
+    assert(!RinRuntime::ApplicationMetadataCatalogJson::parse(
+        catalogObjectAlias, output, error));
+    assert(output.generation == catalogGenerationBefore &&
+           output.applications.size() == catalogApplicationCountBefore &&
+           error == catalogObjectAliasBefore);
+
     output.applications[0].applicationId = valid;
     error = "preserve catalog alias";
     const std::string catalogAliasBefore = output.applications[0].applicationId;
