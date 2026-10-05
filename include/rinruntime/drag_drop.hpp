@@ -192,6 +192,15 @@ inline bool DragDropSession::actionSingleBit(DragDropAction action)
 
 inline void DragDropSession::clearPayloads()
 {
+    /* Payload bytes may be an opaque capability or other caller-sensitive
+     * material.  `vector::clear()` releases the elements but is not required
+     * to erase their backing storage, so scrub the bounded copies before
+     * discarding them. */
+    for (DragDropPayload& payload : payloads_) {
+        volatile std::uint8_t* bytes = payload.bytes.data();
+        for (std::size_t index = 0u; index < payload.bytes.size(); ++index)
+            bytes[index] = 0u;
+    }
     payloads_.clear();
     totalBytes_ = 0u;
 }
