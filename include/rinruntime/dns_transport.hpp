@@ -219,6 +219,9 @@ public:
     bool exchange(const std::uint8_t* query, std::size_t query_length,
                   std::uint8_t* response, std::size_t response_capacity,
                   std::size_t* response_length) {
+        /* A callback may re-enter this object.  Reject that call before
+         * clearing any caller-owned buffer belonging to the outer exchange. */
+        if (in_flight_) return false;
         if (byteRangesOverlap(query, query_length, response,
                               response_capacity) ||
             byteRangesOverlap(query, query_length, response_length,
@@ -227,7 +230,7 @@ public:
                               sizeof(*response_length)))
             return false;
         if (response_length != nullptr) *response_length = 0u;
-        if (!bound_ || in_flight_ || exchange_ == nullptr || query == nullptr ||
+        if (!bound_ || exchange_ == nullptr || query == nullptr ||
             query_length == 0u || query_length > kMaxQueryBytes ||
             response == nullptr || response_capacity == 0u ||
             response_capacity > kMaxResponseBytes || response_length == nullptr)

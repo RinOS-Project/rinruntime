@@ -88,6 +88,31 @@ static int throwingDnsExchange(
     throw std::runtime_error("dns exchange callback failure");
 }
 
+struct ReentrantDnsContext {
+    RinRuntime::DnsTransportSession* session = nullptr;
+};
+
+static int reentrantDnsExchange(
+    void* opaque, const RinRuntime::DnsTransportEndpoint&,
+    const std::uint8_t* query, std::size_t query_length,
+    std::uint8_t* response, std::size_t response_capacity,
+    std::size_t* response_length) {
+    auto* context = static_cast<ReentrantDnsContext*>(opaque);
+    if (context == nullptr || context->session == nullptr || query == nullptr ||
+        query_length == 0u || response == nullptr || response_capacity < 2u ||
+        response_length == nullptr)
+        return -1;
+    response[1] = 0x77u;
+    std::size_t nested_length = 0x2468ace0u;
+    if (context->session->exchange(query, query_length, response,
+                                   response_capacity, &nested_length) ||
+        nested_length != 0x2468ace0u || response[1] != 0x77u)
+        return -1;
+    response[0] = 0x5au;
+    *response_length = 1u;
+    return 0;
+}
+
 int main() {
     static_assert(std::is_const_v<std::remove_reference_t<
                       decltype(std::declval<RinRuntime::Table&>().columns())>>);
@@ -173,6 +198,19 @@ int main() {
     assert(aliased_dns_length_storage.bytes[0] ==
            aliased_dns_length_before.bytes[0]);
     assert(dns_session.bound());
+
+    RinRuntime::DnsTransportSession reentrant_dns_session;
+    ReentrantDnsContext reentrant_dns_context;
+    reentrant_dns_context.session = &reentrant_dns_session;
+    assert(reentrant_dns_session.bind(
+        dns_endpoint, reentrantDnsExchange, &reentrant_dns_context));
+    std::uint8_t reentrant_dns_response[4u] = {};
+    std::size_t reentrant_dns_length = 0u;
+    assert(reentrant_dns_session.exchange(
+        dns_query, sizeof(dns_query), reentrant_dns_response,
+        sizeof(reentrant_dns_response), &reentrant_dns_length));
+    assert(reentrant_dns_length == 1u && reentrant_dns_response[0] == 0x5au &&
+           reentrant_dns_response[1] == 0x77u);
 
     static_assert(RIN_I18N_RMSG_VERSION == 1u,
                   "public i18n catalog version must remain stable");
