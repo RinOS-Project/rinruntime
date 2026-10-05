@@ -51,6 +51,7 @@ private:
     std::function<void()> started_;
     std::function<void()> stopped_;
     std::function<bool(const Event&)> eventHandler_;
+    bool eventCallbackInFlight_ = false;
 
 public:
     Application() = default;
@@ -78,15 +79,20 @@ public:
     }
 
     bool dispatch(const Event& event) {
-        if (state_ != State::Running || !eventHandler_) return false;
+        if (state_ != State::Running || !eventHandler_ || eventCallbackInFlight_)
+            return false;
+        eventCallbackInFlight_ = true;
 #if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
         try {
 #endif
-            return eventHandler_(event);
+            const bool handled = eventHandler_(event);
+            eventCallbackInFlight_ = false;
+            return handled;
 #if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
         } catch (...) {
             /* Do not dispatch more events after a user handler failed.  The
              * caller can still perform the ordinary stop transition. */
+            eventCallbackInFlight_ = false;
             state_ = State::QuitRequested;
             return false;
         }

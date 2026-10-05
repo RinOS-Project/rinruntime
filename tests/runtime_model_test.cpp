@@ -357,6 +357,20 @@ int main() {
     assert(throwingDispatch.state() == Rin::Application::State::QuitRequested);
     assert(throwingDispatch.stop());
 
+    Rin::Application reentrantDispatch;
+    assert(reentrantDispatch.start());
+    size_t dispatchCallbackCount = 0u;
+    bool nestedDispatchResult = true;
+    reentrantDispatch.onEvent([&](const Rin::Event&) -> bool {
+        ++dispatchCallbackCount;
+        nestedDispatchResult = reentrantDispatch.dispatch(Rin::Event{});
+        return true;
+    });
+    assert(reentrantDispatch.dispatch(Rin::Event{}));
+    assert(dispatchCallbackCount == 1u);
+    assert(!nestedDispatchResult);
+    assert(reentrantDispatch.stop());
+
     Rin::Application throwingStop;
     assert(throwingStop.start());
     throwingStop.onStopped([] {
