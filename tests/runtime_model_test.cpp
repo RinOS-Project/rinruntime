@@ -559,6 +559,110 @@ int main() {
     assert(throwing_popup.activate(0));
     assert(!throwing_popup.isOpen());
 
+    RinRuntime::Dialog reentrant_dialog("Dialog");
+    RinRuntime::Event reentrant_escape = {};
+    reentrant_escape.type = RinRuntime::EventType::KeyDown;
+    reentrant_escape.key = 0x1bu;
+    unsigned reentrant_dialog_calls = 0u;
+    reentrant_dialog.setCancelAction([&] {
+        ++reentrant_dialog_calls;
+        assert(reentrant_dialog.handleEvent(reentrant_escape));
+        reentrant_dialog.dismiss();
+    });
+    reentrant_dialog.show();
+    assert(reentrant_dialog.handleEvent(reentrant_escape));
+    assert(reentrant_dialog_calls == 1u && !reentrant_dialog.isOpen());
+
+    RinRuntime::Table reentrant_table;
+    assert(reentrant_table.addColumn({"Name", 96, true}));
+    unsigned reentrant_table_calls = 0u;
+    reentrant_table.setOnSort([&](int32_t column, bool ascending) {
+        ++reentrant_table_calls;
+        assert(reentrant_table.sortBy(column));
+        (void)ascending;
+    });
+    assert(reentrant_table.sortBy(0));
+    assert(reentrant_table_calls == 1u &&
+           !reentrant_table.ascending());
+
+    RinRuntime::Tree reentrant_tree;
+    const uint64_t reentrant_tree_first = reentrant_tree.addRoot("First");
+    const uint64_t reentrant_tree_second = reentrant_tree.addRoot("Second");
+    assert(reentrant_tree_first != 0u && reentrant_tree_second != 0u);
+    reentrant_tree.setBounds({0, 0, 120, 64});
+    reentrant_tree.setAccessibilityFocused(true);
+    RinRuntime::Event move_tree = {};
+    move_tree.type = RinRuntime::EventType::KeyDown;
+    move_tree.key = 0x28u;
+    unsigned reentrant_tree_calls = 0u;
+    reentrant_tree.setOnSelect([&](uint64_t) {
+        ++reentrant_tree_calls;
+        assert(reentrant_tree.handleEvent(move_tree));
+    });
+    assert(reentrant_tree.handleEvent(list_click));
+    assert(reentrant_tree_calls == 1u &&
+           reentrant_tree.selectedItemId() == reentrant_tree_second);
+
+    RinRuntime::TabView reentrant_tabs;
+    assert(reentrant_tabs.setTabs({"One", "Two"}));
+    unsigned reentrant_tab_calls = 0u;
+    reentrant_tabs.setOnTabChange([&](int32_t) {
+        ++reentrant_tab_calls;
+        reentrant_tabs.setActiveTab(0);
+    });
+    reentrant_tabs.setActiveTab(1);
+    assert(reentrant_tab_calls == 1u && reentrant_tabs.activeTab() == 0);
+
+    RinRuntime::ComboBox reentrant_combo;
+    assert(reentrant_combo.setItems({"One", "Two"}));
+    unsigned reentrant_combo_calls = 0u;
+    reentrant_combo.setOnSelect([&](int32_t) {
+        ++reentrant_combo_calls;
+        assert(reentrant_combo.selectIndex(1));
+    });
+    assert(reentrant_combo.selectIndex(0));
+    assert(reentrant_combo_calls == 1u && reentrant_combo.selectedIndex() == 1);
+
+    RinRuntime::RadioButton reentrant_radio("Radio");
+    unsigned reentrant_radio_calls = 0u;
+    reentrant_radio.setOnChange([&](bool) {
+        ++reentrant_radio_calls;
+        reentrant_radio.setChecked(false);
+    });
+    reentrant_radio.setChecked(true);
+    assert(reentrant_radio_calls == 1u && !reentrant_radio.isChecked());
+
+    RinRuntime::PopupMenu reentrant_popup("Popup");
+    unsigned reentrant_popup_calls = 0u;
+    assert(reentrant_popup.addItem("Run", "", [&] {
+        ++reentrant_popup_calls;
+        assert(!reentrant_popup.activate(0));
+    }) == 0);
+    assert(reentrant_popup.activate(0));
+    assert(reentrant_popup_calls == 1u && !reentrant_popup.isOpen());
+
+    RinRuntime::MenuBar reentrant_menu_bar(320);
+    const int32_t reentrant_menu = reentrant_menu_bar.addMenu("File");
+    assert(reentrant_menu == 0);
+    assert(reentrant_menu_bar.addItem(
+               reentrant_menu, {"Run", "", nullptr, false, true}));
+    unsigned reentrant_menu_calls = 0u;
+    reentrant_menu_bar.setAction("File", "Run", [&] {
+        ++reentrant_menu_calls;
+        RinRuntime::Event activate_menu = {};
+        activate_menu.type = RinRuntime::EventType::KeyDown;
+        activate_menu.key = 0x0du;
+        reentrant_menu_bar.setAccessibilityFocused(true);
+        assert(reentrant_menu_bar.handleEvent(activate_menu));
+    });
+    reentrant_menu_bar.setAccessibilityFocused(true);
+    RinRuntime::Event activate_menu = {};
+    activate_menu.type = RinRuntime::EventType::KeyDown;
+    activate_menu.key = 0x0du;
+    assert(reentrant_menu_bar.handleEvent(activate_menu));
+    assert(reentrant_menu_bar.handleEvent(activate_menu));
+    assert(reentrant_menu_calls == 1u);
+
     Rin::Document document;
     assert(document.setText("Rin"));
     assert(document.insert(3u, "OS"));

@@ -527,8 +527,16 @@ class Dialog : public Widget {
     std::string title_;
     bool open_ = false;
     bool modal_ = true;
+    bool actionCallbackInFlight_ = false;
     std::function<void()> defaultAction_;
     std::function<void()> cancelAction_;
+
+    void invokeAction(std::function<void()>& action) noexcept {
+        if (actionCallbackInFlight_) return;
+        actionCallbackInFlight_ = true;
+        (void)widget_detail::invokeCallback(action);
+        actionCallbackInFlight_ = false;
+    }
 
 public:
     explicit Dialog(const std::string& title = "", bool modal = true)
@@ -590,13 +598,13 @@ public:
         if (!open_ || event.type != EventType::KeyDown) return false;
         if (event.key == widget_detail::kEscape) {
             if (cancelAction_)
-                (void)widget_detail::invokeCallback(cancelAction_);
+                invokeAction(cancelAction_);
             else
                 dismiss();
             return true;
         }
         if (event.key == widget_detail::kReturn) {
-            (void)widget_detail::invokeCallback(defaultAction_);
+            invokeAction(defaultAction_);
             return true;
         }
         return false;
@@ -897,8 +905,23 @@ private:
     ScrollModel scroll_;
     int32_t sortColumn_ = -1;
     bool sortAscending_ = true;
+    bool selectionCallbackInFlight_ = false;
+    bool sortCallbackInFlight_ = false;
     std::function<void(int32_t)> onSelect_;
     std::function<void(int32_t, bool)> onSort_;
+
+    void notifySelection(int32_t row) noexcept {
+        if (selectionCallbackInFlight_) return;
+        selectionCallbackInFlight_ = true;
+        (void)widget_detail::invokeCallback(onSelect_, row);
+        selectionCallbackInFlight_ = false;
+    }
+    void notifySort(int32_t column, bool ascending) noexcept {
+        if (sortCallbackInFlight_) return;
+        sortCallbackInFlight_ = true;
+        (void)widget_detail::invokeCallback(onSort_, column, ascending);
+        sortCallbackInFlight_ = false;
+    }
 
     int32_t visibleRows() const {
         int32_t available = bounds.h > headerHeight_ ? bounds.h - headerHeight_ : 0;
@@ -1025,7 +1048,7 @@ public:
             sortColumn_ = column;
             sortAscending_ = true;
         }
-        (void)widget_detail::invokeCallback(onSort_, sortColumn_, sortAscending_);
+        notifySort(sortColumn_, sortAscending_);
         return true;
     }
 
@@ -1068,7 +1091,7 @@ public:
             bool changed = selection_.select(row);
             if (changed) {
                 (void)scroll_.reveal(row, 1);
-                (void)widget_detail::invokeCallback(onSelect_, row);
+                notifySelection(row);
             }
             return changed || (row >= 0 && row < rowCount_);
         }
@@ -1084,8 +1107,7 @@ public:
         else return false;
         if (selection_.hasSelection()) (void)scroll_.reveal(selection_.selected(), 1);
         if (changed)
-            (void)widget_detail::invokeCallback(onSelect_,
-                                                 selection_.selected());
+            notifySelection(selection_.selected());
         return true;
     }
 };
@@ -1112,7 +1134,15 @@ class Tree : public Widget {
     uint64_t selectedId_ = 0u;
     ScrollModel scroll_;
     int32_t rowHeight_ = 32;
+    bool selectionCallbackInFlight_ = false;
     std::function<void(uint64_t)> onSelect_;
+
+    void notifySelection(uint64_t id) noexcept {
+        if (selectionCallbackInFlight_) return;
+        selectionCallbackInFlight_ = true;
+        (void)widget_detail::invokeCallback(onSelect_, id);
+        selectionCallbackInFlight_ = false;
+    }
 
     static bool validLabel(const std::string& label) {
         if (label.size() > kMaxLabelBytes) return false;
@@ -1167,7 +1197,7 @@ class Tree : public Widget {
     bool selectId(uint64_t id) {
         if (id == 0u || id == selectedId_ || !findIn(roots_, id)) return false;
         selectedId_ = id;
-        (void)widget_detail::invokeCallback(onSelect_, selectedId_);
+        notifySelection(selectedId_);
         return true;
     }
     size_t itemCount() const {
@@ -1340,7 +1370,15 @@ public:
 class TabView : public Widget {
     std::vector<std::string> tabs_;
     int32_t activeTab_ = 0;
+    bool changeCallbackInFlight_ = false;
     std::function<void(int32_t)> onChange_;
+
+    void notifyChange(int32_t index) noexcept {
+        if (changeCallbackInFlight_) return;
+        changeCallbackInFlight_ = true;
+        (void)widget_detail::invokeCallback(onChange_, index);
+        changeCallbackInFlight_ = false;
+    }
 
 public:
     TabView() = default;
@@ -1371,7 +1409,7 @@ public:
         if (index < 0 || index >= (int32_t)tabs_.size()) return;
         if (activeTab_ == index) return;
         activeTab_ = index;
-        (void)widget_detail::invokeCallback(onChange_, activeTab_);
+        notifyChange(activeTab_);
     }
     int32_t activeTab() const { return activeTab_; }
     void setOnTabChange(std::function<void(int32_t)> callback) { onChange_ = callback; }
@@ -1420,7 +1458,15 @@ class ComboBox : public Widget {
     std::vector<std::string> items_;
     int32_t selectedIndex_ = -1;
     bool open_ = false;
+    bool selectionCallbackInFlight_ = false;
     std::function<void(int32_t)> onSelect_;
+
+    void notifySelection(int32_t index) noexcept {
+        if (selectionCallbackInFlight_) return;
+        selectionCallbackInFlight_ = true;
+        (void)widget_detail::invokeCallback(onSelect_, index);
+        selectionCallbackInFlight_ = false;
+    }
 
 public:
     ComboBox() = default;
@@ -1461,7 +1507,7 @@ public:
         }
         selectedIndex_ = index;
         open_ = false;
-        (void)widget_detail::invokeCallback(onSelect_, selectedIndex_);
+        notifySelection(selectedIndex_);
         return true;
     }
     bool isOpen() const { return open_; }
@@ -1511,7 +1557,7 @@ public:
             return false;
         if (next != selectedIndex_) {
             selectedIndex_ = next;
-            (void)widget_detail::invokeCallback(onSelect_, selectedIndex_);
+            notifySelection(selectedIndex_);
         }
         return true;
     }
@@ -1524,7 +1570,15 @@ class RadioButton : public Widget {
     std::string label_;
     std::string group_;
     bool checked_ = false;
+    bool changeCallbackInFlight_ = false;
     std::function<void(bool)> onChange_;
+
+    void notifyChange(bool checked) noexcept {
+        if (changeCallbackInFlight_) return;
+        changeCallbackInFlight_ = true;
+        (void)widget_detail::invokeCallback(onChange_, checked);
+        changeCallbackInFlight_ = false;
+    }
 
 public:
     explicit RadioButton(const std::string& label = "",
@@ -1551,7 +1605,7 @@ public:
     void setChecked(bool value) {
         if (checked_ == value) return;
         checked_ = value;
-        (void)widget_detail::invokeCallback(onChange_, checked_);
+        notifyChange(checked_);
     }
 
     AccessibilityRole accessibilityRole() const override {
@@ -1625,6 +1679,7 @@ class PopupMenu : public RinRuntime::Widget {
     std::vector<MenuItem> items_;
     int32_t activeIndex_ = -1;
     bool open_ = false;
+    bool actionCallbackInFlight_ = false;
 
     static bool validText(const std::string& value) {
         if (value.size() > kMaxTextBytes) return false;
@@ -1649,6 +1704,14 @@ class PopupMenu : public RinRuntime::Widget {
     void clearSelection() {
         for (auto& item : items_) item.selected = false;
         activeIndex_ = -1;
+    }
+
+    bool invokeAction(std::function<void()>& action) noexcept {
+        if (actionCallbackInFlight_) return false;
+        actionCallbackInFlight_ = true;
+        (void)widget_detail::invokeCallback(action);
+        actionCallbackInFlight_ = false;
+        return true;
     }
 
 public:
@@ -1824,11 +1887,12 @@ public:
     }
 
     bool activate(int32_t index) {
-        if (index < 0 || index >= static_cast<int32_t>(items_.size()) ||
+        if (actionCallbackInFlight_ ||
+            index < 0 || index >= static_cast<int32_t>(items_.size()) ||
             items_[index].separator || !items_[index].enabled) return false;
         std::function<void()> action = items_[index].action;
         close();
-        (void)widget_detail::invokeCallback(action);
+        (void)invokeAction(action);
         return true;
     }
 
@@ -1910,6 +1974,15 @@ class MenuBar : public Widget {
     int32_t surfaceWidth_ = 1;
     int32_t barHeight_ = 24;
     int32_t itemHeight_ = 24;
+    bool actionCallbackInFlight_ = false;
+
+    bool invokeAction(std::function<void()>& action) noexcept {
+        if (actionCallbackInFlight_) return false;
+        actionCallbackInFlight_ = true;
+        (void)widget_detail::invokeCallback(action);
+        actionCallbackInFlight_ = false;
+        return true;
+    }
 
     int32_t clampedTitleWidth(int32_t index, int32_t x) const {
         if (index < 0 || index >= (int32_t)menus_.size()) return 1;
@@ -2183,7 +2256,7 @@ public:
         MenuItem item = menus_[activeMenu_].items[itemIndex];
         closeMenus();
         if (!item.separator && item.enabled)
-            (void)widget_detail::invokeCallback(item.action);
+            (void)invokeAction(item.action);
         return true;
     }
 
@@ -2224,7 +2297,7 @@ public:
                 MenuItem item = menus_[activeMenu_].items.front();
                 closeMenus();
                 if (!item.separator && item.enabled)
-                    (void)widget_detail::invokeCallback(item.action);
+                    (void)invokeAction(item.action);
             }
             return true;
         } else {
