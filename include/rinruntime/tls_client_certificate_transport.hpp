@@ -174,7 +174,8 @@ public:
             message_length > kMaxTranscriptBytes || signature == nullptr ||
             signature_capacity == 0u || signature_capacity > kMaxSignatureBytes ||
             signature_length == nullptr)
-            return failSign(signature, signature_capacity);
+            return failSign(message, message_length, signature,
+                            signature_capacity, signature_length);
 
         /* Reject caller-owned input/output aliasing before clearing the
          * result length or invoking the private signer.  Otherwise an
@@ -237,7 +238,20 @@ public:
     }
 
 private:
-    int failSign(std::uint8_t* signature, std::size_t signature_capacity) {
+    int failSign(const std::uint8_t* message, std::size_t message_length,
+                 std::uint8_t* signature, std::size_t signature_capacity,
+                 std::size_t* signature_length) {
+        /* Clear a stale result length on ordinary rejected input, but never
+         * write through a length pointer that aliases caller-owned input or
+         * the signature output.  The explicit aliasing path above preserves
+         * the caller's bytes and length for diagnosis. */
+        if (signature_length != nullptr &&
+            !byteRangesOverlap(message, message_length, signature_length,
+                               sizeof(*signature_length)) &&
+            !byteRangesOverlap(signature, signature_capacity,
+                               signature_length,
+                               sizeof(*signature_length)))
+            *signature_length = 0u;
         if (signature != nullptr && signature_capacity != 0u)
             clearBytes(signature, signature_capacity < kMaxSignatureBytes
                                       ? signature_capacity

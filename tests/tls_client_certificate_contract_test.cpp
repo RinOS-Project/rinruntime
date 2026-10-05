@@ -175,6 +175,18 @@ int main() {
     assert(throwing_transport.state() ==
            RinRuntime::TlsClientCertificateTransportState::Failed);
 
+    RinRuntime::TlsClientCertificateTransport invalid_input_transport;
+    assert(invalid_input_transport.bind(request, stateless_sign, nullptr));
+    assert(invalid_input_transport.startHandshake());
+    std::size_t invalid_signature_length = 99u;
+    std::uint8_t invalid_signature[8u] = {
+        0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu};
+    assert(invalid_input_transport.sign(
+               0x0401u, transcript, sizeof(transcript), invalid_signature,
+               sizeof(invalid_signature), &invalid_signature_length) == -1);
+    assert(invalid_signature_length == 0u);
+    for (std::uint8_t byte : invalid_signature) assert(byte == 0u);
+
     RinRuntime::TlsClientCertificateTransport reentrant_transport;
     ReentrantSignContext reentrant_context {&reentrant_transport};
     assert(reentrant_transport.bind(request, reset_from_signer,
