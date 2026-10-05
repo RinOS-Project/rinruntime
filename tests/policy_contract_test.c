@@ -94,5 +94,7 @@ int main(void)
     summary.message_size = 4u;
     memcpy(summary.message, "oops", 4u);
     if (!rinruntime_crash_summary_validate(&summary)) return 1;
+    summary.package_generation = UINT64_MAX;
+    if (rinruntime_crash_summary_validate(&summary)) return 1;
     return backup_round_trip() ? 0 : 1;
 }

@@ -669,3 +669,8 @@ authority, broker ownership, and filesystem access remain private.
 diagnostic request IDs, and fails closed if no live identity can be produced.
 The public client remains only a bounded authenticated crashd adapter; crash
 collection, service ownership, and process-memory authority remain private.
+
+`crash.h` rejects `UINT64_MAX` package generations in redacted crash summaries
+instead of treating the wrapped value like an absent generation. The summary
+validator remains public and memory-only; crashd and process-memory authority
+remain private.

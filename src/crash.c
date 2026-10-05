@@ -22,5 +22,6 @@ int rinruntime_crash_summary_validate(
     }
     for (index = 0u; index < sizeof(summary->package_digest); ++index)
         digest_nonzero |= summary->package_digest[index] != 0u;
+    if (summary->package_generation == UINT64_MAX) return 0;
     return summary->package_generation != 0u ? digest_nonzero : !digest_nonzero;
 }
