@@ -107,6 +107,7 @@ struct DeviceManifestDevice {
                deviceClass <= DeviceManifestClass::Other &&
                transport >= DeviceManifestTransport::Pci &&
                transport <= DeviceManifestTransport::Other && generation != 0u &&
+               generation != UINT64_MAX &&
                sortedUniqueCapabilities(capabilities) && parentId != id;
     }
 };
@@ -125,7 +126,8 @@ struct DeviceManifest {
 
     bool valid() const {
         if (versionMajor == 0u || !validIdentifier(manifestId) ||
-            generation == 0u || devices.size() > kDeviceManifestMaxDevices)
+            generation == 0u || generation == UINT64_MAX ||
+            devices.size() > kDeviceManifestMaxDevices)
             return false;
         for (std::size_t index = 0u; index < devices.size(); ++index) {
             const DeviceManifestDevice& device = devices[index];

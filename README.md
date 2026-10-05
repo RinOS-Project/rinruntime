@@ -630,3 +630,8 @@ timezone persistence, and service ownership remain outside the public runtime.
 generations.  The bounded payload/action model remains available to ordinary
 applications; compositor, File Portal, and filesystem authority remain private
 adapters.
+
+`device_manifest.hpp` and `device_manifest_json.hpp` reserve both zero and
+`UINT64_MAX` for manifest and device generations.  The public model/parser is
+available to ordinary applications, while device probing, kernel admission,
+hotplug, and driver ownership remain private.

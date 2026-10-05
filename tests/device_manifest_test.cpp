@@ -51,6 +51,15 @@ int main() {
     manifest.devices.front().capabilities = {std::string("input.\xc0\x80", 8)};
     assert(!manifest.valid());
 
+    manifest.devices.front().capabilities = {"input.keyboard"};
+    manifest.devices.front().generation = UINT64_MAX;
+    assert(!manifest.valid());
+    manifest.devices.front().generation = 1u;
+    manifest.generation = UINT64_MAX;
+    assert(!manifest.valid());
+    manifest.generation = 4u;
+    assert(manifest.valid());
+
     DeviceManifest parentAfterChild;
     parentAfterChild.versionMajor = 1u;
     parentAfterChild.manifestId = "desktop.devices";
@@ -60,5 +69,9 @@ int main() {
     parentAfterChild.devices.push_back(child);
     parentAfterChild.devices.push_back(validDevice("usb.900"));
     assert(parentAfterChild.valid());
+
+    DeviceManifestDevice terminalDevice = validDevice("usb.002");
+    terminalDevice.generation = UINT64_MAX;
+    assert(!terminalDevice.valid());
     return 0;
 }

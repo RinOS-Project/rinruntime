@@ -29,6 +29,15 @@ int main() {
     assert(output.devices[1].parentId == "pci.0000.00.1f.3");
     assert(output.devices[0].vendorId == 32902u);
 
+    const std::string terminalGeneration =
+        std::string("{\"manifest_id\":\"desktop.devices\",\"") +
+        "version_major\":1,\"generation\":" +
+        std::to_string(UINT64_MAX) + ",\"devices\":[]}";
+    assert(!RinRuntime::DeviceManifestJson::parse(
+        terminalGeneration, output, error));
+    assert(error == "device manifest validation");
+    assert(output.manifestId.empty());
+
     assert(!RinRuntime::DeviceManifestJson::parse(
         "{\"manifest_id\":\"desktop.devices\",\"version_major\":1,"
         "\"generation\":9,\"devices\":[{\"id\":\"usb.001\","
