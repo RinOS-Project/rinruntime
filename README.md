@@ -205,6 +205,9 @@ does not expose Browser, keyring, TLS, or kernel authority.
 `DownloadPartialReceipt::encode()` also clears the caller-owned output range
 on failure, bounded to the receipt wire size. This prevents stale durable
 receipt bytes from being reused after an invalid or undersized encode.
+Receipt and request identity fields reject both zero and `UINT64_MAX`; the
+terminal value is reserved so a wrapped request or generation cannot be
+serialized and later mistaken for a live range owner.
 The decode, request preparation, range-header construction, and response
 construction paths are failure-atomic under exception-enabled builds: an
 allocation failure clears the candidate/output state and returns failure

@@ -336,6 +336,26 @@ int main() {
     assert(RinRuntime::DownloadPartialReceipt::decode(
         receiptWire, receiptSize, decodedReceipt));
 
+    /* Zero and UINT64_MAX are reserved identity values across the public
+     * range/resume boundary.  Do not persist or resume a receipt that could
+     * alias a wrapped request or generation owner. */
+    {
+        RinRuntime::DownloadPartialReceipt invalidIdentity = receipt;
+        invalidIdentity.requestId = UINT64_MAX;
+        std::uint8_t invalidWire[RinRuntime::DownloadPartialReceipt::kWireSize];
+        std::size_t invalidWireSize = 99u;
+        assert(!invalidIdentity.valid());
+        assert(!invalidIdentity.encode(invalidWire, sizeof(invalidWire),
+                                       invalidWireSize));
+        assert(invalidWireSize == 0u);
+        invalidIdentity = receipt;
+        invalidIdentity.generation = UINT64_MAX;
+        assert(!invalidIdentity.valid());
+        assert(!invalidIdentity.encode(invalidWire, sizeof(invalidWire),
+                                       invalidWireSize));
+        assert(invalidWireSize == 0u);
+    }
+
     {
         RinRuntime::DownloadPartialReceipt aliasedReceipt = receipt;
         const RinRuntime::DownloadPartialReceipt before = aliasedReceipt;
@@ -396,6 +416,26 @@ int main() {
     std::string rangeHeader = "stale";
     assert(prepared.makeRangeHeader(rangeHeader));
     assert(rangeHeader == "bytes=2-");
+
+    {
+        RinRuntime::DownloadRangeRequest invalidIdentity = makeRequest();
+        invalidIdentity.requestId = UINT64_MAX;
+        assert(!invalidIdentity.valid());
+        invalidIdentity = makeRequest();
+        invalidIdentity.generation = UINT64_MAX;
+        assert(!invalidIdentity.valid());
+        invalidIdentity = makeRequest();
+        RinRuntime::DownloadPartialReceipt invalidReceipt = receipt;
+        invalidReceipt.generation = UINT64_MAX;
+        assert(!invalidIdentity.prepare(
+            invalidReceipt, invalidReceipt.requestId, invalidReceipt.generation,
+            invalidReceipt.validator));
+        assert(invalidIdentity.requestId == 0u &&
+               invalidIdentity.generation == 0u &&
+               invalidIdentity.offset == 0u &&
+               invalidIdentity.totalBytes == 0u &&
+               invalidIdentity.validator.empty());
+    }
 
     {
         RinRuntime::DownloadRangeRequest aliasedPrepared;

@@ -71,8 +71,13 @@ struct DownloadPartialReceipt {
     std::uint64_t generation = 0u;
     std::string validator;
 
+    static bool validIdentity(std::uint64_t value) {
+        return value != 0u && value != UINT64_MAX;
+    }
+
     bool valid() const {
-        return requestId != 0u && generation != 0u && totalBytes != 0u &&
+        return validIdentity(requestId) && validIdentity(generation) &&
+               totalBytes != 0u &&
                totalBytes <= kMaxBytes && committedBytes <= totalBytes &&
                committedBytes != totalBytes && validValidator(validator);
     }
@@ -240,7 +245,9 @@ struct DownloadRangeRequest {
     }
 
     bool valid() const {
-        return requestId != 0u && generation != 0u && totalBytes != 0u &&
+        return DownloadPartialReceipt::validIdentity(requestId) &&
+               DownloadPartialReceipt::validIdentity(generation) &&
+               totalBytes != 0u &&
                totalBytes <= DownloadPartialReceipt::kMaxBytes &&
                offset < totalBytes && validValidator(validator);
     }
