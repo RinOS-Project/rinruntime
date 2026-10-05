@@ -644,3 +644,8 @@ filesystem authority remain private owners.
 `tls_client_certificate.h` rejects both zero and `UINT64_MAX` request and
 connection generations before the public callback transport binds.  Certificate
 and signer ownership, private keys, and keyring authority remain private.
+
+`dns_transport.hpp` likewise reserves `UINT64_MAX` for exhausted network and
+namespace generations before a public UDP/TCP/DoT/DoH endpoint is built.  The
+endpoint/session callback model remains public; resolver, socket, DNS wire,
+TLS verification, and network authority remain private.

@@ -48,7 +48,8 @@ public:
         DnsTransportEndpoint candidate;
         if (!validKind(kind) || !validAuthority(authority, candidate.authority_) ||
             port == 0u || network_generation == 0u ||
-            namespace_generation == 0u || allZero(namespace_id))
+            network_generation == UINT64_MAX || namespace_generation == 0u ||
+            namespace_generation == UINT64_MAX || allZero(namespace_id))
             return false;
 
         candidate.kind_ = kind;

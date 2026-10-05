@@ -177,6 +177,13 @@ int main() {
     assert(RinRuntime::DnsTransportEndpoint::build(
         RinRuntime::DnsTransportKind::Udp, "Resolver.Example", 53u, 1u,
         1u, dns_namespace, dns_endpoint));
+    RinRuntime::DnsTransportEndpoint terminal_dns_endpoint;
+    assert(!RinRuntime::DnsTransportEndpoint::build(
+        RinRuntime::DnsTransportKind::Udp, "resolver.example", 53u,
+        UINT64_MAX, 1u, dns_namespace, terminal_dns_endpoint));
+    assert(!RinRuntime::DnsTransportEndpoint::build(
+        RinRuntime::DnsTransportKind::Udp, "resolver.example", 53u, 1u,
+        UINT64_MAX, dns_namespace, terminal_dns_endpoint));
     RinRuntime::DnsTransportSession dns_session;
     int dns_context = 1;
     assert(dns_session.bind(dns_endpoint, throwingDnsExchange, &dns_context));
