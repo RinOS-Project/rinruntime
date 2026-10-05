@@ -57,6 +57,12 @@ RinRuntimePollWaitResult rinruntime_poll_wait(
 
     for (;;) {
         const uint64_t now_ms = rin_monotonic_ms();
+        /* UINT64_MAX is the public EventLoop adapter's no-deadline
+         * sentinel, not a usable monotonic sample.  The provider may fail
+         * between deadline construction and the actual poll; do not turn
+         * that failure into a normal timeout. */
+        if (now_ms == UINT64_MAX)
+            return RINRUNTIME_POLL_WAIT_FAILURE;
         const uint64_t remaining_ms =
             now_ms >= deadline_ms ? 0u : deadline_ms - now_ms;
         int timeout;

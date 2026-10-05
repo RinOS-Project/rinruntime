@@ -49,6 +49,17 @@ int main(void)
                sockets[1], RINRUNTIME_POLL_WAIT_READABLE, 1u) ==
            RINRUNTIME_POLL_WAIT_TIMEOUT);
 
+    /* A clock provider may fail after deadline construction but before the
+     * poll.  UINT64_MAX is the public no-deadline sentinel, not a normal
+     * timeout sample; the C facade must fail closed instead of reporting a
+     * timeout. */
+    set_clock(500u, UINT64_MAX, 2u);
+    assert(write(sockets[0], &byte, sizeof(byte)) == 1);
+    assert(rinruntime_poll_wait(
+               sockets[1], RINRUNTIME_POLL_WAIT_READABLE, 1u) ==
+           RINRUNTIME_POLL_WAIT_FAILURE);
+    assert(read(sockets[1], &byte, sizeof(byte)) == 1);
+
     set_clock(300u, 0u, 1u);
     assert(close(sockets[0]) == 0);
     assert(rinruntime_poll_wait(
