@@ -7,6 +7,23 @@
 
 #include <string.h>
 
+static int backup_payload_ranges_overlap(const void* left, size_t left_size,
+                                         const void* right, size_t right_size)
+{
+    uintptr_t left_address;
+    uintptr_t right_address;
+    if (left == NULL || right == NULL || left_size == 0u ||
+        right_size == 0u)
+        return 0;
+    left_address = (uintptr_t)left;
+    right_address = (uintptr_t)right;
+    if (left_address > UINTPTR_MAX - (uintptr_t)left_size ||
+        right_address > UINTPTR_MAX - (uintptr_t)right_size)
+        return 1;
+    return left_address < right_address + (uintptr_t)right_size &&
+           right_address < left_address + (uintptr_t)left_size;
+}
+
 static int backup_payload_reply_header_valid(
     const RinFilePortalCallV1* call, uint16_t operation, int32_t descriptor,
     uint64_t offset, uint32_t payload_size)
@@ -44,13 +61,19 @@ static RinRuntimeBackupResult backup_payload_call(
     RinFilePortalCallV1 call;
     int result;
 
-    if (transferred != NULL) *transferred = 0u;
+    if (transferred == NULL ||
+        backup_payload_ranges_overlap(input, input_size, transferred,
+                                      sizeof(*transferred)) ||
+        backup_payload_ranges_overlap(output, output_capacity, transferred,
+                                      sizeof(*transferred)))
+        return RINRUNTIME_BACKUP_INVALID_ARGUMENT;
+    *transferred = 0u;
     if (output != NULL && output_capacity != 0u)
         memset(output, 0, output_capacity);
     if (descriptor < 0 || input_size > RIN_FILE_PORTAL_PAYLOAD_DATA_SIZE ||
         output_capacity > RIN_FILE_PORTAL_PAYLOAD_DATA_SIZE ||
         (input_size != 0u && input == NULL) ||
-        (output_capacity != 0u && output == NULL) || transferred == NULL ||
+        (output_capacity != 0u && output == NULL) ||
         (operation != RIN_FILE_PORTAL_OPERATION_PAYLOAD_READ &&
          operation != RIN_FILE_PORTAL_OPERATION_PAYLOAD_WRITE &&
          operation != RIN_FILE_PORTAL_OPERATION_PAYLOAD_SYNC &&

@@ -192,6 +192,9 @@ RinRuntimeBackupResult rinruntime_backup_restore_item(
  * current-process descriptor through the File Portal OPEN/DURABLE_OPEN ABI.
  * Each call is bounded by RIN_FILE_PORTAL_PAYLOAD_DATA_SIZE and larger data
  * must be streamed by increasing offset. */
+/* The transfer-count output must not overlap the caller-owned read buffer or
+ * write input.  Alias attempts return INVALID_ARGUMENT before either storage
+ * is cleared or modified. */
 RinRuntimeBackupResult rinruntime_backup_payload_read(
     int32_t descriptor, uint64_t offset, uint8_t* bytes, uint32_t capacity,
     uint32_t* bytes_read);

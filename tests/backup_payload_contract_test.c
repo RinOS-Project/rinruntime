@@ -113,6 +113,32 @@ int main(void)
            RINRUNTIME_BACKUP_OK);
     assert(transferred == 3u);
 
+    {
+        union {
+            uint8_t bytes[4];
+            uint32_t transferred;
+        } alias = {{ 0xa5u, 0xa5u, 0xa5u, 0xa5u }};
+        uint8_t before[sizeof(alias.bytes)];
+        memcpy(before, alias.bytes, sizeof(before));
+        assert(rinruntime_backup_payload_read(
+                   4, 0u, alias.bytes, sizeof(alias.bytes),
+                   &alias.transferred) == RINRUNTIME_BACKUP_INVALID_ARGUMENT);
+        assert(memcmp(alias.bytes, before, sizeof(before)) == 0);
+    }
+
+    {
+        union {
+            uint8_t bytes[4];
+            uint32_t transferred;
+        } alias = {{ 'x', 'y', 'z', 0u }};
+        uint8_t before[sizeof(alias.bytes)];
+        memcpy(before, alias.bytes, sizeof(before));
+        assert(rinruntime_backup_payload_write(
+                   4, 0u, alias.bytes, 3u, &alias.transferred) ==
+               RINRUNTIME_BACKUP_INVALID_ARGUMENT);
+        assert(memcmp(alias.bytes, before, sizeof(before)) == 0);
+    }
+
     transferred = 99u;
     assert(rinruntime_backup_payload_sync(4) == RINRUNTIME_BACKUP_OK);
     assert(rinruntime_backup_payload_truncate(4, 7u) == RINRUNTIME_BACKUP_OK);
