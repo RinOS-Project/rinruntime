@@ -60,7 +60,8 @@ public:
 
     static bool validIdentity(const ApplicationDataIdentity& identity) {
         return identity.userId != 0u && identity.applicationTag != 0u &&
-               identity.packageGeneration != 0u;
+               identity.packageGeneration != 0u &&
+               identity.packageGeneration != UINT64_MAX;
     }
 
     /* Application reads/writes require an exact authenticated identity. */

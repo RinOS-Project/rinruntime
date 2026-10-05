@@ -243,6 +243,16 @@ if(RINRUNTIME_BUILD_TESTS)
     add_executable(rinruntime-policy-test tests/policy_contract_test.c)
     target_link_libraries(rinruntime-policy-test PRIVATE RinRuntime::RinRuntime)
     add_test(NAME rinruntime-policy COMMAND rinruntime-policy-test)
+    add_executable(rinruntime-application-data-policy-test
+                   tests/application_data_policy_test.cpp)
+    target_link_libraries(rinruntime-application-data-policy-test
+                          PRIVATE RinRuntime::RinRuntime)
+    target_include_directories(rinruntime-application-data-policy-test
+                               PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    set_target_properties(rinruntime-application-data-policy-test PROPERTIES
+                          CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES)
+    add_test(NAME rinruntime-application-data-policy
+             COMMAND rinruntime-application-data-policy-test)
     add_executable(rinruntime-crash-service-test tests/crash_service_contract_test.c)
     target_link_libraries(rinruntime-crash-service-test PRIVATE RinRuntime::RinRuntime)
     add_test(NAME rinruntime-crash-service COMMAND rinruntime-crash-service-test)

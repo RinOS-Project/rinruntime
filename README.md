@@ -635,3 +635,8 @@ adapters.
 `UINT64_MAX` for manifest and device generations.  The public model/parser is
 available to ordinary applications, while device probing, kernel admission,
 hotplug, and driver ownership remain private.
+
+`application_data.hpp` applies the same terminal-generation rule to the public
+application identity policy.  The policy remains an identity comparison
+helper for ordinary applications; authenticated launch, storage roots, and
+filesystem authority remain private owners.

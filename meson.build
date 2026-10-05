@@ -144,6 +144,9 @@ if get_option('buildtype') != 'plain'
   test('rinruntime-policy', executable('rinruntime-policy-test',
         'tests/policy_contract_test.c', dependencies: runtime_dep,
         override_options: test_override_options))
+  test('rinruntime-application-data-policy', executable('rinruntime-application-data-policy-test',
+        'tests/application_data_policy_test.cpp', dependencies: runtime_dep,
+        override_options: test_override_options, cpp_args: ['-std=c++17']))
   test('rinruntime-serial-portal', executable('rinruntime-serial-portal-test',
         'tests/serial_portal_contract_test.c', dependencies: runtime_dep,
         override_options: test_override_options))
