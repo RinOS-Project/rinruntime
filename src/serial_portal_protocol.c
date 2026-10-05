@@ -9,9 +9,15 @@ static void zero(void* value, size_t size)
     if (value != NULL) memset(value, 0, size);
 }
 
+static int serial_identity_valid(uint64_t value)
+{
+    return value != 0u && value != UINT64_MAX;
+}
+
 static int capability_valid(RinSerialCapabilityV1 capability)
 {
-    return capability.object_id != 0u && capability.generation != 0u;
+    return serial_identity_valid(capability.object_id) &&
+           serial_identity_valid(capability.generation);
 }
 
 static int result_valid(RinSerialPortalResultV1 result)
@@ -53,16 +59,20 @@ static int frame_valid(const RinSerialPortalFrameV1* frame, size_t frame_size,
            frame->magic == RIN_SERIAL_PORTAL_MAGIC &&
            frame->version == RIN_SERIAL_PORTAL_VERSION &&
            frame->operation == (uint16_t)operation &&
-           frame->frame_size == exact_size && frame->request_id != 0u &&
-           frame->session_id != 0u && frame->session_generation != 0u;
+           frame->frame_size == exact_size &&
+           serial_identity_valid(frame->request_id) &&
+           serial_identity_valid(frame->session_id) &&
+           serial_identity_valid(frame->session_generation);
 }
 
 RinSerialPortalResultV1 rin_serial_portal_request_encode(
     uint64_t request_id, uint64_t session_id, uint64_t session_generation,
     RinSerialPortalOperationV1 operation, RinSerialPortalFrameV1* frame_out)
 {
-    if (frame_out == NULL || request_id == 0u || session_id == 0u ||
-        session_generation == 0u || operation < RIN_SERIAL_PORTAL_ENUMERATE_REQUEST ||
+    if (frame_out == NULL || !serial_identity_valid(request_id) ||
+        !serial_identity_valid(session_id) ||
+        !serial_identity_valid(session_generation) ||
+        operation < RIN_SERIAL_PORTAL_ENUMERATE_REQUEST ||
         operation > RIN_SERIAL_PORTAL_REQUEST_PORT_POLL_RESPONSE)
         return RIN_SERIAL_PORTAL_INVALID_ARGUMENT;
     zero(frame_out, sizeof(*frame_out));
@@ -100,8 +110,10 @@ RinSerialPortalResultV1 rin_serial_portal_enumerate_response_encode(
 {
     if (response_out == NULL || !result_valid(result) ||
         device_count > RIN_SERIAL_PORTAL_MAX_DEVICES ||
-        (device_count != 0u && devices == NULL) || request_id == 0u ||
-        session_id == 0u || session_generation == 0u)
+        (device_count != 0u && devices == NULL) ||
+        !serial_identity_valid(request_id) ||
+        !serial_identity_valid(session_id) ||
+        !serial_identity_valid(session_generation))
         return RIN_SERIAL_PORTAL_INVALID_ARGUMENT;
     zero(response_out, sizeof(*response_out));
     if (rin_serial_portal_request_encode(
@@ -696,7 +708,7 @@ RinSerialPortalResultV1 rin_serial_portal_request_port_poll_encode(
     uint64_t chooser_request_id, const char* origin,
     RinSerialPortalRequestPortPollRequestV1* request_out)
 {
-    if (request_out == NULL || chooser_request_id == 0u ||
+    if (request_out == NULL || !serial_identity_valid(chooser_request_id) ||
         !origin_valid(origin))
         return RIN_SERIAL_PORTAL_INVALID_ARGUMENT;
     zero(request_out, sizeof(*request_out));
@@ -720,7 +732,8 @@ RinSerialPortalResultV1 rin_serial_portal_request_port_poll_decode(
     if (request == NULL || !frame_valid(
             &request->frame, frame_size,
             RIN_SERIAL_PORTAL_REQUEST_PORT_POLL_REQUEST, sizeof(*request)) ||
-        request->chooser_request_id == 0u || !origin_valid(request->origin))
+        !serial_identity_valid(request->chooser_request_id) ||
+        !origin_valid(request->origin))
         return RIN_SERIAL_PORTAL_MALFORMED;
     if (chooser_request_id_out != NULL)
         *chooser_request_id_out = request->chooser_request_id;

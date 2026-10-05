@@ -7,8 +7,12 @@
 int main(void)
 {
     RinSerialPortalFrameV1 frame;
+    RinSerialPortalOpenRequestV1 open_request;
+    RinSerialPortalRequestPortPollRequestV1 poll_request;
     RinSerialPortalRequestPortRequestV1 request_port;
     RinSerialPortalGetPortsRequestV1 get_ports;
+    RinSerialCapabilityV1 terminal_capability = { 1u, UINT64_MAX };
+    RinSerialConfigV1 config = { 0 };
     RinSerialPortalFilterV1 filter = { 1u, 2u, 1u, 1u, 0u };
     char origin[RIN_SERIAL_PORTAL_ORIGIN_MAX];
     uint64_t request_id = 0u;
@@ -24,7 +28,23 @@ int main(void)
                &request_id, &session_id, &session_generation) ==
            RIN_SERIAL_PORTAL_OK);
     assert(request_id == 1u && session_id == 2u && session_generation == 3u);
+    assert(rin_serial_portal_request_encode(
+               UINT64_MAX, 2u, 3u, RIN_SERIAL_PORTAL_ENUMERATE_REQUEST,
+               &frame) == RIN_SERIAL_PORTAL_INVALID_ARGUMENT);
+    assert(rin_serial_portal_request_encode(
+               1u, 2u, UINT64_MAX, RIN_SERIAL_PORTAL_ENUMERATE_REQUEST,
+               &frame) == RIN_SERIAL_PORTAL_INVALID_ARGUMENT);
+    assert(rin_serial_portal_open_request_encode(
+               4u, 5u, 6u, terminal_capability, config, 0u,
+               &open_request) == RIN_SERIAL_PORTAL_INVALID_ARGUMENT);
+    assert(rin_serial_portal_request_port_poll_encode(
+               4u, 5u, 6u, UINT64_MAX, "https://example",
+               &poll_request) == RIN_SERIAL_PORTAL_INVALID_ARGUMENT);
     frame.session_generation = 0u;
+    assert(rin_serial_portal_frame_decode(
+               &frame, sizeof(frame), RIN_SERIAL_PORTAL_ENUMERATE_REQUEST,
+               NULL, NULL, NULL) == RIN_SERIAL_PORTAL_MALFORMED);
+    frame.session_generation = UINT64_MAX;
     assert(rin_serial_portal_frame_decode(
                &frame, sizeof(frame), RIN_SERIAL_PORTAL_ENUMERATE_REQUEST,
                NULL, NULL, NULL) == RIN_SERIAL_PORTAL_MALFORMED);

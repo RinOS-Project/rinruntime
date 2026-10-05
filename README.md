@@ -649,3 +649,8 @@ and signer ownership, private keys, and keyring authority remain private.
 namespace generations before a public UDP/TCP/DoT/DoH endpoint is built.  The
 endpoint/session callback model remains public; resolver, socket, DNS wire,
 TLS verification, and network authority remain private.
+
+`rin_serial_portal_protocol.h` reserves `UINT64_MAX` for exhausted request,
+session, capability, and chooser identities at the public frame boundary.  The
+wire codec remains usable by application-owned adapters; serial probing,
+driver, portal, and physical-device authority remain private.
