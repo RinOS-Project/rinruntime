@@ -6,6 +6,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 
 #include "tls_client_certificate.h"
 
@@ -54,6 +55,28 @@ class TlsClientCertificateTransport final {
         if (bytes == nullptr) return;
         volatile std::uint8_t* target = bytes;
         while (size-- != 0u) *target++ = 0u;
+    }
+
+    static bool byteRangesOverlap(const void* left, std::size_t left_size,
+                                  const void* right,
+                                  std::size_t right_size) noexcept {
+        if (left == nullptr || right == nullptr || left_size == 0u ||
+            right_size == 0u)
+            return false;
+        const std::uintptr_t left_begin =
+            reinterpret_cast<std::uintptr_t>(left);
+        const std::uintptr_t right_begin =
+            reinterpret_cast<std::uintptr_t>(right);
+        const std::uintptr_t max_value =
+            std::numeric_limits<std::uintptr_t>::max();
+        if (left_begin > max_value - static_cast<std::uintptr_t>(left_size) ||
+            right_begin > max_value - static_cast<std::uintptr_t>(right_size))
+            return true;
+        const std::uintptr_t left_end =
+            left_begin + static_cast<std::uintptr_t>(left_size);
+        const std::uintptr_t right_end =
+            right_begin + static_cast<std::uintptr_t>(right_size);
+        return left_begin < right_end && right_begin < left_end;
     }
 
     static bool signatureSchemeSupported(std::uint16_t scheme) {
@@ -145,7 +168,6 @@ public:
     int sign(std::uint16_t signature_scheme, const std::uint8_t* message,
              std::size_t message_length, std::uint8_t* signature,
              std::size_t signature_capacity, std::size_t* signature_length) {
-        if (signature_length != nullptr) *signature_length = 0u;
         if (state_ != TlsClientCertificateTransportState::HandshakeStarted ||
             signing_ || !signatureSchemeSupported(signature_scheme) ||
             signer_ == nullptr || message == nullptr || message_length == 0u ||
@@ -153,6 +175,23 @@ public:
             signature_capacity == 0u || signature_capacity > kMaxSignatureBytes ||
             signature_length == nullptr)
             return failSign(signature, signature_capacity);
+
+        /* Reject caller-owned input/output aliasing before clearing the
+         * result length or invoking the private signer.  Otherwise an
+         * overlapping transcript and signature buffer could be modified by
+         * the callback while it is still being consumed, and an overlapping
+         * length slot could corrupt either buffer before admission. */
+        if (byteRangesOverlap(message, message_length, signature,
+                              signature_capacity) ||
+            byteRangesOverlap(message, message_length, signature_length,
+                              sizeof(*signature_length)) ||
+            byteRangesOverlap(signature, signature_capacity, signature_length,
+                              sizeof(*signature_length))) {
+            clearBytes(capability_, sizeof(capability_));
+            state_ = TlsClientCertificateTransportState::Failed;
+            return -1;
+        }
+        *signature_length = 0u;
 
         std::size_t written = 0u;
         signing_ = true;

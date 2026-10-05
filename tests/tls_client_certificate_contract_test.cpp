@@ -191,5 +191,39 @@ int main() {
     assert(reentrant_transport.state() ==
            RinRuntime::TlsClientCertificateTransportState::Idle);
     assert(reentrant_transport.requestId() == 0u);
+
+    RinRuntime::TlsClientCertificateTransport alias_transport;
+    assert(alias_transport.bind(request, stateless_sign, nullptr));
+    assert(alias_transport.startHandshake());
+    std::uint8_t aliased_transcript[8u] = {
+        0x31u, 0x32u, 0x33u, 0xaau, 0xbbu, 0xccu, 0xddu, 0xeeu};
+    const std::uint8_t aliased_transcript_before[8u] = {
+        0x31u, 0x32u, 0x33u, 0xaau, 0xbbu, 0xccu, 0xddu, 0xeeu};
+    std::size_t aliased_length = 0x12345678u;
+    assert(alias_transport.sign(0x0403u, aliased_transcript, 3u,
+                                aliased_transcript, sizeof(aliased_transcript),
+                                &aliased_length) == -1);
+    assert(aliased_length == 0x12345678u);
+    for (std::size_t index = 0u; index < sizeof(aliased_transcript); ++index)
+        assert(aliased_transcript[index] == aliased_transcript_before[index]);
+    assert(alias_transport.state() ==
+           RinRuntime::TlsClientCertificateTransportState::Failed);
+
+    RinRuntime::TlsClientCertificateTransport length_alias_transport;
+    assert(length_alias_transport.bind(request, stateless_sign, nullptr));
+    assert(length_alias_transport.startHandshake());
+    union {
+        std::uint8_t bytes[sizeof(std::size_t)];
+        std::size_t length;
+    } length_alias = {};
+    length_alias.length = 0x87654321u;
+    const auto length_alias_before = length_alias;
+    assert(length_alias_transport.sign(
+               0x0403u, length_alias.bytes, sizeof(length_alias.bytes),
+               signature, sizeof(signature), &length_alias.length) == -1);
+    assert(length_alias.length == length_alias_before.length);
+    assert(length_alias.bytes[0] == length_alias_before.bytes[0]);
+    assert(length_alias_transport.state() ==
+           RinRuntime::TlsClientCertificateTransportState::Failed);
     return 0;
 }
