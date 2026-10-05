@@ -24,7 +24,8 @@ struct ClockReading {
     std::uint64_t generation = 0u;
 
     bool valid() const noexcept {
-        return wallClockNanoseconds < 1000000000u && generation != 0u;
+        return wallClockNanoseconds < 1000000000u && generation != 0u &&
+               generation != UINT64_MAX;
     }
 };
 
@@ -108,6 +109,7 @@ public:
     bool valid() const {
         if (!validIdentifier(id) || !validOffset(initialOffsetSeconds) ||
             !validAbbreviation(initialAbbreviation) || generation == 0u ||
+            generation == UINT64_MAX ||
             transitions.size() > kMaxTransitions)
             return false;
         std::int64_t previous = std::numeric_limits<std::int64_t>::min();

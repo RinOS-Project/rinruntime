@@ -17,6 +17,9 @@ int main() {
     assert(clock.valid());
     clock.wallClockNanoseconds = 1000000000u;
     assert(!clock.valid());
+    clock.wallClockNanoseconds = 0u;
+    clock.generation = UINT64_MAX;
+    assert(!clock.valid());
 
     TimeZoneSnapshot snapshot;
     snapshot.id = "America/Test";
@@ -48,6 +51,9 @@ int main() {
     assert(!invalid.valid());
     invalid = snapshot;
     invalid.generation = 0u;
+    assert(!invalid.valid());
+    invalid = snapshot;
+    invalid.generation = UINT64_MAX;
     assert(!invalid.valid());
     offset = 123;
     daylight = true;

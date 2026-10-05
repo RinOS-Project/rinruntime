@@ -621,3 +621,7 @@ private archive owner to the public runtime.
 settings provenance generation.  A wrapped generation therefore cannot be
 accepted as a live user/administrator/hardware layer, while the settings
 presenter, persistence, and privileged policy owners remain private adapters.
+
+`timezone.hpp` applies the same terminal-generation rule to the public
+`ClockReading` and `TimeZoneSnapshot` models.  Clock/TZDB acquisition,
+timezone persistence, and service ownership remain outside the public runtime.
