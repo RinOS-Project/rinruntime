@@ -63,6 +63,17 @@ int main() {
     invalid_composition.compositionText = composition;
     invalid_composition.compositionSelectionEnd = 1u;
     assert(event_validation_loop.post(invalid_composition));
+    const char multibyte_composition[] = "\xe3\x81\x82";
+    invalid_composition.compositionText = multibyte_composition;
+    invalid_composition.compositionSize = sizeof(multibyte_composition) - 1u;
+    invalid_composition.compositionSelectionStart = 1u;
+    invalid_composition.compositionSelectionEnd = 3u;
+    assert(!event_validation_loop.post(invalid_composition));
+    invalid_composition.compositionSelectionStart = 0u;
+    invalid_composition.compositionSelectionEnd = 2u;
+    assert(!event_validation_loop.post(invalid_composition));
+    invalid_composition.compositionSelectionEnd = 3u;
+    assert(event_validation_loop.post(invalid_composition));
     Event invalid_text = {};
     invalid_text.type = EventType::TextInput;
     invalid_text.codepoint = 0xd800u;
@@ -72,6 +83,8 @@ int main() {
     invalid_text.codepoint = 0x3042u;
     assert(event_validation_loop.post(invalid_text));
     Event validation_output = {};
+    assert(event_validation_loop.runOne(0u, &validation_output));
+    assert(validation_output.type == EventType::TextComposition);
     assert(event_validation_loop.runOne(0u, &validation_output));
     assert(validation_output.type == EventType::TextComposition);
     assert(event_validation_loop.runOne(0u, &validation_output));

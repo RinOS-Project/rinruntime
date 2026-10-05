@@ -77,6 +77,15 @@ inline bool eventLoopCompositionUtf8Valid(const char* value,
     return true;
 }
 
+inline bool eventLoopCompositionUtf8Boundary(const char* value,
+                                              std::size_t size,
+                                              std::size_t offset) noexcept {
+    if (offset > size) return false;
+    if (offset == 0u || offset == size) return true;
+    if (value == nullptr) return false;
+    return (static_cast<unsigned char>(value[offset]) & 0xc0u) != 0x80u;
+}
+
 } // namespace detail
 
 class EventLoop final {
@@ -146,8 +155,14 @@ private:
                 isUnicodeScalar(event.codepoint)) &&
                event.compositionSize <= kMaxCompositionBytes &&
                (event.type != EventType::TextComposition ||
-                detail::eventLoopCompositionUtf8Valid(
-                    event.compositionText, event.compositionSize)) &&
+                (detail::eventLoopCompositionUtf8Valid(
+                     event.compositionText, event.compositionSize) &&
+                 detail::eventLoopCompositionUtf8Boundary(
+                     event.compositionText, event.compositionSize,
+                     event.compositionSelectionStart) &&
+                 detail::eventLoopCompositionUtf8Boundary(
+                     event.compositionText, event.compositionSize,
+                     event.compositionSelectionEnd))) &&
                event.compositionSelectionStart <= event.compositionSize &&
                event.compositionSelectionEnd <= event.compositionSize &&
                (event.compositionSize == 0u || event.compositionText != nullptr);
