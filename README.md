@@ -674,3 +674,8 @@ collection, service ownership, and process-memory authority remain private.
 instead of treating the wrapped value like an absent generation. The summary
 validator remains public and memory-only; crashd and process-memory authority
 remain private.
+
+`file_operation_service_client.c` reserves zero and `UINT64_MAX` for public
+FileOperation request IDs and resets the counter to 1 before either value can
+be sent. Ordinary user-scoped client calls remain public; privileged broker
+authorization and filesystem mutation remain private.

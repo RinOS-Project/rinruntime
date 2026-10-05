@@ -13,6 +13,11 @@
 
 #define RINRUNTIME_FILE_OPERATION_SERVICE_IO_INTERRUPTION_LIMIT 32u
 
+static int service_client_request_id_valid(uint64_t request_id)
+{
+    return request_id != 0u && request_id != UINT64_MAX;
+}
+
 static int service_client_send_all(int fd, const void* input, uint32_t size)
 {
     const uint8_t* bytes = (const uint8_t*)input;
@@ -130,7 +135,7 @@ static RinRuntimeFileOperationServiceStatus service_client_open_path(
     struct sockaddr_un address;
     int fd;
     if (socket_fd == 0 || *socket_fd >= 0 || reserved != 0u ||
-        next_request_id == 0u || service_path == 0 ||
+        !service_client_request_id_valid(next_request_id) || service_path == 0 ||
         strlen(service_path) + 1u > sizeof(address.sun_path))
         return RINRUNTIME_FILE_OPERATION_SERVICE_INVALID_ARGUMENT;
     memset(&address, 0, sizeof(address));
@@ -160,13 +165,15 @@ static RinRuntimeFileOperationServiceStatus service_client_header(
     uint32_t payload_size, RinRuntimeFileOperationServiceHeaderV1* header)
 {
     if (client == 0 || header == 0 || client->socket_fd < 0 ||
-        client->next_request_id == 0u) return RINRUNTIME_FILE_OPERATION_SERVICE_INVALID_ARGUMENT;
+        !service_client_request_id_valid(client->next_request_id))
+        return RINRUNTIME_FILE_OPERATION_SERVICE_INVALID_ARGUMENT;
     memset(header, 0, sizeof(*header));
     header->struct_size = sizeof(*header);
     header->version = RINRUNTIME_FILE_OPERATION_SERVICE_VERSION;
     header->request_kind = request_kind;
     header->request_id = client->next_request_id++;
-    if (client->next_request_id == 0u) client->next_request_id = 1u;
+    if (!service_client_request_id_valid(client->next_request_id))
+        client->next_request_id = 1u;
     header->payload_size = payload_size;
     return RINRUNTIME_FILE_OPERATION_SERVICE_OK;
 }
@@ -176,14 +183,15 @@ static RinRuntimeFileOperationServiceStatus service_broker_header(
     RinRuntimeFileOperationServiceHeaderV1* header)
 {
     if (client == 0 || header == 0 || client->socket_fd < 0 ||
-        client->next_request_id == 0u)
+        !service_client_request_id_valid(client->next_request_id))
         return RINRUNTIME_FILE_OPERATION_SERVICE_INVALID_ARGUMENT;
     memset(header, 0, sizeof(*header));
     header->struct_size = sizeof(*header);
     header->version = RINRUNTIME_FILE_OPERATION_SERVICE_VERSION;
     header->request_kind = RINRUNTIME_FILE_OPERATION_SERVICE_SUBMIT;
     header->request_id = client->next_request_id++;
-    if (client->next_request_id == 0u) client->next_request_id = 1u;
+    if (!service_client_request_id_valid(client->next_request_id))
+        client->next_request_id = 1u;
     header->payload_size = payload_size;
     return RINRUNTIME_FILE_OPERATION_SERVICE_OK;
 }
