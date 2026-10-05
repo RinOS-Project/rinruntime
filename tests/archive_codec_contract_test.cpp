@@ -1480,6 +1480,51 @@ int main()
                storedXz.data(), storedXz.size(), xzOutput, throwingCallback,
                nullptr) == RinRuntime::ArchiveXzResult::Cancelled);
     assert(xzOutput.empty());
+
+    std::vector<std::uint8_t> concatenatedXz = storedXz;
+    concatenatedXz.insert(concatenatedXz.end(), storedXz.begin(),
+                          storedXz.end());
+    RinRuntime::ArchiveXzConcatenatedSummary concatenatedSummary;
+    assert(xzReader.inspectConcatenated(
+               concatenatedXz.data(), concatenatedXz.size(),
+               concatenatedSummary) == RinRuntime::ArchiveXzResult::Ok);
+    assert(concatenatedSummary.streamSize == concatenatedXz.size() &&
+           concatenatedSummary.streamCount == 2u &&
+           concatenatedSummary.blockCount == 2u &&
+           concatenatedSummary.uncompressedSize == 10u);
+    xzOutput = "poison";
+    assert(xzReader.decodeStoredLzma2Concatenated(
+               concatenatedXz.data(), concatenatedXz.size(), xzOutput) ==
+           RinRuntime::ArchiveXzResult::Ok);
+    assert(xzOutput == "hellohello");
+
+    std::vector<std::uint8_t> paddedConcatenatedXz = storedXz;
+    paddedConcatenatedXz.insert(paddedConcatenatedXz.end(), 4u, 0u);
+    paddedConcatenatedXz.insert(paddedConcatenatedXz.end(), storedXz.begin(),
+                                storedXz.end());
+    assert(xzReader.inspectConcatenated(
+               paddedConcatenatedXz.data(), paddedConcatenatedXz.size(),
+               concatenatedSummary) == RinRuntime::ArchiveXzResult::Ok);
+    xzOutput = "poison";
+    assert(xzReader.decodeStoredLzma2Concatenated(
+               paddedConcatenatedXz.data(), paddedConcatenatedXz.size(),
+               xzOutput) == RinRuntime::ArchiveXzResult::Ok);
+    assert(xzOutput == "hellohello");
+    std::uint32_t cancelConcatenated = 1u;
+    xzOutput = "poison";
+    assert(xzReader.decodeStoredLzma2Concatenated(
+               concatenatedXz.data(), concatenatedXz.size(), xzOutput,
+               cancelNow, &cancelConcatenated, nullptr, nullptr) ==
+           RinRuntime::ArchiveXzResult::Cancelled);
+    assert(xzOutput == "poison");
+    std::vector<std::uint8_t> malformedConcatenatedXz = concatenatedXz;
+    malformedConcatenatedXz[storedXz.size() + 20u] ^= 0x01u;
+    xzOutput = "poison";
+    assert(xzReader.decodeStoredLzma2Concatenated(
+               malformedConcatenatedXz.data(), malformedConcatenatedXz.size(),
+               xzOutput) == RinRuntime::ArchiveXzResult::CrcMismatch);
+    assert(xzOutput == "poison");
+
     std::vector<std::uint8_t> compressedXz = storedXz;
     compressedXz[24u] = 0x80u;
     xzOutput = "poison";

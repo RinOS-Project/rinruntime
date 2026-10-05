@@ -40,6 +40,15 @@ struct ArchiveXzSummary {
     std::uint8_t reserved[3] = {0u, 0u, 0u};
 };
 
+struct ArchiveXzConcatenatedSummary {
+    std::size_t streamSize = 0u;
+    std::uint64_t uncompressedSize = 0u;
+    std::uint64_t compressedSize = 0u;
+    std::uint32_t streamCount = 0u;
+    std::uint32_t blockCount = 0u;
+    std::uint8_t reserved[8] = {0u};
+};
+
 /*
  * This is a bounded inspector and decoder.  It verifies the bounded stream
  * envelope, header/footer/index CRCs, block-header CRCs, block boundaries,
@@ -243,6 +252,57 @@ public:
         return ArchiveXzResult::Ok;
     }
 
+    /* XZ permits multiple streams, with optional zero padding between them.
+     * Keep the existing inspect() single-stream contract strict and expose
+     * concatenation as an explicit bounded public operation. */
+    ArchiveXzResult inspectConcatenated(
+        const std::uint8_t* bytes, std::size_t size,
+        ArchiveXzConcatenatedSummary& output) const
+    {
+        output = {};
+        if (bytes == nullptr) return ArchiveXzResult::InvalidArgument;
+        if (size > kMaxStreamBytes) return ArchiveXzResult::Limit;
+
+        std::size_t offset = 0u;
+        std::uint64_t uncompressedSize = 0u;
+        std::uint64_t compressedSize = 0u;
+        std::uint32_t blockCount = 0u;
+        std::uint32_t streamCount = 0u;
+        while (offset < size) {
+            if (streamCount >= RINRUNTIME_ARCHIVE_ENTRY_LIMIT)
+                return ArchiveXzResult::Limit;
+            ArchiveXzSummary stream;
+            const ArchiveXzResult result = findNextStream(
+                bytes + offset, size - offset, stream);
+            if (result != ArchiveXzResult::Ok) return result;
+            if (stream.streamSize == 0u ||
+                stream.streamSize > size - offset)
+                return ArchiveXzResult::Malformed;
+            if (uncompressedSize >
+                    RINRUNTIME_ARCHIVE_CONTENT_LIMIT -
+                        stream.uncompressedSize ||
+                compressedSize >
+                    RINRUNTIME_ARCHIVE_CONTENT_LIMIT -
+                        stream.compressedSize ||
+                blockCount > UINT32_MAX - stream.blockCount)
+                return ArchiveXzResult::Limit;
+            uncompressedSize += stream.uncompressedSize;
+            compressedSize += stream.compressedSize;
+            blockCount += stream.blockCount;
+            ++streamCount;
+            offset += stream.streamSize;
+            if (!skipStreamPadding(bytes, size, offset))
+                return ArchiveXzResult::Malformed;
+        }
+        if (streamCount == 0u) return ArchiveXzResult::Malformed;
+        output.streamSize = size;
+        output.uncompressedSize = uncompressedSize;
+        output.compressedSize = compressedSize;
+        output.streamCount = streamCount;
+        output.blockCount = blockCount;
+        return ArchiveXzResult::Ok;
+    }
+
     /* Decode bounded LZMA2 chunks.  Stored chunks remain supported for
      * deterministic producers, while range-coded chunks use the same
      * caller-owned output, deadline, and cancellation boundary.  The public
@@ -270,6 +330,90 @@ public:
     {
         return decodeStoredLzma2(bytes, size, output, nullptr, nullptr,
                                  deadline, deadlineContext);
+    }
+
+    ArchiveXzResult decodeStoredLzma2Concatenated(
+        const std::uint8_t* bytes, std::size_t size,
+        std::string& output) const
+    {
+        return decodeStoredLzma2Concatenated(
+            bytes, size, output, nullptr, nullptr, nullptr, nullptr);
+    }
+
+    ArchiveXzResult decodeStoredLzma2Concatenated(
+        const std::uint8_t* bytes, std::size_t size, std::string& output,
+        ArchiveDeflateCancellationFunction cancellation,
+        void* cancellationContext) const
+    {
+        return decodeStoredLzma2Concatenated(
+            bytes, size, output, cancellation, cancellationContext, nullptr,
+            nullptr);
+    }
+
+    ArchiveXzResult decodeStoredLzma2ConcatenatedWithDeadline(
+        const std::uint8_t* bytes, std::size_t size, std::string& output,
+        ArchiveDeflateDeadlineFunction deadline, void* deadlineContext) const
+    {
+        return decodeStoredLzma2Concatenated(
+            bytes, size, output, nullptr, nullptr, deadline, deadlineContext);
+    }
+
+    ArchiveXzResult decodeStoredLzma2Concatenated(
+        const std::uint8_t* bytes, std::size_t size, std::string& output,
+        ArchiveDeflateCancellationFunction cancellation,
+        void* cancellationContext, ArchiveDeflateDeadlineFunction deadline,
+        void* deadlineContext) const
+    {
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
+        if (bytes == nullptr ||
+            rinruntime_archive_byte_ranges_overlap(
+                bytes, size, output.data(), output.capacity()))
+            return ArchiveXzResult::InvalidArgument;
+        if (deadline != nullptr && deadline(deadlineContext))
+            return ArchiveXzResult::Deadline;
+        if (cancellationRequested(cancellation, cancellationContext))
+            return ArchiveXzResult::Cancelled;
+
+        ArchiveXzConcatenatedSummary summary;
+        ArchiveXzResult result = inspectConcatenated(bytes, size, summary);
+        if (result != ArchiveXzResult::Ok) return result;
+
+        std::string decoded;
+        std::size_t offset = 0u;
+        while (offset < size) {
+            ArchiveXzSummary stream;
+            result = findNextStream(bytes + offset, size - offset, stream);
+            if (result != ArchiveXzResult::Ok) return result;
+            std::string streamOutput;
+            result = decodeStoredLzma2(
+                bytes + offset, stream.streamSize, streamOutput,
+                cancellation, cancellationContext, deadline, deadlineContext);
+            if (result != ArchiveXzResult::Ok) return result;
+            if (decoded.size() > kMaxStreamBytes - streamOutput.size())
+                return ArchiveXzResult::Limit;
+            decoded.append(streamOutput);
+            offset += stream.streamSize;
+            if (!skipStreamPadding(bytes, size, offset))
+                return ArchiveXzResult::Malformed;
+        }
+        if (decoded.size() != summary.uncompressedSize)
+            return ArchiveXzResult::Malformed;
+        output = std::move(decoded);
+        return ArchiveXzResult::Ok;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (const std::bad_alloc&) {
+            output.clear();
+            return ArchiveXzResult::Limit;
+        } catch (const CancellationCallbackFailure&) {
+            output.clear();
+            return ArchiveXzResult::Cancelled;
+        } catch (...) {
+            output.clear();
+            return ArchiveXzResult::Malformed;
+        }
+#endif
     }
 
     /* Decode one raw LZMA1 range-coded stream.  7z stores the five-byte LZMA
@@ -2102,6 +2246,55 @@ private:
     static constexpr std::size_t kHeaderSize = 12u;
     static constexpr std::size_t kFooterSize = 12u;
     static constexpr std::size_t kMinimumIndexSize = 8u;
+    static constexpr std::size_t kMaxBoundaryCandidates = 256u;
+
+    static bool hasMagic(const std::uint8_t* bytes, std::size_t size)
+    {
+        return bytes != nullptr && size >= 6u && bytes[0] == 0xfdu &&
+               bytes[1] == 0x37u && bytes[2] == 0x7au &&
+               bytes[3] == 0x58u && bytes[4] == 0x5au && bytes[5] == 0x00u;
+    }
+
+    static bool skipStreamPadding(const std::uint8_t* bytes, std::size_t size,
+                                  std::size_t& offset)
+    {
+        const std::size_t start = offset;
+        while (offset < size && bytes[offset] == 0u) ++offset;
+        return ((offset - start) & 3u) == 0u;
+    }
+
+    /* Find the first valid stream in a bounded concatenated input.  The
+     * single-stream inspector remains the authority for all structure and
+     * checksum validation; this helper only finds a footer followed by an
+     * optional four-byte-aligned padding/header boundary. */
+    ArchiveXzResult findNextStream(const std::uint8_t* bytes, std::size_t size,
+                                   ArchiveXzSummary& output) const
+    {
+        output = {};
+        if (bytes == nullptr || size < kHeaderSize + kFooterSize)
+            return inspect(bytes, size, output);
+
+        std::size_t candidates = 0u;
+        for (std::size_t end = kHeaderSize + kFooterSize;
+             end + 2u <= size; ++end) {
+            if (bytes[end - 2u] != static_cast<std::uint8_t>('Y') ||
+                bytes[end - 1u] != static_cast<std::uint8_t>('Z'))
+                continue;
+            std::size_t next = end;
+            if (!skipStreamPadding(bytes, size, next)) continue;
+            if (next != size && !hasMagic(bytes + next, size - next))
+                continue;
+            if (++candidates > kMaxBoundaryCandidates)
+                return ArchiveXzResult::Limit;
+            ArchiveXzSummary candidate;
+            const ArchiveXzResult result = inspect(bytes, end, candidate);
+            if (result == ArchiveXzResult::Ok) {
+                output = candidate;
+                return ArchiveXzResult::Ok;
+            }
+        }
+        return inspect(bytes, size, output);
+    }
 
     static std::uint32_t readLe32(const std::uint8_t* bytes)
     {

@@ -1531,6 +1531,15 @@ int main()
            RinRuntime::ArchiveContainerResult::Cancelled);
     assert(output.empty());
 
+    std::vector<std::uint8_t> concatenatedXz = xz;
+    concatenatedXz.insert(concatenatedXz.end(), xz.begin(), xz.end());
+    assert(reader.parse(concatenatedXz.data(), concatenatedXz.size()) ==
+           RinRuntime::ArchiveContainerResult::Ok);
+    assert(reader.kind() == RinRuntime::ArchiveContainerKind::Xz &&
+           reader.size() == 1u && reader.entries()[0].size == 10u);
+    assert(reader.readEntry(0u, output) ==
+           RinRuntime::ArchiveContainerResult::Ok && output == "hellohello");
+
     const std::vector<std::uint8_t> deltaXz = makeXzDeltaStoredLzma2();
     assert(reader.parse(deltaXz.data(), deltaXz.size()) ==
            RinRuntime::ArchiveContainerResult::Ok);

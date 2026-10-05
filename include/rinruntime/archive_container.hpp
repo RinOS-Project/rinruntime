@@ -155,7 +155,7 @@ public:
             case ArchiveContainerKind::Xz:
                 reader_.emplace<ArchiveXzReader>();
                 result = map(std::get<ArchiveXzReader>(reader_)
-                                 .decodeStoredLzma2WithDeadline(
+                                 .decodeStoredLzma2ConcatenatedWithDeadline(
                                      bytes, size, stream_, deadline,
                                      deadlineContext));
                 break;
