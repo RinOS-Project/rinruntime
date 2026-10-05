@@ -175,7 +175,8 @@ RinRuntimeBackupResult rinruntime_backup_status_from_manifest(
  * Cache, recent items, and keyring entries always return INELIGIBLE. On every
  * failure, restored_size_out is zeroed and the caller-owned restored_out span
  * is cleared when supplied. restored_out may be NULL only when
- * restored_capacity is zero. */
+ * restored_capacity is zero. archived_bytes and restored_out must not
+ * overlap; migration callbacks always receive isolated input/output spans. */
 RinRuntimeBackupResult rinruntime_backup_restore_item(
     const uint8_t* source_manifest_bytes, size_t source_manifest_size,
     uint32_t item_index, const RinRuntimeBackupIdentityV1* target_identity,

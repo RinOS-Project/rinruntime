@@ -513,7 +513,9 @@ RinRuntimeBackupResult rinruntime_backup_restore_item(
         restored_size_out == NULL || target_schema_version == 0u ||
         (archived_size != 0u && archived_bytes == NULL) ||
         (archived_size != 0u && restored_out == NULL) ||
-        (restored_capacity != 0u && restored_out == NULL))
+        (restored_capacity != 0u && restored_out == NULL) ||
+        backup_ranges_overlap(archived_bytes, (size_t)archived_size,
+                              restored_out, (size_t)restored_capacity))
         goto invalid_argument;
     item_result = rinruntime_backup_manifest_inspect(
         source_manifest_bytes, source_manifest_size, &source_manifest);
