@@ -91,6 +91,21 @@ int main() {
     assert(validation_output.type == EventType::TextInput &&
            validation_output.codepoint == 0x3042u);
 
+    /* Draining model-owned work must not require an OS wait adapter.  The
+     * public EventLoop can be used as a queue/timer model by ordinary
+     * applications before they select a platform backend. */
+    EventLoop backend_free_loop;
+    assert(backend_free_loop.post(ready_event));
+    Event backend_free_output = {};
+    assert(backend_free_loop.wait(g_now, nullptr, nullptr,
+                                  &backend_free_output));
+    assert(backend_free_output.type == EventType::Close);
+    assert(backend_free_loop.scheduleAt(g_now, ready_event) != 0u);
+    backend_free_output = {};
+    assert(backend_free_loop.wait(g_now, nullptr, nullptr,
+                                  &backend_free_output));
+    assert(backend_free_output.type == EventType::Close);
+
     assert(loop.scheduleAt(UINT64_MAX, ready_event) == 0u);
     assert(loop.scheduleAt(g_now + 1u, ready_event) != 0u);
     Event output = {};

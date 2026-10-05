@@ -414,8 +414,11 @@ public:
               Event* output) noexcept {
         if (output == nullptr) return false;
         *output = {};
-        if (backend == nullptr) return false;
         if (runOne(now, output)) return true;
+        /* A queued event or an already-due timer is entirely owned by this
+         * backend-independent model.  Do not make callers manufacture an OS
+         * adapter merely to drain work that cannot block. */
+        if (backend == nullptr) return false;
 
         WaitRequest requests[kWaitCapacity] = {};
         Event requestEvents[kWaitCapacity] = {};

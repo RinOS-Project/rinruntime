@@ -47,6 +47,11 @@ failure-closed at `UINT32_MAX` instead of wrapping, and `clear()` never resets
 that lifetime state, so a stale ID cannot become valid again after a long-lived
 loop has recycled a slot.
 
+`EventLoop::wait()` first drains a queued event or an already-due timer, so a
+backend is not required for model-owned work that cannot block.  A null
+`WaitFunction` is still rejected when a native readiness wait would be needed;
+platform adapters remain caller-owned and outside the public model.
+
 The canonical `rinruntime/rinruntime.hpp` umbrella includes the public
 `RinEventLoopBackend` userspace adapter on every target and includes
 `PollEventLoopBackend` on POSIX targets. The former translates to the public
