@@ -23,6 +23,7 @@ int main()
     assert(directPayload.valid());
 
     assert(!session.begin(0u, 1u, RinRuntime::DragDropAction::Copy));
+    assert(!session.begin(17u, UINT64_MAX, RinRuntime::DragDropAction::Copy));
     assert(session.begin(17u, 3u,
                          static_cast<RinRuntime::DragDropAction>(3u)));
     assert(session.addPayload("text/plain", "メモ", text, sizeof(text)));

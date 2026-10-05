@@ -210,7 +210,7 @@ inline bool DragDropSession::begin(std::uint64_t sessionId,
                                    DragDropAction actions)
 {
     reset();
-    if (sessionId == 0u || generation == 0u ||
+    if (sessionId == 0u || generation == 0u || generation == UINT64_MAX ||
         !actionValid(actions))
         return false;
     sessionId_ = sessionId;
