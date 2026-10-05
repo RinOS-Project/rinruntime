@@ -461,6 +461,24 @@ int main() {
     assert(reentrant_slider.handleEvent(increase_slider));
     assert(reentrant_slider_calls == 1u && reentrant_slider.value() == 100);
 
+    RinRuntime::List reentrant_list;
+    assert(reentrant_list.addItem("one"));
+    assert(reentrant_list.addItem("two"));
+    assert(reentrant_list.addItem("three"));
+    assert(reentrant_list.setSelectedIndex(0));
+    reentrant_list.setAccessibilityFocused(true);
+    RinRuntime::Event move_list = {};
+    move_list.type = RinRuntime::EventType::KeyDown;
+    move_list.key = 0x28u;
+    unsigned reentrant_list_calls = 0u;
+    reentrant_list.setOnSelect([&](int32_t) {
+        ++reentrant_list_calls;
+        assert(reentrant_list.handleEvent(move_list));
+    });
+    assert(reentrant_list.handleEvent(move_list));
+    assert(reentrant_list_calls == 1u &&
+           reentrant_list.selectedIndex() == 2);
+
     RinRuntime::Slider throwing_slider;
     throwing_slider.setBounds({0, 0, 100, 20});
     throwing_slider.setOnChange([](int32_t) {

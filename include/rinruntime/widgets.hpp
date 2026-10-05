@@ -613,6 +613,7 @@ class List : public Widget {
     ScrollModel scroll_;
     int32_t rowHeight_ = 32;
     std::function<void(int32_t)> onSelect_;
+    bool selectionCallbackInFlight_ = false;
 
     int32_t visibleRows() const {
         return rowHeight_ > 0 && bounds.h > 0 ? bounds.h / rowHeight_ : 0;
@@ -629,11 +630,18 @@ class List : public Widget {
         if (selection_.hasSelection())
             (void)scroll_.reveal(selection_.selected(), 1);
     }
+    void notifySelection(int32_t index) {
+        if (selectionCallbackInFlight_)
+            return;
+        selectionCallbackInFlight_ = true;
+        (void)widget_detail::invokeCallback(onSelect_, index);
+        selectionCallbackInFlight_ = false;
+    }
     bool selectIndex(int32_t index, bool notify) {
         if (!selection_.select(index)) return false;
         revealSelected();
         if (notify)
-            (void)widget_detail::invokeCallback(onSelect_, index);
+            notifySelection(index);
         return true;
     }
     static bool validItem(const std::string& value) {
@@ -738,8 +746,7 @@ public:
             return false;
         if (event.key == widget_detail::kReturn) {
             if (selection_.hasSelection())
-                (void)widget_detail::invokeCallback(onSelect_,
-                                                     selection_.selected());
+                notifySelection(selection_.selected());
             return selection_.hasSelection();
         }
         bool changed = false;
@@ -752,8 +759,7 @@ public:
         else return false;
         revealSelected();
         if (changed)
-            (void)widget_detail::invokeCallback(onSelect_,
-                                                 selection_.selected());
+            notifySelection(selection_.selected());
         return true;
     }
 };
