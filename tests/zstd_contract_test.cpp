@@ -92,24 +92,24 @@ int main()
     assert(decoded == std::vector<std::uint8_t>(5u, 'x'));
 
     const std::uint8_t compressedWithSequences[] = {
-        0x28u, 0xb5u, 0x2fu, 0xfdu, 0x20u, 0x08u,
+        0x28u, 0xb5u, 0x2fu, 0xfdu, 0x20u, 0x09u,
         0x45u, 0x00u, 0x00u, 0x08u, 'x', 0x01u,
-        0x54u, 0x01u, 0x00u, 0x04u, 0x01u};
+        0x54u, 0x01u, 0x00u, 0x05u, 0x01u};
     assert(decoder.decode(compressedWithSequences,
                           sizeof(compressedWithSequences), decoded) ==
            RinCompression::ZstdResult::Ok &&
-           decoded == std::vector<std::uint8_t>(8u, 'x'));
+           decoded == std::vector<std::uint8_t>(9u, 'x'));
 
     /* The same RLE tables may drive more than one sequence.  The second
      * match must continue from the output produced by the first sequence. */
     const std::uint8_t compressedWithMultipleSequences[] = {
-        0x28u, 0xb5u, 0x2fu, 0xfdu, 0x20u, 0x10u,
+        0x28u, 0xb5u, 0x2fu, 0xfdu, 0x20u, 0x12u,
         0x4du, 0x00u, 0x00u, 0x10u, 'x', 'x', 0x02u,
-        0x54u, 0x01u, 0x00u, 0x04u, 0x01u};
+        0x54u, 0x01u, 0x00u, 0x05u, 0x01u};
     assert(decoder.decode(compressedWithMultipleSequences,
                           sizeof(compressedWithMultipleSequences), decoded) ==
            RinCompression::ZstdResult::Ok &&
-           decoded == std::vector<std::uint8_t>(16u, 'x'));
+           decoded == std::vector<std::uint8_t>(18u, 'x'));
 
     /* The public sequence subset rejects non-RLE sequence tables and never
      * turns an unsupported entropy mode into partial output. */
@@ -125,7 +125,7 @@ int main()
     std::vector<std::uint8_t> unsupportedMatchLength(
         compressedWithSequences,
         compressedWithSequences + sizeof(compressedWithSequences));
-    unsupportedMatchLength[15] = 0x05u;
+    unsupportedMatchLength[15] = 0x21u;
     decoded.assign(1u, 0xa5u);
     assert(decoder.decode(unsupportedMatchLength.data(),
                           unsupportedMatchLength.size(), decoded) ==
