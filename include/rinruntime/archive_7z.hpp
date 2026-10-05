@@ -113,13 +113,13 @@ public:
      * regular files/directories with no packed stream.
      * BindPairs are validated before any coder runs.  A multi-entry folder is
      * exposed as bounded slices of the decoded folder stream, with
-     * `FilesInfo`-described empty files/directories interleaved in file order.
+     * `FilesInfo`-described empty files/directories, including empty entries
+     * interleaved with non-empty substreams in file order.
      * This subset is useful
      * for caller-owned test/resource bytes and intentionally has no path,
      * filename, filesystem, or service authority.  Multi-stream coders,
-     * arbitrary multi-stream graphs, non-linear multi-folder coder chains, encryption,
-     * empty entries in a non-empty folder, and external headers remain
-     * explicit Unsupported results. */
+     * arbitrary multi-stream graphs, non-linear multi-folder coder chains,
+     * encryption, and external headers remain explicit Unsupported results. */
     Archive7zResult decodeStored(const std::uint8_t* bytes, std::size_t size,
                                  std::string& output) const
     {
