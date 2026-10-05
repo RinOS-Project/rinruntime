@@ -2,6 +2,7 @@
 
 #include <cassert>
 #include <cstdint>
+#include <stdexcept>
 
 #include <rinruntime/window.hpp>
 
@@ -76,6 +77,13 @@ int main() {
     assert(window.dispatch() == 1);
     assert(callbackCount == 2);
 
+    window.onEvent([](const RinRuntime::WindowEvent&) -> bool {
+        throw std::runtime_error("event callback failure");
+    });
+    assert(window.dispatch() == RIN_ERROR_IO);
+    window.onEvent([](const RinRuntime::WindowEvent&) -> bool { return true; });
+    assert(window.dispatch() == 1);
+
     int paintCallbackCount = 0;
     int nestedPaintResult = RIN_SUCCESS;
     window.onPaint([&] {
@@ -88,6 +96,11 @@ int main() {
     assert(window.paint() == RIN_SUCCESS);
     assert(paintCallbackCount == 2);
 
+    window.onPaint([] { throw std::runtime_error("paint callback failure"); });
+    assert(window.paint() == RIN_ERROR_IO);
+    window.onPaint([] {});
+    assert(window.paint() == RIN_SUCCESS);
+
     int completionCallbackCount = 0;
     int nestedCompletionResult = RIN_SUCCESS;
     window.onCompositorCompletion([&](const RinRuntimeGuiCompletionV1&) {
@@ -99,5 +112,14 @@ int main() {
     assert(nestedCompletionResult == 1);
     assert(wnd_dispatch_compositor(0u, 1u) == 1);
     assert(completionCallbackCount == 2);
+
+    window.onCompositorCompletion(
+        [](const RinRuntimeGuiCompletionV1&) {
+            throw std::runtime_error("completion callback failure");
+        });
+    assert(wnd_dispatch_compositor(0u, 1u) == 1);
+    window.onCompositorCompletion(
+        [](const RinRuntimeGuiCompletionV1&) {});
+    assert(wnd_dispatch_compositor(0u, 1u) == 1);
     return 0;
 }
