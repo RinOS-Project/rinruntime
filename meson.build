@@ -144,6 +144,8 @@ if get_option('buildtype') != 'plain'
         args: [files('tests/file_operation_service_request_identity_boundary_test.py')])
   test('rinruntime-accessibility-service-request-identity-boundary', python,
         args: [files('tests/accessibility_service_request_identity_boundary_test.py')])
+  test('rinruntime-compositor-request-identity-boundary', python,
+        args: [files('tests/compositor_request_identity_boundary_test.py')])
   test('rinruntime-portal', executable('rinruntime-portal-test',
         'tests/portal_contract_test.c', dependencies: runtime_dep,
         override_options: test_override_options))

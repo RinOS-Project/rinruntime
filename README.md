@@ -684,3 +684,8 @@ authorization and filesystem mutation remain private.
 public request counter. Accessibility model/wire and client adapters remain
 public, while presenter, WebContent, desktop-service ownership, and actual UI
 authority remain private.
+
+`compositor_gui.c` also reserves zero and `UINT32_MAX` in both synchronous
+and asynchronous public window RPC request allocators. Compositor transport
+and kernel/window authority remain private adapters behind the public window
+API.

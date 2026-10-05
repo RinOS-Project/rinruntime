@@ -185,6 +185,11 @@ static RinCompositorInputRingEventV1
 static uint32_t g_input_ring_batch_count;
 static uint32_t g_input_ring_batch_index;
 
+static int runtime_request_id_valid(uint32_t request_id)
+{
+    return request_id != 0u && request_id != UINT32_MAX;
+}
+
 static int runtime_connect(void);
 static int runtime_setup_input_ring(void);
 static int runtime_request(uint32_t type, const void* payload,
@@ -427,8 +432,9 @@ static int runtime_request(uint32_t type, const void* payload,
         errno = EAGAIN;
         return -1;
     }
+    if (!runtime_request_id_valid(g_next_request_id)) g_next_request_id = 1u;
     request_id = g_next_request_id++;
-    if (g_next_request_id == 0u) g_next_request_id = 1u;
+    if (!runtime_request_id_valid(g_next_request_id)) g_next_request_id = 1u;
     request_start_ms = rin_monotonic_ms();
     if (runtime_deadline_after(
             request_start_ms,
@@ -1152,8 +1158,9 @@ static void runtime_async_begin_operation(void) {
     g_async_requests.request.type = runtime_async_request_type();
     g_async_requests.request.payload_size =
         runtime_async_request_payload_size();
+    if (!runtime_request_id_valid(g_next_request_id)) g_next_request_id = 1u;
     g_async_requests.request.request_id = g_next_request_id++;
-    if (g_next_request_id == 0u) g_next_request_id = 1u;
+    if (!runtime_request_id_valid(g_next_request_id)) g_next_request_id = 1u;
     g_async_requests.offset = 0u;
     g_async_requests.reply_offset = 0u;
     g_async_requests.stage = RIN_RUNTIME_GUI_ASYNC_SEND_HEADER;
