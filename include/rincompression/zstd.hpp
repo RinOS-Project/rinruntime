@@ -798,7 +798,9 @@ static inline ZstdResult decodeRleSequences(
     if (literalLengthCode > 1u || offsetCode != 0u ||
         matchLengthCode > 1u)
         return ZstdResult::Unsupported;
-    if (blockEnd - position != 1u || bytes[position++] != 0x80u)
+    /* A one-byte backward stream with no payload bits uses the lowest set
+     * bit as its end marker; 0x80 would leave seven zero payload bits. */
+    if (blockEnd - position != 1u || bytes[position++] != 0x01u)
         return ZstdResult::Malformed;
 
     const std::size_t literalLength = literalLengthCode;

@@ -92,13 +92,13 @@ int main()
     assert(decoded == std::vector<std::uint8_t>(5u, 'x'));
 
     const std::uint8_t compressedWithSequences[] = {
-        0x28u, 0xb5u, 0x2fu, 0xfdu, 0x20u, 0x04u,
+        0x28u, 0xb5u, 0x2fu, 0xfdu, 0x20u, 0x08u,
         0x45u, 0x00u, 0x00u, 0x08u, 'x', 0x01u,
-        0x54u, 0x01u, 0x00u, 0x00u, 0x80u};
+        0x54u, 0x01u, 0x00u, 0x04u, 0x01u};
     assert(decoder.decode(compressedWithSequences,
                           sizeof(compressedWithSequences), decoded) ==
            RinCompression::ZstdResult::Ok &&
-           decoded == std::vector<std::uint8_t>(4u, 'x'));
+           decoded == std::vector<std::uint8_t>(8u, 'x'));
 
     /* The public sequence subset rejects non-RLE sequence tables and never
      * turns an unsupported entropy mode into partial output. */
