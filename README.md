@@ -664,3 +664,8 @@ identities: zero and `UINT64_MAX` are rejected for every request/grant/status
 wire codec, and generated IDs skip both reserved values.  The path-free
 chooser adapter remains available to ordinary applications; File Manager
 authority, broker ownership, and filesystem access remain private.
+
+`crash_service_client.c` also skips zero and `UINT64_MAX` when allocating
+diagnostic request IDs, and fails closed if no live identity can be produced.
+The public client remains only a bounded authenticated crashd adapter; crash
+collection, service ownership, and process-memory authority remain private.

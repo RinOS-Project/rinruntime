@@ -17,6 +17,24 @@
 #define RINRUNTIME_CRASH_SERVICE_SYSTEM_SCOPE UINT16_C(1)
 static uint64_t g_crash_service_diagnostic_request_id = UINT64_C(1);
 
+static int crash_service_request_id_valid(uint64_t request_id)
+{
+    return request_id != 0u && request_id != UINT64_MAX;
+}
+
+static uint64_t crash_service_next_request_id(void)
+{
+    uint64_t request_id = 0u;
+    /* Two values are reserved, so three consecutive fetches always find a
+     * usable identity even when the counter crosses the wrap boundary. */
+    for (unsigned attempt = 0u; attempt < 3u; ++attempt) {
+        request_id = __atomic_fetch_add(&g_crash_service_diagnostic_request_id,
+                                        UINT64_C(1), __ATOMIC_RELAXED);
+        if (crash_service_request_id_valid(request_id)) return request_id;
+    }
+    return 0u;
+}
+
 static int crash_service_wait(int fd, uint32_t events)
 {
     uint32_t idle = 0u;
@@ -260,11 +278,11 @@ RinRuntimeCrashServiceResult rinruntime_crash_service_append_diagnostic(
     if (connect(fd, (const struct sockaddr*)&address, sizeof(address)) != 0 ||
         !crash_service_endpoint_valid(fd, expected_service_slot))
         goto done;
-    request_id = __atomic_fetch_add(&g_crash_service_diagnostic_request_id,
-                                    UINT64_C(1), __ATOMIC_RELAXED);
-    if (request_id == 0u)
-        request_id = __atomic_fetch_add(&g_crash_service_diagnostic_request_id,
-                                        UINT64_C(1), __ATOMIC_RELAXED);
+    request_id = crash_service_next_request_id();
+    if (!crash_service_request_id_valid(request_id)) {
+        result = RINRUNTIME_CRASH_SERVICE_PROTOCOL_ERROR;
+        goto done;
+    }
     request.struct_size = sizeof(request);
     request.version = RIN_CRASH_SERVICE_ABI_VERSION;
     request.opcode = RIN_CRASH_SERVICE_OP_APPEND_DIAGNOSTIC;

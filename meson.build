@@ -138,6 +138,8 @@ if get_option('buildtype') != 'plain'
         override_options: test_override_options, cpp_args: ['-std=c++17']))
   test('rinruntime-public-io-retry-boundary', python,
         args: [files('tests/public_io_retry_boundary_test.py')])
+  test('rinruntime-crash-service-request-identity-boundary', python,
+        args: [files('tests/crash_service_request_identity_boundary_test.py')])
   test('rinruntime-portal', executable('rinruntime-portal-test',
         'tests/portal_contract_test.c', dependencies: runtime_dep,
         override_options: test_override_options))
