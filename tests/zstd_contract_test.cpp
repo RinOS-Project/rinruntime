@@ -100,6 +100,17 @@ int main()
            RinCompression::ZstdResult::Ok &&
            decoded == std::vector<std::uint8_t>(8u, 'x'));
 
+    /* The same RLE tables may drive more than one sequence.  The second
+     * match must continue from the output produced by the first sequence. */
+    const std::uint8_t compressedWithMultipleSequences[] = {
+        0x28u, 0xb5u, 0x2fu, 0xfdu, 0x20u, 0x10u,
+        0x4du, 0x00u, 0x00u, 0x10u, 'x', 'x', 0x02u,
+        0x54u, 0x01u, 0x00u, 0x04u, 0x01u};
+    assert(decoder.decode(compressedWithMultipleSequences,
+                          sizeof(compressedWithMultipleSequences), decoded) ==
+           RinCompression::ZstdResult::Ok &&
+           decoded == std::vector<std::uint8_t>(16u, 'x'));
+
     /* The public sequence subset rejects non-RLE sequence tables and never
      * turns an unsupported entropy mode into partial output. */
     std::vector<std::uint8_t> unsupportedSequence(
