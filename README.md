@@ -531,11 +531,12 @@ and portal ownership remains with the private adapter.
 The public `rincompression/zstd.hpp` header provides a bounded Zstandard frame
 subset for raw and RLE blocks plus direct-table or bounded-FSE, single- and
 four-stream Huffman literals, with content-size, optional XXH64 checksum,
-cancellation, and failure-atomic output validation. The public FSE tree path is
-capped at accuracy seven and 128 decoded weight bytes; non-zero sequence
-commands and external dictionaries return `Unsupported`. A private frame owner
-may add those algorithms without changing the public filesystem or service
-boundary.
+cancellation, and failure-atomic output validation. The decoder also accepts
+the bounded RLE sequence subset with literal-length codes 0/1, match-length
+codes 0/1, and distance one; FSE/repeat sequence tables and external
+dictionaries return `Unsupported`. The public FSE tree path is capped at
+accuracy seven and 128 decoded weight bytes. A private frame owner may add
+those algorithms without changing the public filesystem or service boundary.
 The decoder also rejects frames containing more than `kZstdMaximumBlocks`
 (65,536) blocks, including empty raw blocks, so block-count CPU amplification
 fails closed as `Limit` without changing the public/private ownership split.

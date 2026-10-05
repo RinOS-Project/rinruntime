@@ -92,10 +92,23 @@ int main()
     assert(decoded == std::vector<std::uint8_t>(5u, 'x'));
 
     const std::uint8_t compressedWithSequences[] = {
-        0x28u, 0xb5u, 0x2fu, 0xfdu, 0x20u, 0x01u,
-        0x1du, 0x00u, 0x00u, 0x08u, 'x', 0x01u};
+        0x28u, 0xb5u, 0x2fu, 0xfdu, 0x20u, 0x04u,
+        0x45u, 0x00u, 0x00u, 0x08u, 'x', 0x01u,
+        0x54u, 0x01u, 0x00u, 0x00u, 0x80u};
     assert(decoder.decode(compressedWithSequences,
                           sizeof(compressedWithSequences), decoded) ==
+           RinCompression::ZstdResult::Ok &&
+           decoded == std::vector<std::uint8_t>(4u, 'x'));
+
+    /* The public sequence subset rejects non-RLE sequence tables and never
+     * turns an unsupported entropy mode into partial output. */
+    std::vector<std::uint8_t> unsupportedSequence(
+        compressedWithSequences,
+        compressedWithSequences + sizeof(compressedWithSequences));
+    unsupportedSequence[12] = 0x94u;
+    decoded.assign(1u, 0xa5u);
+    assert(decoder.decode(unsupportedSequence.data(),
+                          unsupportedSequence.size(), decoded) ==
            RinCompression::ZstdResult::Unsupported && decoded.empty());
 
     /* A direct-table, single-stream Huffman literal section is a public
