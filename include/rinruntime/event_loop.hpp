@@ -44,7 +44,7 @@ public:
     static constexpr Size kEventCapacity = 64u;
     static constexpr Size kTimerCapacity = 32u;
     static constexpr Size kWaitCapacity = 16u;
-    static constexpr Size kMaxCompositionBytes = 4096u;
+    static constexpr Size kMaxCompositionBytes = kMaxTextCompositionBytes;
     using TimerId = std::uint64_t;
     using WaitId = std::uint64_t;
 
@@ -101,6 +101,8 @@ private:
 
     static bool validEvent(const Event& event) noexcept {
         return event.type != EventType::None &&
+               (event.type != EventType::TextInput ||
+                isUnicodeScalar(event.codepoint)) &&
                event.compositionSize <= kMaxCompositionBytes &&
                event.compositionSelectionStart <= event.compositionSize &&
                event.compositionSelectionEnd <= event.compositionSize &&

@@ -35,6 +35,7 @@ enum EventFlags : std::uint32_t {
 constexpr std::uint32_t EVENT_MODIFIER_SHIFT = 0x00000001u;
 constexpr std::uint32_t EVENT_MODIFIER_CTRL = 0x00000002u;
 constexpr std::uint32_t EVENT_MODIFIER_ALT = 0x00000004u;
+constexpr std::uint32_t kMaxTextCompositionBytes = 4096u;
 
 struct Event {
     EventType type = EventType::None;

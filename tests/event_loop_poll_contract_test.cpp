@@ -59,9 +59,20 @@ int main() {
     assert(!event_validation_loop.post(invalid_composition));
     invalid_composition.compositionSelectionEnd = 1u;
     assert(event_validation_loop.post(invalid_composition));
+    Event invalid_text = {};
+    invalid_text.type = EventType::TextInput;
+    invalid_text.codepoint = 0xd800u;
+    assert(!event_validation_loop.post(invalid_text));
+    invalid_text.codepoint = 0x110000u;
+    assert(!event_validation_loop.post(invalid_text));
+    invalid_text.codepoint = 0x3042u;
+    assert(event_validation_loop.post(invalid_text));
     Event validation_output = {};
     assert(event_validation_loop.runOne(0u, &validation_output));
     assert(validation_output.type == EventType::TextComposition);
+    assert(event_validation_loop.runOne(0u, &validation_output));
+    assert(validation_output.type == EventType::TextInput &&
+           validation_output.codepoint == 0x3042u);
 
     assert(loop.scheduleAt(UINT64_MAX, ready_event) == 0u);
     assert(loop.scheduleAt(g_now + 1u, ready_event) != 0u);

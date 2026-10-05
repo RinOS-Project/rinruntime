@@ -214,7 +214,9 @@ public:
      * Repeated preedit updates retain the selection that was active at start. */
     bool setComposition(const char* value, size_t valueLength,
                         size_t selectionStart, size_t selectionEnd) {
-        if (!value && valueLength != 0u) return false;
+        if ((!value && valueLength != 0u) ||
+            valueLength > kMaxTextCompositionBytes)
+            return false;
 #if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
         try {
 #endif
