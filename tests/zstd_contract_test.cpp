@@ -111,6 +111,15 @@ int main()
                           unsupportedSequence.size(), decoded) ==
            RinCompression::ZstdResult::Unsupported && decoded.empty());
 
+    std::vector<std::uint8_t> unsupportedMatchLength(
+        compressedWithSequences,
+        compressedWithSequences + sizeof(compressedWithSequences));
+    unsupportedMatchLength[15] = 0x05u;
+    decoded.assign(1u, 0xa5u);
+    assert(decoder.decode(unsupportedMatchLength.data(),
+                          unsupportedMatchLength.size(), decoded) ==
+           RinCompression::ZstdResult::Unsupported && decoded.empty());
+
     /* A direct-table, single-stream Huffman literal section is a public
      * entropy-coded subset.  The tree describes symbols 0 and 1 with equal
      * one-bit weights; the final bit in 0x15 is the stream end marker. */
