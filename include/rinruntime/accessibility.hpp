@@ -235,7 +235,8 @@ public:
         try {
 #endif
             AccessibilityTree tree = {};
-            if (!output || nodeId == 0u || !getTree(handle, &tree) ||
+            if (!output || nodeId == 0u || generation == 0u ||
+                generation == UINT64_MAX || !getTree(handle, &tree) ||
                 tree.generation != generation)
                 return false;
             for (const auto& node : tree.nodes) {
@@ -256,7 +257,8 @@ public:
     static bool performAction(uintptr_t handle, uint64_t generation,
                               uint64_t nodeId, AccessibilityAction action,
                               const std::string& value = "") {
-        if (handle == 0u || generation == 0u || nodeId == 0u ||
+        if (handle == 0u || generation == 0u || generation == UINT64_MAX ||
+            nodeId == 0u ||
             static_cast<uint32_t>(action) == 0u ||
             (static_cast<uint32_t>(action) &
              (static_cast<uint32_t>(action) - 1u)) != 0u)

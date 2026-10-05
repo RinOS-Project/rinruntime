@@ -20,6 +20,7 @@ class AccessibilityTreeBridge final : public AccessibilityProvider {
 
     static bool validTreeRoot(const AccessibilityTree& tree) {
         return tree.window != 0u && tree.generation != 0u &&
+               tree.generation != UINT64_MAX &&
                !tree.nodes.empty() && tree.nodes.size() <=
                    ACCESSIBILITY_BRIDGE_MAX_NODES && tree.nodes[0].id != 0u &&
                tree.nodes[0].parentId == 0u;
@@ -74,7 +75,7 @@ class AccessibilityTreeBridge final : public AccessibilityProvider {
         value ^= value >> 27u;
         value *= UINT64_C(0x94d049bb133111eb);
         value ^= value >> 31u;
-        return value == 0u ? 1u : value;
+        return value == 0u || value == UINT64_MAX ? 1u : value;
     }
 
     static std::uint64_t webId(std::uint64_t id) {

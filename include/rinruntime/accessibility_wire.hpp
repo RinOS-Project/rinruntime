@@ -110,6 +110,7 @@ public:
     static bool encode(const AccessibilityTree& tree,
                        AccessibilityWireSnapshotV1* out) {
         if (out == nullptr || tree.window == 0u || tree.generation == 0u ||
+            tree.generation == UINT64_MAX ||
             tree.nodes.empty() || tree.nodes.size() > kAccessibilityWireMaxNodes)
             return false;
         AccessibilityWireSnapshotV1 encoded = {};
@@ -171,6 +172,7 @@ public:
         if (out == nullptr || source.struct_size != sizeof(source) ||
             source.version != kAccessibilityWireVersion || source.flags != 0u ||
             source.window == 0u || source.generation == 0u ||
+            source.generation == UINT64_MAX ||
             source.node_count == 0u || source.node_count > kAccessibilityWireMaxNodes ||
             source.reserved0 != 0u) return false;
         AccessibilityTree decoded = {};

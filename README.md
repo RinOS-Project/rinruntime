@@ -247,6 +247,15 @@ public validation boundary. `cancel()` and `reset()` scrub copied payload
 bytes before releasing them, because a public opaque payload may contain
 caller-sensitive material.
 
+`accessibility.hpp`, `accessibility_wire.hpp`, and
+`accessibility_bridge.hpp` keep accessibility snapshot generations bounded
+and non-wrapping. Direct desktop lookup/actions, wire encode/decode, and
+chrome/WebContent tree composition reject zero or `UINT64_MAX`; the terminal
+value is reserved so an exhausted private accessibilityd snapshot cannot be
+accepted or reused as a live public tree. The accessibility model and wire
+codec remain public for ordinary applications and toolkits, while presenter,
+WebContent, and desktop-service authority remain private.
+
 `clipboard.h` provides the public application text clipboard client.  It
 validates the UTF-8 byte bound and uses the public GUI syscall adapter with
 failure-atomic output handling.  The private kernel broker remains the owner

@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: MIT */
 #include <rinruntime/rinruntime.hpp>
+#include <rinruntime/accessibility_bridge.hpp>
 
 #include <cassert>
 #include <cstdint>
@@ -58,6 +59,22 @@ static bool throwingEventLoopBackend(
 struct EventLoopWatchMutationContext {
     RinRuntime::EventLoop* loop = nullptr;
     bool mutate = true;
+};
+
+struct AccessibilityTestProvider final : RinRuntime::AccessibilityProvider {
+    RinRuntime::AccessibilityTree tree = {};
+
+    RinRuntime::AccessibilityTree accessibilityTree() const override {
+        return tree;
+    }
+
+    bool focusAccessibilityNode(std::uint64_t) override { return true; }
+
+    bool performAccessibilityActionValue(
+        std::uint64_t, RinRuntime::AccessibilityAction,
+        const std::string&) override {
+        return true;
+    }
 };
 
 static bool mutateEventLoopWatch(
@@ -334,8 +351,42 @@ int main() {
     RinRuntime::AccessibilityTree decoded = {};
     assert(RinRuntime::AccessibilityWireCodec::decode(wire, &decoded));
     assert(decoded.nodes.size() == 1u && decoded.nodes[0].id == 1u);
+    tree.generation = UINT64_MAX;
+    assert(!RinRuntime::AccessibilityWireCodec::encode(tree, &wire));
+    tree.generation = 3u;
+    assert(RinRuntime::AccessibilityWireCodec::encode(tree, &wire));
+    wire.generation = UINT64_MAX;
+    assert(!RinRuntime::AccessibilityWireCodec::decode(wire, &decoded));
+    wire.generation = 3u;
     wire.nodes[0].name.bytes[0] = 0xffu;
     assert(!RinRuntime::AccessibilityWireCodec::decode(wire, &decoded));
+
+    AccessibilityTestProvider provider;
+    provider.tree.window = 11u;
+    provider.tree.generation = UINT64_MAX;
+    provider.tree.nodes.push_back(root);
+    assert(RinRuntime::AccessibilityDesktopService::tryRegisterWindow(
+        11u, &provider));
+    RinRuntime::AccessibilityNode found = {};
+    assert(!RinRuntime::AccessibilityDesktopService::findNode(
+        11u, UINT64_MAX, 1u, &found));
+    assert(!RinRuntime::AccessibilityDesktopService::performAction(
+        11u, UINT64_MAX, 1u, RinRuntime::ACCESSIBILITY_ACTION_FOCUS));
+    RinRuntime::AccessibilityDesktopService::unregisterWindow(11u, &provider);
+
+    AccessibilityTestProvider chrome;
+    chrome.tree.window = 12u;
+    chrome.tree.generation = 1u;
+    chrome.tree.nodes.push_back(root);
+    AccessibilityTestProvider web;
+    web.tree.window = 12u;
+    web.tree.generation = UINT64_MAX;
+    web.tree.nodes.push_back(root);
+    RinRuntime::AccessibilityTreeBridge bridge(&chrome, &web);
+    const RinRuntime::AccessibilityTree rejectedBridgeTree =
+        bridge.accessibilityTree();
+    assert(rejectedBridgeTree.generation == 0u &&
+           rejectedBridgeTree.nodes.empty());
 
     Rin::Application application;
     assert(application.start());
