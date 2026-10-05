@@ -406,11 +406,15 @@ class Slider : public Widget {
     int32_t minValue_ = 0;
     int32_t maxValue_ = 100;
     bool dragging_ = false;
+    bool changeInFlight_ = false;
     std::function<void(int32_t)> onChange_;
 
     void notifyIfChanged(int32_t oldValue) {
-        if (value_ != oldValue)
+        if (value_ != oldValue && !changeInFlight_) {
+            changeInFlight_ = true;
             (void)widget_detail::invokeCallback(onChange_, value_);
+            changeInFlight_ = false;
+        }
     }
 
 public:
