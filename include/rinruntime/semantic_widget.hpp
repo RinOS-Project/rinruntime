@@ -27,6 +27,7 @@ class SemanticWidget : public Widget {
     uint32_t actions_ = ACCESSIBILITY_ACTION_NONE;
     bool keyboardFocusable_ = false;
     bool textEditable_ = false;
+    bool valueMutationInFlight_ = false;
     std::function<bool()> activate_;
     std::function<bool(const std::string&)> setValue_;
 
@@ -37,7 +38,8 @@ public:
     bool configure(const std::string& name, const std::string& value,
                    const std::string& description, uint32_t extraState,
                    uint32_t actions, bool focusable, bool editable) {
-        if (!strictUtf8TextValid(name) || !strictUtf8TextValid(value) ||
+        if (valueMutationInFlight_ || !strictUtf8TextValid(name) ||
+            !strictUtf8TextValid(value) ||
             !strictUtf8TextValid(description))
             return false;
 #if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
@@ -91,19 +93,25 @@ public:
     bool isTextEditable() const override { return textEditable_; }
 
     bool setAccessibilityValue(const std::string& value) override {
-        if (!textEditable_ || !strictUtf8TextValid(value) || !setValue_)
+        if (valueMutationInFlight_ || !textEditable_ ||
+            !strictUtf8TextValid(value) || !setValue_)
             return false;
 #if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
         try {
 #endif
             std::string candidate = value;
-            if (!setValue_(value)) return false;
+            valueMutationInFlight_ = true;
+            const bool accepted = setValue_(value);
+            valueMutationInFlight_ = false;
+            if (!accepted) return false;
             value_.swap(candidate);
             return true;
 #if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
         } catch (const std::bad_alloc&) {
+            valueMutationInFlight_ = false;
             return false;
         } catch (...) {
+            valueMutationInFlight_ = false;
             return false;
         }
 #endif

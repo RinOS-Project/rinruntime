@@ -388,6 +388,22 @@ int main() {
     assert(!semantic.setAccessibilityValue("new"));
     assert(semantic.value() == "old");
 
+    RinRuntime::SemanticWidget reentrant_semantic;
+    assert(reentrant_semantic.configure("Name", "old", "", 0u,
+                                        RinRuntime::ACCESSIBILITY_ACTION_SET_VALUE,
+                                        true, true));
+    bool reentrant_semantic_called = false;
+    reentrant_semantic.setValueHandler([&](const std::string&) {
+        reentrant_semantic_called = true;
+        assert(!reentrant_semantic.setAccessibilityValue("nested"));
+        assert(!reentrant_semantic.configure(
+            "Name", "nested", "", 0u,
+            RinRuntime::ACCESSIBILITY_ACTION_SET_VALUE, true, true));
+        return true;
+    });
+    assert(reentrant_semantic.setAccessibilityValue("new"));
+    assert(reentrant_semantic_called && reentrant_semantic.value() == "new");
+
     RinRuntime::Button throwing_button("Throwing");
     throwing_button.setBounds({0, 0, 100, 40});
     throwing_button.setOnClick([] {
