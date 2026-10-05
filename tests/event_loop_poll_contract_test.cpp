@@ -57,6 +57,10 @@ int main() {
     invalid_composition.compositionSize = 1u;
     invalid_composition.compositionSelectionEnd = 2u;
     assert(!event_validation_loop.post(invalid_composition));
+    invalid_composition.compositionText = "\xc0";
+    invalid_composition.compositionSelectionEnd = 1u;
+    assert(!event_validation_loop.post(invalid_composition));
+    invalid_composition.compositionText = composition;
     invalid_composition.compositionSelectionEnd = 1u;
     assert(event_validation_loop.post(invalid_composition));
     Event invalid_text = {};

@@ -36,6 +36,47 @@ inline bool eventLoopByteRangesOverlap(const void* left, std::size_t leftSize,
     return leftStart < rightEnd && rightStart < leftEnd;
 }
 
+inline bool eventLoopCompositionUtf8Valid(const char* value,
+                                           std::size_t size) noexcept {
+    if (value == nullptr) return size == 0u;
+    std::size_t index = 0u;
+    while (index < size) {
+        const unsigned char first =
+            static_cast<unsigned char>(value[index]);
+        std::size_t count = 0u;
+        std::uint32_t codepoint = 0u;
+        if (first <= 0x7fu) {
+            count = 1u;
+            codepoint = first;
+        } else if (first >= 0xc2u && first <= 0xdfu) {
+            count = 2u;
+            codepoint = first & 0x1fu;
+        } else if (first >= 0xe0u && first <= 0xefu) {
+            count = 3u;
+            codepoint = first & 0x0fu;
+        } else if (first >= 0xf0u && first <= 0xf4u) {
+            count = 4u;
+            codepoint = first & 0x07u;
+        } else {
+            return false;
+        }
+        if (count > size - index) return false;
+        for (std::size_t offset = 1u; offset < count; ++offset) {
+            const unsigned char continuation = static_cast<unsigned char>(
+                value[index + offset]);
+            if ((continuation & 0xc0u) != 0x80u) return false;
+            codepoint = (codepoint << 6u) | (continuation & 0x3fu);
+        }
+        if (!isUnicodeScalar(codepoint) ||
+            (count == 2u && codepoint < 0x80u) ||
+            (count == 3u && codepoint < 0x800u) ||
+            (count == 4u && codepoint < 0x10000u))
+            return false;
+        index += count;
+    }
+    return true;
+}
+
 } // namespace detail
 
 class EventLoop final {
@@ -103,6 +144,9 @@ private:
         return event.type != EventType::None &&
                (event.type != EventType::TextInput ||
                 isUnicodeScalar(event.codepoint)) &&
+               (event.type != EventType::TextComposition ||
+                detail::eventLoopCompositionUtf8Valid(
+                    event.compositionText, event.compositionSize)) &&
                event.compositionSize <= kMaxCompositionBytes &&
                event.compositionSelectionStart <= event.compositionSize &&
                event.compositionSelectionEnd <= event.compositionSize &&
