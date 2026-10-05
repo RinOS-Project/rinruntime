@@ -163,6 +163,7 @@ int rinruntime_backup_identity_valid(const RinRuntimeBackupIdentityV1* identity)
     return identity != NULL && identity->struct_size == sizeof(*identity) &&
            identity->version == RINRUNTIME_BACKUP_VERSION &&
            identity->reserved0 == 0u && identity->package_generation != 0u &&
+           identity->package_generation != UINT64_MAX &&
            backup_nonzero(identity->application_id,
                           sizeof(identity->application_id)) &&
            backup_nonzero(identity->package_digest,
@@ -222,7 +223,9 @@ static RinRuntimeBackupResult backup_manifest_validate(
         manifest->version != RINRUNTIME_BACKUP_VERSION ||
         manifest->reserved0 != 0u ||
         !rinruntime_backup_identity_valid(&manifest->identity) ||
-        manifest->manifest_generation == 0u || manifest->created_at_ns == 0u ||
+        manifest->manifest_generation == 0u ||
+        manifest->manifest_generation == UINT64_MAX ||
+        manifest->created_at_ns == 0u ||
         manifest->item_count > RINRUNTIME_BACKUP_MAX_ITEMS ||
         (manifest->item_count != 0u && manifest->items == NULL) ||
         manifest->reserved1 != 0u || manifest->reserved[0] != 0u ||
@@ -364,7 +367,9 @@ static RinRuntimeBackupResult backup_wire_validate(
     memcpy(identity.package_digest, header.package_digest,
            sizeof(identity.package_digest));
     identity.package_generation = header.package_generation;
-    if (header.manifest_generation == 0u || header.created_at_ns == 0u ||
+    if (header.manifest_generation == 0u ||
+        header.manifest_generation == UINT64_MAX ||
+        header.created_at_ns == 0u ||
         !rinruntime_backup_identity_valid(&identity))
         return RINRUNTIME_BACKUP_MALFORMED;
     memset(&prior_item, 0, sizeof(prior_item));

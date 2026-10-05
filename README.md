@@ -526,6 +526,10 @@ The encoder, manifest inspector, entry accessor, and status-from-manifest
 helper reject input/output storage overlap before that clear; this preserves
 the caller's manifest bytes when a public application accidentally aliases a
 wire image with its result object or output buffer.
+Backup package and manifest generations must be neither zero nor `UINT64_MAX`;
+the terminal value is reserved so a wrapped package or manifest identity cannot
+be accepted as a live restore record. Timestamp fields keep their separate
+nonzero time contract.
 
 The public session-recovery serializer and resolver apply the same boundary:
 snapshot payloads, wire images, metadata, restored payloads, and size outputs
