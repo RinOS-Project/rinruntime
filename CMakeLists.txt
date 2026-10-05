@@ -328,6 +328,16 @@ if(RINRUNTIME_BUILD_TESTS)
                           CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES)
     add_test(NAME rinruntime-download-range
              COMMAND rinruntime-download-range-test)
+    add_executable(rinruntime-public-common-adapters-test
+                   tests/public_common_adapters_contract_test.cpp)
+    target_link_libraries(rinruntime-public-common-adapters-test
+                          PRIVATE RinRuntime::RinRuntime)
+    target_include_directories(rinruntime-public-common-adapters-test
+                               PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    set_target_properties(rinruntime-public-common-adapters-test PROPERTIES
+                          CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES)
+    add_test(NAME rinruntime-public-common-adapters
+             COMMAND rinruntime-public-common-adapters-test)
     add_executable(rinruntime-drag-drop-test
                    tests/drag_drop_contract_test.cpp)
     target_link_libraries(rinruntime-drag-drop-test

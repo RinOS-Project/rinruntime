@@ -171,6 +171,11 @@ if get_option('buildtype') != 'plain'
   test('rinruntime-download-range', executable('rinruntime-download-range-test',
         'tests/download_range_transport_contract_test.cpp',
         dependencies: runtime_dep, override_options: test_override_options))
+  test('rinruntime-public-common-adapters', executable(
+        'rinruntime-public-common-adapters-test',
+        'tests/public_common_adapters_contract_test.cpp',
+        dependencies: runtime_dep, override_options: test_override_options,
+        cpp_args: ['-std=c++17']))
   test('rinruntime-drag-drop', executable('rinruntime-drag-drop-test',
         'tests/drag_drop_contract_test.cpp', dependencies: runtime_dep,
         override_options: test_override_options))
