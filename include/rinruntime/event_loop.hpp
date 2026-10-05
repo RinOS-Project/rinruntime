@@ -144,10 +144,10 @@ private:
         return event.type != EventType::None &&
                (event.type != EventType::TextInput ||
                 isUnicodeScalar(event.codepoint)) &&
+               event.compositionSize <= kMaxCompositionBytes &&
                (event.type != EventType::TextComposition ||
                 detail::eventLoopCompositionUtf8Valid(
                     event.compositionText, event.compositionSize)) &&
-               event.compositionSize <= kMaxCompositionBytes &&
                event.compositionSelectionStart <= event.compositionSize &&
                event.compositionSelectionEnd <= event.compositionSize &&
                (event.compositionSize == 0u || event.compositionText != nullptr);
