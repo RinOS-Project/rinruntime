@@ -762,9 +762,9 @@ static inline ZstdResult decodeLiterals(
 
 /* Execute the deliberately small sequence subset that can be validated
  * without constructing sequence FSE tables: all three sequence tables use
- * RLE mode, the literal-length symbol is 0 or 1, the match-length symbol is
- * 0 through 32 (all zero-additional-bit codes), and the offset symbol is 0
- * (distance one).  The backward bitstream
+ * RLE mode, the literal-length symbol is 0 through 15 and the match-length
+ * symbol is 0 through 31 (the zero-additional-bit codes), and the offset
+ * symbol is 0 (distance one).  The backward bitstream
  * then contains only its end marker.  This is useful for ordinary repeated
  * data while keeping unsupported sequence entropy modes explicit. */
 static inline ZstdResult decodeRleSequences(
@@ -804,8 +804,8 @@ static inline ZstdResult decodeRleSequences(
     const std::uint8_t literalLengthCode = bytes[position++];
     const std::uint8_t offsetCode = bytes[position++];
     const std::uint8_t matchLengthCode = bytes[position++];
-    if (literalLengthCode > 1u || offsetCode != 0u ||
-        matchLengthCode > 32u)
+    if (literalLengthCode > 15u || offsetCode != 0u ||
+        matchLengthCode > 31u)
         return ZstdResult::Unsupported;
     /* A one-byte backward stream with no payload bits uses the lowest set
      * bit as its end marker; 0x80 would leave seven zero payload bits. */

@@ -111,6 +111,26 @@ int main()
            RinCompression::ZstdResult::Ok &&
            decoded == std::vector<std::uint8_t>(18u, 'x'));
 
+    /* The zero-additional-bit boundaries are interoperable: LL code 15 and
+     * ML code 31 both remain in the bounded RLE-table subset. */
+    const std::uint8_t compressedWithMaximumZeroBitCodes[] = {
+        0x28u, 0xb5u, 0x2fu, 0xfdu, 0x20u, 0x23u,
+        0x45u, 0x00u, 0x00u, 0x08u, 'x', 0x01u,
+        0x54u, 0x01u, 0x00u, 0x1fu, 0x01u};
+    assert(decoder.decode(compressedWithMaximumZeroBitCodes,
+                          sizeof(compressedWithMaximumZeroBitCodes), decoded) ==
+           RinCompression::ZstdResult::Ok &&
+           decoded == std::vector<std::uint8_t>(35u, 'x'));
+
+    const std::uint8_t compressedWithMaximumZeroBitLiteralCode[] = {
+        0x28u, 0xb5u, 0x2fu, 0xfdu, 0x20u, 0x12u,
+        0x45u, 0x00u, 0x00u, 0x79u, 'x',
+        0x01u, 0x54u, 0x0fu, 0x00u, 0x00u, 0x01u};
+    assert(decoder.decode(compressedWithMaximumZeroBitLiteralCode,
+                          sizeof(compressedWithMaximumZeroBitLiteralCode),
+                          decoded) == RinCompression::ZstdResult::Ok &&
+           decoded == std::vector<std::uint8_t>(18u, 'x'));
+
     /* The public sequence subset rejects non-RLE sequence tables and never
      * turns an unsupported entropy mode into partial output. */
     std::vector<std::uint8_t> unsupportedSequence(
@@ -125,7 +145,7 @@ int main()
     std::vector<std::uint8_t> unsupportedMatchLength(
         compressedWithSequences,
         compressedWithSequences + sizeof(compressedWithSequences));
-    unsupportedMatchLength[15] = 0x21u;
+    unsupportedMatchLength[15] = 0x20u;
     decoded.assign(1u, 0xa5u);
     assert(decoder.decode(unsupportedMatchLength.data(),
                           unsupportedMatchLength.size(), decoded) ==
