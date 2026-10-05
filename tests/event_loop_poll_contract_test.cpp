@@ -106,6 +106,24 @@ int main() {
                                   &backend_free_output));
     assert(backend_free_output.type == EventType::Close);
 
+    /* UINT64_MAX is the adapter no-deadline sentinel, not a valid clock
+     * sample.  A failed clock sample must not publish every finite timer as
+     * already due or discard the timer from the queue. */
+    EventLoop sentinel_loop;
+    Event paint = {};
+    paint.type = EventType::Paint;
+    const EventLoop::TimerId sentinel_timer =
+        sentinel_loop.scheduleAt(30u, paint);
+    assert(sentinel_timer != 0u);
+    Event sentinel_output = {};
+    assert(!sentinel_loop.runOne(UINT64_MAX, &sentinel_output));
+    assert(sentinel_output.type == EventType::None);
+    std::uint64_t sentinel_deadline = 0u;
+    assert(sentinel_loop.nextDeadline(&sentinel_deadline) &&
+           sentinel_deadline == 30u);
+    assert(sentinel_loop.runOne(30u, &sentinel_output) &&
+           sentinel_output.type == EventType::Paint);
+
     assert(loop.scheduleAt(UINT64_MAX, ready_event) == 0u);
     assert(loop.scheduleAt(g_now + 1u, ready_event) != 0u);
     Event output = {};

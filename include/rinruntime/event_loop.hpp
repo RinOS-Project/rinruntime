@@ -372,7 +372,11 @@ public:
     bool runOne(std::uint64_t now, Event* output) noexcept {
         if (output == nullptr) return false;
         *output = {};
-        if (takeDueTimer(now, output)) return true;
+        /* UINT64_MAX is the public adapter's no-deadline sentinel, not a
+         * usable monotonic clock sample.  Do not turn an invalid clock into
+         * an observation that every finite timer is due.  Queued events are
+         * independent of the clock and remain drainable below. */
+        if (now != UINT64_MAX && takeDueTimer(now, output)) return true;
         if (eventCount_ == 0u) return false;
         *output = events_[eventHead_];
         events_[eventHead_] = Event{};
