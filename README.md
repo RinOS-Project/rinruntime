@@ -354,7 +354,10 @@ ordinary applications; device admission, repository trust, update transport,
 and install authority remain private owners. The public application metadata,
 application catalog, and theme resource adapters also reject a caller-owned
 source buffer that overlaps model or error storage before source scrub or
-resource callbacks.
+resource callbacks. If a path-backed resource callback throws in an
+exception-enabled build, each adapter catches it, scrubs the bounded source,
+clears the output/size publication, and returns its ordinary resource failure;
+filesystem and service ownership remains with the caller-owned callback.
 
 `update_metadata.hpp` provides the corresponding bounded update description:
 product/update identity, target version, channel, applicability floor, release

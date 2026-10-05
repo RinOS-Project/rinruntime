@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -25,8 +26,11 @@ static RinResourceCatalogStatus readThemePath(
     void* context, const char* path, std::uint32_t pathSize, std::uint8_t* output,
     std::uint64_t capacity, std::uint64_t* outputSize) {
     const std::string json = validJson();
-    if (context != nullptr)
+    if (context != nullptr) {
+        if (*static_cast<std::uint64_t*>(context) == UINT64_MAX)
+            throw std::runtime_error("theme callback failed");
         *static_cast<std::uint64_t*>(context) = capacity;
+    }
     assert(path != nullptr && pathSize == 15u &&
            std::string(path, pathSize) == "/res/theme.json");
     if (output == nullptr || outputSize == nullptr ||
@@ -110,6 +114,18 @@ int main() {
     assert(loaded == resourceJson.size());
     assert(observedCapacity == RinRuntime::ThemeProfileJson::kMaximumBytes);
     assert(profile.valid());
+
+    observedCapacity = UINT64_MAX;
+    std::fill(source.begin(), source.end(), 0xa5u);
+    loaded = SIZE_MAX;
+    profile = {};
+    assert(!RinRuntime::ThemeProfileJson::parseResource(
+        &catalog, 7u, readThemePath, &observedCapacity, source.data(),
+        source.size(), &loaded, profile, error));
+    assert(error == "theme resource" && loaded == 0u && !profile.valid());
+    for (std::size_t index = 0u;
+         index < RinRuntime::ThemeProfileJson::kMaximumBytes; ++index)
+        assert(source[index] == 0u);
 
     const std::string malformedResource = "{\"theme_id\":7}";
     entry.flags = RIN_RESOURCE_CATALOG_SOURCE_BLOB |

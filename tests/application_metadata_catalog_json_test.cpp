@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstring>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -14,6 +15,7 @@ struct PathSource {
     std::size_t size = 0u;
     std::uint32_t calls = 0u;
     bool fail = false;
+    bool throwCallback = false;
 };
 
 static RinResourceCatalogStatus readCatalogPath(
@@ -27,6 +29,8 @@ static RinResourceCatalogStatus readCatalogPath(
            std::memcmp(path, "/applications/catalog.json", pathSize) == 0);
     ++source->calls;
     *outputSize = 0u;
+    if (source->throwCallback)
+        throw std::runtime_error("catalog callback failed");
     if (source->fail) return RIN_RESOURCE_CATALOG_IO_ERROR;
     if (source->bytes == nullptr || source->size > outputCapacity ||
         (source->size != 0u && output == nullptr))
@@ -152,6 +156,18 @@ int main()
     assert(pathSource.calls == 1u && sourceSize == resourceJson.size());
     assert(output.generation == 9u && output.find("com.rinos.notes") != nullptr);
 
+    pathSource.throwCallback = true;
+    std::fill(source.begin(), source.end(), 0xa5u);
+    sourceSize = SIZE_MAX;
+    output.generation = 99u;
+    assert(!RinRuntime::ApplicationMetadataCatalogJson::parseResource(
+        &resourceCatalog, 7u, readCatalogPath, &pathSource, source.data(),
+        source.size(), &sourceSize, output, error));
+    assert(error == "application catalog resource" && sourceSize == 0u &&
+           output.generation == 0u && output.applications.empty());
+    for (std::uint8_t byte : source) assert(byte == 0u);
+    pathSource.throwCallback = false;
+
     pathSource.fail = true;
     std::fill(source.begin(), source.end(), 0xa5u);
     sourceSize = SIZE_MAX;
@@ -159,7 +175,7 @@ int main()
     assert(!RinRuntime::ApplicationMetadataCatalogJson::parseResource(
         &resourceCatalog, 7u, readCatalogPath, &pathSource, source.data(),
         source.size(), &sourceSize, output, error));
-    assert(pathSource.calls == 2u && sourceSize == 0u &&
+    assert(pathSource.calls == 3u && sourceSize == 0u &&
            output.generation == 0u && output.applications.empty());
     for (std::uint8_t byte : source) assert(byte == 0u);
 
@@ -169,7 +185,7 @@ int main()
     assert(!RinRuntime::ApplicationMetadataCatalogJson::parseResource(
         &resourceCatalog, 7u, readCatalogPath, &pathSource, tooSmall.data(),
         tooSmall.size(), &sourceSize, output, error));
-    assert(pathSource.calls == 3u && sourceSize == 0u &&
+    assert(pathSource.calls == 4u && sourceSize == 0u &&
            output.generation == 0u && output.applications.empty());
     for (std::uint8_t byte : tooSmall) assert(byte == 0u);
 

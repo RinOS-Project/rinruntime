@@ -3,6 +3,7 @@
 #include <cassert>
 #include <cstdint>
 #include <cstring>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -15,6 +16,7 @@ struct ResourcePath {
     std::size_t size = 0u;
     unsigned calls = 0u;
     std::uint64_t lastCapacity = 0u;
+    bool throwCallback = false;
 };
 
 RinResourceCatalogStatus readResourcePath(
@@ -27,6 +29,8 @@ RinResourceCatalogStatus readResourcePath(
                                        pathSize) != 0)
         return RIN_RESOURCE_CATALOG_INVALID_ARGUMENT;
     ++resource->calls;
+    if (resource->throwCallback)
+        throw std::runtime_error("resource callback failed");
     resource->lastCapacity = outputCapacity;
     if (output == nullptr || outputCapacity < resource->size)
         return RIN_RESOURCE_CATALOG_BUFFER_TOO_SMALL;
@@ -113,6 +117,18 @@ int main() {
         sizeof(source), &sourceSize, output, error));
     assert(sourceSize == resourceJson.size() && resourcePath.calls == 1u);
     assert(output.applicationId == "com.rinos.notes");
+
+    resourcePath.throwCallback = true;
+    std::memset(source, 0xa5, sizeof(source));
+    sourceSize = SIZE_MAX;
+    output.applicationId = "stale";
+    assert(!RinRuntime::ApplicationMetadataJson::parseResource(
+        &catalog, 7u, readResourcePath, &resourcePath, source,
+        sizeof(source), &sourceSize, output, error));
+    assert(error == "metadata resource" && sourceSize == 0u &&
+           output.applicationId.empty());
+    for (std::uint8_t byte : source) assert(byte == 0u);
+    resourcePath.throwCallback = false;
 
     error = resourceJson;
     const std::string aliasedResourceError = error;

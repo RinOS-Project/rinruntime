@@ -192,11 +192,29 @@ public:
             return false;
         }
         *sourceSizeOut = 0u;
-        const RinResourceCatalogStatus resourceStatus =
-            rin_resource_catalog_load(
+        RinResourceCatalogStatus resourceStatus =
+            RIN_RESOURCE_CATALOG_INVALID_ARGUMENT;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS)
+        try {
+#endif
+            resourceStatus = rin_resource_catalog_load(
                 catalog, RIN_RESOURCE_CATALOG_TYPE_APPLICATION, resourceId,
                 readPath, context, source,
                 static_cast<std::uint64_t>(loadCapacity), &loadedSize);
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS)
+        } catch (...) {
+            if (source != nullptr) {
+                const std::size_t bounded =
+                    sourceCapacity < kMaximumBytes ? sourceCapacity :
+                                                     kMaximumBytes;
+                volatile std::uint8_t* bytes = source;
+                for (std::size_t index = 0u; index < bounded; ++index)
+                    bytes[index] = 0u;
+            }
+            error = "application catalog resource";
+            return false;
+        }
+#endif
         if (resourceStatus != RIN_RESOURCE_CATALOG_OK || loadedSize == 0u ||
             loadedSize > static_cast<std::uint64_t>(SIZE_MAX)) {
             if (source != nullptr) {
