@@ -532,7 +532,8 @@ int rin_firewall_rule_set_add(RinFirewallRuleSetV1* set,
         if (firewall_rule_policy_equal(&set->rules[index], rule))
             return RIN_FIREWALL_DUPLICATE;
     }
-    if (set->generation == UINT64_MAX)
+    /* UINT64_MAX is terminal; reserve it instead of publishing it. */
+    if (set->generation >= UINT64_MAX - 1u)
         return RIN_FIREWALL_GENERATION_EXHAUSTED;
     firewall_copy(&set->rules[set->rule_count], rule, sizeof(*rule));
     ++set->rule_count;
@@ -552,7 +553,8 @@ int rin_firewall_rule_set_update(RinFirewallRuleSetV1* set,
     if (rule->id != rule_id) return RIN_FIREWALL_MALFORMED;
     status = rin_firewall_rule_validate(rule);
     if (status != RIN_FIREWALL_OK) return status;
-    if (set->generation == UINT64_MAX)
+    /* UINT64_MAX is terminal; reserve it instead of publishing it. */
+    if (set->generation >= UINT64_MAX - 1u)
         return RIN_FIREWALL_GENERATION_EXHAUSTED;
     for (index = 0u; index < set->rule_count; ++index) {
         if (set->rules[index].id == rule_id) {
@@ -572,7 +574,8 @@ int rin_firewall_rule_set_remove(RinFirewallRuleSetV1* set,
     if (!set || rule_id == 0u) return RIN_FIREWALL_INVALID_ARGUMENT;
     status = rin_firewall_rule_set_validate(set);
     if (status != RIN_FIREWALL_OK) return status;
-    if (set->generation == UINT64_MAX)
+    /* UINT64_MAX is terminal; reserve it instead of publishing it. */
+    if (set->generation >= UINT64_MAX - 1u)
         return RIN_FIREWALL_GENERATION_EXHAUSTED;
     for (index = 0u; index < set->rule_count; ++index) {
         if (set->rules[index].id == rule_id) {

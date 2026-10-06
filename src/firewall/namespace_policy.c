@@ -38,7 +38,9 @@ int rin_firewall_namespace_policy_set_default_action(
         if (rin_firewall_container_rule_owner_id(current) != owner_id)
             return RIN_FIREWALL_ACCESS_DENIED;
         if (current->action == action) return RIN_FIREWALL_OK;
-        if (set->generation == UINT64_MAX) return RIN_FIREWALL_GENERATION_EXHAUSTED;
+        /* UINT64_MAX is terminal; reserve it instead of publishing it. */
+        if (set->generation >= UINT64_MAX - 1u)
+            return RIN_FIREWALL_GENERATION_EXHAUSTED;
         current->action = action;
         ++set->generation;
         return RIN_FIREWALL_OK;
@@ -112,7 +114,9 @@ int rin_firewall_namespace_policy_remove_defaults(
         rule_ids[rule_count++] = rule->id;
     }
     if (rule_count == 0u) return RIN_FIREWALL_NOT_FOUND;
-    if (UINT64_MAX - set->generation < rule_count)
+    /* Each removal consumes one generation; leave UINT64_MAX terminal and
+     * keep the whole batch failure-atomic. */
+    if (UINT64_MAX - 1u - set->generation < rule_count)
         return RIN_FIREWALL_GENERATION_EXHAUSTED;
     for (index = 0u; index < rule_count; ++index) {
         result = rin_firewall_rule_set_remove(set, rule_ids[index]);

@@ -116,7 +116,8 @@ int rin_firewall_profile_set(
     if (result != RIN_FIREWALL_OK) return result;
     if (expected_generation != table->generation)
         return RIN_FIREWALL_NOT_FOUND;
-    if (table->generation == UINT64_MAX)
+    /* UINT64_MAX is terminal; reserve it instead of publishing it. */
+    if (table->generation >= UINT64_MAX - 1u)
         return RIN_FIREWALL_GENERATION_EXHAUSTED;
     candidate = *table;
     index = profile_find(&candidate, interface_id);
@@ -157,7 +158,8 @@ int rin_firewall_profile_remove(
     if (result != RIN_FIREWALL_OK) return result;
     if (expected_generation != table->generation)
         return RIN_FIREWALL_NOT_FOUND;
-    if (table->generation == UINT64_MAX)
+    /* UINT64_MAX is terminal; reserve it instead of publishing it. */
+    if (table->generation >= UINT64_MAX - 1u)
         return RIN_FIREWALL_GENERATION_EXHAUSTED;
     candidate = *table;
     index = profile_find(&candidate, interface_id);
