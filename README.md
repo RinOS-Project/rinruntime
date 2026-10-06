@@ -451,8 +451,8 @@ File Portal publication remain private owners.
 It verifies the bounded XZ stream header/footer/index, block-header CRCs,
 filter-property bounds, block padding, record sizes, and expanded-size limits
 without opening a path.  `decodeStoredLzma2()` adds a failure-atomic,
-caller-owned output path for check type 0, CRC32 (type 1), or CRC64 (type 4)
-blocks containing both LZMA2 stored chunks (`0x01`/`0x02`) and range-coded
+caller-owned output path for check type 0, CRC32 (type 1), CRC64 (type 4), or
+SHA-256 (type 10) blocks containing both LZMA2 stored chunks (`0x01`/`0x02`) and range-coded
 chunks, or an ordered bounded chain of Delta (`0x03`, distance 1..256), x86
 BCJ (`0x04`, four-byte start offset), PowerPC BCJ (`0x05`, no properties), ARM
 BCJ (`0x07`, no properties), ARM Thumb BCJ (`0x08`, no properties), ARM64 BCJ
