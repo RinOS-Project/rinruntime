@@ -443,6 +443,10 @@ adapter also maps the bounded 7z Copy／Delta／BCJ／BCJ2／raw-DEFLATE／LZMA�
 decoded stream to the same `<stream>` contract.  It does not infer package
 trust or publish the stream to a filesystem.
 
+The public container adapter's cancellation read path is kept warning-clean
+under strict C++17/Werror; filesystem extraction, archive service IPC, and
+File Portal publication remain private owners.
+
 `archive_xz.hpp` provides the public `ArchiveXzReader` structural inspector.
 It verifies the bounded XZ stream header/footer/index, block-header CRCs,
 filter-property bounds, block padding, record sizes, and expanded-size limits
