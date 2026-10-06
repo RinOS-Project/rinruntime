@@ -84,6 +84,13 @@ int main() {
     std::vector<std::uint8_t> source(
         RinRuntime::ThemeProfileJson::kMaximumBytes + 1u);
     std::size_t loaded = 0u;
+    profile.id = 42u;
+    error = "stale theme error";
+    assert(!RinRuntime::ThemeProfileJson::parseResource(
+        &catalog, 7u, nullptr, nullptr, nullptr, 0u, &loaded, profile,
+        error));
+    assert(error == "theme resource buffer" && loaded == 0u &&
+           !profile.valid());
     assert(RinRuntime::ThemeProfileJson::parseResource(
         &catalog, 7u, nullptr, nullptr, source.data(), source.size(), &loaded,
         profile, error));
