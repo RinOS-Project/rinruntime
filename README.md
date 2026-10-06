@@ -52,6 +52,12 @@ backend is not required for model-owned work that cannot block.  A null
 `WaitFunction` is still rejected when a native readiness wait would be needed;
 platform adapters remain caller-owned and outside the public model.
 
+The public loop also rejects reentrant `WaitFunction` invocation on the same
+loop.  A nested wait fails closed with an empty result while the outer backend
+call remains authoritative and its generation/mask validation still runs.
+This prevents a caller-owned userspace adapter from recursively entering the
+loop without exposing kernel wait or service readiness authority.
+
 The canonical `rinruntime/rinruntime.hpp` umbrella includes the public
 `RinEventLoopBackend` userspace adapter on every target and includes
 `PollEventLoopBackend` on POSIX targets. The former translates to the public

@@ -23,6 +23,34 @@ static bool stateless_wait_backend(
     return true;
 }
 
+struct ReentrantWaitContext {
+    RinRuntime::EventLoop* loop = nullptr;
+    bool nestedResult = true;
+    unsigned calls = 0u;
+};
+
+static bool reentrant_wait_backend(
+    void* opaque, const RinRuntime::EventLoop::WaitRequest* requests,
+    RinRuntime::EventLoop::Size count, uint64_t,
+    RinRuntime::EventLoop::WaitResult* ready) {
+    auto* context = static_cast<ReentrantWaitContext*>(opaque);
+    if (context == nullptr || context->loop == nullptr || requests == nullptr ||
+        count != 1u || ready == nullptr)
+        return false;
+    ++context->calls;
+    if (context->calls == 1u) {
+        RinRuntime::Event nestedOutput = {};
+        context->nestedResult = context->loop->wait(
+            g_now, reentrant_wait_backend, context, &nestedOutput);
+        if (context->nestedResult || nestedOutput.type !=
+                                         RinRuntime::EventType::None)
+            return false;
+    }
+    ready->id = requests[0].id;
+    ready->events = requests[0].events;
+    return true;
+}
+
 #if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
 static bool throwing_wait_backend(
     void*, const RinRuntime::EventLoop::WaitRequest*,
@@ -45,6 +73,21 @@ int main() {
     EventLoop loop;
     Event ready_event = {};
     ready_event.type = EventType::Close;
+
+    /* A public wait backend may synchronously call back into the same loop.
+     * Reject only the nested backend invocation; the outer ready result still
+     * goes through the normal generation and event-mask validation. */
+    EventLoop reentrant_loop;
+    const EventLoop::WaitId reentrant_id = reentrant_loop.watch(
+        7u, EventLoop::WAIT_READABLE, ready_event);
+    assert(reentrant_id != 0u);
+    ReentrantWaitContext reentrant_context{&reentrant_loop};
+    Event reentrant_output = {};
+    assert(reentrant_loop.wait(g_now, reentrant_wait_backend,
+                               &reentrant_context, &reentrant_output));
+    assert(reentrant_output.type == EventType::Close);
+    assert(!reentrant_context.nestedResult && reentrant_context.calls == 1u);
+    assert(reentrant_loop.unwatch(reentrant_id));
 
     EventLoop event_validation_loop;
     char composition[] = "x";

@@ -148,6 +148,7 @@ private:
     std::uint32_t nextGeneration_ = 1u;
     bool generationExhausted_ = false;
     bool wakePending_ = false;
+    bool waitBackendInFlight_ = false;
 
     static bool validEvent(const Event& event) noexcept {
         return event.type != EventType::None &&
@@ -273,6 +274,20 @@ private:
             return false;
         }
 #endif
+    }
+
+    bool callWaitBackend(WaitFunction backend, void* context,
+                         const WaitRequest* requests, Size count,
+                         std::uint64_t deadline, WaitResult* ready) noexcept {
+        if (waitBackendInFlight_) {
+            if (ready != nullptr) *ready = {};
+            return false;
+        }
+        waitBackendInFlight_ = true;
+        const bool result = invokeWaitBackend(backend, context, requests,
+                                              count, deadline, ready);
+        waitBackendInFlight_ = false;
+        return result;
     }
 
 public:
@@ -440,13 +455,13 @@ public:
         (void)nextDeadline(&deadline);
         if (count == 0u) {
             WaitResult idleResult = {};
-            if (deadline != UINT64_MAX) (void)invokeWaitBackend(
+            if (deadline != UINT64_MAX) (void)callWaitBackend(
                 backend, context, nullptr, 0u, deadline, &idleResult);
             return false;
         }
         WaitResult ready = {};
-        if (!invokeWaitBackend(backend, context, requests, count, deadline,
-                               &ready) ||
+        if (!callWaitBackend(backend, context, requests, count, deadline,
+                             &ready) ||
             ready.id == 0u || ready.events == 0u)
             return false;
         for (Size index = 0u; index < count; ++index) {
