@@ -216,6 +216,10 @@ struct ReentrantOwner {
     unsigned cancelCalls = 0u;
     unsigned abortCalls = 0u;
     bool abortOnRead = false;
+    bool reenterRead = false;
+    bool nestedReadResult = true;
+    std::size_t nestedReadBytes = 99u;
+    std::uint8_t nestedReadBuffer[2u] = {0xffu, 0xffu};
     bool reenterAbort = false;
     bool abortOnSecondCancellation = false;
 };
@@ -244,6 +248,10 @@ static int reentrantRead(void* opaque, std::uint8_t* buffer,
         return -1;
     if (owner->abortOnRead && owner->adapter != nullptr)
         owner->adapter->abort();
+    if (owner->reenterRead && owner->adapter != nullptr)
+        owner->nestedReadResult = owner->adapter->read(
+            owner->nestedReadBuffer, sizeof(owner->nestedReadBuffer),
+            owner->nestedReadBytes);
     buffer[0] = 0xd1u;
     *bytesRead = 1u;
     return 0;
@@ -578,6 +586,28 @@ int main() {
            RinRuntime::DownloadRangeTransportAdapter::State::Idle);
     assert(reentrantReadOwner.readCalls == 1u &&
            reentrantReadOwner.abortCalls == 1u);
+
+    ReentrantOwner nestedReadOwner;
+    RinRuntime::DownloadRangeTransportOpsV1 nestedReadOps = reentrantReadOps;
+    nestedReadOps.context = &nestedReadOwner;
+    RinRuntime::DownloadRangeTransportAdapter nestedReadAdapter;
+    nestedReadOwner.adapter = &nestedReadAdapter;
+    nestedReadOwner.reenterRead = true;
+    assert(nestedReadAdapter.bind(nestedReadOps));
+    assert(nestedReadAdapter.begin(request, response));
+    std::uint8_t nestedReadBytes[4u] = {0xffu, 0xffu, 0xffu, 0xffu};
+    bytesRead = 0u;
+    assert(nestedReadAdapter.read(nestedReadBytes, sizeof(nestedReadBytes),
+                                  bytesRead) &&
+           bytesRead == 1u && nestedReadBytes[0] == 0xd1u);
+    assert(!nestedReadOwner.nestedReadResult &&
+           nestedReadOwner.nestedReadBytes == 0u);
+    for (const std::uint8_t byte : nestedReadOwner.nestedReadBuffer)
+        assert(byte == 0u);
+    assert(nestedReadOwner.readCalls == 1u &&
+           nestedReadAdapter.state() ==
+               RinRuntime::DownloadRangeTransportAdapter::State::Streaming);
+    nestedReadAdapter.abort();
 
     ReentrantOwner reentrantAbortOwner;
     RinRuntime::DownloadRangeTransportOpsV1 reentrantAbortOps;

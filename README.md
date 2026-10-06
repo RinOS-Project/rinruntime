@@ -220,6 +220,13 @@ and the extended table containing the optional cancellation callback. Older
 owners therefore remain usable without inventing a cancellation context; a
 future incompatible table must use a new ABI version.
 
+Owner callbacks are non-reentrant at the public adapter boundary.  A nested
+`begin()`/`read()`/cancellation probe from an owner callback fails closed and
+scrubs any caller buffer, while an outer operation remains authoritative;
+explicit `abort()` remains usable to invalidate that operation.  This keeps
+ordinary application-owned HTTP, local-file, and object-store providers from
+publishing bytes after a nested callback has observed the adapter state.
+
 `readDownloadRangeToBuffer()` is the optional caller-owned convenience helper
 for this same public transport. It revalidates the admitted response length,
 reads in at most 64 KiB chunks, rejects early EOF and trailing bytes, and

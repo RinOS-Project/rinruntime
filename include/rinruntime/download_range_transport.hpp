@@ -73,6 +73,7 @@ private:
     std::uint64_t remaining_ = 0u;
     bool rangeExhausted_ = false;
     bool abortInFlight_ = false;
+    bool callbackInFlight_ = false;
     State state_ = State::Idle;
 
     static void scrubBuffer(std::uint8_t* buffer, std::size_t capacity) {
@@ -131,14 +132,22 @@ private:
         return normalized;
     }
 
-    int cancellationStatus() const noexcept {
+    int cancellationStatus() noexcept {
         if (ops_.cancelled == nullptr) return 0;
+        /* An owner callback is not allowed to call back into another owner
+         * callback.  The outer operation remains authoritative; a nested
+         * cancellation probe is an owner failure rather than recursion. */
+        if (callbackInFlight_) return -1;
 #if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
         try {
 #endif
-            return ops_.cancelled(ops_.context);
+            callbackInFlight_ = true;
+            const int result = ops_.cancelled(ops_.context);
+            callbackInFlight_ = false;
+            return result;
 #if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
         } catch (...) {
+            callbackInFlight_ = false;
             /* A public C callback must not let an owner exception escape the
              * runtime boundary.  Treat it as an owner failure. */
             return -1;
@@ -151,6 +160,8 @@ private:
             abortInFlight_)
             return;
         abortInFlight_ = true;
+        const bool callbackWasInFlight = callbackInFlight_;
+        callbackInFlight_ = true;
 #if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
         try {
 #endif
@@ -161,7 +172,45 @@ private:
              * decided to fail.  Do not leak an owner exception to the caller. */
         }
 #endif
+        callbackInFlight_ = callbackWasInFlight;
         abortInFlight_ = false;
+    }
+
+    int invokeBegin(const DownloadRangeRequest* request,
+                    DownloadRangeResponse* response) noexcept {
+        if (callbackInFlight_ || ops_.begin == nullptr) return -1;
+        callbackInFlight_ = true;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
+            const int result = ops_.begin(ops_.context, request, response);
+            callbackInFlight_ = false;
+            return result;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (...) {
+            callbackInFlight_ = false;
+            return -1;
+        }
+#endif
+    }
+
+    int invokeRead(std::uint8_t* buffer, std::size_t capacity,
+                   std::size_t* bytesRead) noexcept {
+        if (callbackInFlight_ || ops_.read == nullptr) return -1;
+        callbackInFlight_ = true;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
+            const int result =
+                ops_.read(ops_.context, buffer, capacity, bytesRead);
+            callbackInFlight_ = false;
+            return result;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (...) {
+            callbackInFlight_ = false;
+            return -1;
+        }
+#endif
     }
 
     void cancelAndAbort() noexcept {
@@ -223,7 +272,7 @@ public:
         }
         const DownloadRangeRequest requestBaseline = request_;
         DownloadRangeResponse candidate{};
-        const int result = ops_.begin(ops_.context, &request_, &candidate);
+        const int result = invokeBegin(&request_, &candidate);
         if (state_ != State::Streaming || result != 0 ||
             !requestEquivalent(request_, requestBaseline) ||
             !candidate.validFor(requestBaseline)) {
@@ -268,6 +317,10 @@ public:
     bool read(std::uint8_t* buffer, std::size_t capacity,
               std::size_t& bytesRead) override {
         bytesRead = 0u;
+        if (callbackInFlight_) {
+            scrubBuffer(buffer, capacity);
+            return false;
+        }
         if (state_ != State::Streaming) {
             /* A caller may reuse a buffer after a terminal read, cancellation,
              * or explicit abort.  Do not leave bytes from the previous range
@@ -312,8 +365,7 @@ public:
             readCapacity = static_cast<std::size_t>(remaining_);
         }
         std::size_t candidate = 0u;
-        const int readResult = ops_.read(ops_.context, buffer, readCapacity,
-                                         &candidate);
+        const int readResult = invokeRead(buffer, readCapacity, &candidate);
         if (state_ != State::Streaming) {
             scrubBuffer(buffer, capacity);
             return false;
