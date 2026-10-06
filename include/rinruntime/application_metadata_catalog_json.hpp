@@ -181,18 +181,22 @@ public:
             return false;
         output = {};
         error.clear();
-        if (source != nullptr) {
+        if (sourceSizeOut == nullptr) {
+            error = "application catalog resource size";
+            return false;
+        }
+        *sourceSizeOut = 0u;
+        if (source == nullptr || sourceCapacity == 0u) {
+            error = "application catalog resource buffer";
+            return false;
+        }
+        {
             const std::size_t bounded =
                 sourceCapacity < kMaximumBytes ? sourceCapacity : kMaximumBytes;
             volatile std::uint8_t* bytes = source;
             for (std::size_t index = 0u; index < bounded; ++index)
                 bytes[index] = 0u;
         }
-        if (sourceSizeOut == nullptr) {
-            error = "application catalog resource size";
-            return false;
-        }
-        *sourceSizeOut = 0u;
         RinResourceCatalogStatus resourceStatus =
             RIN_RESOURCE_CATALOG_INVALID_ARGUMENT;
 #if defined(__cpp_exceptions) || defined(__EXCEPTIONS)

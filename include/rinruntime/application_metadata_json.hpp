@@ -262,12 +262,16 @@ public:
             return false;
         output = {};
         error.clear();
-        clearSource(source, sourceCapacity);
         if (sourceSizeOut == nullptr) {
             error = "metadata resource size";
             return false;
         }
         *sourceSizeOut = 0u;
+        if (source == nullptr || sourceCapacity == 0u) {
+            error = "metadata resource buffer";
+            return false;
+        }
+        clearSource(source, sourceCapacity);
         RinResourceCatalogStatus resourceStatus =
             RIN_RESOURCE_CATALOG_INVALID_ARGUMENT;
 #if defined(__cpp_exceptions) || defined(__EXCEPTIONS)
