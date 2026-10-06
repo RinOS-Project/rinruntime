@@ -46,6 +46,7 @@ private:
     void* clockContext_ = nullptr;
     std::uint64_t lastNow_ = 0u;
     bool haveLastNow_ = false;
+    bool waitInFlight_ = false;
 
     static short pollEvents(std::uint32_t events) noexcept {
         short result = 0;
@@ -119,6 +120,15 @@ public:
     bool wait(const EventLoop::WaitRequest* requests, Size count,
               std::uint64_t deadline, EventLoop::WaitResult* ready) noexcept {
         if (ready == nullptr) return false;
+        if (waitInFlight_) {
+            *ready = {};
+            return false;
+        }
+        waitInFlight_ = true;
+        struct WaitGuard final {
+            bool& inFlight;
+            ~WaitGuard() { inFlight = false; }
+        } waitGuard{waitInFlight_};
         if (count > EventLoop::kWaitCapacity ||
             detail::eventLoopByteRangesOverlap(
                 requests, count * sizeof(EventLoop::WaitRequest), ready,

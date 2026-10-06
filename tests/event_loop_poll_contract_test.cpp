@@ -12,6 +12,28 @@ static uint64_t g_now = 100u;
 
 static uint64_t test_clock(void*) noexcept { return g_now; }
 
+struct ReentrantClockContext {
+    RinRuntime::PollEventLoopBackend* backend = nullptr;
+    RinRuntime::EventLoop::WaitRequest request = {};
+    bool called = false;
+    bool nestedResult = true;
+};
+
+static uint64_t reentrant_clock(void* opaque) noexcept {
+    auto* context = static_cast<ReentrantClockContext*>(opaque);
+    if (context == nullptr || context->backend == nullptr) return UINT64_MAX;
+    if (!context->called) {
+        context->called = true;
+        RinRuntime::EventLoop::WaitResult nestedReady = {};
+        context->nestedResult = context->backend->wait(
+            &context->request, 1u, g_now, &nestedReady);
+        if (context->nestedResult || nestedReady.id != 0u ||
+            nestedReady.events != 0u)
+            return UINT64_MAX;
+    }
+    return g_now;
+}
+
 static bool stateless_wait_backend(
     void* context, const RinRuntime::EventLoop::WaitRequest* requests,
     RinRuntime::EventLoop::Size count, uint64_t,
@@ -73,6 +95,26 @@ int main() {
     EventLoop loop;
     Event ready_event = {};
     ready_event.type = EventType::Close;
+
+    /* Direct users of the POSIX backend can re-enter it from the clock
+     * callback.  Only the nested call is rejected; the outer poll remains
+     * usable and retains its monotonic-clock state. */
+    ReentrantClockContext reentrant_clock_context;
+    PollEventLoopBackend reentrant_backend(reentrant_clock,
+                                           &reentrant_clock_context);
+    reentrant_clock_context.backend = &reentrant_backend;
+    reentrant_clock_context.request.id = 1u;
+    reentrant_clock_context.request.nativeHandle =
+        static_cast<std::uint64_t>(pipe_fds[0]);
+    reentrant_clock_context.request.events = EventLoop::WAIT_READABLE;
+    char reentrant_byte = 'r';
+    assert(write(pipe_fds[1], &reentrant_byte, sizeof(reentrant_byte)) == 1);
+    EventLoop::WaitResult reentrant_ready = {};
+    assert(reentrant_backend.wait(&reentrant_clock_context.request, 1u,
+                                  g_now, &reentrant_ready));
+    assert(reentrant_clock_context.called &&
+           !reentrant_clock_context.nestedResult && reentrant_ready.id == 1u);
+    assert(read(pipe_fds[0], &reentrant_byte, sizeof(reentrant_byte)) == 1);
 
     /* A public wait backend may synchronously call back into the same loop.
      * Reject only the nested backend invocation; the outer ready result still

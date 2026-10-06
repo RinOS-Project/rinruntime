@@ -58,6 +58,11 @@ call remains authoritative and its generation/mask validation still runs.
 This prevents a caller-owned userspace adapter from recursively entering the
 loop without exposing kernel wait or service readiness authority.
 
+The public POSIX `PollEventLoopBackend` applies the same rule to direct users:
+a `ClockFunction` that re-enters the backend receives an empty failed result,
+while the outer `poll(2)` operation retains its bounded timeout and monotonic
+rollback checks.
+
 The canonical `rinruntime/rinruntime.hpp` umbrella includes the public
 `RinEventLoopBackend` userspace adapter on every target and includes
 `PollEventLoopBackend` on POSIX targets. The former translates to the public
