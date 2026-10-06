@@ -36,6 +36,10 @@ public:
 private:
     std::vector<RemovableVolume> volumes_;
 
+    static bool liveIdentity(uint64_t value) {
+        return value != 0u && value != UINT64_MAX;
+    }
+
     static bool boundedText(const std::string& value, size_t limit,
                             bool allowEmpty) {
         if (!allowEmpty && value.empty()) return false;
@@ -66,8 +70,9 @@ private:
 
 public:
     static bool valid(const RemovableVolume& volume) {
-        if (volume.diskId == 0u || volume.diskGeneration == 0u ||
-            volume.diskRevision == 0u || volume.flags == 0u ||
+        if (!liveIdentity(volume.diskId) ||
+            !liveIdentity(volume.diskGeneration) ||
+            !liveIdentity(volume.diskRevision) || volume.flags == 0u ||
             volume.totalBytes == 0u || volume.usedBytes > volume.totalBytes)
             return false;
         return boundedText(volume.name, kMaxNameBytes, false) &&
