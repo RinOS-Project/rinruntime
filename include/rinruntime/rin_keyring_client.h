@@ -55,7 +55,8 @@ int rin_keyring_client_kerberos_operation(
     const uint8_t* input, uint32_t input_size, uint8_t* output,
     uint32_t output_capacity, uint32_t* output_size,
     uint8_t* next_context_token, uint32_t next_context_capacity,
-    uint32_t* next_context_token_size, uint64_t* generation);
+    uint32_t* next_context_token_size, uint64_t* generation,
+    uint32_t* provider_result, uint32_t* return_flags);
 void rin_keyring_client_clear(void* memory, size_t size);
 
 #ifdef __cplusplus

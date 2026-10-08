@@ -85,7 +85,8 @@ static int client_kerberos_operation_ranges_alias(
     const uint8_t* input, uint32_t input_size, uint8_t* output,
     uint32_t output_capacity, uint32_t* output_size,
     uint8_t* next_context_token, uint32_t next_context_capacity,
-    uint32_t* next_context_token_size, uint64_t* generation)
+    uint32_t* next_context_token_size, uint64_t* generation,
+    uint32_t* provider_result, uint32_t* return_flags)
 {
     const void* ranges[] = {
         handle,
@@ -97,6 +98,8 @@ static int client_kerberos_operation_ranges_alias(
         output_size,
         next_context_token_size,
         generation,
+        provider_result,
+        return_flags,
     };
     const uint32_t sizes[] = {
         (uint32_t)sizeof(*handle),
@@ -108,6 +111,8 @@ static int client_kerberos_operation_ranges_alias(
         (uint32_t)sizeof(*output_size),
         (uint32_t)sizeof(*next_context_token_size),
         (uint32_t)sizeof(*generation),
+        (uint32_t)sizeof(*provider_result),
+        (uint32_t)sizeof(*return_flags),
     };
     uint32_t left;
     uint32_t right;
@@ -464,7 +469,8 @@ int rin_keyring_client_kerberos_operation(
     const uint8_t* input, uint32_t input_size, uint8_t* output,
     uint32_t output_capacity, uint32_t* output_size,
     uint8_t* next_context_token, uint32_t next_context_capacity,
-    uint32_t* next_context_token_size, uint64_t* generation)
+    uint32_t* next_context_token_size, uint64_t* generation,
+    uint32_t* provider_result, uint32_t* return_flags)
 {
     RinKeyringMessageHeaderV1 message;
     RinKeyringMessageHeaderV1 response;
@@ -476,7 +482,8 @@ int rin_keyring_client_kerberos_operation(
             handle, request, context_token, context_token_size, input,
             input_size, output, output_capacity, output_size,
             next_context_token, next_context_capacity,
-            next_context_token_size, generation))
+            next_context_token_size, generation, provider_result,
+            return_flags))
         return RIN_KEYRING_INVALID;
     if (output && output_capacity) secure_clear(output, output_capacity);
     if (next_context_token && next_context_capacity)
@@ -484,12 +491,18 @@ int rin_keyring_client_kerberos_operation(
     if (output_size) *output_size = 0u;
     if (next_context_token_size) *next_context_token_size = 0u;
     if (generation) *generation = 0u;
+    if (provider_result) *provider_result = 0u;
+    if (return_flags) *return_flags = 0u;
     memset(&response, 0, sizeof(response));
     memset(&operation_response, 0, sizeof(operation_response));
     if (!handle || !request || !output_size || !next_context_token_size ||
-        !generation || request->struct_size != sizeof(*request) ||
+        !generation || !provider_result || !return_flags ||
+        request->struct_size != sizeof(*request) ||
         request->version != RIN_KERBEROS_OPERATION_ABI_VERSION ||
-        request->flags != 0u ||
+        (request->flags & ~RIN_KERBEROS_OPERATION_KNOWN_FLAGS) != 0u ||
+        ((request->operation != RIN_KERBEROS_OPERATION_WRAP &&
+          request->operation != RIN_KERBEROS_OPERATION_UNWRAP) &&
+         request->flags != 0u) ||
         request->context_token_size != context_token_size ||
         request->input_size != input_size ||
         request->output_capacity != output_capacity ||
@@ -523,7 +536,14 @@ int rin_keyring_client_kerberos_operation(
             operation_response.version !=
                 RIN_KERBEROS_OPERATION_ABI_VERSION ||
             operation_response.operation != request->operation ||
-            operation_response.reserved != 0u ||
+            operation_response.provider_result >
+                RIN_KERBEROS_OPERATION_RESULT_CONTINUE_NEEDED ||
+            (operation_response.provider_result ==
+                 RIN_KERBEROS_OPERATION_RESULT_CONTINUE_NEEDED &&
+             request->operation != RIN_KERBEROS_OPERATION_INIT_SEC_CONTEXT &&
+             request->operation != RIN_KERBEROS_OPERATION_ACCEPT_SEC_CONTEXT) ||
+            (operation_response.return_flags &
+             ~RIN_KERBEROS_OPERATION_KNOWN_RETURN_FLAGS) != 0u ||
             rin_wire_capability_generation_valid(
                 operation_response.generation) != RIN_WIRE_CAPABILITY_OK ||
             operation_response.context_token_size > next_context_capacity ||
@@ -542,6 +562,8 @@ int rin_keyring_client_kerberos_operation(
             *next_context_token_size = operation_response.context_token_size;
             *output_size = operation_response.output_size;
             *generation = operation_response.generation;
+            *provider_result = operation_response.provider_result;
+            *return_flags = operation_response.return_flags;
         }
     } else if (response.payload_size != 0u) {
         status = RIN_KEYRING_STORAGE_FAILED;
@@ -554,6 +576,8 @@ int rin_keyring_client_kerberos_operation(
         *output_size = 0u;
         *next_context_token_size = 0u;
         *generation = 0u;
+        *provider_result = 0u;
+        *return_flags = 0u;
     }
     secure_clear(&operation_response, sizeof(operation_response));
     return status;
