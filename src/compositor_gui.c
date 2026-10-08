@@ -12,6 +12,7 @@
 #include "compositor_gpu_bridge.h"
 #include <rin/contract_abi.h>
 #include <rin/ipc/shm_abi.h>
+#include <rin/net/socket_abi.h>
 #include <errno.h>
 #include <stdio.h>
 #include <string.h>
@@ -2458,6 +2459,26 @@ int rinruntime_compositor_gpu_import_frame_v1(
      * source GPU allocation is no longer needed: pixels have been copied to
      * the window owner's SHM buffer before this point. */
     return wnd_present(handle);
+}
+
+int wnd_get_compositor_peer_identity_v1(
+    RinIpcPeerIdentityV1* identity_out) {
+    rin_unix_peer_identity_v1 peer;
+    socklen_t peer_size = sizeof(peer);
+    int result;
+    if (!identity_out) return RIN_RESULT_INVALID_ARGUMENT;
+    memset(identity_out, 0, sizeof(*identity_out));
+    if (g_compositor_fd < 0 && runtime_connect() != 0)
+        return RIN_RESULT_IO;
+    memset(&peer, 0, sizeof(peer));
+    if (getsockopt(g_compositor_fd, SOL_SOCKET,
+                   SO_RIN_UNIX_PEER_IDENTITY, &peer, &peer_size) != 0)
+        return errno == ENOPROTOOPT ? RIN_RESULT_NOT_SUPPORTED
+                                    : RIN_RESULT_IO;
+    if (peer_size != sizeof(peer)) return RIN_RESULT_CORRUPT_DATA;
+    result = rinruntime_compositor_peer_identity_project_v1(
+        &peer, identity_out);
+    return result;
 }
 
 int wnd_export_gpu_image(RinRuntimeGuiHandle handle,

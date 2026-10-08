@@ -41,6 +41,28 @@ int rinruntime_compositor_gpu_slot_reuse_status_v1(
     return RIN_RESULT_CORRUPT_DATA;
 }
 
+int rinruntime_compositor_peer_identity_project_v1(
+    const rin_unix_peer_identity_v1* peer,
+    RinIpcPeerIdentityV1* identity_out) {
+    rin_unix_peer_identity_v1 peer_copy;
+    if (!identity_out) return RIN_RESULT_INVALID_ARGUMENT;
+    memset(identity_out, 0, sizeof(*identity_out));
+    if (!peer ||
+        compositor_gpu_ranges_overlap((uintptr_t)peer, sizeof(*peer),
+                                       (uintptr_t)identity_out,
+                                       sizeof(*identity_out)))
+        return RIN_RESULT_INVALID_ARGUMENT;
+    memcpy(&peer_copy, peer, sizeof(peer_copy));
+    if (!rin_unix_peer_identity_valid(&peer_copy))
+        return RIN_RESULT_CORRUPT_DATA;
+    identity_out->struct_size = sizeof(*identity_out);
+    identity_out->version = RIN_SDK_STRUCT_VERSION_1;
+    identity_out->process_id = peer_copy.process_id;
+    identity_out->process_instance_cookie =
+        peer_copy.process_instance_cookie;
+    return RIN_RESULT_OK;
+}
+
 int rinruntime_compositor_shm_export_validate_v1(
     const RinCompositorGpuImageV1* image, uint32_t surface_id,
     uint32_t buffer_slot, uint64_t expected_surface_generation,

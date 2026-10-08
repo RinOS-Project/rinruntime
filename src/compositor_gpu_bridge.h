@@ -7,6 +7,8 @@
 #include <stdint.h>
 
 #include <rin/contract_abi.h>
+#include <rin/ipc.h>
+#include <rin/net/socket_abi.h>
 #include <rinruntime/window.h>
 
 #define RIN_RUNTIME_COMPOSITOR_GPU_FRAME_V1_VERSION UINT32_C(1)
@@ -43,6 +45,13 @@ int rinruntime_compositor_gpu_import_frame_v1(
  * unchanged and retry; a future completion sequence is protocol corruption. */
 int rinruntime_compositor_gpu_slot_reuse_status_v1(
     uint64_t submitted_sequence, uint64_t released_sequence);
+
+/* Project only the recipient process identity from the kernel-owned Unix
+ * peer record. Callers must obtain that record from the connected Compositor
+ * socket with SO_RIN_UNIX_PEER_IDENTITY. */
+int rinruntime_compositor_peer_identity_project_v1(
+    const rin_unix_peer_identity_v1* peer,
+    RinIpcPeerIdentityV1* identity_out);
 
 /* Validate the Compositor's explicitly software-SHM export against the
  * caller-owned native-window buffer set. expected_surface_generation may be

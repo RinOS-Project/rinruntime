@@ -5,6 +5,7 @@
 
 #include <stdint.h>
 #include <rin/abi.h>
+#include <rin/ipc.h>
 #include <rin/gui/window_abi.h>
 #include <rin/gui/event_abi.h>
 #include <rin/gui/compositor_protocol.h>
@@ -128,6 +129,12 @@ int wnd_dispatch_compositor(uint32_t timeout_ms, uint32_t max_completions);
  * synchronously rebinds live surfaces; call it from the application's
  * recovery path, not from a per-frame callback. */
 int wnd_reconnect_compositor(void);
+
+/* Return the kernel-authenticated process identity of the Compositor peer
+ * connected by RinRuntime. This is suitable for recipient-bound GPU
+ * capability issuance; it is not derived from a window handle or caller PID. */
+int wnd_get_compositor_peer_identity_v1(
+    RinIpcPeerIdentityV1* identity_out);
 
 /* Legacy cached query names remain ABI-compatible with the original runtime. */
 int rinruntime_gui_get_size(RinRuntimeGuiHandle handle, int* width,
