@@ -662,11 +662,18 @@ int rin_keyring_client_kerberos_operation(
                 RIN_KERBEROS_OPERATION_ABI_VERSION ||
             operation_response.operation != request->operation ||
             operation_response.provider_result >
-                RIN_KERBEROS_OPERATION_RESULT_CONTINUE_NEEDED ||
+                RIN_KERBEROS_OPERATION_RESULT_ERROR ||
             (operation_response.provider_result ==
                  RIN_KERBEROS_OPERATION_RESULT_CONTINUE_NEEDED &&
              request->operation != RIN_KERBEROS_OPERATION_INIT_SEC_CONTEXT &&
              request->operation != RIN_KERBEROS_OPERATION_ACCEPT_SEC_CONTEXT) ||
+            (operation_response.provider_result ==
+                 RIN_KERBEROS_OPERATION_RESULT_ERROR &&
+             (request->operation != RIN_KERBEROS_OPERATION_ACCEPT_SEC_CONTEXT ||
+              operation_response.output_size == 0u ||
+              operation_response.context_token_size != 0u ||
+              (operation_response.return_flags &
+               ~RIN_KERBEROS_OPERATION_RETURN_FLAG_EXTENDED_ERROR) != 0u)) ||
             (operation_response.return_flags &
              ~RIN_KERBEROS_OPERATION_KNOWN_RETURN_FLAGS) != 0u ||
             rin_wire_capability_generation_valid(
