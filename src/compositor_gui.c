@@ -69,6 +69,7 @@ typedef struct RinRuntimeGuiSurface {
     uint64_t frame_sequence;
     uint64_t slot_submitted_sequence[RIN_COMPOSITOR_MAX_BUFFERS];
     uint64_t render_target_generation;
+    uint64_t compositor_surface_generation;
     uint32_t render_target_acquired;
     uint32_t render_target_slot;
     uint32_t frame_present_pending;
@@ -850,6 +851,7 @@ static int runtime_attach_existing_buffers(RinRuntimeGuiSurface* surface) {
         status != 0 || reply_size != 0u) return -1;
     memset(surface->slot_submitted_sequence, 0,
            sizeof(surface->slot_submitted_sequence));
+    surface->compositor_surface_generation = 0u;
     return 0;
 }
 
@@ -1129,6 +1131,7 @@ static int runtime_async_enqueue_resize(
     surface->pitch = candidate.pitch;
     surface->bytes = candidate.bytes;
     surface->render_target_generation = candidate.render_target_generation;
+    surface->compositor_surface_generation = 0u;
     surface->draw_slot = 0u;
     surface->front_slot = 0u;
     surface->render_target_acquired = 0u;
@@ -2471,16 +2474,19 @@ int wnd_export_gpu_image(RinRuntimeGuiHandle handle,
     request.version = RIN_COMPOSITOR_GPU_SURFACE_ABI_VERSION;
     request.surface_id = surface->id;
     request.buffer_slot = surface->draw_slot;
+    request.expected_surface_generation =
+        surface->compositor_surface_generation;
     if (runtime_request(RIN_COMPOSITOR_EXPORT_GPU_IMAGE, &request,
                         sizeof(request), image_out, sizeof(*image_out),
                         &reply_size, &status) != 0 || status != 0 ||
         reply_size != sizeof(*image_out) ||
-        image_out->struct_size != sizeof(*image_out) ||
-        image_out->version != RIN_COMPOSITOR_GPU_SURFACE_ABI_VERSION ||
-        image_out->surface_id != surface->id ||
-        image_out->buffer_slot != surface->draw_slot ||
-        image_out->image_handle == 0u || image_out->surface_generation == 0u)
+        rinruntime_compositor_shm_export_validate_v1(
+            image_out, surface->id, surface->draw_slot,
+            surface->compositor_surface_generation, surface->width,
+            surface->height, surface->pitch, 0u, surface->bytes) !=
+            RIN_RESULT_OK)
         return status != 0 ? status : RIN_RESULT_CORRUPT_DATA;
+    surface->compositor_surface_generation = image_out->surface_generation;
     return RIN_RESULT_OK;
 }
 

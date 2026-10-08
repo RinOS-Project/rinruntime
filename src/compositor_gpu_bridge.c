@@ -41,6 +41,33 @@ int rinruntime_compositor_gpu_slot_reuse_status_v1(
     return RIN_RESULT_CORRUPT_DATA;
 }
 
+int rinruntime_compositor_shm_export_validate_v1(
+    const RinCompositorGpuImageV1* image, uint32_t surface_id,
+    uint32_t buffer_slot, uint64_t expected_surface_generation,
+    uint32_t width, uint32_t height, uint32_t pitch, uint32_t format,
+    uint64_t bytes) {
+    uint64_t minimum_bytes;
+    if (!image || surface_id == 0u ||
+        buffer_slot >= RIN_COMPOSITOR_MAX_BUFFERS || width == 0u ||
+        height == 0u || width > UINT32_MAX / 4u ||
+        pitch < width * 4u || format > 1u || bytes == 0u)
+        return RIN_RESULT_INVALID_ARGUMENT;
+    minimum_bytes = (uint64_t)pitch * height;
+    if (minimum_bytes > bytes) return RIN_RESULT_INVALID_ARGUMENT;
+    if (image->struct_size != sizeof(*image) ||
+        image->version != RIN_COMPOSITOR_GPU_SURFACE_ABI_VERSION ||
+        image->surface_id != surface_id || image->buffer_slot != buffer_slot ||
+        image->surface_generation == 0u || image->image_handle == 0u ||
+        (expected_surface_generation != 0u &&
+         image->surface_generation != expected_surface_generation) ||
+        image->width != width || image->height != height ||
+        image->pitch != pitch || image->format != format ||
+        image->bytes != bytes || image->reserved[0] != 0u ||
+        image->reserved[1] != 0u)
+        return RIN_RESULT_CORRUPT_DATA;
+    return RIN_RESULT_OK;
+}
+
 int rinruntime_compositor_gpu_copy_frame_v1(
     void* destination, uint64_t destination_bytes,
     uint32_t destination_pitch, uint32_t destination_format,

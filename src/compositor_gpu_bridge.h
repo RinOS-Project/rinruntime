@@ -44,6 +44,15 @@ int rinruntime_compositor_gpu_import_frame_v1(
 int rinruntime_compositor_gpu_slot_reuse_status_v1(
     uint64_t submitted_sequence, uint64_t released_sequence);
 
+/* Validate the Compositor's explicitly software-SHM export against the
+ * caller-owned native-window buffer set. expected_surface_generation may be
+ * zero only before the first export of a buffer generation. */
+int rinruntime_compositor_shm_export_validate_v1(
+    const RinCompositorGpuImageV1* image, uint32_t surface_id,
+    uint32_t buffer_slot, uint64_t expected_surface_generation,
+    uint32_t width, uint32_t height, uint32_t pitch, uint32_t format,
+    uint64_t bytes);
+
 /* API-independent checked pixel copy used by the window handoff and host
  * tests. Formats use the native Compositor protocol's BGRA32/RGBA32 values. */
 int rinruntime_compositor_gpu_copy_frame_v1(
