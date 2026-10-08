@@ -28,14 +28,21 @@ typedef struct RinRuntimeCompositorGpuFrameV1 {
     uint64_t reserved[2];
 } RinRuntimeCompositorGpuFrameV1;
 
-/* Copy a completed, CPU-readable GPU image into the active native-window
+/* Copy a completed, CPU-readable GPU image into an available native-window
  * SHM backbuffer, then enqueue the existing damage+commit transaction.
- * expected_generation binds the copy to the current window buffer set. The
- * source may be released as soon as this function returns because the copy
- * is synchronous; the Compositor owns the SHM buffer through its commit path. */
+ * expected_generation binds the copy to the current window buffer set. On
+ * success the source may be released when this function returns because the
+ * copy is synchronous. BUSY means no copy occurred and the source remains
+ * caller-owned; the Compositor owns an accepted SHM slot until render release. */
 int rinruntime_compositor_gpu_import_frame_v1(
     RinRuntimeGuiHandle handle, uint64_t expected_generation,
     const RinRuntimeCompositorGpuFrameV1* frame);
+
+/* Compare one producer slot's last accepted submission with the Compositor's
+ * completed-read sequence. BUSY means the producer must keep the slot
+ * unchanged and retry; a future completion sequence is protocol corruption. */
+int rinruntime_compositor_gpu_slot_reuse_status_v1(
+    uint64_t submitted_sequence, uint64_t released_sequence);
 
 /* API-independent checked pixel copy used by the window handoff and host
  * tests. Formats use the native Compositor protocol's BGRA32/RGBA32 values. */

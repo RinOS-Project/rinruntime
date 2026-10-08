@@ -99,6 +99,9 @@ int wnd_ack_frame_async(RinRuntimeGuiHandle handle, uint64_t frame_sequence,
 int rinruntime_gui_get_outputs(RinCompositorOutputListV1* outputs);
 int rinruntime_gui_get_outputs_async(RinRuntimeGuiHandle completion_handle,
                                      uint64_t cookie);
+/* Returns BUSY while the Compositor is still reading this surface's previous
+ * submission from the current SHM slot. Do not access the slot until this
+ * call succeeds; retry after a transient BUSY result. */
 int wnd_acquire_render_target(RinRuntimeGuiHandle handle,
                               RinRenderTarget* out_target);
 int wnd_release_render_target(RinRuntimeGuiHandle handle,

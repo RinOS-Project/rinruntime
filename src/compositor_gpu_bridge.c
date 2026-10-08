@@ -34,6 +34,13 @@ static int compositor_gpu_ranges_overlap(uintptr_t left, uint64_t left_size,
     return left < right_end && right < left_end;
 }
 
+int rinruntime_compositor_gpu_slot_reuse_status_v1(
+    uint64_t submitted_sequence, uint64_t released_sequence) {
+    if (released_sequence == submitted_sequence) return RIN_RESULT_OK;
+    if (released_sequence < submitted_sequence) return RIN_RESULT_BUSY;
+    return RIN_RESULT_CORRUPT_DATA;
+}
+
 int rinruntime_compositor_gpu_copy_frame_v1(
     void* destination, uint64_t destination_bytes,
     uint32_t destination_pitch, uint32_t destination_format,
