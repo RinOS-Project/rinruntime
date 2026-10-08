@@ -462,6 +462,70 @@ int rin_keyring_client_remove_handle(const RinKeyringHandleV1* handle)
                                NULL, 0u, NULL, NULL);
 }
 
+int rin_keyring_client_kerberos_principal(
+    const RinKeyringHandleV1* handle, uint8_t* output,
+    uint32_t output_capacity, uint32_t* output_size, uint64_t* generation)
+{
+    RinKeyringMessageHeaderV1 request;
+    RinKeyringMessageHeaderV1 response;
+    RinKeyringHandleRequestV1 request_body;
+    RinKeyringKerberosPrincipalResponseV1 principal_response;
+    int fd;
+    int status;
+
+    if (output_size) *output_size = 0u;
+    if (generation) *generation = 0u;
+    memset(&response, 0, sizeof(response));
+    memset(&principal_response, 0, sizeof(principal_response));
+    if (!handle || !output || output_capacity == 0u ||
+        output_capacity > RIN_KEYRING_MAX_SECRET_SIZE || !output_size ||
+        !generation || rin_wire_capability_generation_valid(handle->generation) !=
+            RIN_WIRE_CAPABILITY_OK)
+        return RIN_KEYRING_INVALID;
+    secure_clear(output, output_capacity);
+    fd = connect_service();
+    if (fd < 0) return RIN_KEYRING_LOCKED;
+    memset(&request_body, 0, sizeof(request_body));
+    request_body.handle_size = RIN_KEYRING_HANDLE_SIZE;
+    request_header(&request, RIN_KEYRING_OP_KERBEROS_PRINCIPAL,
+                   sizeof(request_body) + sizeof(*handle));
+    status = send_exact(fd, &request, sizeof(request)) == 0 &&
+             send_exact(fd, &request_body, sizeof(request_body)) == 0 &&
+             send_exact(fd, handle, sizeof(*handle)) == 0
+        ? receive_header(fd, RIN_KEYRING_OP_KERBEROS_PRINCIPAL, &response)
+        : RIN_KEYRING_STORAGE_FAILED;
+    if (status == RIN_KEYRING_OK) {
+        if (response.payload_size < sizeof(principal_response) ||
+            recv_exact(fd, &principal_response,
+                       sizeof(principal_response)) != 0 ||
+            principal_response.reserved != 0u ||
+            rin_wire_capability_generation_valid(
+                principal_response.generation) != RIN_WIRE_CAPABILITY_OK ||
+            principal_response.principal_size == 0u ||
+            principal_response.principal_size > output_capacity ||
+            response.payload_size != sizeof(principal_response) +
+                principal_response.principal_size ||
+            recv_exact(fd, output, principal_response.principal_size) != 0) {
+            secure_clear(output, output_capacity);
+            status = principal_response.principal_size > output_capacity
+                ? RIN_KEYRING_TOO_LARGE : RIN_KEYRING_STORAGE_FAILED;
+        } else {
+            *output_size = principal_response.principal_size;
+            *generation = principal_response.generation;
+        }
+    } else if (response.payload_size != 0u) {
+        status = RIN_KEYRING_STORAGE_FAILED;
+    }
+    close(fd);
+    if (status != RIN_KEYRING_OK) {
+        secure_clear(output, output_capacity);
+        *output_size = 0u;
+        *generation = 0u;
+    }
+    secure_clear(&principal_response, sizeof(principal_response));
+    return status;
+}
+
 int rin_keyring_client_kerberos_operation(
     const RinKeyringHandleV1* handle,
     const RinKerberosOperationRequestV1* request,

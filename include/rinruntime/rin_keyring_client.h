@@ -48,6 +48,9 @@ int rin_keyring_client_get_handle(const RinKeyringHandleV1* handle,
                                   uint32_t* secret_size,
                                   uint64_t* generation);
 int rin_keyring_client_remove_handle(const RinKeyringHandleV1* handle);
+int rin_keyring_client_kerberos_principal(
+    const RinKeyringHandleV1* handle, uint8_t* output,
+    uint32_t output_capacity, uint32_t* output_size, uint64_t* generation);
 int rin_keyring_client_kerberos_operation(
     const RinKeyringHandleV1* handle,
     const RinKerberosOperationRequestV1* request,
