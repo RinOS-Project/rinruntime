@@ -63,6 +63,23 @@ int rinruntime_compositor_peer_identity_project_v1(
     return RIN_RESULT_OK;
 }
 
+int rinruntime_compositor_peer_identity_query_v1(
+    RinRuntimeCompositorPeerQueryV1Fn query, void* context,
+    RinIpcPeerIdentityV1* identity_out) {
+    rin_unix_peer_identity_v1 peer;
+    uint32_t peer_size = 0u;
+    int result;
+    if (!identity_out) return RIN_RESULT_INVALID_ARGUMENT;
+    memset(identity_out, 0, sizeof(*identity_out));
+    if (!query) return RIN_RESULT_INVALID_ARGUMENT;
+    memset(&peer, 0, sizeof(peer));
+    result = query(context, &peer, &peer_size);
+    if (result != RIN_RESULT_OK) return result;
+    if (peer_size != sizeof(peer)) return RIN_RESULT_CORRUPT_DATA;
+    return rinruntime_compositor_peer_identity_project_v1(
+        &peer, identity_out);
+}
+
 int rinruntime_compositor_shm_export_validate_v1(
     const RinCompositorGpuImageV1* image, uint32_t surface_id,
     uint32_t buffer_slot, uint64_t expected_surface_generation,

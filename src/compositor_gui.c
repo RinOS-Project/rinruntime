@@ -2461,24 +2461,33 @@ int rinruntime_compositor_gpu_import_frame_v1(
     return wnd_present(handle);
 }
 
+static int runtime_query_compositor_peer_identity(
+    void* context, rin_unix_peer_identity_v1* peer_out,
+    uint32_t* peer_size_out) {
+    const int* descriptor = (const int*)context;
+    socklen_t size = sizeof(*peer_out);
+    if (!descriptor || *descriptor < 0 || !peer_out || !peer_size_out)
+        return RIN_RESULT_INVALID_ARGUMENT;
+    *peer_size_out = 0u;
+    if (getsockopt(*descriptor, SOL_SOCKET, SO_RIN_UNIX_PEER_IDENTITY,
+                   peer_out, &size) != 0)
+        return errno == ENOPROTOOPT ? RIN_RESULT_NOT_SUPPORTED
+                                    : RIN_RESULT_IO;
+    if (size > UINT32_MAX) return RIN_RESULT_CORRUPT_DATA;
+    *peer_size_out = (uint32_t)size;
+    return RIN_RESULT_OK;
+}
+
 int wnd_get_compositor_peer_identity_v1(
     RinIpcPeerIdentityV1* identity_out) {
-    rin_unix_peer_identity_v1 peer;
-    socklen_t peer_size = sizeof(peer);
-    int result;
+    int descriptor;
     if (!identity_out) return RIN_RESULT_INVALID_ARGUMENT;
     memset(identity_out, 0, sizeof(*identity_out));
     if (g_compositor_fd < 0 && runtime_connect() != 0)
         return RIN_RESULT_IO;
-    memset(&peer, 0, sizeof(peer));
-    if (getsockopt(g_compositor_fd, SOL_SOCKET,
-                   SO_RIN_UNIX_PEER_IDENTITY, &peer, &peer_size) != 0)
-        return errno == ENOPROTOOPT ? RIN_RESULT_NOT_SUPPORTED
-                                    : RIN_RESULT_IO;
-    if (peer_size != sizeof(peer)) return RIN_RESULT_CORRUPT_DATA;
-    result = rinruntime_compositor_peer_identity_project_v1(
-        &peer, identity_out);
-    return result;
+    descriptor = g_compositor_fd;
+    return rinruntime_compositor_peer_identity_query_v1(
+        runtime_query_compositor_peer_identity, &descriptor, identity_out);
 }
 
 int wnd_export_gpu_image(RinRuntimeGuiHandle handle,

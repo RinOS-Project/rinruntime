@@ -52,6 +52,12 @@ int rinruntime_compositor_gpu_slot_reuse_status_v1(
 int rinruntime_compositor_peer_identity_project_v1(
     const rin_unix_peer_identity_v1* peer,
     RinIpcPeerIdentityV1* identity_out);
+typedef int (*RinRuntimeCompositorPeerQueryV1Fn)(
+    void* context, rin_unix_peer_identity_v1* peer_out,
+    uint32_t* peer_size_out);
+int rinruntime_compositor_peer_identity_query_v1(
+    RinRuntimeCompositorPeerQueryV1Fn query, void* context,
+    RinIpcPeerIdentityV1* identity_out);
 
 /* Validate the Compositor's explicitly software-SHM export against the
  * caller-owned native-window buffer set. expected_surface_generation may be
