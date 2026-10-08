@@ -185,6 +185,8 @@ static int keyring_result_valid(int status)
     case RIN_KEYRING_TOO_LARGE:
     case RIN_KEYRING_REPLAY:
     case RIN_KEYRING_NOT_SUPPORTED:
+    case RIN_KEYRING_CONTEXT_EXPIRED:
+    case RIN_KEYRING_BAD_BINDINGS:
         return 1;
     default:
         return 0;
