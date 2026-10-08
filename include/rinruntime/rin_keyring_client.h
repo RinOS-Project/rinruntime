@@ -7,6 +7,7 @@
 #include <stdint.h>
 
 #include <rin/keyring.h>
+#include <rin/net/kerberos_operation_abi.h>
 #include <rin/net/socket_abi.h>
 
 static inline uint32_t rin_keyring_client_secret_name_size(const char* name)
@@ -47,6 +48,14 @@ int rin_keyring_client_get_handle(const RinKeyringHandleV1* handle,
                                   uint32_t* secret_size,
                                   uint64_t* generation);
 int rin_keyring_client_remove_handle(const RinKeyringHandleV1* handle);
+int rin_keyring_client_kerberos_operation(
+    const RinKeyringHandleV1* handle,
+    const RinKerberosOperationRequestV1* request,
+    const uint8_t* context_token, uint32_t context_token_size,
+    const uint8_t* input, uint32_t input_size, uint8_t* output,
+    uint32_t output_capacity, uint32_t* output_size,
+    uint8_t* next_context_token, uint32_t next_context_capacity,
+    uint32_t* next_context_token_size, uint64_t* generation);
 void rin_keyring_client_clear(void* memory, size_t size);
 
 #ifdef __cplusplus
