@@ -37,6 +37,12 @@ extern "C" {
 int rin_keyring_client_status(void);
 int rin_keyring_client_put(const char* name, const void* secret,
                            uint32_t secret_size, uint64_t* generation);
+/* Session-manager-only import boundary. The keyring daemon requires an
+ * authenticated owner policy and accepts only the exact Kerberos scopes;
+ * ordinary application PUT/GET cannot reach this path. */
+int rin_keyring_client_import_kerberos_credential(
+    const char* scope, const void* credential, uint32_t credential_size,
+    uint64_t expected_generation, uint64_t* generation);
 int rin_keyring_client_get(const char* name, void* secret,
                            uint32_t secret_capacity, uint32_t* secret_size,
                            uint64_t* generation);

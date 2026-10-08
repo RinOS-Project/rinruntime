@@ -270,6 +270,67 @@ int rin_keyring_client_put(const char* name, const void* secret,
     return status;
 }
 
+int rin_keyring_client_import_kerberos_credential(
+    const char* scope, const void* credential, uint32_t credential_size,
+    uint64_t expected_generation, uint64_t* generation)
+{
+    static const char session_scope[] = "credential.kerberos.session";
+    static const char acceptor_scope[] = "credential.kerberos.acceptor";
+    RinKeyringMessageHeaderV1 request;
+    RinKeyringMessageHeaderV1 response;
+    RinKeyringImportKerberosCredentialRequestV1 import_request;
+    RinKeyringSecretResponseV1 result;
+    const uint32_t scope_size = rin_keyring_client_secret_name_size(scope);
+    const uint32_t session_scope_size =
+        (uint32_t)sizeof(session_scope) - 1u;
+    const uint32_t acceptor_scope_size =
+        (uint32_t)sizeof(acceptor_scope) - 1u;
+    int fd;
+    int status;
+
+    if (generation) *generation = 0u;
+    if (!scope || !credential || credential_size == 0u ||
+        credential_size > RIN_KEYRING_MAX_SECRET_SIZE ||
+        scope_size == 0u || scope_size > RIN_KEYRING_MAX_SECRET_NAME ||
+        !((scope_size == session_scope_size &&
+           memcmp(scope, session_scope, session_scope_size) == 0) ||
+          (scope_size == acceptor_scope_size &&
+           memcmp(scope, acceptor_scope, acceptor_scope_size) == 0)))
+        return RIN_KEYRING_INVALID;
+    fd = connect_service();
+    if (fd < 0) return RIN_KEYRING_LOCKED;
+    memset(&import_request, 0, sizeof(import_request));
+    memset(&result, 0, sizeof(result));
+    import_request.expected_generation = expected_generation;
+    import_request.secret_name_size = scope_size;
+    import_request.credential_size = credential_size;
+    request_header(
+        &request, RIN_KEYRING_OP_IMPORT_KERBEROS_CREDENTIAL,
+        (uint32_t)(sizeof(import_request) + scope_size + credential_size));
+    status = send_exact(fd, &request, sizeof(request)) == 0 &&
+             send_exact(fd, &import_request, sizeof(import_request)) == 0 &&
+             send_exact(fd, scope, scope_size) == 0 &&
+             send_exact(fd, credential, credential_size) == 0
+        ? receive_header(fd, RIN_KEYRING_OP_IMPORT_KERBEROS_CREDENTIAL,
+                         &response)
+        : RIN_KEYRING_STORAGE_FAILED;
+    if (status == RIN_KEYRING_OK) {
+        if (response.payload_size != sizeof(result) ||
+            recv_exact(fd, &result, sizeof(result)) != 0 ||
+            result.reserved != 0u ||
+            rin_wire_capability_generation_valid(result.generation) !=
+                RIN_WIRE_CAPABILITY_OK) {
+            status = RIN_KEYRING_STORAGE_FAILED;
+        } else if (generation) {
+            *generation = result.generation;
+        }
+    }
+    close(fd);
+    secure_clear(&import_request, sizeof(import_request));
+    secure_clear(&result, sizeof(result));
+    return status;
+}
+
 int rin_keyring_client_get(const char* name, void* secret,
                            uint32_t secret_capacity, uint32_t* secret_size,
                            uint64_t* generation)
