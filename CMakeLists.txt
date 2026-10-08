@@ -89,6 +89,7 @@ if(RINRUNTIME_BUILD_GUI)
                      ${CMAKE_CURRENT_BINARY_DIR}/aquamarine EXCLUDE_FROM_ALL)
     list(APPEND RINRUNTIME_SOURCES
          src/compositor_gui.c
+         src/compositor_gpu_bridge.c
          src/render.c
          src/render_context.cpp)
 endif()

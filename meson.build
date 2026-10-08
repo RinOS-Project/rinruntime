@@ -44,7 +44,8 @@ if host_machine.system() != 'windows'
                               include_directories: aq_inc)
   aquamarine_dep = declare_dependency(link_with: aquamarine,
                                        include_directories: aq_inc)
-  runtime_sources += files('src/compositor_gui.c', 'src/render.c',
+  runtime_sources += files('src/compositor_gui.c',
+                           'src/compositor_gpu_bridge.c', 'src/render.c',
                            'src/render_context.cpp')
 endif
 runtime_deps = []

@@ -9,6 +9,7 @@
 #include <rinruntime/window.h>
 #include <rinruntime/poll_wait.h>
 #include "platform.h"
+#include "compositor_gpu_bridge.h"
 #include <rin/contract_abi.h>
 #include <rin/ipc/shm_abi.h>
 #include <errno.h>
@@ -2396,6 +2397,33 @@ int wnd_present(RinRuntimeGuiHandle handle) {
     surface->frame_present_pending = 1u;
     surface->frame_sequence = commit.frame_sequence;
     return RIN_RESULT_OK;
+}
+
+int rinruntime_compositor_gpu_import_frame_v1(
+    RinRuntimeGuiHandle handle, uint64_t expected_generation,
+    const RinRuntimeCompositorGpuFrameV1* frame) {
+    RinRuntimeGuiSurface* surface = runtime_surface(handle);
+    int result;
+    if (!surface || !frame ||
+        frame->struct_size != sizeof(*frame) ||
+        frame->version != RIN_RUNTIME_COMPOSITOR_GPU_FRAME_V1_VERSION ||
+        expected_generation == 0u ||
+        surface->render_target_generation != expected_generation ||
+        frame->width != surface->width || frame->height != surface->height)
+        return RIN_RESULT_INVALID_ARGUMENT;
+    if (surface->render_target_acquired != 0u ||
+        surface->frame_present_pending != 0u || surface->resize_pending != 0u ||
+        surface->draw_slot >= RIN_COMPOSITOR_MAX_BUFFERS ||
+        !surface->pixels[surface->draw_slot])
+        return RIN_RESULT_BUSY;
+    result = rinruntime_compositor_gpu_copy_frame_v1(
+        surface->pixels[surface->draw_slot], surface->bytes, surface->pitch,
+        RIN_RUNTIME_COMPOSITOR_GPU_PIXEL_BGRA8, frame);
+    if (result != RIN_RESULT_OK) return result;
+    /* wnd_present queues the established Compositor damage+commit path. The
+     * source GPU allocation is no longer needed: pixels have been copied to
+     * the window owner's SHM buffer before this point. */
+    return wnd_present(handle);
 }
 
 int wnd_export_gpu_image(RinRuntimeGuiHandle handle,
