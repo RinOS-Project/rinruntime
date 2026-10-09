@@ -2532,6 +2532,33 @@ int wnd_get_gpu_frame_generation_v1(RinRuntimeGuiHandle handle,
     return RIN_RESULT_OK;
 }
 
+int wnd_get_gpu_surface_v1(
+    RinRuntimeGuiHandle handle,
+    RinRuntimeCompositorGpuSurfaceV1* surface_out) {
+    RinRuntimeGuiSurface* surface;
+    if (!surface_out) return RIN_RESULT_INVALID_ARGUMENT;
+    memset(surface_out, 0, sizeof(*surface_out));
+    surface = runtime_surface(handle);
+    if (!surface) return RIN_RESULT_INVALID_HANDLE;
+    if (surface->resize_pending != 0u) return RIN_RESULT_BUSY;
+    if (surface->width == 0u || surface->height == 0u ||
+        surface->width > UINT32_MAX / 4u ||
+        surface->pitch < surface->width * 4u ||
+        surface->bytes < (uint64_t)surface->pitch * surface->height ||
+        surface->render_target_generation == 0u)
+        return RIN_RESULT_CORRUPT_DATA;
+
+    surface_out->struct_size = sizeof(*surface_out);
+    surface_out->version = RIN_RUNTIME_COMPOSITOR_GPU_SURFACE_V1_VERSION;
+    surface_out->width = surface->width;
+    surface_out->height = surface->height;
+    surface_out->supported_frame_formats =
+        RIN_RUNTIME_COMPOSITOR_GPU_SURFACE_FORMAT_BGRA8_BIT |
+        RIN_RUNTIME_COMPOSITOR_GPU_SURFACE_FORMAT_RGBA8_BIT;
+    surface_out->surface_generation = surface->render_target_generation;
+    return RIN_RESULT_OK;
+}
+
 int wnd_import_gpu_readback_frame_v1(
     RinRuntimeGuiHandle handle, uint64_t expected_generation,
     const RinRuntimeCompositorGpuFrameV1* frame) {

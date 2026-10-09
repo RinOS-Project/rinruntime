@@ -21,6 +21,10 @@ extern "C" {
 typedef RinWindowHandle RinRuntimeGuiHandle;
 
 #define RIN_RUNTIME_COMPOSITOR_GPU_FRAME_V1_VERSION UINT32_C(1)
+#define RIN_RUNTIME_COMPOSITOR_GPU_SURFACE_V1_VERSION UINT32_C(1)
+
+#define RIN_RUNTIME_COMPOSITOR_GPU_SURFACE_FORMAT_BGRA8_BIT UINT32_C(0x1)
+#define RIN_RUNTIME_COMPOSITOR_GPU_SURFACE_FORMAT_RGBA8_BIT UINT32_C(0x2)
 
 typedef enum RinRuntimeCompositorGpuPixelFormatV1 {
     RIN_RUNTIME_COMPOSITOR_GPU_PIXEL_BGRA8 = 0,
@@ -44,6 +48,22 @@ typedef struct RinRuntimeCompositorGpuFrameV1 {
     uint64_t reserved[2];
 } RinRuntimeCompositorGpuFrameV1;
 
+/* Single-call local snapshot for a Vulkan/native-window WSI consumer. The
+ * generation and extent are read from the same live Runtime surface record;
+ * any resize/rebind after this query is rejected by the generation-bound
+ * frame import API. These formats describe the CPU-readable Compositor
+ * handoff, not formats accepted by direct scanout. */
+typedef struct RinRuntimeCompositorGpuSurfaceV1 {
+    uint32_t struct_size;
+    uint32_t version;
+    uint32_t width;
+    uint32_t height;
+    uint32_t supported_frame_formats;
+    uint32_t reserved0;
+    uint64_t surface_generation;
+    uint64_t reserved[2];
+} RinRuntimeCompositorGpuSurfaceV1;
+
 #define RIN_RUNTIME_GPU_READBACK_LEASE_V1_VERSION UINT32_C(1)
 typedef struct RinRuntimeGpuReadbackLeaseV1 {
     uint32_t struct_size;
@@ -64,6 +84,14 @@ static_assert(sizeof(RinRuntimeGpuReadbackLeaseV1) == 88u,
 #elif defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
 _Static_assert(sizeof(RinRuntimeGpuReadbackLeaseV1) == 88u,
                "RinRuntimeGpuReadbackLeaseV1 ABI drift");
+#endif
+
+#if defined(__cplusplus)
+static_assert(sizeof(RinRuntimeCompositorGpuSurfaceV1) == 48u,
+              "RinRuntimeCompositorGpuSurfaceV1 ABI drift");
+#elif defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
+_Static_assert(sizeof(RinRuntimeCompositorGpuSurfaceV1) == 48u,
+               "RinRuntimeCompositorGpuSurfaceV1 ABI drift");
 #endif
 
 typedef struct RinRuntimeGuiCompletionV1 {
@@ -158,6 +186,9 @@ int wnd_present(RinRuntimeGuiHandle handle);
  * BUSY means a resize/rebind is in progress; retry after it completes. */
 int wnd_get_gpu_frame_generation_v1(RinRuntimeGuiHandle handle,
                                     uint64_t* generation_out);
+int wnd_get_gpu_surface_v1(
+    RinRuntimeGuiHandle handle,
+    RinRuntimeCompositorGpuSurfaceV1* surface_out);
 /* Explicit ordinary-window path for a completed CPU-readable GPU readback.
  * Copies into the current SHM slot and submits the existing Compositor
  * damage/commit transaction. The source is not retained after this returns;
