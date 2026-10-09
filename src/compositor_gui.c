@@ -2545,6 +2545,7 @@ int wnd_get_gpu_surface_v1(
         surface->width > UINT32_MAX / 4u ||
         surface->pitch < surface->width * 4u ||
         surface->bytes < (uint64_t)surface->pitch * surface->height ||
+        surface->bytes > RIN_RUNTIME_GUI_MAX_BUFFER_BYTES ||
         surface->render_target_generation == 0u)
         return RIN_RESULT_CORRUPT_DATA;
 
