@@ -60,6 +60,10 @@ typedef enum RinPerformanceTraceEvent {
     RIN_TRACE_TLB_SHOOTDOWN_DETAILS,
     /* arg0=cycles until observed remote completion, arg1=target CPU. */
     RIN_TRACE_TLB_SHOOTDOWN_ACK_LATENCY,
+    /* arg0=writeback latency in cycles (bit 63 marks failure), arg1=pages. */
+    RIN_TRACE_PAGE_CACHE_WRITEBACK,
+    /* arg0=lock wait cycles, arg1=spin iterations. */
+    RIN_TRACE_PAGE_CACHE_LOCK_WAIT,
     RIN_TRACE_EVENT_COUNT
 } RinPerformanceTraceEvent;
 
@@ -73,6 +77,7 @@ typedef enum RinPerformanceTracePageFaultClass {
 } RinPerformanceTracePageFaultClass;
 
 #define RIN_TRACE_PAGE_FAULT_STAGE_FAILED_FLAG (UINT64_C(1) << 63u)
+#define RIN_TRACE_PAGE_CACHE_FAILED_FLAG (UINT64_C(1) << 63u)
 
 /* Timestamps in records are raw RDTSC values. Event arguments retain the
  * source units documented by the event producer. */
