@@ -626,6 +626,9 @@ int rin_keyring_client_kerberos_operation(
         !generation || !provider_result || !return_flags ||
         request->struct_size != sizeof(*request) ||
         request->version != RIN_KERBEROS_OPERATION_ABI_VERSION ||
+        request->operation == 0u || request->operation > 16u ||
+        (RIN_KERBEROS_OPERATION_KNOWN_OPERATIONS &
+         UINT16_C(1u << (request->operation - 1u))) == 0u ||
         (request->flags & ~RIN_KERBEROS_OPERATION_KNOWN_FLAGS) != 0u ||
         ((request->operation != RIN_KERBEROS_OPERATION_WRAP &&
           request->operation != RIN_KERBEROS_OPERATION_UNWRAP) &&
