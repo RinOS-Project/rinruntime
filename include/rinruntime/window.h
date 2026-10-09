@@ -44,6 +44,28 @@ typedef struct RinRuntimeCompositorGpuFrameV1 {
     uint64_t reserved[2];
 } RinRuntimeCompositorGpuFrameV1;
 
+#define RIN_RUNTIME_GPU_READBACK_LEASE_V1_VERSION UINT32_C(1)
+typedef struct RinRuntimeGpuReadbackLeaseV1 {
+    uint32_t struct_size;
+    uint32_t version;
+    uint32_t format;
+    uint32_t width;
+    uint32_t height;
+    uint32_t row_pitch;
+    uint64_t allocation_offset;
+    uint64_t bytes;
+    RinGpuCrossProcessCapabilityTokenV2 capability;
+    uint64_t expected_surface_generation;
+} RinRuntimeGpuReadbackLeaseV1;
+
+#if defined(__cplusplus)
+static_assert(sizeof(RinRuntimeGpuReadbackLeaseV1) == 88u,
+              "RinRuntimeGpuReadbackLeaseV1 ABI drift");
+#elif defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
+_Static_assert(sizeof(RinRuntimeGpuReadbackLeaseV1) == 88u,
+               "RinRuntimeGpuReadbackLeaseV1 ABI drift");
+#endif
+
 typedef struct RinRuntimeGuiCompletionV1 {
     uint32_t struct_size;
     uint32_t version;
@@ -143,6 +165,18 @@ int wnd_get_gpu_frame_generation_v1(RinRuntimeGuiHandle handle,
 int wnd_import_gpu_readback_frame_v1(
     RinRuntimeGuiHandle handle, uint64_t expected_generation,
     const RinRuntimeCompositorGpuFrameV1* frame);
+/* Asynchronous explicit CPU-readable allocation handoff to an ordinary
+ * Compositor window. The producer must finish GPU writes and CPU visibility
+ * before submission. expected_surface_generation must come from a current
+ * wnd_export_gpu_image result (repeat after resize). The capability must be
+ * recipient-bound to the connected Compositor process with READ rights.
+ * Compositor copies into a free SHM slot and releases the exact capability
+ * lease before replying; release the source after a successful completion.
+ * On error, do not assume the lease was released. This is not direct scanout
+ * or an implicit software fallback. */
+int wnd_present_gpu_readback_lease_v1(
+    RinRuntimeGuiHandle handle,
+    const RinRuntimeGpuReadbackLeaseV1* readback, uint64_t cookie);
 int wnd_export_gpu_image(RinRuntimeGuiHandle handle,
                          RinCompositorGpuImageV1* image_out);
 int wnd_export_gpu_image_async(RinRuntimeGuiHandle handle, uint64_t cookie);

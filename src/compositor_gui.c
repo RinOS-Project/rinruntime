@@ -74,6 +74,8 @@ typedef struct RinRuntimeGuiSurface {
     uint32_t render_target_acquired;
     uint32_t render_target_slot;
     uint32_t frame_present_pending;
+    uint32_t gpu_readback_pending;
+    uint32_t copy_front_before_draw;
     uint32_t resize_pending;
     uint32_t input_poll_pending;
     uint32_t input_event_ready;
@@ -135,7 +137,8 @@ enum {
     RIN_RUNTIME_GUI_ASYNC_RESULT_GPU_FRAME = 2u,
     RIN_RUNTIME_GUI_ASYNC_RESULT_RESIZE = 3u,
     RIN_RUNTIME_GUI_ASYNC_RESULT_QUERY = 4u,
-    RIN_RUNTIME_GUI_ASYNC_RESULT_INPUT = 5u
+    RIN_RUNTIME_GUI_ASYNC_RESULT_INPUT = 5u,
+    RIN_RUNTIME_GUI_ASYNC_RESULT_GPU_READBACK = 6u
 };
 
 _Static_assert(sizeof(RinCompositorAttachBuffersV2) <=
@@ -171,6 +174,7 @@ static RinRuntimeGuiCompletionDispatch
     g_async_completions[RIN_RUNTIME_GUI_COMPLETION_CAPACITY];
 static uint32_t g_async_completion_head;
 static uint32_t g_async_completion_count;
+static uint32_t g_async_readback_completion_reservations;
 static uint32_t g_next_name_id = 1u;
 static uint32_t g_compositor_reconnect_count = 0u;
 static uint32_t g_handle_generations[RIN_RUNTIME_GUI_MAX_SURFACES];
@@ -308,6 +312,7 @@ static int runtime_compositor_status_known(int32_t status) {
     case 0:
     case -1:  /* EINVAL */
     case -4:  /* compositor capability/authority rejection */
+    case -5:  /* capability service/lease release I/O */
     case -11: /* EAGAIN */
     case -13: /* EACCES */
     case -22: /* EINVAL */
@@ -327,6 +332,8 @@ static int32_t runtime_public_result(int32_t status) {
         return RIN_RESULT_INVALID_ARGUMENT;
     case -4:  /* compositor capability/authority rejection */
         return RIN_RESULT_ACCESS_DENIED;
+    case -5:  /* capability service/lease release I/O */
+        return RIN_RESULT_IO;
     case -11: /* EAGAIN */
         return RIN_RESULT_WOULD_BLOCK;
     case -13: /* EACCES */
@@ -876,8 +883,15 @@ static void runtime_async_queue_completion(
     RinRuntimeGuiCompletionDispatch* dispatch;
     if (!job) return;
     surface = runtime_surface(job->handle);
+    if (job->result_kind == RIN_RUNTIME_GUI_ASYNC_RESULT_GPU_READBACK &&
+        g_async_readback_completion_reservations != 0u)
+        --g_async_readback_completion_reservations;
     if (!surface || !surface->completion_callback ||
-        g_async_completion_count >= RIN_RUNTIME_GUI_COMPLETION_CAPACITY)
+        g_async_completion_count >= RIN_RUNTIME_GUI_COMPLETION_CAPACITY ||
+        (job->result_kind != RIN_RUNTIME_GUI_ASYNC_RESULT_GPU_READBACK &&
+         g_async_completion_count +
+                 g_async_readback_completion_reservations >=
+             RIN_RUNTIME_GUI_COMPLETION_CAPACITY))
         return;
     slot = (g_async_completion_head + g_async_completion_count) %
            RIN_RUNTIME_GUI_COMPLETION_CAPACITY;
@@ -950,9 +964,7 @@ static void runtime_async_apply_completion(RinRuntimeGuiAsyncJob* job,
                         surface->pixels[next_slot]) {
                         surface->front_slot = commit.buffer_slot;
                         surface->draw_slot = next_slot;
-                        memcpy(surface->pixels[next_slot],
-                               surface->pixels[commit.buffer_slot],
-                               (size_t)surface->bytes);
+                        surface->copy_front_before_draw = 1u;
                     }
                 }
             }
@@ -976,9 +988,47 @@ static void runtime_async_apply_completion(RinRuntimeGuiAsyncJob* job,
                         surface->front_slot = present.buffer_slot;
                         surface->draw_slot = next_slot;
                         surface->frame_sequence = present.frame_sequence;
-                        memcpy(surface->pixels[next_slot],
-                               surface->pixels[present.buffer_slot],
-                               (size_t)surface->bytes);
+                        surface->copy_front_before_draw = 1u;
+                    }
+                }
+            }
+        }
+    } else if (job->result_kind ==
+               RIN_RUNTIME_GUI_ASYNC_RESULT_GPU_READBACK) {
+        if (surface) {
+            surface->frame_present_pending = 0u;
+            surface->gpu_readback_pending = 0u;
+            if (status == 0) {
+                RinCompositorGpuReadbackLeaseResultV1 result;
+                if (!payload || payload_size != sizeof(result)) {
+                    status = RIN_RESULT_CORRUPT_DATA;
+                } else {
+                    memcpy(&result, payload, sizeof(result));
+                    RinCompositorGpuReadbackLeasePresentV1 submitted;
+                    memcpy(&submitted, job->payload, sizeof(submitted));
+                    if (result.struct_size != sizeof(result) ||
+                        result.version !=
+                            RIN_COMPOSITOR_GPU_READBACK_LEASE_VERSION ||
+                        result.surface_id != surface->id ||
+                        result.buffer_slot >= RIN_COMPOSITOR_MAX_BUFFERS ||
+                        result.surface_generation !=
+                            submitted.expected_surface_generation ||
+                        result.frame_sequence == 0u ||
+                        result.frame_sequence != submitted.frame_sequence ||
+                        result.frame_sequence <= surface->frame_sequence) {
+                        status = RIN_RESULT_CORRUPT_DATA;
+                    } else {
+                        surface->slot_submitted_sequence[result.buffer_slot] =
+                            result.frame_sequence;
+                        surface->frame_sequence = result.frame_sequence;
+                        const uint32_t next_slot = result.buffer_slot ^ 1u;
+                        if (next_slot < RIN_COMPOSITOR_MAX_BUFFERS &&
+                            surface->pixels[result.buffer_slot] &&
+                            surface->pixels[next_slot]) {
+                            surface->front_slot = result.buffer_slot;
+                            surface->draw_slot = next_slot;
+                            surface->copy_front_before_draw = 1u;
+                        }
                     }
                 }
             }
@@ -1088,7 +1138,8 @@ static int runtime_async_enqueue_resize(
     uint32_t index;
     int result;
     if (!surface || surface->resize_pending != 0u ||
-        surface->render_target_acquired != 0u)
+        surface->render_target_acquired != 0u ||
+        surface->gpu_readback_pending != 0u)
         return RIN_RESULT_BUSY;
     memset(&candidate, 0, sizeof(candidate));
     for (index = 0u; index < RIN_COMPOSITOR_MAX_BUFFERS; ++index)
@@ -1135,6 +1186,7 @@ static int runtime_async_enqueue_resize(
     surface->compositor_surface_generation = 0u;
     surface->draw_slot = 0u;
     surface->front_slot = 0u;
+    surface->copy_front_before_draw = 0u;
     surface->render_target_acquired = 0u;
     surface->render_target_slot = 0u;
     surface->acquired_generation = 0u;
@@ -1862,6 +1914,7 @@ int wnd_close_async(RinRuntimeGuiHandle handle) {
     int result;
     if (!surface || runtime_surface_id(handle, &id) != 0)
         return RIN_RESULT_INVALID_HANDLE;
+    if (surface->gpu_readback_pending != 0u) return RIN_RESULT_BUSY;
     result = runtime_async_enqueue(RIN_COMPOSITOR_DESTROY_SURFACE, &id,
             sizeof(id),
             0u, 0, 0u, handle, 0u,
@@ -1873,7 +1926,9 @@ int wnd_close_async(RinRuntimeGuiHandle handle) {
 
 void wnd_close(RinRuntimeGuiHandle handle) {
     RinRuntimeGuiSurface* surface;
-    if (wnd_close_async(handle) != RIN_RESULT_OK) {
+    const int close_result = wnd_close_async(handle);
+    if (close_result == RIN_RESULT_BUSY) return;
+    if (close_result != RIN_RESULT_OK) {
         surface = runtime_surface(handle);
         if (!surface) return;
         runtime_close_connection();
@@ -2387,6 +2442,7 @@ int wnd_present(RinRuntimeGuiHandle handle) {
     if (surface->render_target_acquired != 0u ||
         surface->frame_present_pending != 0u ||
         surface->resize_pending != 0u ||
+        surface->copy_front_before_draw != 0u ||
         surface->draw_slot >= RIN_COMPOSITOR_MAX_BUFFERS ||
         !surface->pixels[surface->draw_slot])
         return RIN_RESULT_BUSY;
@@ -2455,6 +2511,7 @@ int rinruntime_compositor_gpu_import_frame_v1(
         surface->pixels[surface->draw_slot], surface->bytes, surface->pitch,
         RIN_RUNTIME_COMPOSITOR_GPU_PIXEL_BGRA8, frame);
     if (result != RIN_RESULT_OK) return result;
+    surface->copy_front_before_draw = 0u;
     /* wnd_present queues the established Compositor damage+commit path. The
      * source GPU allocation is no longer needed: pixels have been copied to
      * the window owner's SHM buffer before this point. */
@@ -2480,6 +2537,96 @@ int wnd_import_gpu_readback_frame_v1(
     const RinRuntimeCompositorGpuFrameV1* frame) {
     return rinruntime_compositor_gpu_import_frame_v1(
         handle, expected_generation, frame);
+}
+
+int wnd_present_gpu_readback_lease_v1(
+    RinRuntimeGuiHandle handle,
+    const RinRuntimeGpuReadbackLeaseV1* readback, uint64_t cookie) {
+    RinRuntimeGuiSurface* surface = runtime_surface(handle);
+    RinCompositorGpuReadbackLeasePresentV1 request;
+    uint32_t job_slot;
+    int result;
+    if (!surface || !readback) return RIN_RESULT_INVALID_ARGUMENT;
+    if ((g_compositor_features &
+         (RIN_COMPOSITOR_FEATURE_GPU_SURFACE_ABI |
+          RIN_COMPOSITOR_FEATURE_GPU_READBACK_LEASE)) !=
+        (RIN_COMPOSITOR_FEATURE_GPU_SURFACE_ABI |
+         RIN_COMPOSITOR_FEATURE_GPU_READBACK_LEASE))
+        return RIN_RESULT_NOT_SUPPORTED;
+    if (!surface->completion_callback ||
+        readback->struct_size != sizeof(*readback) ||
+        readback->version != RIN_RUNTIME_GPU_READBACK_LEASE_V1_VERSION ||
+        (readback->format != RIN_COMPOSITOR_GPU_READBACK_FORMAT_BGRA8 &&
+         readback->format != RIN_COMPOSITOR_GPU_READBACK_FORMAT_RGBA8) ||
+        readback->width != surface->width ||
+        readback->height != surface->height ||
+        readback->width > UINT32_MAX / 4u ||
+        readback->row_pitch < readback->width * 4u ||
+        readback->bytes == 0u ||
+        readback->allocation_offset > UINT64_MAX - readback->bytes ||
+        readback->expected_surface_generation == 0u ||
+        readback->capability.struct_size !=
+            sizeof(readback->capability) ||
+        readback->capability.version !=
+            RIN_GPU_CROSS_PROCESS_CAPABILITY_V2_VERSION ||
+        readback->capability.token == 0u ||
+        readback->capability.device_generation == 0u ||
+        (readback->capability.rights &
+         RIN_GPU_CROSS_PROCESS_RIGHT_READ) == 0u ||
+        (readback->capability.rights &
+         ~RIN_GPU_CROSS_PROCESS_RIGHT_MASK) != 0u ||
+        readback->capability.reserved[0] != 0u ||
+        readback->capability.reserved[1] != 0u ||
+        readback->capability.reserved[2] != 0u)
+        return RIN_RESULT_INVALID_ARGUMENT;
+    {
+        const uint64_t last_row_offset =
+            (uint64_t)(readback->height - 1u) * readback->row_pitch;
+        const uint64_t row_bytes = (uint64_t)readback->width * 4u;
+        if (last_row_offset > UINT64_MAX - row_bytes ||
+            readback->bytes < last_row_offset + row_bytes)
+            return RIN_RESULT_INVALID_ARGUMENT;
+    }
+    if (readback->expected_surface_generation !=
+        surface->compositor_surface_generation)
+        return RIN_RESULT_BUSY;
+    if (surface->render_target_acquired != 0u ||
+        surface->frame_present_pending != 0u || surface->resize_pending != 0u)
+        return RIN_RESULT_BUSY;
+    if (surface->frame_sequence == UINT64_MAX)
+        return RIN_RESULT_LIMIT_EXCEEDED;
+    if (g_async_completion_count +
+            g_async_readback_completion_reservations >=
+        RIN_RUNTIME_GUI_COMPLETION_CAPACITY)
+        return RIN_RESULT_BUSY;
+
+    memset(&request, 0, sizeof(request));
+    request.struct_size = sizeof(request);
+    request.version = RIN_COMPOSITOR_GPU_READBACK_LEASE_VERSION;
+    request.surface_id = surface->id;
+    request.format = readback->format;
+    request.expected_surface_generation =
+        readback->expected_surface_generation;
+    request.frame_sequence = surface->frame_sequence + 1u;
+    request.allocation_offset = readback->allocation_offset;
+    request.bytes = readback->bytes;
+    request.capability = readback->capability;
+    request.width = readback->width;
+    request.height = readback->height;
+    request.row_pitch = readback->row_pitch;
+    result = runtime_async_enqueue(
+        RIN_COMPOSITOR_PRESENT_GPU_READBACK_LEASE, &request,
+        sizeof(request), 0u, 0, 0u, handle, cookie,
+        RIN_RUNTIME_GUI_ASYNC_RESULT_GPU_READBACK);
+    if (result != RIN_RESULT_OK) return result;
+    job_slot = (g_async_requests.head + g_async_requests.count - 1u) %
+               RIN_RUNTIME_GUI_ASYNC_QUEUE_CAPACITY;
+    g_async_requests.jobs[job_slot].reply_capacity =
+        sizeof(RinCompositorGpuReadbackLeaseResultV1);
+    ++g_async_readback_completion_reservations;
+    surface->frame_present_pending = 1u;
+    surface->gpu_readback_pending = 1u;
+    return RIN_RESULT_OK;
 }
 
 static int runtime_query_compositor_peer_identity(
@@ -2603,6 +2750,16 @@ int wnd_acquire_render_target(RinRuntimeGuiHandle handle,
         int result = runtime_draw_slot_available(surface, slot);
         if (result != RIN_RESULT_OK) return result;
     }
+    if (surface->copy_front_before_draw != 0u) {
+        if (surface->front_slot >= RIN_COMPOSITOR_MAX_BUFFERS ||
+            !surface->pixels[surface->front_slot])
+            return RIN_RESULT_CORRUPT_DATA;
+        if (slot != surface->front_slot)
+            memcpy(surface->pixels[slot],
+                   surface->pixels[surface->front_slot],
+                   (size_t)surface->bytes);
+        surface->copy_front_before_draw = 0u;
+    }
     out_target->struct_size = sizeof(*out_target);
     out_target->version = RIN_RENDER_TARGET_VERSION;
     out_target->pixels = surface->pixels[slot];
@@ -2690,6 +2847,8 @@ int wnd_set_compositor_completion_callback(
     void* context) {
     RinRuntimeGuiSurface* surface = runtime_surface(handle);
     if (!surface) return RIN_RESULT_INVALID_HANDLE;
+    if (!callback && surface->gpu_readback_pending != 0u)
+        return RIN_RESULT_BUSY;
     surface->completion_callback = callback;
     surface->completion_context = context;
     return RIN_RESULT_OK;
