@@ -2567,6 +2567,31 @@ int wnd_import_gpu_readback_frame_v1(
         handle, expected_generation, frame);
 }
 
+static int runtime_gpu_surface_query_callback_v1(
+    void* context, RinRuntimeGuiHandle handle,
+    RinRuntimeCompositorGpuSurfaceV1* surface_out) {
+    if (context != NULL) return RIN_RESULT_INVALID_ARGUMENT;
+    return wnd_get_gpu_surface_v1(handle, surface_out);
+}
+
+static int runtime_gpu_frame_import_callback_v1(
+    void* context, RinRuntimeGuiHandle handle, uint64_t surface_generation,
+    const RinRuntimeCompositorGpuFrameV1* frame) {
+    if (context != NULL) return RIN_RESULT_INVALID_ARGUMENT;
+    return wnd_import_gpu_readback_frame_v1(handle, surface_generation, frame);
+}
+
+int wnd_get_gpu_surface_ops_v1(
+    RinRuntimeCompositorGpuSurfaceOpsV1* ops_out) {
+    if (!ops_out) return RIN_RESULT_INVALID_ARGUMENT;
+    memset(ops_out, 0, sizeof(*ops_out));
+    ops_out->struct_size = sizeof(*ops_out);
+    ops_out->version = RIN_RUNTIME_COMPOSITOR_GPU_SURFACE_OPS_V1_VERSION;
+    ops_out->query = runtime_gpu_surface_query_callback_v1;
+    ops_out->import_frame = runtime_gpu_frame_import_callback_v1;
+    return RIN_RESULT_OK;
+}
+
 int wnd_present_gpu_readback_lease_v1(
     RinRuntimeGuiHandle handle,
     const RinRuntimeGpuReadbackLeaseV1* readback, uint64_t cookie) {

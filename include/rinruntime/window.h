@@ -22,6 +22,7 @@ typedef RinWindowHandle RinRuntimeGuiHandle;
 
 #define RIN_RUNTIME_COMPOSITOR_GPU_FRAME_V1_VERSION UINT32_C(1)
 #define RIN_RUNTIME_COMPOSITOR_GPU_SURFACE_V1_VERSION UINT32_C(1)
+#define RIN_RUNTIME_COMPOSITOR_GPU_SURFACE_OPS_V1_VERSION UINT32_C(1)
 
 #define RIN_RUNTIME_COMPOSITOR_GPU_SURFACE_FORMAT_BGRA8_BIT UINT32_C(0x1)
 #define RIN_RUNTIME_COMPOSITOR_GPU_SURFACE_FORMAT_RGBA8_BIT UINT32_C(0x2)
@@ -64,6 +65,27 @@ typedef struct RinRuntimeCompositorGpuSurfaceV1 {
     uint64_t reserved[2];
 } RinRuntimeCompositorGpuSurfaceV1;
 
+typedef int (*RinRuntimeCompositorGpuSurfaceQueryV1Fn)(
+    void* context, RinRuntimeGuiHandle handle,
+    RinRuntimeCompositorGpuSurfaceV1* surface_out);
+typedef int (*RinRuntimeCompositorGpuFrameImportV1Fn)(
+    void* context, RinRuntimeGuiHandle handle, uint64_t surface_generation,
+    const RinRuntimeCompositorGpuFrameV1* frame);
+
+/* Callback bridge for a Vulkan native-window surface adapter. It contains no
+ * Vulkan types: query uses Runtime's generation-bearing window record and
+ * import synchronously copies completed CPU-readable pixels into Compositor
+ * shared memory. Call wnd_get_gpu_surface_ops_v1 to obtain the production
+ * callbacks; the callback context is process-local and must not be serialized. */
+typedef struct RinRuntimeCompositorGpuSurfaceOpsV1 {
+    uint32_t struct_size;
+    uint32_t version;
+    void* context;
+    RinRuntimeCompositorGpuSurfaceQueryV1Fn query;
+    RinRuntimeCompositorGpuFrameImportV1Fn import_frame;
+    uint64_t reserved[2];
+} RinRuntimeCompositorGpuSurfaceOpsV1;
+
 #define RIN_RUNTIME_GPU_READBACK_LEASE_V1_VERSION UINT32_C(1)
 typedef struct RinRuntimeGpuReadbackLeaseV1 {
     uint32_t struct_size;
@@ -92,6 +114,24 @@ static_assert(sizeof(RinRuntimeCompositorGpuSurfaceV1) == 48u,
 #elif defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
 _Static_assert(sizeof(RinRuntimeCompositorGpuSurfaceV1) == 48u,
                "RinRuntimeCompositorGpuSurfaceV1 ABI drift");
+#endif
+
+#if defined(__cplusplus)
+#if UINTPTR_MAX == UINT64_MAX
+static_assert(sizeof(RinRuntimeCompositorGpuSurfaceOpsV1) == 48u,
+              "RinRuntimeCompositorGpuSurfaceOpsV1 ABI drift");
+#else
+static_assert(sizeof(RinRuntimeCompositorGpuSurfaceOpsV1) == 36u,
+              "RinRuntimeCompositorGpuSurfaceOpsV1 ABI drift");
+#endif
+#elif defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
+#if UINTPTR_MAX == UINT64_MAX
+_Static_assert(sizeof(RinRuntimeCompositorGpuSurfaceOpsV1) == 48u,
+               "RinRuntimeCompositorGpuSurfaceOpsV1 ABI drift");
+#else
+_Static_assert(sizeof(RinRuntimeCompositorGpuSurfaceOpsV1) == 36u,
+               "RinRuntimeCompositorGpuSurfaceOpsV1 ABI drift");
+#endif
 #endif
 
 typedef struct RinRuntimeGuiCompletionV1 {
@@ -189,6 +229,8 @@ int wnd_get_gpu_frame_generation_v1(RinRuntimeGuiHandle handle,
 int wnd_get_gpu_surface_v1(
     RinRuntimeGuiHandle handle,
     RinRuntimeCompositorGpuSurfaceV1* surface_out);
+int wnd_get_gpu_surface_ops_v1(
+    RinRuntimeCompositorGpuSurfaceOpsV1* ops_out);
 /* Explicit ordinary-window path for a completed CPU-readable GPU readback.
  * Copies into the current SHM slot and submits the existing Compositor
  * damage/commit transaction. The source is not retained after this returns;
