@@ -84,3 +84,28 @@ int rinruntime_performance_trace_read_cpu(
     }
     return (int)result;
 }
+
+int rinruntime_performance_trace_read_scheduler_cpu(
+    uint32_t cpu, RinPerformanceTraceSchedulerMetricsV1* metrics)
+{
+    intptr_t result;
+
+    if (cpu >= RIN_PERFORMANCE_TRACE_MAX_CPUS || !metrics) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    result = _syscall2(
+        (uintptr_t)RIN_SYS_PERFORMANCE_TRACE_SCHEDULER_READ_V1,
+        (uintptr_t)cpu,
+        (uintptr_t)metrics);
+    if (result < 0) {
+        errno = result >= -4095 ? (int)(-result) : EIO;
+        return -1;
+    }
+    if (result != 0) {
+        errno = EIO;
+        return -1;
+    }
+    return 0;
+}

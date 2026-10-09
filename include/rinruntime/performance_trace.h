@@ -9,6 +9,8 @@
 #define RIN_PERFORMANCE_TRACE_RING_CAPACITY 512u
 #define RIN_PERFORMANCE_TRACE_MAX_READ_RECORDS 32u
 #define RIN_PERFORMANCE_TRACE_SNAPSHOT_VERSION 1u
+#define RIN_PERFORMANCE_TRACE_SCHEDULER_METRICS_VERSION 1u
+#define RIN_PERFORMANCE_TRACE_SCHEDULER_HISTOGRAM_BINS 16u
 
 typedef enum RinPerformanceTraceEvent {
     RIN_TRACE_SCHED_PICK_START = 1,
@@ -71,6 +73,28 @@ typedef struct RinPerformanceTraceSnapshotInfo {
     uint64_t emit_count;
 } RinPerformanceTraceSnapshotInfo;
 
+/* Cumulative debug scheduler counters for one CPU. Queue-depth histogram
+ * bin 0 represents depth 0. Bins 1 through 14 represent [2^(bin-1),
+ * 2^bin), and bin 15 represents depth >= 16384. */
+typedef struct RinPerformanceTraceSchedulerMetricsV1 {
+    uint32_t struct_size;
+    uint32_t version;
+    uint32_t cpu;
+    uint32_t reserved;
+    uint64_t pick_count;
+    uint64_t pick_attempts;
+    uint64_t pick_rejected;
+    uint64_t republish_count;
+    uint64_t runqueue_lock_wait_cycles;
+    uint64_t runqueue_lock_hold_cycles;
+    uint64_t transition_lock_wait_cycles;
+    uint64_t migration_count;
+    uint64_t steal_count;
+    uint64_t cross_cpu_wakeup_count;
+    uint64_t queue_depth_histogram[
+        RIN_PERFORMANCE_TRACE_SCHEDULER_HISTOGRAM_BINS];
+} RinPerformanceTraceSchedulerMetricsV1;
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -88,6 +112,12 @@ int rinruntime_performance_trace_read_cpu(
     uint32_t cpu, uint64_t after_sequence,
     RinPerformanceTraceRecord* records, uint32_t capacity,
     RinPerformanceTraceSnapshotInfo* info);
+
+/* Read cumulative native x86_64 scheduler counters and the queue-depth
+ * histogram for one CPU. Available only in x86_64 debug builds with
+ * performance tracing enabled. */
+int rinruntime_performance_trace_read_scheduler_cpu(
+    uint32_t cpu, RinPerformanceTraceSchedulerMetricsV1* metrics);
 
 #ifdef __cplusplus
 }
