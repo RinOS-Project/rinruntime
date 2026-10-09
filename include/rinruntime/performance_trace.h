@@ -44,6 +44,7 @@ typedef enum RinPerformanceTraceEvent {
     RIN_TRACE_COMPOSITOR_T5,
     RIN_TRACE_COMPOSITOR_T6,
     RIN_TRACE_COMPOSITOR_T7,
+    RIN_TRACE_SCHED_PICK_DIAGNOSTIC,
     RIN_TRACE_EVENT_COUNT
 } RinPerformanceTraceEvent;
 
