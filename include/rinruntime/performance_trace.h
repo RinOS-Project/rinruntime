@@ -46,8 +46,29 @@ typedef enum RinPerformanceTraceEvent {
     RIN_TRACE_COMPOSITOR_T7,
     RIN_TRACE_SCHED_PICK_DIAGNOSTIC, /* arg0=queue depth, arg1=fast checks */
     RIN_TRACE_SCHED_IRQ_DISABLED, /* arg0=disabled cycles, arg1=lock wait */
+    /* arg0=class, arg1=fault address; see RinPerformanceTracePageFaultClass. */
+    RIN_TRACE_PAGE_FAULT_CLASS,
+    /* Stage arg0=cycles (bit 63 marks failure), arg1=fault address. */
+    RIN_TRACE_PAGE_FAULT_VMA_LOOKUP,
+    RIN_TRACE_PAGE_FAULT_PAGE_ALLOC,
+    RIN_TRACE_PAGE_FAULT_ZERO_PAGE_ACQUIRE,
+    RIN_TRACE_PAGE_FAULT_PAGE_ZERO,
+    RIN_TRACE_PAGE_FAULT_PTE_CONSTRUCT,
+    RIN_TRACE_PAGE_FAULT_BACKING_READ,
+    RIN_TRACE_PAGE_FAULT_COW_COMPLETE,
     RIN_TRACE_EVENT_COUNT
 } RinPerformanceTraceEvent;
+
+typedef enum RinPerformanceTracePageFaultClass {
+    RIN_TRACE_PAGE_FAULT_CLASS_PRIVATE_ANONYMOUS = 1,
+    RIN_TRACE_PAGE_FAULT_CLASS_SHARED_ANONYMOUS,
+    RIN_TRACE_PAGE_FAULT_CLASS_FILE_BACKED,
+    RIN_TRACE_PAGE_FAULT_CLASS_COPY_ON_WRITE,
+    RIN_TRACE_PAGE_FAULT_CLASS_SWAPPED,
+    RIN_TRACE_PAGE_FAULT_CLASS_OTHER
+} RinPerformanceTracePageFaultClass;
+
+#define RIN_TRACE_PAGE_FAULT_STAGE_FAILED_FLAG (UINT64_C(1) << 63u)
 
 /* Timestamps in records are raw RDTSC values. Event arguments retain the
  * source units documented by the event producer. */
