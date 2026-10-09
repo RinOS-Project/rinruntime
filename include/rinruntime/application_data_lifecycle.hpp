@@ -5,6 +5,7 @@
 #define RINRUNTIME_APPLICATION_DATA_LIFECYCLE_HPP
 
 #include "application_data.hpp"
+#include "backup_archive.hpp"
 #include "backup_restore.h"
 #include "known_folders.h"
 
@@ -30,6 +31,10 @@ enum class ApplicationDataLifecycleResult : int {
     MigrationFailed = -7,
     PublishFailed = -8,
     AllocationFailed = -9,
+    InvalidArchive = -10,
+    RestoreTransactionFailed = -11,
+    RestoreRollbackFailed = -12,
+    RestoreScratchTooSmall = -13,
 };
 
 /* The application id is the same authenticated logical id used by the
@@ -92,6 +97,38 @@ using ApplicationDataRestorePublishFn = int (*)(
     void* context, const ApplicationDataLifecyclePlan* plan,
     const RinRuntimeBackupItemV1* item, const std::uint8_t* bytes,
     std::uint32_t size);
+
+/* A product owner implements these callbacks with one private staging area.
+ * begin() must reserve an unpublished transaction, stageItem() must copy the
+ * supplied bytes before returning, commit() must publish every staged item
+ * atomically, and rollback() must remove the unpublished transaction. A
+ * callback failure or exception never means that partially published data is
+ * accepted by this common layer. */
+using ApplicationDataRestoreBeginFn = int (*)(
+    void* context, const ApplicationDataLifecyclePlan* plan,
+    const RinRuntimeBackupManifestInfoV1* manifest);
+using ApplicationDataRestoreStageItemFn = int (*)(
+    void* context, const ApplicationDataLifecyclePlan* plan,
+    const RinRuntimeBackupItemV1* item, const std::uint8_t* bytes,
+    std::uint32_t size);
+using ApplicationDataRestoreCommitFn = int (*)(
+    void* context, const ApplicationDataLifecyclePlan* plan,
+    std::uint32_t stagedItemCount);
+using ApplicationDataRestoreRollbackFn = int (*)(
+    void* context, const ApplicationDataLifecyclePlan* plan);
+
+struct ApplicationDataRestoreTransactionOwner final {
+    ApplicationDataRestoreBeginFn begin = nullptr;
+    ApplicationDataRestoreStageItemFn stageItem = nullptr;
+    ApplicationDataRestoreCommitFn commit = nullptr;
+    ApplicationDataRestoreRollbackFn rollback = nullptr;
+    void* context = nullptr;
+
+    bool valid() const {
+        return begin != nullptr && stageItem != nullptr &&
+               commit != nullptr && rollback != nullptr;
+    }
+};
 
 /* Optional launcher authorization for restoring data across a package
  * digest/generation change.  The callback must be owned by the authenticated
@@ -489,6 +526,177 @@ public:
             authorizeIdentity, authorizeContext, migrate, migrateContext,
             archivedBytes, archivedSize, restoredOut, restoredCapacity,
             restoredSizeOut, publish, publishContext);
+    }
+
+    /* Restore every included declaration as one owner transaction. The
+     * archive reader validates ZIP/member shape before entry, this preflight
+     * checks the complete declaration set before begin(), and each payload is
+     * identity/schema checked before it reaches the private staging owner.
+     * scratch is caller-owned, bounded storage for one restored item and is
+     * zeroed on entry, between items, and on every exit. */
+    static ApplicationDataLifecycleResult restoreArchive(
+        const ApplicationDataProfile& profile,
+        const ApplicationDataKnownFolderOwner& knownFolderOwner,
+        const BackupArchiveReader& archive,
+        ApplicationDataIdentityAuthorizerFn authorizeIdentity,
+        void* authorizeContext, ApplicationDataMigrationFn migrate,
+        void* migrateContext, std::uint8_t* scratch,
+        std::uint32_t scratchCapacity,
+        const ApplicationDataRestoreTransactionOwner& transaction) {
+        const auto clearScratch = [&]() noexcept {
+            if (scratch != nullptr && scratchCapacity != 0u)
+                std::memset(scratch, 0, scratchCapacity);
+        };
+        clearScratch();
+        if (!archive.parsed() || !transaction.valid() ||
+            (scratchCapacity != 0u && scratch == nullptr))
+            return ApplicationDataLifecycleResult::InvalidArgument;
+
+        ApplicationDataLifecyclePlan plan;
+        const ApplicationDataLifecycleResult planResult = buildUninstallPlan(
+            profile, true, knownFolderOwner, plan);
+        if (planResult != ApplicationDataLifecycleResult::Ok)
+            return planResult;
+        if (!plan.ownerBound)
+            return ApplicationDataLifecycleResult::RestoreNotAuthorized;
+
+        const RinRuntimeBackupManifestInfoV1& manifest =
+            archive.manifestInfo();
+        if (manifest.struct_size != sizeof(manifest) ||
+            manifest.version != RINRUNTIME_BACKUP_VERSION ||
+            manifest.item_count == 0u ||
+            manifest.item_count > RINRUNTIME_BACKUP_MAX_ITEMS ||
+            !rinruntime_backup_identity_valid(&manifest.identity))
+            return ApplicationDataLifecycleResult::InvalidArchive;
+
+        std::uint32_t includedCount = 0u;
+        for (std::uint32_t index = 0u; index < manifest.item_count; ++index) {
+            RinRuntimeBackupItemV1 item{};
+            if (archive.itemAt(index, item) != BackupArchiveResult::Ok)
+                return ApplicationDataLifecycleResult::InvalidArchive;
+            if (item.flags == RINRUNTIME_BACKUP_ITEM_EXCLUDE) continue;
+            if (item.flags != RINRUNTIME_BACKUP_ITEM_INCLUDE ||
+                !rinruntime_backup_item_is_eligible(&item))
+                return ApplicationDataLifecycleResult::InvalidArchive;
+            ++includedCount;
+        }
+        if (includedCount == 0u ||
+            includedCount != manifest.eligible_item_count)
+            return ApplicationDataLifecycleResult::InvalidArchive;
+
+        bool transactionStarted = false;
+        const auto rollback = [&]() noexcept {
+            clearScratch();
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+            try {
+                return transaction.rollback(transaction.context, &plan) == 0;
+            } catch (...) {
+                return false;
+            }
+#else
+            return transaction.rollback(transaction.context, &plan) == 0;
+#endif
+        };
+        const auto failTransaction = [&](
+            ApplicationDataLifecycleResult failure) noexcept {
+            clearScratch();
+            if (!transactionStarted) return failure;
+            if (!rollback())
+                return ApplicationDataLifecycleResult::RestoreRollbackFailed;
+            transactionStarted = false;
+            return failure;
+        };
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
+            std::uint32_t stagedCount = 0u;
+            for (std::uint32_t index = 0u; index < manifest.item_count;
+                 ++index) {
+                RinRuntimeBackupItemV1 item{};
+                if (archive.itemAt(index, item) != BackupArchiveResult::Ok) {
+                    return failTransaction(
+                        ApplicationDataLifecycleResult::InvalidArchive);
+                }
+                if (item.flags == RINRUNTIME_BACKUP_ITEM_EXCLUDE) continue;
+
+                std::uint32_t restoredSize = 0u;
+                const BackupArchiveResult readResult = archive.readItem(
+                    index, &profile.backupIdentity, profile.dataSchemaVersion,
+                    authorizeIdentity, authorizeContext, migrate, migrateContext,
+                    scratch, scratchCapacity, &restoredSize);
+                if (readResult != BackupArchiveResult::Ok) {
+                    clearScratch();
+                    const ApplicationDataLifecycleResult failure =
+                        readResult == BackupArchiveResult::IdentityMismatch
+                            ? ApplicationDataLifecycleResult::IdentityMismatch
+                        : readResult == BackupArchiveResult::IdentityNotAuthorized
+                            ? ApplicationDataLifecycleResult::RestoreNotAuthorized
+                        : readResult == BackupArchiveResult::MigrationRequired
+                            ? ApplicationDataLifecycleResult::MigrationRequired
+                        : readResult == BackupArchiveResult::MigrationFailed
+                            ? ApplicationDataLifecycleResult::MigrationFailed
+                        : readResult == BackupArchiveResult::Limit
+                            ? ApplicationDataLifecycleResult::RestoreScratchTooSmall
+                        : ApplicationDataLifecycleResult::InvalidArchive;
+                    return failTransaction(failure);
+                }
+
+                if (!transactionStarted) {
+                    /* Authenticate/decode the first item before reserving
+                     * private staging resources for an untrusted archive. */
+                    transactionStarted = true;
+                    if (transaction.begin(transaction.context, &plan,
+                                          &manifest) != 0)
+                        return failTransaction(
+                            ApplicationDataLifecycleResult::RestoreTransactionFailed);
+                }
+
+                int stageResult = -1;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+                try {
+#endif
+                    stageResult = transaction.stageItem(
+                        transaction.context, &plan, &item,
+                        restoredSize == 0u ? nullptr : scratch, restoredSize);
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+                } catch (...) {
+                    clearScratch();
+                    return failTransaction(
+                        ApplicationDataLifecycleResult::RestoreTransactionFailed);
+                }
+#endif
+                clearScratch();
+                if (stageResult != 0)
+                    return failTransaction(
+                        ApplicationDataLifecycleResult::RestoreTransactionFailed);
+                ++stagedCount;
+            }
+
+            int commitResult = -1;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+            try {
+#endif
+                commitResult = transaction.commit(transaction.context, &plan,
+                                                  stagedCount);
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+            } catch (...) {
+                commitResult = -1;
+            }
+#endif
+            if (commitResult != 0)
+                return failTransaction(
+                    ApplicationDataLifecycleResult::RestoreTransactionFailed);
+
+            transactionStarted = false;
+            clearScratch();
+            return ApplicationDataLifecycleResult::Ok;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (...) {
+            if (transactionStarted && !rollback())
+                return ApplicationDataLifecycleResult::RestoreRollbackFailed;
+            return ApplicationDataLifecycleResult::RestoreTransactionFailed;
+        }
+#endif
     }
 };
 

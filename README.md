@@ -153,6 +153,13 @@ unsupported form therefore fails closed and clears the caller's destination
 even when the source pointer is null; the same rule applies to UTF-8 and
 UTF-32 callers.
 
+`application_data_lifecycle.hpp` also provides `ApplicationDataLifecycle::restoreArchive()`
+to validate and stage every included RBK1 item through one owner transaction,
+then commit the set atomically or request rollback. The caller supplies bounded
+scratch storage and private owner callbacks; the runtime clears the scratch
+bytes between items. Launcher authorization, filesystem publication, and
+durable storage remain product-owner responsibilities.
+
 RinOS applications may opt into `RinEventLoopBackend` in
 `event_loop_rin.hpp`. It translates the same bounded requests to the public
 `rin_wait_set_*` SDK contract and keeps the wait-set handle private to the
