@@ -56,6 +56,10 @@ typedef enum RinPerformanceTraceEvent {
     RIN_TRACE_PAGE_FAULT_PTE_CONSTRUCT,
     RIN_TRACE_PAGE_FAULT_BACKING_READ,
     RIN_TRACE_PAGE_FAULT_COW_COMPLETE,
+    /* arg0=page count (bit 63 marks full flush), arg1=IPI count. */
+    RIN_TRACE_TLB_SHOOTDOWN_DETAILS,
+    /* arg0=cycles until observed remote completion, arg1=target CPU. */
+    RIN_TRACE_TLB_SHOOTDOWN_ACK_LATENCY,
     RIN_TRACE_EVENT_COUNT
 } RinPerformanceTraceEvent;
 
