@@ -33,6 +33,191 @@ enum class BackupArchiveResult : int {
     MigrationFailed = RINRUNTIME_BACKUP_MIGRATION_FAILED,
     TransportFailed = RINRUNTIME_BACKUP_TRANSPORT_FAILED,
     Cancelled = -11,
+    Incomplete = -12,
+};
+
+/* Construct the public RBK1 ZIP layout from a validated declaration and its
+ * included logical items.  Payload names come only from manifest item IDs;
+ * filesystem paths and excluded declarations are never accepted.  Items are
+ * added in manifest order so the resulting ZIP bytes are deterministic. */
+class BackupArchiveWriter final {
+public:
+    BackupArchiveWriter() = default;
+
+    BackupArchiveResult begin(const std::uint8_t* manifestBytes,
+                              std::size_t manifestSize)
+    {
+        clear();
+        if (manifestBytes == nullptr || manifestSize == 0u)
+            return BackupArchiveResult::InvalidArgument;
+        if (manifestSize > RINRUNTIME_BACKUP_MANIFEST_STORAGE_MAX)
+            return BackupArchiveResult::Limit;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
+        RinRuntimeBackupManifestInfoV1 info{};
+        const RinRuntimeBackupResult inspectResult =
+            rinruntime_backup_manifest_inspect(manifestBytes, manifestSize,
+                                               &info);
+        if (inspectResult != RINRUNTIME_BACKUP_OK)
+            return fail(fromBackupResult(inspectResult));
+
+        std::vector<std::string> names(info.item_count);
+        for (std::uint32_t index = 0u; index < info.item_count; ++index) {
+            RinRuntimeBackupItemV1 item{};
+            const RinRuntimeBackupResult itemResult =
+                rinruntime_backup_manifest_entry_at(
+                    manifestBytes, manifestSize, index, &item);
+            if (itemResult != RINRUNTIME_BACKUP_OK)
+                return fail(fromBackupResult(itemResult));
+            if (!rinruntime_backup_item_is_eligible(&item))
+                continue;
+
+            std::size_t idLength = 0u;
+            while (idLength < RINRUNTIME_BACKUP_ITEM_ID_SIZE &&
+                   item.item_id[idLength] != 0u)
+                ++idLength;
+            if (idLength == 0u ||
+                idLength == RINRUNTIME_BACKUP_ITEM_ID_SIZE)
+                return fail(BackupArchiveResult::Malformed);
+            names[index].assign("payload/");
+            names[index].append(
+                reinterpret_cast<const char*>(item.item_id), idLength);
+        }
+
+        const ArchiveZipResult zipResult = zip_.addStored(
+            "manifest.rbk1", manifestBytes, manifestSize);
+        if (zipResult != ArchiveZipResult::Ok)
+            return fail(fromArchiveResult(zipResult));
+        payloadNames_ = std::move(names);
+        info_ = info;
+        active_ = true;
+        advanceToNextIncluded();
+        return BackupArchiveResult::Ok;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (const std::bad_alloc&) {
+            return fail(BackupArchiveResult::Limit);
+        } catch (...) {
+            return fail(BackupArchiveResult::Malformed);
+        }
+#endif
+    }
+
+    BackupArchiveResult addItem(std::uint32_t itemIndex,
+                                const std::uint8_t* payload,
+                                std::size_t payloadSize)
+    {
+        if (!active_ || finalized_ || itemIndex >= payloadNames_.size() ||
+            (payload == nullptr && payloadSize != 0u))
+            return BackupArchiveResult::InvalidArgument;
+        if (payloadNames_[itemIndex].empty())
+            return BackupArchiveResult::Ineligible;
+        if (itemIndex != nextIncludedIndex_)
+            return BackupArchiveResult::Incomplete;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
+        const ArchiveZipResult result = zip_.addStored(
+            payloadNames_[itemIndex].c_str(), payload, payloadSize);
+        if (result != ArchiveZipResult::Ok)
+            return fail(fromArchiveResult(result));
+        ++nextIncludedIndex_;
+        advanceToNextIncluded();
+        return BackupArchiveResult::Ok;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (const std::bad_alloc&) {
+            return fail(BackupArchiveResult::Limit);
+        } catch (...) {
+            return fail(BackupArchiveResult::Malformed);
+        }
+#endif
+    }
+
+    BackupArchiveResult finish(std::vector<std::uint8_t>& archiveOut)
+    {
+        archiveOut.clear();
+        if (!active_) return BackupArchiveResult::InvalidArgument;
+        if (nextIncludedIndex_ != payloadNames_.size())
+            return BackupArchiveResult::Incomplete;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
+        std::vector<std::uint8_t> candidate;
+        const ArchiveZipResult result = zip_.finish(candidate);
+        if (result != ArchiveZipResult::Ok)
+            return fromArchiveResult(result);
+        archiveOut = std::move(candidate);
+        finalized_ = true;
+        return BackupArchiveResult::Ok;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (const std::bad_alloc&) {
+            archiveOut.clear();
+            return BackupArchiveResult::Limit;
+        } catch (...) {
+            archiveOut.clear();
+            return BackupArchiveResult::Malformed;
+        }
+#endif
+    }
+
+    void clear()
+    {
+        zip_.clear();
+        payloadNames_.clear();
+        info_ = RinRuntimeBackupManifestInfoV1{};
+        nextIncludedIndex_ = 0u;
+        active_ = false;
+        finalized_ = false;
+    }
+
+    bool active() const { return active_; }
+    const RinRuntimeBackupManifestInfoV1& manifestInfo() const
+    {
+        return info_;
+    }
+
+private:
+    static BackupArchiveResult fromArchiveResult(ArchiveZipResult result)
+    {
+        switch (result) {
+        case ArchiveZipResult::Ok:
+            return BackupArchiveResult::Ok;
+        case ArchiveZipResult::InvalidArgument:
+            return BackupArchiveResult::InvalidArgument;
+        case ArchiveZipResult::Limit:
+            return BackupArchiveResult::Limit;
+        case ArchiveZipResult::Cancelled:
+            return BackupArchiveResult::Cancelled;
+        case ArchiveZipResult::Malformed:
+        default:
+            return BackupArchiveResult::Malformed;
+        }
+    }
+
+    static BackupArchiveResult fromBackupResult(RinRuntimeBackupResult result)
+    {
+        return static_cast<BackupArchiveResult>(result);
+    }
+
+    void advanceToNextIncluded()
+    {
+        while (nextIncludedIndex_ < payloadNames_.size() &&
+               payloadNames_[nextIncludedIndex_].empty())
+            ++nextIncludedIndex_;
+    }
+
+    BackupArchiveResult fail(BackupArchiveResult result)
+    {
+        clear();
+        return result;
+    }
+
+    ArchiveZipWriter zip_;
+    std::vector<std::string> payloadNames_;
+    RinRuntimeBackupManifestInfoV1 info_{};
+    std::size_t nextIncludedIndex_ = 0u;
+    bool active_ = false;
+    bool finalized_ = false;
 };
 
 /*

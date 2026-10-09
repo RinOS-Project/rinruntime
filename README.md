@@ -521,19 +521,22 @@ consumes multi-byte extra bytes in the format's little-endian order and rejects
 non-minimal encodings such as a zero value encoded with an extra byte, so
 malformed header values do not reach the stored-copy path.
 
-`backup_archive.hpp` adds the public `BackupArchiveReader` consumer for the
-bounded RBK1 ZIP layout (`manifest.rbk1` plus one `payload/<item_id>` entry per
-included declaration). It keeps the manifest and payload in caller-owned
+`backup_archive.hpp` provides a public `BackupArchiveWriter` and
+`BackupArchiveReader` for the bounded RBK1 ZIP layout (`manifest.rbk1` plus one
+`payload/<item_id>` entry per included declaration). The writer accepts a
+validated manifest and included payloads in declaration order, skips excluded
+items, and emits deterministic caller-owned ZIP bytes within the shared 256
+MiB archive limit. The reader keeps its manifest and payload in caller-owned
 memory, rejects missing/unknown/excluded members, and passes each payload to
-the existing identity and migration checks. It does not open backup paths,
-resolve Known Folders, authenticate package handoffs, read a File Portal
-descriptor, or publish restored bytes; those remain private archive/service
+the existing identity and migration checks. Neither class opens backup paths,
+resolves Known Folders, authenticates package handoffs, reads a File Portal
+descriptor, or publishes restored bytes; those remain private archive/service
 owners.
 
-The canonical `rinruntime/rinruntime.hpp` umbrella includes this memory-only
-backup reader as well, so ordinary applications and external toolkits can
-consume the bounded RBK1 contract without importing a private archive or File
-Portal owner.
+The canonical `rinruntime/rinruntime.hpp` umbrella includes both memory-only
+backup archive classes, so ordinary applications and external toolkits can
+produce or consume the bounded RBK1 contract without importing a private
+archive or File Portal owner.
 
 `BackupArchiveReader::itemAt()` exposes one validated declaration at a time
 without exposing the reader's manifest storage. An application can select its
