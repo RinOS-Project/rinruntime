@@ -2461,6 +2461,27 @@ int rinruntime_compositor_gpu_import_frame_v1(
     return wnd_present(handle);
 }
 
+int wnd_get_gpu_frame_generation_v1(RinRuntimeGuiHandle handle,
+                                    uint64_t* generation_out) {
+    RinRuntimeGuiSurface* surface;
+    if (!generation_out) return RIN_RESULT_INVALID_ARGUMENT;
+    *generation_out = 0u;
+    surface = runtime_surface(handle);
+    if (!surface) return RIN_RESULT_INVALID_HANDLE;
+    if (surface->resize_pending != 0u) return RIN_RESULT_BUSY;
+    if (surface->render_target_generation == 0u)
+        return RIN_RESULT_CORRUPT_DATA;
+    *generation_out = surface->render_target_generation;
+    return RIN_RESULT_OK;
+}
+
+int wnd_import_gpu_readback_frame_v1(
+    RinRuntimeGuiHandle handle, uint64_t expected_generation,
+    const RinRuntimeCompositorGpuFrameV1* frame) {
+    return rinruntime_compositor_gpu_import_frame_v1(
+        handle, expected_generation, frame);
+}
+
 static int runtime_query_compositor_peer_identity(
     void* context, rin_unix_peer_identity_v1* peer_out,
     uint32_t* peer_size_out) {

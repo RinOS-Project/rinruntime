@@ -11,25 +11,6 @@
 #include <rin/net/socket_abi.h>
 #include <rinruntime/window.h>
 
-#define RIN_RUNTIME_COMPOSITOR_GPU_FRAME_V1_VERSION UINT32_C(1)
-
-typedef enum RinRuntimeCompositorGpuPixelFormatV1 {
-    RIN_RUNTIME_COMPOSITOR_GPU_PIXEL_BGRA8 = 0,
-    RIN_RUNTIME_COMPOSITOR_GPU_PIXEL_RGBA8 = 1
-} RinRuntimeCompositorGpuPixelFormatV1;
-
-typedef struct RinRuntimeCompositorGpuFrameV1 {
-    uint32_t struct_size;
-    uint32_t version;
-    const void* pixels;
-    uint64_t bytes;
-    uint32_t width;
-    uint32_t height;
-    uint32_t row_pitch;
-    uint32_t format;
-    uint64_t reserved[2];
-} RinRuntimeCompositorGpuFrameV1;
-
 /* Copy a completed, CPU-readable GPU image into an available native-window
  * SHM backbuffer, then enqueue the existing damage+commit transaction.
  * expected_generation binds the copy to the current window buffer set. On

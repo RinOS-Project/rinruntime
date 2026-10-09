@@ -20,6 +20,30 @@ extern "C" {
 /* Kept as the source-compatible name used by the original runtime header. */
 typedef RinWindowHandle RinRuntimeGuiHandle;
 
+#define RIN_RUNTIME_COMPOSITOR_GPU_FRAME_V1_VERSION UINT32_C(1)
+
+typedef enum RinRuntimeCompositorGpuPixelFormatV1 {
+    RIN_RUNTIME_COMPOSITOR_GPU_PIXEL_BGRA8 = 0,
+    RIN_RUNTIME_COMPOSITOR_GPU_PIXEL_RGBA8 = 1
+} RinRuntimeCompositorGpuPixelFormatV1;
+
+/* An explicitly CPU-readable readback of an application GPU image. The
+ * producer must wait for the GPU write to complete and perform the required
+ * device-to-CPU visibility operation before calling the import API below.
+ * RinRuntime copies the pixels synchronously; the source may be released
+ * when that call returns. This is a Compositor handoff, not direct scanout. */
+typedef struct RinRuntimeCompositorGpuFrameV1 {
+    uint32_t struct_size;
+    uint32_t version;
+    const void* pixels;
+    uint64_t bytes;
+    uint32_t width;
+    uint32_t height;
+    uint32_t row_pitch;
+    uint32_t format;
+    uint64_t reserved[2];
+} RinRuntimeCompositorGpuFrameV1;
+
 typedef struct RinRuntimeGuiCompletionV1 {
     uint32_t struct_size;
     uint32_t version;
@@ -108,6 +132,17 @@ int wnd_acquire_render_target(RinRuntimeGuiHandle handle,
 int wnd_release_render_target(RinRuntimeGuiHandle handle,
                               const RinRenderTarget* target);
 int wnd_present(RinRuntimeGuiHandle handle);
+/* Obtain the generation to pass back to wnd_import_gpu_readback_frame_v1.
+ * BUSY means a resize/rebind is in progress; retry after it completes. */
+int wnd_get_gpu_frame_generation_v1(RinRuntimeGuiHandle handle,
+                                    uint64_t* generation_out);
+/* Explicit ordinary-window path for a completed CPU-readable GPU readback.
+ * Copies into the current SHM slot and submits the existing Compositor
+ * damage/commit transaction. The source is not retained after this returns;
+ * the Compositor retains its SHM slot until its normal read-release sequence. */
+int wnd_import_gpu_readback_frame_v1(
+    RinRuntimeGuiHandle handle, uint64_t expected_generation,
+    const RinRuntimeCompositorGpuFrameV1* frame);
 int wnd_export_gpu_image(RinRuntimeGuiHandle handle,
                          RinCompositorGpuImageV1* image_out);
 int wnd_export_gpu_image_async(RinRuntimeGuiHandle handle, uint64_t cookie);
