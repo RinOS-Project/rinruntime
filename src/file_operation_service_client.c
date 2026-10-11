@@ -96,6 +96,17 @@ static int service_client_submit_valid(
     for (index = 0u; index < request->entry_count; ++index) {
         const RinRuntimeFileOperationServiceEntryV1* entry = &entries[index];
         if (!rin_wire_reserved_zero(&entry->reserved, sizeof(entry->reserved)) ||
+            entry->source_identity_reserved != 0u ||
+            (entry->source_identity_flags != 0u &&
+             entry->source_identity_flags !=
+                 RINRUNTIME_FILE_OPERATION_SERVICE_ENTRY_SOURCE_IDENTITY_REQUIRED) ||
+            (entry->source_identity_flags ==
+                 RINRUNTIME_FILE_OPERATION_SERVICE_ENTRY_SOURCE_IDENTITY_REQUIRED
+                 ? (request->operation != RINRUNTIME_FILE_OPERATION_TRASH ||
+                    entry->kind != RINRUNTIME_FILE_OPERATION_ENTRY_DIRECTORY ||
+                    entry->expected_source_inode == 0u)
+                 : (entry->expected_source_device != 0u ||
+                    entry->expected_source_inode != 0u)) ||
             !rin_wire_flags_valid(
                 entry->flags, RINRUNTIME_FILE_OPERATION_SERVICE_ENTRY_FLAGS_KNOWN) ||
             !service_client_path_valid(entry->source_path,

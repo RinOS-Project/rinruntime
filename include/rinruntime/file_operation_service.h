@@ -12,7 +12,7 @@
 extern "C" {
 #endif
 
-#define RINRUNTIME_FILE_OPERATION_SERVICE_VERSION 1u
+#define RINRUNTIME_FILE_OPERATION_SERVICE_VERSION 2u
 #define RINRUNTIME_FILE_OPERATION_SERVICE_PATH "/run/rin/fileoperationd.sock"
 /* The broker endpoint is deliberately distinct from the ordinary application
  * endpoint.  No authorization ticket is accepted on SERVICE_PATH. */
@@ -75,6 +75,7 @@ typedef enum RinRuntimeFileOperationServiceJobState {
 #define RINRUNTIME_FILE_OPERATION_SERVICE_ENTRY_CLEANUP_ON_FAILURE 0x00000002u
 #define RINRUNTIME_FILE_OPERATION_SERVICE_ENTRY_RECREATE_CLEANUP_ON_UNDO_SUCCESS 0x00000004u
 #define RINRUNTIME_FILE_OPERATION_SERVICE_ENTRY_CLEANUP_ON_UNDO_SUCCESS 0x00000008u
+#define RINRUNTIME_FILE_OPERATION_SERVICE_ENTRY_SOURCE_IDENTITY_REQUIRED 0x00000001u
 #define RINRUNTIME_FILE_OPERATION_SERVICE_ENTRY_FLAGS_KNOWN \
     (RINRUNTIME_FILE_OPERATION_SERVICE_ENTRY_CLEANUP_ON_SUCCESS | \
      RINRUNTIME_FILE_OPERATION_SERVICE_ENTRY_CLEANUP_ON_FAILURE | \
@@ -93,17 +94,26 @@ typedef struct RinRuntimeFileOperationServiceHeaderV1 {
 } RinRuntimeFileOperationServiceHeaderV1;
 
 /* Wire entries own their path storage; no client pointer crosses the socket. */
-typedef struct RinRuntimeFileOperationServiceEntryV1 {
+typedef struct RinRuntimeFileOperationServiceEntryV2 {
     uint32_t kind;
     uint32_t flags;
     uint32_t link_source_index;
     uint32_t reserved;
     uint64_t size_bytes;
+    uint32_t source_identity_flags;
+    uint32_t source_identity_reserved;
+    uint64_t expected_source_device;
+    uint64_t expected_source_inode;
     char source_path[RINRUNTIME_FILE_OPERATION_PATH_MAX];
     char destination_path[RINRUNTIME_FILE_OPERATION_PATH_MAX];
     /* Optional state sidecar removed only under the selected cleanup rule. */
     char cleanup_path[RINRUNTIME_FILE_OPERATION_PATH_MAX];
-} RinRuntimeFileOperationServiceEntryV1;
+} RinRuntimeFileOperationServiceEntryV2;
+
+/* Source compatibility name for clients that use the V1 identifier. The
+ * service protocol version is 2 and the wire entry uses the V2 layout. */
+typedef RinRuntimeFileOperationServiceEntryV2
+    RinRuntimeFileOperationServiceEntryV1;
 
 typedef struct RinRuntimeFileOperationServiceSubmitV1 {
     uint32_t struct_size;
@@ -118,7 +128,7 @@ typedef struct RinRuntimeFileOperationServiceSubmitV1 {
 
 /* Fixed prefix for the broker-only submit wire payload.  Entries follow this
  * prefix in the same bounded array format as ordinary SUBMIT. */
-#define RINRUNTIME_FILE_OPERATION_SERVICE_AUTHORIZED_SUBMIT_VERSION 1u
+#define RINRUNTIME_FILE_OPERATION_SERVICE_AUTHORIZED_SUBMIT_VERSION 2u
 typedef struct RinRuntimeFileOperationServiceAuthorizedSubmitV1 {
     uint32_t struct_size;
     uint16_t version;
