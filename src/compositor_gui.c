@@ -2871,6 +2871,10 @@ int rinruntime_gui_get_size(RinRuntimeGuiHandle handle, int* width,
     return 0;
 }
 
+int wnd_get_size(RinRuntimeGuiHandle handle, int* width, int* height) {
+    return rinruntime_gui_get_size(handle, width, height);
+}
+
 int wnd_get_geometry(RinRuntimeGuiHandle handle, RinWindowGeometryV1* geometry) {
     RinRuntimeGuiSurface* surface = runtime_surface(handle);
     if (!surface || !geometry) return RIN_RESULT_INVALID_ARGUMENT;
