@@ -7,10 +7,16 @@
 #include <errno.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <sys/un.h>
 #include <unistd.h>
 
 #define RIN_KEYRING_CLIENT_IO_INTERRUPTION_LIMIT 32u
+/* Keep the authenticated keyring IPC bounded even when a peer accepts the
+ * connection but stops making progress.  This is a transport bound for each
+ * blocking send/recv; the operation-wide deadline and cancellation contract
+ * remains owned by the versioned Kerberos operation ABI. */
+#define RIN_KEYRING_CLIENT_IO_TIMEOUT_MS UINT32_C(1000)
 
 static int send_exact(int fd, const void* input, uint32_t size)
 {
@@ -137,6 +143,7 @@ static int connect_service(void)
     struct sockaddr_un address;
     rin_unix_service_identity_v1 identity;
     socklen_t identity_size = sizeof(identity);
+    struct timeval timeout;
     uint32_t expected_slot_id = 0u;
     int fd = socket(AF_UNIX, SOCK_STREAM, 0);
     if (fd < 0) return -1;
@@ -153,6 +160,14 @@ static int connect_service(void)
         identity_size != sizeof(identity) ||
         !rin_keyring_client_service_identity_valid(&identity,
                                                    expected_slot_id)) {
+        close(fd);
+        return -1;
+    }
+    timeout.tv_sec = (time_t)(RIN_KEYRING_CLIENT_IO_TIMEOUT_MS / 1000u);
+    timeout.tv_usec = (suseconds_t)((RIN_KEYRING_CLIENT_IO_TIMEOUT_MS % 1000u) *
+                                    1000u);
+    if (setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) != 0 ||
+        setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout)) != 0) {
         close(fd);
         return -1;
     }
