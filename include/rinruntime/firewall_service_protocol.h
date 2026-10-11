@@ -33,6 +33,7 @@ enum {
     RIN_FIREWALL_SERVICE_OP_SET_LOG_ALLOW = 19u,
     RIN_FIREWALL_SERVICE_OP_REPLACE_CONTAINER_RULES = 20u,
     RIN_FIREWALL_SERVICE_OP_RESET_USER_RULES = 21u,
+    RIN_FIREWALL_SERVICE_OP_SET_SAFE_MODE = 22u,
 };
 
 #pragma pack(push, 1)
@@ -179,7 +180,7 @@ static inline int rin_firewall_service_peer_valid(
 static inline int rin_firewall_service_operation_valid(uint16_t operation)
 {
     return operation >= RIN_FIREWALL_SERVICE_OP_GET_STATUS &&
-           operation <= RIN_FIREWALL_SERVICE_OP_RESET_USER_RULES;
+           operation <= RIN_FIREWALL_SERVICE_OP_SET_SAFE_MODE;
 }
 
 static inline void rin_firewall_service_message_initialize(
