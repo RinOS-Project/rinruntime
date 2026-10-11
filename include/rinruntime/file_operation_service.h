@@ -100,6 +100,8 @@ typedef struct RinRuntimeFileOperationServiceEntryV2 {
     uint32_t link_source_index;
     uint32_t reserved;
     uint64_t size_bytes;
+    /* Optional source identity guard. Currently accepted only for TRASH of
+     * a directory; all three fields must be zero when the flag is clear. */
     uint32_t source_identity_flags;
     uint32_t source_identity_reserved;
     uint64_t expected_source_device;
