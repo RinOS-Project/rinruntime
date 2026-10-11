@@ -55,12 +55,21 @@ typedef struct RinFirewallRuleIndexV2 {
 int rin_firewall_rule_index_build(const RinFirewallRuleSetV1* set,
                                   RinFirewallRuleIndexV2* index);
 
-/* Evaluates only the candidate bucket for this packet. The ruleset must be
- * the validated, unchanged policy snapshot used to build index. */
+/* Evaluates only the candidate bucket for this packet. The ruleset policy
+ * fields must be unchanged after index build. This variant also updates the
+ * matched rule's packet/byte counters. */
 int rin_firewall_evaluate_indexed(RinFirewallRuleSetV1* set,
                                   const RinFirewallRuleIndexV2* index,
                                   const RinFirewallPacketV1* packet,
                                   RinFirewallDecisionV1* decision);
+
+/* Evaluates the same immutable policy metadata but leaves rule counters
+ * untouched and returns the matched array index for a separate counter owner.
+ * The output is RIN_FIREWALL_MAX_RULES when no rule matched. */
+int rin_firewall_evaluate_indexed_uncounted(
+    RinFirewallRuleSetV1* set, const RinFirewallRuleIndexV2* index,
+    const RinFirewallPacketV1* packet, RinFirewallDecisionV1* decision,
+    uint32_t* matched_rule_index_out);
 
 #ifdef __cplusplus
 }

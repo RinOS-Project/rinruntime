@@ -888,7 +888,8 @@ static int firewall_rule_index_valid_for_packet(
 
 static int firewall_evaluate_internal(
     RinFirewallRuleSetV1* set, const RinFirewallRuleIndexV2* rule_index,
-    const RinFirewallPacketV1* packet, RinFirewallDecisionV1* decision)
+    const RinFirewallPacketV1* packet, RinFirewallDecisionV1* decision,
+    int update_counters, uint32_t* matched_rule_index_out)
 {
     uint32_t iteration;
     uint32_t best_bypass = RIN_FIREWALL_MAX_RULES;
@@ -902,6 +903,8 @@ static int firewall_evaluate_internal(
     uint32_t generic_cursor = 0u;
     uint32_t application_cursor = 0u;
     int status;
+    if (matched_rule_index_out != NULL)
+        *matched_rule_index_out = RIN_FIREWALL_MAX_RULES;
     if (!decision) return RIN_FIREWALL_INVALID_ARGUMENT;
     firewall_decision_init(decision);
     if (!set || !packet) {
@@ -1043,10 +1046,14 @@ static int firewall_evaluate_internal(
         decision->matched = 1u;
         decision->rule_id = rule->id;
         decision->priority = rule->priority;
-        if (rule->packet_count != UINT64_MAX) ++rule->packet_count;
-        firewall_counter_add(&rule->byte_count, packet->payload_length);
-        decision->packet_count = rule->packet_count;
-        decision->byte_count = rule->byte_count;
+        if (matched_rule_index_out != NULL)
+            *matched_rule_index_out = best;
+        if (update_counters != 0) {
+            if (rule->packet_count != UINT64_MAX) ++rule->packet_count;
+            firewall_counter_add(&rule->byte_count, packet->payload_length);
+            decision->packet_count = rule->packet_count;
+            decision->byte_count = rule->byte_count;
+        }
     }
     decision->status = RIN_FIREWALL_OK;
     return RIN_FIREWALL_OK;
@@ -1056,7 +1063,7 @@ int rin_firewall_evaluate(RinFirewallRuleSetV1* set,
                           const RinFirewallPacketV1* packet,
                           RinFirewallDecisionV1* decision)
 {
-    return firewall_evaluate_internal(set, NULL, packet, decision);
+    return firewall_evaluate_internal(set, NULL, packet, decision, 1, NULL);
 }
 
 int rin_firewall_evaluate_indexed(RinFirewallRuleSetV1* set,
@@ -1071,5 +1078,29 @@ int rin_firewall_evaluate_indexed(RinFirewallRuleSetV1* set,
         }
         return RIN_FIREWALL_INVALID_ARGUMENT;
     }
-    return firewall_evaluate_internal(set, index, packet, decision);
+    return firewall_evaluate_internal(set, index, packet, decision, 1, NULL);
+}
+
+int rin_firewall_evaluate_indexed_uncounted(
+    RinFirewallRuleSetV1* set, const RinFirewallRuleIndexV2* index,
+    const RinFirewallPacketV1* packet, RinFirewallDecisionV1* decision,
+    uint32_t* matched_rule_index_out)
+{
+    if (matched_rule_index_out == NULL) {
+        if (decision != NULL) {
+            firewall_decision_init(decision);
+            decision->status = RIN_FIREWALL_INVALID_ARGUMENT;
+        }
+        return RIN_FIREWALL_INVALID_ARGUMENT;
+    }
+    if (index == NULL) {
+        *matched_rule_index_out = RIN_FIREWALL_MAX_RULES;
+        if (decision != NULL) {
+            firewall_decision_init(decision);
+            decision->status = RIN_FIREWALL_INVALID_ARGUMENT;
+        }
+        return RIN_FIREWALL_INVALID_ARGUMENT;
+    }
+    return firewall_evaluate_internal(set, index, packet, decision, 0,
+                                      matched_rule_index_out);
 }
