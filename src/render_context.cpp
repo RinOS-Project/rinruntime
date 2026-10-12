@@ -62,10 +62,6 @@ const AqFont* loadSystemUiFont() noexcept {
     return aq_font_builtin_8x16();
 }
 
-void clearContext() noexcept {
-    g_context = RenderContextState{};
-}
-
 } // namespace
 
 int setSystemUiFontLoader(SystemUiFontLoaderFunction loader,
@@ -126,6 +122,10 @@ bool currentFrameValid() noexcept {
 }
 
 int beginNativeFrame(RinRuntimeGuiHandle handle) noexcept {
+#if defined(RIN_RUNTIME_HEADLESS_CONTEXT)
+    (void)handle;
+    return RIN_ERROR_NOT_SUPPORTED;
+#else
     RinRenderTarget target{};
     if (g_context.active) return RIN_ERROR_BUSY;
     if (handle == RIN_WINDOW_HANDLE_INVALID) return RIN_ERROR_STALE_HANDLE;
@@ -148,17 +148,22 @@ int beginNativeFrame(RinRuntimeGuiHandle handle) noexcept {
     next.scale = 1.0f;
     g_context = next;
     return RIN_SUCCESS;
+#endif
 }
 
 int endNativeFrame() noexcept {
+#if defined(RIN_RUNTIME_HEADLESS_CONTEXT)
+    return RIN_ERROR_NOT_SUPPORTED;
+#else
     if (!g_context.active) return RIN_ERROR_BUSY;
     const int release_result =
         wnd_release_render_target(g_context.handle, &g_context.target);
     const int present_result = release_result == RIN_SUCCESS
         ? wnd_present(g_context.handle)
         : release_result;
-    clearContext();
+    g_context = RenderContextState{};
     return present_result;
+#endif
 }
 
 int pushRenderClip(std::int32_t x, std::int32_t y,
