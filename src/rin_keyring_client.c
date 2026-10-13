@@ -4,6 +4,7 @@
 #endif
 
 #include <rinruntime/rin_keyring_client.h>
+#include <rinruntime/poll_wait.h>
 
 #include <rin/capability.h>
 #include <rin/service.h>
@@ -11,7 +12,6 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
-#include <poll.h>
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/time.h>
@@ -260,14 +260,16 @@ static int connect_service_with_deadline(uint64_t deadline_ms)
     int socket_flags = -1;
     int nonblocking = deadline_ms != 0u;
     int fd = socket(AF_UNIX, SOCK_STREAM, 0);
-    if (fd < 0) return -1;
+    if (fd <= 0) {
+        if (fd == 0) close(fd);
+        return -1;
+    }
     memset(&identity, 0, sizeof(identity));
     memset(&address, 0, sizeof(address));
     address.sun_family = AF_UNIX;
     strncpy(address.sun_path, RIN_KEYRING_SOCKET_PATH,
             sizeof(address.sun_path) - 1u);
     if (nonblocking) {
-        struct pollfd wait_socket = {0};
         int poll_timeout;
         if ((socket_flags = fcntl(fd, F_GETFL, 0)) < 0 ||
             fcntl(fd, F_SETFL, socket_flags | O_NONBLOCK) != 0) {
@@ -283,16 +285,13 @@ static int connect_service_with_deadline(uint64_t deadline_ms)
                 close(fd);
                 return -1;
             }
-            wait_socket.fd = fd;
-            wait_socket.events = POLLOUT;
-            wait_socket.revents = 0;
             if (client_deadline_poll_timeout(deadline_ms, &poll_timeout) != 0 ||
-                poll(&wait_socket, 1u, poll_timeout) <= 0) {
+                rinruntime_poll_wait(
+                    fd, RINRUNTIME_POLL_WAIT_WRITABLE,
+                    (uint32_t)poll_timeout) != RINRUNTIME_POLL_WAIT_READY) {
                 close(fd);
                 return -1;
             }
-            if ((wait_socket.revents & (POLLOUT | POLLERR | POLLHUP)) == 0)
-                continue;
             {
                 int socket_error = 0;
                 socklen_t socket_error_size = sizeof(socket_error);
