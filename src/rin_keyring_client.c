@@ -1,14 +1,22 @@
 /* SPDX-License-Identifier: MIT */
+#if !defined(_POSIX_C_SOURCE)
+#define _POSIX_C_SOURCE 200809L
+#endif
+
 #include <rinruntime/rin_keyring_client.h>
 
 #include <rin/capability.h>
 #include <rin/service.h>
 
 #include <errno.h>
+#include <fcntl.h>
+#include <limits.h>
+#include <poll.h>
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <sys/un.h>
+#include <time.h>
 #include <unistd.h>
 
 #define RIN_KEYRING_CLIENT_IO_INTERRUPTION_LIMIT 32u
@@ -17,6 +25,11 @@
  * blocking send/recv; the operation-wide deadline and cancellation contract
  * remains owned by the versioned Kerberos operation ABI. */
 #define RIN_KEYRING_CLIENT_IO_TIMEOUT_MS UINT32_C(1000)
+/* Kerberos owner operations use one monotonic budget across connect, request
+ * framing, response framing, and response payload.  This is only the local
+ * keyring IPC budget; KDC/AS/TGS policy belongs to the authenticated session
+ * credential producer and must not be inferred here. */
+#define RIN_KEYRING_CLIENT_KERBEROS_OPERATION_TIMEOUT_MS UINT64_C(1000)
 
 static int send_exact(int fd, const void* input, uint32_t size)
 {
@@ -57,6 +70,103 @@ static int recv_exact(int fd, void* output, uint32_t size)
                 continue;
         }
         return -1;
+    }
+    return 0;
+}
+
+static int client_monotonic_ms(uint64_t* output)
+{
+    struct timespec now = {0};
+    uint64_t seconds;
+    if (output == NULL || clock_gettime(CLOCK_MONOTONIC, &now) != 0 ||
+        now.tv_sec < 0 || now.tv_nsec < 0 || now.tv_nsec >= 1000000000L)
+        return -1;
+    seconds = (uint64_t)now.tv_sec;
+    if (seconds > (UINT64_MAX - (uint64_t)now.tv_nsec / UINT64_C(1000000)) /
+                    UINT64_C(1000))
+        return -1;
+    *output = seconds * UINT64_C(1000) +
+              (uint64_t)now.tv_nsec / UINT64_C(1000000);
+    return 0;
+}
+
+static int client_set_deadline_timeout(int fd, uint64_t deadline_ms)
+{
+    uint64_t now_ms;
+    uint64_t remaining_ms;
+    struct timeval timeout;
+    if (fd < 0 || client_monotonic_ms(&now_ms) != 0 ||
+        now_ms >= deadline_ms)
+        return -1;
+    remaining_ms = deadline_ms - now_ms;
+    if (remaining_ms > UINT64_C(1000)) remaining_ms = UINT64_C(1000);
+    timeout.tv_sec = (time_t)(remaining_ms / UINT64_C(1000));
+    timeout.tv_usec = (suseconds_t)((remaining_ms % UINT64_C(1000)) *
+                                    UINT64_C(1000));
+    return setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) !=
+                   0 ||
+               setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout,
+                          sizeof(timeout)) != 0
+        ? -1
+        : 0;
+}
+
+static int client_deadline_poll_timeout(uint64_t deadline_ms, int* timeout_ms)
+{
+    uint64_t now_ms;
+    uint64_t remaining_ms;
+    if (timeout_ms == NULL || client_monotonic_ms(&now_ms) != 0 ||
+        now_ms >= deadline_ms)
+        return -1;
+    remaining_ms = deadline_ms - now_ms;
+    *timeout_ms = remaining_ms > (uint64_t)INT_MAX
+        ? INT_MAX : (int)remaining_ms;
+    if (*timeout_ms == 0) *timeout_ms = 1;
+    return 0;
+}
+
+static int send_exact_until(int fd, const void* input, uint32_t size,
+                            uint64_t deadline_ms)
+{
+    const uint8_t* bytes = (const uint8_t*)input;
+    uint32_t offset = 0u;
+    uint32_t interrupted = 0u;
+    if (fd < 0 || (size != 0u && input == NULL)) return -1;
+    while (offset < size) {
+        ssize_t count;
+        if (client_set_deadline_timeout(fd, deadline_ms) != 0) return -1;
+        count = send(fd, bytes + offset, size - offset, MSG_NOSIGNAL);
+        if (count < 0 && errno == EINTR) {
+            if (++interrupted >= RIN_KEYRING_CLIENT_IO_INTERRUPTION_LIMIT)
+                return -1;
+            continue;
+        }
+        if (count <= 0 || (uint32_t)count > size - offset) return -1;
+        offset += (uint32_t)count;
+        interrupted = 0u;
+    }
+    return 0;
+}
+
+static int recv_exact_until(int fd, void* output, uint32_t size,
+                            uint64_t deadline_ms)
+{
+    uint8_t* bytes = (uint8_t*)output;
+    uint32_t offset = 0u;
+    uint32_t interrupted = 0u;
+    if (fd < 0 || (size != 0u && output == NULL)) return -1;
+    while (offset < size) {
+        ssize_t count;
+        if (client_set_deadline_timeout(fd, deadline_ms) != 0) return -1;
+        count = recv(fd, bytes + offset, size - offset, 0);
+        if (count < 0 && errno == EINTR) {
+            if (++interrupted >= RIN_KEYRING_CLIENT_IO_INTERRUPTION_LIMIT)
+                return -1;
+            continue;
+        }
+        if (count <= 0 || (uint32_t)count > size - offset) return -1;
+        offset += (uint32_t)count;
+        interrupted = 0u;
     }
     return 0;
 }
@@ -133,18 +243,22 @@ static int client_kerberos_operation_ranges_alias(
     return 0;
 }
 
+static int keyring_result_valid(int status);
+
 void rin_keyring_client_clear(void* memory, size_t size)
 {
     secure_clear(memory, size);
 }
 
-static int connect_service(void)
+static int connect_service_with_deadline(uint64_t deadline_ms)
 {
     struct sockaddr_un address;
     rin_unix_service_identity_v1 identity;
     socklen_t identity_size = sizeof(identity);
     struct timeval timeout;
     uint32_t expected_slot_id = 0u;
+    int socket_flags = -1;
+    int nonblocking = deadline_ms != 0u;
     int fd = socket(AF_UNIX, SOCK_STREAM, 0);
     if (fd < 0) return -1;
     memset(&identity, 0, sizeof(identity));
@@ -152,8 +266,54 @@ static int connect_service(void)
     address.sun_family = AF_UNIX;
     strncpy(address.sun_path, RIN_KEYRING_SOCKET_PATH,
             sizeof(address.sun_path) - 1u);
-    if (connect(fd, (const struct sockaddr*)&address, sizeof(address)) != 0 ||
-        rin_service_find_system_slot(RIN_KEYRING_SERVICE_ID,
+    if (nonblocking) {
+        struct pollfd wait_socket = {0};
+        int poll_timeout;
+        if ((socket_flags = fcntl(fd, F_GETFL, 0)) < 0 ||
+            fcntl(fd, F_SETFL, socket_flags | O_NONBLOCK) != 0) {
+            close(fd);
+            return -1;
+        }
+        for (;;) {
+            int connect_result = connect(
+                fd, (const struct sockaddr*)&address, sizeof(address));
+            if (connect_result == 0) break;
+            if (errno != EINPROGRESS && errno != EALREADY &&
+                errno != EINTR) {
+                close(fd);
+                return -1;
+            }
+            wait_socket.fd = fd;
+            wait_socket.events = POLLOUT;
+            wait_socket.revents = 0;
+            if (client_deadline_poll_timeout(deadline_ms, &poll_timeout) != 0 ||
+                poll(&wait_socket, 1u, poll_timeout) <= 0) {
+                close(fd);
+                return -1;
+            }
+            if ((wait_socket.revents & (POLLOUT | POLLERR | POLLHUP)) == 0)
+                continue;
+            {
+                int socket_error = 0;
+                socklen_t socket_error_size = sizeof(socket_error);
+                if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &socket_error,
+                               &socket_error_size) != 0 || socket_error != 0) {
+                    close(fd);
+                    return -1;
+                }
+            }
+            break;
+        }
+        if (fcntl(fd, F_SETFL, socket_flags) != 0) {
+            close(fd);
+            return -1;
+        }
+    } else if (connect(fd, (const struct sockaddr*)&address, sizeof(address)) !=
+               0) {
+        close(fd);
+        return -1;
+    }
+    if (rin_service_find_system_slot(RIN_KEYRING_SERVICE_ID,
                                      &expected_slot_id) != 0 ||
         getsockopt(fd, SOL_SOCKET, SO_RIN_UNIX_SERVICE_IDENTITY,
                    &identity, &identity_size) != 0 ||
@@ -163,15 +323,59 @@ static int connect_service(void)
         close(fd);
         return -1;
     }
-    timeout.tv_sec = (time_t)(RIN_KEYRING_CLIENT_IO_TIMEOUT_MS / 1000u);
-    timeout.tv_usec = (suseconds_t)((RIN_KEYRING_CLIENT_IO_TIMEOUT_MS % 1000u) *
-                                    1000u);
-    if (setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) != 0 ||
-        setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout)) != 0) {
-        close(fd);
-        return -1;
+    if (nonblocking) {
+        if (client_set_deadline_timeout(fd, deadline_ms) != 0) {
+            close(fd);
+            return -1;
+        }
+    } else {
+        timeout.tv_sec = (time_t)(RIN_KEYRING_CLIENT_IO_TIMEOUT_MS / 1000u);
+        timeout.tv_usec = (suseconds_t)((RIN_KEYRING_CLIENT_IO_TIMEOUT_MS %
+                                         1000u) * 1000u);
+        if (setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout,
+                       sizeof(timeout)) != 0 ||
+            setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout,
+                       sizeof(timeout)) != 0) {
+            close(fd);
+            return -1;
+        }
     }
     return fd;
+}
+
+static int connect_service(void)
+{
+    return connect_service_with_deadline(0u);
+}
+
+static int receive_header_until(int fd, uint16_t opcode,
+                                RinKeyringMessageHeaderV1* response,
+                                uint64_t deadline_ms)
+{
+    if (recv_exact_until(fd, response, sizeof(*response), deadline_ms) != 0 ||
+        response->struct_size != sizeof(*response) ||
+        response->version != 1u || response->opcode != opcode ||
+        response->request_id != 1u || response->flags != 0u ||
+        response->reserved != 0u || !keyring_result_valid(response->status)) {
+        return RIN_KEYRING_STORAGE_FAILED;
+    }
+    return response->status;
+}
+
+/* Keep the legacy helpers above for the existing short keyring operations.
+ * Kerberos uses the _until variants so a partial response cannot extend the
+ * owner IPC budget by resetting SO_RCVTIMEO for every frame. */
+static int receive_header(int fd, uint16_t opcode,
+                          RinKeyringMessageHeaderV1* response)
+{
+    if (recv_exact(fd, response, sizeof(*response)) != 0 ||
+        response->struct_size != sizeof(*response) ||
+        response->version != 1u || response->opcode != opcode ||
+        response->request_id != 1u || response->flags != 0u ||
+        response->reserved != 0u || !keyring_result_valid(response->status)) {
+        return RIN_KEYRING_STORAGE_FAILED;
+    }
+    return response->status;
 }
 
 static void request_header(RinKeyringMessageHeaderV1* header,
@@ -208,18 +412,6 @@ static int keyring_result_valid(int status)
     }
 }
 
-static int receive_header(int fd, uint16_t opcode,
-                          RinKeyringMessageHeaderV1* response)
-{
-    if (recv_exact(fd, response, sizeof(*response)) != 0 ||
-        response->struct_size != sizeof(*response) ||
-        response->version != 1u || response->opcode != opcode ||
-        response->request_id != 1u || response->flags != 0u ||
-        response->reserved != 0u || !keyring_result_valid(response->status)) {
-        return RIN_KEYRING_STORAGE_FAILED;
-    }
-    return response->status;
-}
 
 int rin_keyring_client_status(void)
 {
@@ -617,6 +809,8 @@ int rin_keyring_client_kerberos_operation(
     RinKeyringMessageHeaderV1 message;
     RinKeyringMessageHeaderV1 response;
     RinKerberosOperationResponseV1 operation_response;
+    uint64_t start_ms;
+    uint64_t deadline_ms;
     int fd;
     int status;
 
@@ -661,22 +855,29 @@ int rin_keyring_client_kerberos_operation(
         (next_context_capacity != 0u && next_context_token == NULL))
         return RIN_KEYRING_INVALID;
 
-    fd = connect_service();
+    if (client_monotonic_ms(&start_ms) != 0 ||
+        start_ms > UINT64_MAX -
+            RIN_KEYRING_CLIENT_KERBEROS_OPERATION_TIMEOUT_MS)
+        return RIN_KEYRING_STORAGE_FAILED;
+    deadline_ms = start_ms + RIN_KEYRING_CLIENT_KERBEROS_OPERATION_TIMEOUT_MS;
+    fd = connect_service_with_deadline(deadline_ms);
     if (fd < 0) return RIN_KEYRING_LOCKED;
     request_header(&message, RIN_KEYRING_OP_KERBEROS_OPERATION,
                    (uint32_t)(sizeof(*request) + sizeof(*handle) +
                               context_token_size + input_size));
-    status = send_exact(fd, &message, sizeof(message)) == 0 &&
-             send_exact(fd, request, sizeof(*request)) == 0 &&
-             send_exact(fd, handle, sizeof(*handle)) == 0 &&
-             send_exact(fd, context_token, context_token_size) == 0 &&
-             send_exact(fd, input, input_size) == 0
-        ? receive_header(fd, RIN_KEYRING_OP_KERBEROS_OPERATION, &response)
+    status = send_exact_until(fd, &message, sizeof(message), deadline_ms) == 0 &&
+             send_exact_until(fd, request, sizeof(*request), deadline_ms) == 0 &&
+             send_exact_until(fd, handle, sizeof(*handle), deadline_ms) == 0 &&
+             send_exact_until(fd, context_token, context_token_size,
+                              deadline_ms) == 0 &&
+             send_exact_until(fd, input, input_size, deadline_ms) == 0
+        ? receive_header_until(fd, RIN_KEYRING_OP_KERBEROS_OPERATION,
+                               &response, deadline_ms)
         : RIN_KEYRING_STORAGE_FAILED;
     if (status == RIN_KEYRING_OK) {
         if (response.payload_size < sizeof(operation_response) ||
-            recv_exact(fd, &operation_response,
-                       sizeof(operation_response)) != 0 ||
+            recv_exact_until(fd, &operation_response,
+                             sizeof(operation_response), deadline_ms) != 0 ||
             operation_response.struct_size != sizeof(operation_response) ||
             operation_response.version !=
                 RIN_KERBEROS_OPERATION_ABI_VERSION ||
@@ -703,9 +904,11 @@ int rin_keyring_client_kerberos_operation(
             response.payload_size != sizeof(operation_response) +
                 operation_response.context_token_size +
                 operation_response.output_size ||
-            recv_exact(fd, next_context_token,
-                       operation_response.context_token_size) != 0 ||
-            recv_exact(fd, output, operation_response.output_size) != 0) {
+            recv_exact_until(fd, next_context_token,
+                             operation_response.context_token_size,
+                             deadline_ms) != 0 ||
+            recv_exact_until(fd, output, operation_response.output_size,
+                             deadline_ms) != 0) {
             if (output && output_capacity) secure_clear(output, output_capacity);
             if (next_context_token && next_context_capacity)
                 secure_clear(next_context_token, next_context_capacity);
