@@ -2054,7 +2054,19 @@ void wnd_resize(RinRuntimeGuiHandle handle, int w, int h) {
 static int runtime_ring_pop(RinCompositorInputRingEventV1* event) {
     int result;
     if (!event || !g_input_ring_address) return 0;
-    if (g_input_ring_batch_index >= g_input_ring_batch_count) {
+    for (;;) {
+        while (g_input_ring_batch_index < g_input_ring_batch_count) {
+            *event = g_input_ring_batch[g_input_ring_batch_index++];
+            if (rin_compositor_input_ring_event_current(
+                    (RinCompositorInputRingHeaderV1*)g_input_ring_address,
+                    event)) {
+                event->trace.t4_client_dequeue_ns = rin_monotonic_ms() *
+                                                     UINT64_C(1000000);
+                event->trace.t5_client_callback_ns =
+                    event->trace.t4_client_dequeue_ns;
+                return 1;
+            }
+        }
         g_input_ring_batch_count = 0u;
         g_input_ring_batch_index = 0u;
         result = rin_compositor_input_ring_pop_batch(
@@ -2063,11 +2075,6 @@ static int runtime_ring_pop(RinCompositorInputRingEventV1* event) {
             g_input_ring_bytes, &g_input_ring_batch_count);
         if (result <= 0) return result;
     }
-    *event = g_input_ring_batch[g_input_ring_batch_index++];
-    event->trace.t4_client_dequeue_ns = rin_monotonic_ms() *
-                                         UINT64_C(1000000);
-    event->trace.t5_client_callback_ns = event->trace.t4_client_dequeue_ns;
-    return 1;
 }
 
 int wnd_poll_native(RinRuntimeGuiHandle handle, RinGuiNativeEventV1* event,
