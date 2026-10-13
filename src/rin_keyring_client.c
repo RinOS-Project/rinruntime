@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: MIT */
-#if !defined(_POSIX_C_SOURCE)
+#if !defined(__rinos__) && !defined(_POSIX_C_SOURCE)
 #define _POSIX_C_SOURCE 200809L
 #endif
 
