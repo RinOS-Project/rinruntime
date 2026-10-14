@@ -2700,6 +2700,8 @@ int wnd_present_gpu_readback_lease_sync_v1(
     int32_t status = -1;
     int result;
     if (!surface || !readback) return RIN_RESULT_INVALID_ARGUMENT;
+    if (!surface->pixels[0] || !surface->pixels[1])
+        return RIN_RESULT_NOT_SUPPORTED;
     if ((g_compositor_features &
          (RIN_COMPOSITOR_FEATURE_GPU_SURFACE_ABI |
           RIN_COMPOSITOR_FEATURE_GPU_READBACK_LEASE)) !=
@@ -2786,15 +2788,9 @@ int wnd_present_gpu_readback_lease_sync_v1(
     surface->slot_submitted_sequence[response.buffer_slot] =
         response.frame_sequence;
     surface->frame_sequence = response.frame_sequence;
-    {
-        const uint32_t next_slot = response.buffer_slot ^ 1u;
-        if (next_slot < RIN_COMPOSITOR_MAX_BUFFERS &&
-            surface->pixels[response.buffer_slot] && surface->pixels[next_slot]) {
-            surface->front_slot = response.buffer_slot;
-            surface->draw_slot = next_slot;
-            surface->copy_front_before_draw = 1u;
-        }
-    }
+    surface->front_slot = response.buffer_slot;
+    surface->draw_slot = response.buffer_slot ^ 1u;
+    surface->copy_front_before_draw = 1u;
     return RIN_RESULT_OK;
 }
 
