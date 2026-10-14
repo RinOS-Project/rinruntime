@@ -5,6 +5,7 @@
 
 #include <rinruntime/rin_keyring_client.h>
 #include <rinruntime/poll_wait.h>
+#include "private_service_socket.h"
 
 #include <rin/capability.h>
 #include <rin/service.h>
@@ -259,11 +260,8 @@ static int connect_service_with_deadline(uint64_t deadline_ms)
     uint32_t expected_slot_id = 0u;
     int socket_flags = -1;
     int nonblocking = deadline_ms != 0u;
-    int fd = socket(AF_UNIX, SOCK_STREAM, 0);
-    if (fd <= 0) {
-        if (fd == 0) close(fd);
-        return -1;
-    }
+    int fd = rinruntime_create_private_unix_stream_socket();
+    if (fd < 0) return -1;
     memset(&identity, 0, sizeof(identity));
     memset(&address, 0, sizeof(address));
     address.sun_family = AF_UNIX;

@@ -8,6 +8,7 @@
  */
 #include <rinruntime/window.h>
 #include <rinruntime/poll_wait.h>
+#include "private_service_socket.h"
 #include "platform.h"
 #include "compositor_gpu_bridge.h"
 #include <rin/contract_abi.h>
@@ -675,7 +676,7 @@ static int runtime_connect(void) {
 
     if (g_compositor_fd >= 0) return 0;
     for (attempt = 0u; attempt < 40u; ++attempt) {
-        int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+        int fd = rinruntime_create_private_unix_stream_socket();
         if (fd < 0) return -1;
         memset(&address, 0, sizeof(address));
         address.sun_family = AF_UNIX;

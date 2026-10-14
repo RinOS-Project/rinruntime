@@ -2,6 +2,7 @@
 
 #include <rinruntime/accessibility_service_client.h>
 #include <rinruntime/poll_wait.h>
+#include "private_service_socket.h"
 
 #include <errno.h>
 #include <string.h>
@@ -168,7 +169,7 @@ RinResultCode rin_accessibility_service_client_open(
     if (strlen(RIN_ACCESSIBILITY_SERVICE_SOCKET_PATH) >=
         sizeof(address.sun_path)) return RIN_RESULT_INVALID_ARGUMENT;
     strcpy(address.sun_path, RIN_ACCESSIBILITY_SERVICE_SOCKET_PATH);
-    fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    fd = rinruntime_create_private_unix_stream_socket();
     if (fd < 0) return RIN_RESULT_IO;
     if (connect(fd, (const struct sockaddr*)&address, sizeof(address)) != 0) {
         close(fd);

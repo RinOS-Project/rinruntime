@@ -4,6 +4,7 @@
 #include <rinruntime/path.h>
 #include <rin/capability.h>
 #include <rin/validation.h>
+#include "private_service_socket.h"
 
 #include <errno.h>
 #include <string.h>
@@ -152,7 +153,7 @@ static RinRuntimeFileOperationServiceStatus service_client_open_path(
     memset(&address, 0, sizeof(address));
     address.sun_family = AF_UNIX;
     memcpy(address.sun_path, service_path, strlen(service_path) + 1u);
-    fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    fd = rinruntime_create_private_unix_stream_socket();
     if (fd < 0) return RINRUNTIME_FILE_OPERATION_SERVICE_UNAVAILABLE;
     if (connect(fd, (const struct sockaddr*)&address, sizeof(address)) != 0) {
         (void)close(fd);

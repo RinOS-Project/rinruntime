@@ -2,6 +2,7 @@
 
 #include <rinruntime/rin_audio_service_client.h>
 #include "../platform.h"
+#include "../private_service_socket.h"
 
 #include <rin/shm_abi.h>
 #include <rin/socket_abi.h>
@@ -290,7 +291,7 @@ static int client_connect_locked(void)
         result = 0;
         goto done;
     }
-    fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    fd = rinruntime_create_private_unix_stream_socket();
     if (fd < 0) goto done;
     memset(&address, 0, sizeof(address));
     address.sun_family = AF_UNIX;

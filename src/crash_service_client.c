@@ -2,6 +2,7 @@
 
 #include <rinruntime/crash_service.h>
 #include <rinruntime/poll_wait.h>
+#include "private_service_socket.h"
 
 #include <errno.h>
 #include <string.h>
@@ -161,7 +162,7 @@ static RinRuntimeCrashServiceResult crash_service_recovery_request(
         (opcode != RIN_CRASH_SERVICE_OP_REGISTER_RECOVERY &&
          opcode != RIN_CRASH_SERVICE_OP_QUERY_RECOVERY_CRASH))
         return RINRUNTIME_CRASH_SERVICE_INVALID_ARGUMENT;
-    fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    fd = rinruntime_create_private_unix_stream_socket();
     if (fd < 0) goto done;
     address.sun_family = AF_UNIX;
     memcpy(address.sun_path, RINRUNTIME_CRASH_SERVICE_PATH, path_size);
@@ -271,7 +272,7 @@ RinRuntimeCrashServiceResult rinruntime_crash_service_append_diagnostic(
     memcpy(diagnostic.message, message, message_size);
     diagnostic.message[message_size] = '\0';
 
-    fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    fd = rinruntime_create_private_unix_stream_socket();
     if (fd < 0) goto done;
     address.sun_family = AF_UNIX;
     memcpy(address.sun_path, RINRUNTIME_CRASH_SERVICE_PATH, path_size);

@@ -4,6 +4,9 @@
 #include <rinruntime/text_codec.h>
 #include <rinruntime/path.h>
 #include <rin/capability.h>
+#if !defined(_WIN32)
+#include "private_service_socket.h"
+#endif
 
 #include <errno.h>
 #include <string.h>
@@ -663,7 +666,7 @@ static int chooser_connect(void)
         return -1;
     memcpy(address.sun_path, RINRUNTIME_FILE_CHOOSER_SERVICE_PATH,
            sizeof(RINRUNTIME_FILE_CHOOSER_SERVICE_PATH));
-    descriptor = socket(AF_UNIX, SOCK_STREAM, 0);
+    descriptor = rinruntime_create_private_unix_stream_socket();
     if (descriptor < 0) return -1;
     if (connect(descriptor, (const struct sockaddr*)&address, sizeof(address)) != 0) {
         (void)close(descriptor);
