@@ -112,6 +112,12 @@ int rin_web_serial_open(RinSerialCapabilityV1 capability, uint32_t baud_rate,
                         uint8_t data_bits, uint8_t stop_bits, uint8_t parity,
                         uint8_t flow_control, uint32_t buffer_size,
                         uint32_t* handle_out);
+/* Open through the authenticated page-bound owner channel. Subsequent
+ * operations use the page identity retained with the returned handle. */
+int rin_web_serial_open_for_page(
+    uint32_t page_id, RinSerialCapabilityV1 capability, uint32_t baud_rate,
+    uint8_t data_bits, uint8_t stop_bits, uint8_t parity,
+    uint8_t flow_control, uint32_t buffer_size, uint32_t* handle_out);
 int rin_web_serial_close(uint32_t handle);
 int rin_web_serial_read(uint32_t handle, uint8_t* bytes, size_t capacity,
                         size_t* count_out);
