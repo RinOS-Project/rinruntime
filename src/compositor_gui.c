@@ -2725,10 +2725,7 @@ int wnd_present_gpu_readback_lease_sync_v1(
             RIN_GPU_CROSS_PROCESS_CAPABILITY_V2_VERSION ||
         readback->capability.token == 0u ||
         readback->capability.device_generation == 0u ||
-        (readback->capability.rights &
-         RIN_GPU_CROSS_PROCESS_RIGHT_READ) == 0u ||
-        (readback->capability.rights &
-         ~RIN_GPU_CROSS_PROCESS_RIGHT_MASK) != 0u ||
+        readback->capability.rights != RIN_GPU_CROSS_PROCESS_RIGHT_READ ||
         readback->capability.reserved[0] != 0u ||
         readback->capability.reserved[1] != 0u ||
         readback->capability.reserved[2] != 0u)
