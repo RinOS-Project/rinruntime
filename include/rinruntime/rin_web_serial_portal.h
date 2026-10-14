@@ -48,6 +48,13 @@ typedef struct RinWebSerialFileOpsV1 {
                 RinSerialWaitResultV1* result);
 } RinWebSerialFileOpsV1;
 
+/* Optional identity owner for alternate WebContent hosts. The default VFS
+ * adapter reads this record from the open character device's identity ioctl;
+ * custom file owners must provide an equivalent query before enumeration or
+ * capability-based open can succeed. */
+typedef int (*RinWebSerialIdentityQueryV1)(
+    void* context, uint32_t handle, RinSerialDeviceIdentityV1* identity);
+
 typedef int (*RinWebSerialPortalExchangeV1)(
     void* context, const void* request, size_t request_size,
     void* response, size_t response_capacity, size_t* response_size);
@@ -65,6 +72,8 @@ typedef struct RinWebSerialPortalTransportV1 {
 } RinWebSerialPortalTransportV1;
 
 void rin_web_serial_set_file_ops(const RinWebSerialFileOpsV1* ops);
+void rin_web_serial_set_identity_query(
+    RinWebSerialIdentityQueryV1 query, void* context);
 void rin_web_serial_set_portal_transport(
     const RinWebSerialPortalTransportV1* transport);
 /* Install the private authenticated owner-channel adapter used by
