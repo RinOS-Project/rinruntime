@@ -250,6 +250,12 @@ int wnd_import_gpu_readback_frame_v1(
 int wnd_present_gpu_readback_lease_v1(
     RinRuntimeGuiHandle handle,
     const RinRuntimeGpuReadbackLeaseV1* readback, uint64_t cookie);
+/* Synchronous form for producers whose backing allocation cannot be retired
+ * until the Compositor has acquired, copied, and released the exact READ
+ * lease. Success is returned only after the Compositor reply validates. */
+int wnd_present_gpu_readback_lease_sync_v1(
+    RinRuntimeGuiHandle handle,
+    const RinRuntimeGpuReadbackLeaseV1* readback);
 int wnd_export_gpu_image(RinRuntimeGuiHandle handle,
                          RinCompositorGpuImageV1* image_out);
 int wnd_export_gpu_image_async(RinRuntimeGuiHandle handle, uint64_t cookie);
