@@ -6,7 +6,7 @@
 
 #include <rin/abi.h>
 #include "rin_socket_abi.h"
-#include "webcontent_service_abi.h"
+#include "rinruntime/webcontent_service_abi.h"
 
 #define RIN_WEBCONTENT_CLIENT_REQUIRED_CAPABILITIES \
     (RIN_CAP_RIN_PASS | RIN_CAP_NETWORK_ACCESS | RIN_CAP_CLIPBOARD | \

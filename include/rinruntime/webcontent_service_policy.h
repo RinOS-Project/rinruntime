@@ -3,7 +3,7 @@
 #define RIN_SHARED_WEBCONTENT_SERVICE_POLICY_H
 
 #include "webcontent_client_policy.h"
-#include "webcontent_service_abi.h"
+#include "rinruntime/webcontent_service_abi.h"
 
 #ifdef __cplusplus
 extern "C" {
