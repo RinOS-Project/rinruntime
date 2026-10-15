@@ -22,6 +22,7 @@ enum RinThemePaletteId {
     RIN_THEME_PEACH = 6,
     RIN_THEME_DARK = 7,
     RIN_THEME_MIDNIGHT = 8,
+    RIN_THEME_LIGHT_BLUE = 9,
 };
 
 enum RinThemePaletteColorIndex {

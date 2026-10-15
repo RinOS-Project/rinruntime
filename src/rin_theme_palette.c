@@ -38,7 +38,7 @@ int rin_theme_palette_build(
     uint32_t* out_flags) {
     palette_zero(out_colors);
     if (out_flags) *out_flags = 0u;
-    if (!out_colors || !out_flags || theme_id > RIN_THEME_MIDNIGHT)
+    if (!out_colors || !out_flags || theme_id > RIN_THEME_LIGHT_BLUE)
         return -1;
     palette_base(out_colors);
     switch (theme_id) {
@@ -98,6 +98,21 @@ int rin_theme_palette_build(
             out_colors[RIN_THEME_PALETTE_TEXT_SECONDARY] = 0xffc8c8c8u;
             out_colors[RIN_THEME_PALETTE_TEXT_DIM] = 0xff8f8f8fu;
             out_colors[RIN_THEME_PALETTE_BORDER] = 0xff444444u;
+            break;
+        case RIN_THEME_LIGHT_BLUE:
+            out_colors[RIN_THEME_PALETTE_PRIMARY] = 0xff39b6f2u;
+            out_colors[RIN_THEME_PALETTE_PRIMARY_LIGHT] = 0xffa9e2fbu;
+            out_colors[RIN_THEME_PALETTE_PRIMARY_DARK] = 0xff1689c3u;
+            out_colors[RIN_THEME_PALETTE_ON_PRIMARY] = 0xff17354au;
+            out_colors[RIN_THEME_PALETTE_SECONDARY] = 0xffd9f2ffu;
+            out_colors[RIN_THEME_PALETTE_BACKGROUND] = 0xffeaf8ffu;
+            out_colors[RIN_THEME_PALETTE_TEXT] = 0xff17354au;
+            out_colors[RIN_THEME_PALETTE_TEXT_SECONDARY] = 0xff3f5e72u;
+            out_colors[RIN_THEME_PALETTE_TEXT_DIM] = 0xff607d8bu;
+            out_colors[RIN_THEME_PALETTE_BORDER] = 0xffb9d9e8u;
+            out_colors[RIN_THEME_PALETTE_SHADOW] = 0x200a4f6bu;
+            out_colors[RIN_THEME_PALETTE_HOVER] = 0x1839b6f2u;
+            out_colors[RIN_THEME_PALETTE_SELECTED] = 0x4039b6f2u;
             break;
         default:
             palette_zero(out_colors);

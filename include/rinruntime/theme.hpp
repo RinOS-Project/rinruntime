@@ -19,6 +19,7 @@ enum class ThemeId : std::uint32_t {
     Peach = 6u,
     Dark = 7u,
     Midnight = 8u,
+    LightBlue = 9u,
 };
 
 enum class ThemeColor : std::uint8_t {
@@ -62,7 +63,7 @@ struct ThemeProfile final {
     std::array<std::uint32_t, kThemeColorCount> colors = {};
 
     static constexpr bool validId(std::uint32_t value) {
-        return value <= static_cast<std::uint32_t>(ThemeId::Midnight);
+        return value <= static_cast<std::uint32_t>(ThemeId::LightBlue);
     }
 
     static constexpr bool validColor(std::uint32_t value) {
