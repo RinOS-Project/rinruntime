@@ -30,8 +30,8 @@ static inline void rinfs_trace_emit_current(uint32_t event, uint64_t arg0,
     rinfs_trace_emit_current((event), (arg0), (arg1))
 #define RINFS_TRACE_CPU_ID() RIN_TRACE_ID_UNKNOWN
 #else
-#include "../../kernel/core/trace.h"
-#include "../../kernel/core/smp.h"
+#include "kernel/core/trace.h"
+#include "kernel/core/smp.h"
 #define RINFS_TRACE_CPU_ID() smp_get_current_cpu_id()
 #endif
 
@@ -40,7 +40,7 @@ extern void platform_thread_yield(void);
 #endif
 
 #if defined(RIN_KERNEL) && defined(RIN_FREESTANDING) && defined(__x86_64__)
-#include "../../kernel/arch/x86_64/va_layout.h"
+#include "kernel/arch/x86_64/va_layout.h"
 extern uint64_t platform_pmm_alloc_file_cache_page(void);
 extern void platform_pmm_free_page(uint64_t address);
 #endif
