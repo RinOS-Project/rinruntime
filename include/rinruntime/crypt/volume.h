@@ -4,7 +4,7 @@
 
 #include <stdint.h>
 #include <rin/crypt.h>
-#include "../../../public-base/libs/rintls/crypto/aes.h"
+#include <crypto/aes.h>
 
 #define RIN_CRYPT_SESSION_MAGIC UINT32_C(0x31584352) /* "RCX1" */
 

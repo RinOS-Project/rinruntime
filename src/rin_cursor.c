@@ -3,8 +3,8 @@
 #include "rin_cursor.h"
 
 #include <rinruntime/wincompat_image_bmp.h>
-#include "../../public-base/libs/rinpng/rpng.h"
-#include "../../public-base/libs/rinruntime/include/rinruntime/cursor.h"
+#include <rinpng/rpng.h>
+#include "rinruntime/cursor.h"
 
 #include <limits.h>
 #include <stdlib.h>

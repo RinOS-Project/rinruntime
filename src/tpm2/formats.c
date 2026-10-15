@@ -5,7 +5,7 @@
 
 #include <stddef.h>
 
-#include "../../../public-base/libs/rintls/crypto/sha256.h"
+#include <crypto/sha256.h>
 
 #define RIN_TPM2_HANDLE_TRANSIENT UINT32_C(0x80000000)
 #define RIN_TPM2_HANDLE_PERSISTENT UINT32_C(0x81000000)

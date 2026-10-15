@@ -10,7 +10,7 @@
 #include <stdint.h>
 #include <string.h>
 
-#include "../../public-base/libs/rinruntime/include/rinruntime/tls_client_certificate.h"
+#include "rinruntime/tls_client_certificate.h"
 
 static inline int rin_requestserver_tls_client_certificate_ipc_valid(
     uint64_t expected_request_id,

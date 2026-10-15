@@ -3,7 +3,7 @@
 #include <rin/file_portal.h>
 
 #include <rinwire/capability.h>
-#include "../../public-base/libs/rintls/crypto/hmac.h"
+#include <crypto/hmac.h>
 
 #include <stddef.h>
 

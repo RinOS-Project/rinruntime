@@ -6,7 +6,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include "../../public-base/libs/rinruntime/include/rinruntime/cursor.h"
+#include "rinruntime/cursor.h"
 
 #ifdef __cplusplus
 extern "C" {

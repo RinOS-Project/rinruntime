@@ -6,7 +6,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include "../../public-base/libs/rinhttp/include/rinhttp/http.h"
+#include <rinhttp/http.h>
 #include <rin/web/request_body_capability.h>
 #include "workerd_service_abi.h"
 

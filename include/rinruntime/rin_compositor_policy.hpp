@@ -3,7 +3,7 @@
 #pragma once
 
 #include <stdint.h>
-#include "../../public-base/RinOS-SDK/include/rin/compositor_protocol.h"
+#include <rin/compositor_protocol.h>
 
 struct RinCompositorRectPolicy {
     int32_t x;

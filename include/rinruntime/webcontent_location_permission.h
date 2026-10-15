@@ -9,7 +9,7 @@
 #include <string.h>
 
 #include <rin/location.h>
-#include "../../public-base/RinOS-SDK/include/rin/web/webcontent_protocol.h"
+#include <rin/web/webcontent_protocol.h>
 
 #define RIN_WEBCONTENT_CMD_COMPLETE_LOCATION_V1 UINT32_C(38)
 #define RIN_WEBCONTENT_LOCATION_PERMISSION_VERSION UINT16_C(1)

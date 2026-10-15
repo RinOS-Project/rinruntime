@@ -2,7 +2,7 @@
 #ifndef RIN_SHARED_HTTP_URL_HPP
 #define RIN_SHARED_HTTP_URL_HPP
 
-#include "../../public-base/libs/rinuri/include/rinuri/uri.h"
+#include <rinuri/uri.h>
 
 #include <string>
 
