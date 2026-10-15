@@ -222,6 +222,27 @@ static void rebuild_tasks(RinDesktopModel* model)
         add_task_from_window(model, &model->windows[i]);
 }
 
+typedef struct RinDesktopSettingsV1 {
+    uint32_t version;
+    uint32_t flags;
+    uint8_t taskbar_visible;
+    uint8_t tray_visible;
+    uint8_t auto_hide;
+    uint8_t show_on_all_outputs;
+    uint8_t clock_24_hour;
+    uint8_t dnd;
+    uint8_t notification_privacy;
+    uint8_t reserved;
+    uint32_t position;
+    uint32_t output_mode;
+    uint32_t theme_id;
+    uint32_t reduced_motion;
+    uint32_t high_contrast;
+    uint32_t reduced_transparency;
+    uint32_t system_icon_visibility;
+    uint32_t tray_policy;
+} RinDesktopSettingsV1;
+
 void rin_desktop_model_init(RinDesktopModel* model)
 {
     if (!model) return;
@@ -231,6 +252,9 @@ void rin_desktop_model_init(RinDesktopModel* model)
     model->settings.taskbar_visible = 1u;
     model->settings.tray_visible = 1u;
     model->settings.clock_24_hour = 1u;
+    model->settings.taskbar_use_accent_color = 1u;
+    model->settings.taskbar_transparency_percent = 80u;
+    model->settings.taskbar_corner_radius_px = 8u;
     model->settings.notification_privacy = RIN_DESKTOP_NOTIFICATION_HIDE_BACKGROUND;
     model->settings.position = RIN_DESKTOP_TASKBAR_BOTTOM;
     model->settings.output_mode = RIN_DESKTOP_OUTPUT_PRIMARY_ONLY;
@@ -1075,18 +1099,22 @@ int rin_desktop_model_serialize_settings(const RinDesktopModel* model, uint8_t* 
 
 int rin_desktop_model_deserialize_settings(RinDesktopModel* model, const uint8_t* input, uint32_t size)
 {
-    uint32_t magic, version, count, preference_count, expected, index;
+    uint32_t magic, version, settings_version, count, preference_count;
+    uint32_t expected, index;
     uint32_t payload_size;
     uint32_t preference_bytes;
     uint32_t stored_checksum;
+    uint32_t settings_bytes;
     int legacy_preferences = 0;
     RinDesktopSettings settings;
     RinDesktopPin decoded_pins[RIN_DESKTOP_MAX_PINS];
     RinDesktopTrayPreference decoded_preferences[RIN_DESKTOP_MAX_TRAY_PREFERENCES];
-    if (!model || !input || size < 16u + sizeof(settings)) return -1;
+    if (!model || !input || size < 16u + sizeof(RinDesktopSettingsV1))
+        return -1;
     memcpy(&magic, input, 4u); memcpy(&version, input + 4u, 4u);
     if (version == RIN_DESKTOP_SETTINGS_FORMAT_VERSION) {
-        if (size < SETTINGS_CRC_SIZE + 16u + sizeof(settings)) return -1;
+        if (size < SETTINGS_CRC_SIZE + 16u + sizeof(RinDesktopSettingsV1))
+            return -1;
         payload_size = size - SETTINGS_CRC_SIZE;
         memcpy(&stored_checksum, input + payload_size, sizeof(stored_checksum));
         if (stored_checksum != settings_crc32(input, payload_size)) return -2;
@@ -1097,10 +1125,43 @@ int rin_desktop_model_deserialize_settings(RinDesktopModel* model, const uint8_t
     } else {
         return -2;
     }
-    memcpy(&settings, input + 8u, sizeof(settings));
-    memcpy(&count, input + 8u + sizeof(settings), 4u);
+    memcpy(&settings_version, input + 8u, sizeof(settings_version));
+    memset(&settings, 0, sizeof(settings));
+    if (settings_version == 1u) {
+        RinDesktopSettingsV1 old_settings;
+        memcpy(&old_settings, input + 8u, sizeof(old_settings));
+        if (old_settings.reserved != 0u) return -2;
+        settings.version = RIN_DESKTOP_MODEL_VERSION;
+        settings.flags = old_settings.flags;
+        settings.taskbar_visible = old_settings.taskbar_visible;
+        settings.tray_visible = old_settings.tray_visible;
+        settings.auto_hide = old_settings.auto_hide;
+        settings.show_on_all_outputs = old_settings.show_on_all_outputs;
+        settings.clock_24_hour = old_settings.clock_24_hour;
+        settings.dnd = old_settings.dnd;
+        settings.notification_privacy = old_settings.notification_privacy;
+        settings.position = old_settings.position;
+        settings.output_mode = old_settings.output_mode;
+        settings.theme_id = old_settings.theme_id;
+        settings.reduced_motion = old_settings.reduced_motion;
+        settings.high_contrast = old_settings.high_contrast;
+        settings.reduced_transparency = old_settings.reduced_transparency;
+        settings.system_icon_visibility = old_settings.system_icon_visibility;
+        settings.tray_policy = old_settings.tray_policy;
+        settings.taskbar_use_accent_color = 1u;
+        settings.taskbar_transparency_percent = 80u;
+        settings.taskbar_corner_radius_px = 8u;
+        settings_bytes = (uint32_t)sizeof(old_settings);
+    } else if (settings_version == RIN_DESKTOP_MODEL_VERSION) {
+        if (size < 16u + sizeof(settings)) return -1;
+        memcpy(&settings, input + 8u, sizeof(settings));
+        settings_bytes = (uint32_t)sizeof(settings);
+    } else {
+        return -2;
+    }
+    memcpy(&count, input + 8u + settings_bytes, 4u);
     if (count > RIN_DESKTOP_MAX_PINS) return -2;
-    expected = 12u + (uint32_t)sizeof(settings) +
+    expected = 12u + settings_bytes +
                count * (uint32_t)sizeof(RinDesktopPin);
     if (expected > payload_size - sizeof(preference_count)) return -2;
     memcpy(&preference_count, input + expected, sizeof(preference_count));
@@ -1125,18 +1186,22 @@ int rin_desktop_model_deserialize_settings(RinDesktopModel* model, const uint8_t
         settings.flags != 0u || settings.taskbar_visible > 1u ||
         settings.tray_visible > 1u || settings.auto_hide > 1u ||
         settings.show_on_all_outputs > 1u || settings.clock_24_hour > 1u ||
+        settings.clock_show_seconds > 1u ||
         settings.dnd > 1u ||
         settings.notification_privacy > RIN_DESKTOP_NOTIFICATION_HIDE_BACKGROUND ||
-        settings.reserved != 0u || settings.position > RIN_DESKTOP_TASKBAR_RIGHT ||
+        settings.position > RIN_DESKTOP_TASKBAR_RIGHT ||
         settings.output_mode > RIN_DESKTOP_OUTPUT_ALL_WINDOWS ||
         settings.reduced_motion > 1u || settings.high_contrast > 1u ||
         settings.reduced_transparency > 1u ||
+        settings.taskbar_use_accent_color > 1u ||
+        settings.taskbar_transparency_percent > 100u ||
+        settings.taskbar_corner_radius_px > 20u ||
         (settings.system_icon_visibility & ~RIN_DESKTOP_SYSTEM_ICON_ALL) != 0u ||
         (settings.tray_policy & ~RIN_DESKTOP_TRAY_POLICY_SHOW_OVERFLOW_BUTTON) != 0u ||
         count > RIN_DESKTOP_MAX_PINS)
         return -2;
     for (index = 0u; index < count; ++index) {
-        memcpy(&decoded_pins[index], input + 12u + sizeof(settings) +
+        memcpy(&decoded_pins[index], input + 12u + settings_bytes +
                index * sizeof(RinDesktopPin), sizeof(decoded_pins[index]));
         if (decoded_pins[index].app_identity_id == 0u ||
             !bounded_text(decoded_pins[index].app_identity, RIN_DESKTOP_IDENTITY_MAX) ||

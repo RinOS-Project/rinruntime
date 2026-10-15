@@ -19,7 +19,7 @@
 extern "C" {
 #endif
 
-#define RIN_DESKTOP_MODEL_VERSION 1u
+#define RIN_DESKTOP_MODEL_VERSION 2u
 #define RIN_DESKTOP_MAX_WINDOWS 64u
 #define RIN_DESKTOP_MAX_TASK_ITEMS 64u
 #define RIN_DESKTOP_MAX_PINS 32u
@@ -342,7 +342,7 @@ typedef struct RinDesktopSettings {
     uint8_t clock_24_hour;
     uint8_t dnd;
     uint8_t notification_privacy;
-    uint8_t reserved;
+    uint8_t clock_show_seconds;
     uint32_t position;
     uint32_t output_mode;
     uint32_t theme_id;
@@ -351,6 +351,9 @@ typedef struct RinDesktopSettings {
     uint32_t reduced_transparency;
     uint32_t system_icon_visibility;
     uint32_t tray_policy;
+    uint32_t taskbar_use_accent_color;
+    uint32_t taskbar_transparency_percent;
+    uint32_t taskbar_corner_radius_px;
 } RinDesktopSettings;
 
 typedef struct RinDesktopTrayPreference {
