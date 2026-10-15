@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: MIT */
 
-#include "webcontent_bridge_recovery_policy.h"
+#include <rinruntime/webcontent_bridge_recovery_policy.h>
 
 #include <stddef.h>
 
