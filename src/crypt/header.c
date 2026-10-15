@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
-#include "header.h"
+#include "rinruntime/crypt/header.h"
 
 static void header_zero(void* pointer, uint64_t size)
 {

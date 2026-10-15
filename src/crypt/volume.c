@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
-#include "volume.h"
+#include "rinruntime/crypt/volume.h"
 
 static void crypt_zero(void* pointer, uint32_t size)
 {

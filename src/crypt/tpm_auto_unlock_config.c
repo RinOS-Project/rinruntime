@@ -1,11 +1,11 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /* Shared validation of the stable RinCrypt TPM auto-unlock record. */
 
-#include "tpm_auto_unlock_config.h"
+#include "rinruntime/crypt/tpm_auto_unlock_config.h"
 
 #include <stddef.h>
 
-#include "../../../public-base/libs/rintls/crypto/sha256.h"
+#include "crypto/sha256.h"
 
 #define RIN_TPM2_HANDLE_PERSISTENT UINT32_C(0x81000000)
 

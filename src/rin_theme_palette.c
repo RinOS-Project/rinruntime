@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 
-#include "rin_theme_palette.h"
+#include <rinruntime/rin_theme_palette.h>
 
 static void palette_zero(uint32_t* colors) {
     uint32_t index;

@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
-#include "recovery_key.h"
+#include "rinruntime/crypt/recovery_key.h"
 
 #define RECOVERY_PAYLOAD_SIZE (RIN_CRYPT_RECOVERY_KEY_SECRET_SIZE + 2u)
 #define RECOVERY_BASE32_COUNT 36u

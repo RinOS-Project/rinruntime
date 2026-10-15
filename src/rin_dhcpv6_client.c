@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: MIT */
-#include "rin_dhcpv6_client.h"
+#include <rinruntime/rin_dhcpv6_client.h>
 
 #include <limits.h>
 #include <stddef.h>

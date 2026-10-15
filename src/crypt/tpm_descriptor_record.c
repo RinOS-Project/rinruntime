@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 
-#include "tpm_descriptor_record.h"
+#include "rinruntime/crypt/tpm_descriptor_record.h"
 
 #include <stddef.h>
 
@@ -9,7 +9,7 @@
 #define sha256_update rin_driver_sha256_update
 #define sha256_final rin_driver_sha256_final
 #endif
-#include "../../../public-base/libs/rintls/crypto/sha256.h"
+#include "crypto/sha256.h"
 
 #define RECORD_DESCRIPTOR_OFFSET UINT32_C(80)
 #define RECORD_RESERVED_OFFSET UINT32_C(2216)

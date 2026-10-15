@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: MIT */
 /* Strict, allocation-free RIN v3 resource and icon reader. */
 
-#include "rin_resource.h"
+#include <rinruntime/rin_resource.h>
 
 #include <stdint.h>
 #include <string.h>
