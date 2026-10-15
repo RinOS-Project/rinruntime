@@ -4,10 +4,12 @@
 
 #include <rin/net/socket_abi.h>
 #include "platform.h"
+#if !defined(_WIN32)
+#include "private_service_socket.h"
+#endif
 
 #include <string.h>
 #if !defined(_WIN32)
-#include <sys/socket.h>
 #include <unistd.h>
 #endif
 
@@ -137,7 +139,8 @@ int rinruntime_session_recovery_get_authenticated_identity(
     memset(&session_identity, 0, sizeof(session_identity));
     memset(&package_identity, 0, sizeof(package_identity));
     process_id = rinruntime_process_id();
-    if (process_id == 0u || socketpair(AF_UNIX, SOCK_STREAM, 0, pair) != 0)
+    if (process_id == 0u ||
+        rinruntime_create_private_unix_stream_socketpair(pair) != 0)
         goto mismatch;
     if (getsockopt(pair[0], SOL_SOCKET, SO_RIN_UNIX_PEER_SESSION_IDENTITY,
                    &session_identity, &session_size) != 0 ||
