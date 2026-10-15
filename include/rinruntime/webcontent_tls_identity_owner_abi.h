@@ -3,7 +3,7 @@
 #ifndef RIN_SHARED_WEBCONTENT_TLS_IDENTITY_OWNER_ABI_H
 #define RIN_SHARED_WEBCONTENT_TLS_IDENTITY_OWNER_ABI_H
 
-#include "rinruntime/webcontent_service_abi.h"
+#include "webcontent_service_abi.h"
 #include "requestserver_tls_client_certificate_policy.h"
 
 #define RIN_WEBCONTENT_CMD_TLS_IDENTITY_OWNER_V1 UINT32_C(37)
