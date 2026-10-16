@@ -887,8 +887,8 @@ int rin_keyring_client_kerberos_operation(
              request->operation != RIN_KERBEROS_OPERATION_ACCEPT_SEC_CONTEXT) ||
             (operation_response.provider_result ==
                  RIN_KERBEROS_OPERATION_RESULT_ERROR &&
-             (request->operation != RIN_KERBEROS_OPERATION_INIT_SEC_CONTEXT &&
-              request->operation != RIN_KERBEROS_OPERATION_ACCEPT_SEC_CONTEXT ||
+             ((request->operation != RIN_KERBEROS_OPERATION_INIT_SEC_CONTEXT &&
+               request->operation != RIN_KERBEROS_OPERATION_ACCEPT_SEC_CONTEXT) ||
               operation_response.output_size == 0u ||
               operation_response.context_token_size != 0u ||
               (operation_response.return_flags &
