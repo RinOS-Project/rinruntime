@@ -162,6 +162,33 @@ int rin_crash_history_get_local(RinCrashHistoryQueryV1* query)
 #endif
 }
 
+int rin_crash_pending_minidumps_get_local(RinCrashPendingQueryV1* query)
+{
+    if (query == NULL) return (int)RIN_RESULT_INVALID_ARGUMENT;
+    query->record_count = 0u;
+    summary_zero(query->records, (uint32_t)sizeof(query->records));
+    if (query->struct_size != sizeof(*query) ||
+        query->version != RIN_CRASH_PENDING_QUERY_VERSION ||
+        query->capacity == 0u ||
+        query->capacity > RIN_CRASH_PENDING_MAX_RECORDS ||
+        query->reserved != 0u)
+        return (int)RIN_RESULT_INVALID_ARGUMENT;
+#if defined(_WIN32)
+    return (int)RIN_RESULT_NOT_SUPPORTED;
+#else
+    {
+        const intptr_t result = _syscall2(
+            (uintptr_t)RIN_SYS_CRASH_SUMMARY_GET,
+            (uintptr_t)query, (uintptr_t)sizeof(*query));
+        if (result != (intptr_t)RIN_RESULT_OK) {
+            query->record_count = 0u;
+            summary_zero(query->records, (uint32_t)sizeof(query->records));
+        }
+        return (int)result;
+    }
+#endif
+}
+
 int rin_crash_history_ack_local(uint64_t sequence)
 {
     RinCrashHistoryAckV1 ack;
