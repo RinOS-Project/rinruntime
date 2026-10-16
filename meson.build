@@ -6,7 +6,8 @@ fs = import('fs')
 inc = include_directories('include', '../../RinOS-SDK/include',
                           '../rinjson/include', '../rinpath/include',
                           '../libunicode')
-runtime_sources = files('src/portal.c', 'src/crash.c', 'src/backup_restore.c',
+runtime_sources = files('src/portal.c', 'src/crash.c',
+                        'src/rin_crash_summary.c', 'src/backup_restore.c',
                         'src/known_folders.c', 'src/file_operation.c',
                         'src/safe_save.c', 'src/safe_save_posix.c',
                         'src/session_recovery.c', 'src/crash_service.c',

@@ -1,8 +1,14 @@
 /* SPDX-License-Identifier: MIT */
 
 #include <rin/crash_summary.h>
+#include <rin/contract_abi.h>
 
 #include <stddef.h>
+
+#if !defined(_WIN32)
+#include "../../libc/sys/syscall.h"
+#include <rin/syscall_abi.h>
+#endif
 
 static void summary_zero(void* output, uint32_t size)
 {
@@ -121,4 +127,55 @@ RinCrashRecordResult rin_crash_summary_decode(
         offset += sizeof(section) + padded_size;
     }
     return RIN_CRASH_RECORD_OK;
+}
+
+int rin_crash_summary_get_local(RinCrashSummaryV1* summary)
+{
+    if (summary == NULL) return (int)RIN_RESULT_INVALID_ARGUMENT;
+    summary_zero(summary, (uint32_t)sizeof(*summary));
+#if defined(_WIN32)
+    return (int)RIN_RESULT_NOT_SUPPORTED;
+#else
+    return (int)_syscall2((uintptr_t)RIN_SYS_CRASH_SUMMARY_GET,
+                          (uintptr_t)summary,
+                          (uintptr_t)sizeof(*summary));
+#endif
+}
+
+int rin_crash_history_get_local(RinCrashHistoryQueryV1* query)
+{
+    if (query == NULL) return (int)RIN_RESULT_INVALID_ARGUMENT;
+    query->record_count = 0u;
+    summary_zero(query->records, (uint32_t)sizeof(query->records));
+#if defined(_WIN32)
+    return (int)RIN_RESULT_NOT_SUPPORTED;
+#else
+    intptr_t result;
+    result = _syscall2((uintptr_t)RIN_SYS_CRASH_SUMMARY_GET,
+                       (uintptr_t)query,
+                       (uintptr_t)sizeof(*query));
+    if (result != (intptr_t)RIN_RESULT_OK) {
+        query->record_count = 0u;
+        summary_zero(query->records, (uint32_t)sizeof(query->records));
+    }
+    return (int)result;
+#endif
+}
+
+int rin_crash_history_ack_local(uint64_t sequence)
+{
+    RinCrashHistoryAckV1 ack;
+    intptr_t result;
+    summary_zero(&ack, (uint32_t)sizeof(ack));
+    ack.struct_size = (uint32_t)sizeof(ack);
+    ack.version = RIN_CRASH_HISTORY_ACK_VERSION;
+    ack.sequence = sequence;
+#if defined(_WIN32)
+    result = (intptr_t)RIN_RESULT_NOT_SUPPORTED;
+#else
+    result = _syscall2((uintptr_t)RIN_SYS_CRASH_SUMMARY_GET,
+                       (uintptr_t)&ack, (uintptr_t)sizeof(ack));
+#endif
+    summary_zero(&ack, (uint32_t)sizeof(ack));
+    return (int)result;
 }
