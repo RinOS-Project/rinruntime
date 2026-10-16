@@ -62,6 +62,7 @@ static int crash_section_size_valid(uint32_t type, uint32_t size)
                    size / sizeof(uint64_t) <= RIN_CRASH_RECORD_MAX_FRAMES;
         case RIN_CRASH_SECTION_PROCESS:
             return size == sizeof(RinCrashProcessInfo) ||
+                   size == RIN_CRASH_PROCESS_INFO_PRE_SESSION_SIZE ||
                    size == RIN_CRASH_PROCESS_INFO_LEGACY_SIZE;
         case RIN_CRASH_SECTION_SCHEDULER:
             return size == sizeof(RinCrashSchedulerInfo);
@@ -168,13 +169,19 @@ static int crash_section_content_valid(uint32_t type, const void* data,
         if (!terminated || !crash_text_valid(
                 (const uint8_t*)process.image_name, index))
             return 0;
-        if (size == sizeof(process) && process.reserved != 0u) return 0;
+        if (size >= RIN_CRASH_PROCESS_INFO_PRE_SESSION_SIZE &&
+            process.reserved != 0u)
+            return 0;
         for (index = 0u; index < sizeof(process.package_digest); ++index)
             package_digest_nonzero |= process.package_digest[index] != 0u;
-        return (process.package_generation == 0u &&
-                package_digest_nonzero == 0u) ||
-               (process.package_generation != 0u &&
-                package_digest_nonzero != 0u);
+        if (!((process.package_generation == 0u &&
+               package_digest_nonzero == 0u) ||
+              (process.package_generation != 0u &&
+               package_digest_nonzero != 0u)))
+            return 0;
+        if (size < sizeof(process)) return 1;
+        return rin_crash_owner_session_valid(&process.owner_session,
+                                             process.owner_uid);
     } else if (type == RIN_CRASH_SECTION_SCHEDULER) {
         RinCrashSchedulerInfo scheduler;
         crash_copy(&scheduler, data, sizeof(scheduler));
