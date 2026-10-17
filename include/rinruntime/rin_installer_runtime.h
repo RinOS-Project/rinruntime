@@ -19,9 +19,14 @@ int32_t rin_app_block_count(void);
 RinResultCode rin_app_block_enumerate(uint32_t index,
                                       RinBlockInfoV1* info_out);
 
-/* Looks up a live V2 block snapshot and returns its kernel-assigned media ID
- * only when generation, ancestry, and unique physical-medium attestation are
- * all present. Current root-registration IDs do not satisfy this contract. */
+/* Returns the live V2 snapshot. A root ID may describe only a registration;
+ * callers that need physical-media separation must also require the
+ * MEDIA_UNIQUE_ATTESTED flag. */
+RinResultCode rin_app_block_get_info_v2(uint32_t block_id,
+                                        RinBlockInfoV2* info_out);
+
+/* Returns the root ID only when generation, ancestry, and unique
+ * physical-medium attestation are all present. */
 RinResultCode rin_app_block_physical_device_id(
     uint32_t block_id, uint32_t* physical_device_id_out);
 

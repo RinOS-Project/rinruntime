@@ -296,11 +296,13 @@ extern void  platform_serial_hex(uint32_t val);
 /* RinFS consumes only the Rin-native block contract. The transport-specific
  * ATA/AHCI/NVMe/VirtIO implementation stays below this boundary. */
 #define platform_ata_read(device, lba, count, buffer) \
-    rin_block_read((RinBlockId)(device), (uint64_t)(lba), (count), (buffer))
+    rin_block_read_wait((RinBlockId)(device), (uint64_t)(lba), (count), \
+                        (buffer), RIN_BLOCK_DEFAULT_TIMEOUT_MS)
 #define platform_ata_write(device, lba, count, buffer) \
-    rin_block_write((RinBlockId)(device), (uint64_t)(lba), (count), (buffer), 0u)
+    rin_block_write_wait((RinBlockId)(device), (uint64_t)(lba), (count), \
+                         (buffer), 0u, RIN_BLOCK_DEFAULT_TIMEOUT_MS)
 #define platform_ata_flush(device) \
-    rin_block_flush((RinBlockId)(device))
+    rin_block_flush_wait((RinBlockId)(device), RIN_BLOCK_DEFAULT_TIMEOUT_MS)
 
 #define rinfs_malloc   platform_kmalloc
 #define rinfs_free     platform_kfree
@@ -473,7 +475,7 @@ struct RinFS_MmapSource {
     uint32_t reserved;
     uint64_t reference_generation;
     uint64_t reference_cookie;
-};
+} __attribute__((aligned(8)));
 
 #define RINFS_MAX_MMAP_SOURCE_REFERENCES 1024u
 #define RINFS_MMAP_SOURCE_ACTIVE 1u
@@ -558,9 +560,8 @@ static void rinfs_page_cache_lock(RinFS_PageCache* cache) {
     }
     if (spin_iterations != 0u) {
         uint64_t waited_cycles = RIN_TRACE_CYCLES_NOW() - started_at;
-        __atomic_add_fetch(&cache->lock_wait_count, 1u, __ATOMIC_RELAXED);
-        __atomic_add_fetch(&cache->lock_wait_cycles, waited_cycles,
-                           __ATOMIC_RELAXED);
+        ++cache->lock_wait_count;
+        cache->lock_wait_cycles += waited_cycles;
         RIN_TRACE_EMIT_CURRENT(RIN_TRACE_PAGE_CACHE_LOCK_WAIT, waited_cycles,
                                spin_iterations);
     }
@@ -574,6 +575,9 @@ static void rinfs_page_cache_unlock(RinFS_PageCache* cache) {
 }
 
 static uint64_t g_rinfs_mount_epoch_next = 1u;
+/* Keep RinFS_Mount's public field layout stable on IA-32 while synchronizing
+ * its 64-bit coalesced-I/O telemetry. */
+static volatile uint32_t g_rinfs_coalesced_stats_lock;
 static volatile uint32_t g_rinfs_mmap_source_lock;
 static RinFS_MmapSourceReference
     g_rinfs_mmap_source_references[RINFS_MAX_MMAP_SOURCE_REFERENCES];
@@ -1943,100 +1947,88 @@ void rinfs_read_stats(const RinFS_Mount* mount, RinFS_ReadStats* stats_out) {
     if (!stats_out) return;
     rinfs_memset(stats_out, 0, sizeof(*stats_out));
     if (!mount) return;
-    stats_out->coalesced_read_ops = __atomic_load_n(
-        &mount->coalesced_read_ops, __ATOMIC_RELAXED);
-    stats_out->coalesced_read_bytes = __atomic_load_n(
-        &mount->coalesced_read_bytes, __ATOMIC_RELAXED);
-    stats_out->coalesced_write_ops = __atomic_load_n(
-        &mount->coalesced_write_ops, __ATOMIC_RELAXED);
-    stats_out->coalesced_write_bytes = __atomic_load_n(
-        &mount->coalesced_write_bytes, __ATOMIC_RELAXED);
+    rinfs_spin_lock(&g_rinfs_coalesced_stats_lock);
+    stats_out->coalesced_read_ops = mount->coalesced_read_ops;
+    stats_out->coalesced_read_bytes = mount->coalesced_read_bytes;
+    stats_out->coalesced_write_ops = mount->coalesced_write_ops;
+    stats_out->coalesced_write_bytes = mount->coalesced_write_bytes;
+    rinfs_spin_unlock(&g_rinfs_coalesced_stats_lock);
     if (mount->dentry_cache) {
-        stats_out->dentry_hits = __atomic_load_n(
-            &mount->dentry_cache->hits, __ATOMIC_RELAXED);
-        stats_out->dentry_misses = __atomic_load_n(
-            &mount->dentry_cache->misses, __ATOMIC_RELAXED);
+        rinfs_spin_lock(&mount->dentry_cache->lock);
+        stats_out->dentry_hits = mount->dentry_cache->hits;
+        stats_out->dentry_misses = mount->dentry_cache->misses;
+        rinfs_spin_unlock(&mount->dentry_cache->lock);
     }
     if (mount->inode_cache) {
-        stats_out->inode_cache_hits = __atomic_load_n(
-            &mount->inode_cache->hits, __ATOMIC_RELAXED);
-        stats_out->inode_cache_misses = __atomic_load_n(
-            &mount->inode_cache->misses, __ATOMIC_RELAXED);
-        stats_out->inode_cache_evictions = __atomic_load_n(
-            &mount->inode_cache->evictions, __ATOMIC_RELAXED);
+        rinfs_spin_lock(&mount->inode_cache->lock);
+        stats_out->inode_cache_hits = mount->inode_cache->hits;
+        stats_out->inode_cache_misses = mount->inode_cache->misses;
+        stats_out->inode_cache_evictions = mount->inode_cache->evictions;
+        rinfs_spin_unlock(&mount->inode_cache->lock);
     }
     if (mount->page_cache) {
-        stats_out->page_cache_hits = __atomic_load_n(
-            &mount->page_cache->hits, __ATOMIC_RELAXED);
-        stats_out->page_cache_misses = __atomic_load_n(
-            &mount->page_cache->misses, __ATOMIC_RELAXED);
-        stats_out->page_cache_dirty_pages = __atomic_load_n(
-            &mount->page_cache->dirty_pages, __ATOMIC_RELAXED);
-        stats_out->page_cache_dirty_bytes = __atomic_load_n(
-            &mount->page_cache->dirty_bytes, __ATOMIC_RELAXED);
-        stats_out->page_cache_writeback_errors = __atomic_load_n(
-            &mount->page_cache->writeback_errors, __ATOMIC_RELAXED);
-        stats_out->page_cache_evictions = __atomic_load_n(
-            &mount->page_cache->evictions, __ATOMIC_RELAXED);
-        stats_out->page_cache_writeback_ops = __atomic_load_n(
-            &mount->page_cache->writeback_ops, __ATOMIC_RELAXED);
-        stats_out->page_cache_writeback_pages = __atomic_load_n(
-            &mount->page_cache->writeback_pages, __ATOMIC_RELAXED);
-        stats_out->page_cache_writeback_cycles = __atomic_load_n(
-            &mount->page_cache->writeback_cycles, __ATOMIC_RELAXED);
-        stats_out->page_cache_readahead_issued = __atomic_load_n(
-            &mount->page_cache->readahead_issued, __ATOMIC_RELAXED);
-        stats_out->page_cache_readahead_useful = __atomic_load_n(
-            &mount->page_cache->readahead_useful, __ATOMIC_RELAXED);
-        stats_out->page_cache_readahead_wasted = __atomic_load_n(
-            &mount->page_cache->readahead_wasted, __ATOMIC_RELAXED);
-        stats_out->page_cache_lock_wait_count = __atomic_load_n(
-            &mount->page_cache->lock_wait_count, __ATOMIC_RELAXED);
-        stats_out->page_cache_lock_wait_cycles = __atomic_load_n(
-            &mount->page_cache->lock_wait_cycles, __ATOMIC_RELAXED);
+        rinfs_page_cache_lock(mount->page_cache);
+        stats_out->page_cache_hits = mount->page_cache->hits;
+        stats_out->page_cache_misses = mount->page_cache->misses;
+        stats_out->page_cache_dirty_pages = mount->page_cache->dirty_pages;
+        stats_out->page_cache_dirty_bytes = mount->page_cache->dirty_bytes;
+        stats_out->page_cache_writeback_errors =
+            mount->page_cache->writeback_errors;
+        stats_out->page_cache_evictions = mount->page_cache->evictions;
+        stats_out->page_cache_writeback_ops = mount->page_cache->writeback_ops;
+        stats_out->page_cache_writeback_pages =
+            mount->page_cache->writeback_pages;
+        stats_out->page_cache_writeback_cycles =
+            mount->page_cache->writeback_cycles;
+        stats_out->page_cache_readahead_issued =
+            mount->page_cache->readahead_issued;
+        stats_out->page_cache_readahead_useful =
+            mount->page_cache->readahead_useful;
+        stats_out->page_cache_readahead_wasted =
+            mount->page_cache->readahead_wasted;
+        stats_out->page_cache_lock_wait_count =
+            mount->page_cache->lock_wait_count;
+        stats_out->page_cache_lock_wait_cycles =
+            mount->page_cache->lock_wait_cycles;
+        rinfs_page_cache_unlock(mount->page_cache);
     }
 }
 
 void rinfs_read_stats_reset(RinFS_Mount* mount) {
     if (!mount) return;
-    __atomic_store_n(&mount->coalesced_read_ops, 0u, __ATOMIC_RELAXED);
-    __atomic_store_n(&mount->coalesced_read_bytes, 0u, __ATOMIC_RELAXED);
-    __atomic_store_n(&mount->coalesced_write_ops, 0u, __ATOMIC_RELAXED);
-    __atomic_store_n(&mount->coalesced_write_bytes, 0u, __ATOMIC_RELAXED);
+    rinfs_spin_lock(&g_rinfs_coalesced_stats_lock);
+    mount->coalesced_read_ops = 0u;
+    mount->coalesced_read_bytes = 0u;
+    mount->coalesced_write_ops = 0u;
+    mount->coalesced_write_bytes = 0u;
+    rinfs_spin_unlock(&g_rinfs_coalesced_stats_lock);
     if (mount->dentry_cache) {
-        __atomic_store_n(&mount->dentry_cache->hits, 0u, __ATOMIC_RELAXED);
-        __atomic_store_n(&mount->dentry_cache->misses, 0u, __ATOMIC_RELAXED);
+        rinfs_spin_lock(&mount->dentry_cache->lock);
+        mount->dentry_cache->hits = 0u;
+        mount->dentry_cache->misses = 0u;
+        rinfs_spin_unlock(&mount->dentry_cache->lock);
     }
     if (mount->inode_cache) {
-        __atomic_store_n(&mount->inode_cache->hits, 0u, __ATOMIC_RELAXED);
-        __atomic_store_n(&mount->inode_cache->misses, 0u, __ATOMIC_RELAXED);
-        __atomic_store_n(&mount->inode_cache->evictions, 0u,
-                         __ATOMIC_RELAXED);
+        rinfs_spin_lock(&mount->inode_cache->lock);
+        mount->inode_cache->hits = 0u;
+        mount->inode_cache->misses = 0u;
+        mount->inode_cache->evictions = 0u;
+        rinfs_spin_unlock(&mount->inode_cache->lock);
     }
     if (mount->page_cache) {
         rinfs_page_cache_lock(mount->page_cache);
-        __atomic_store_n(&mount->page_cache->hits, 0u, __ATOMIC_RELAXED);
-        __atomic_store_n(&mount->page_cache->misses, 0u, __ATOMIC_RELAXED);
-        __atomic_store_n(&mount->page_cache->evictions, 0u,
-                         __ATOMIC_RELAXED);
-        __atomic_store_n(&mount->page_cache->writeback_errors, 0u,
-                         __ATOMIC_RELAXED);
-        __atomic_store_n(&mount->page_cache->writeback_ops, 0u,
-                         __ATOMIC_RELAXED);
-        __atomic_store_n(&mount->page_cache->writeback_pages, 0u,
-                         __ATOMIC_RELAXED);
-        __atomic_store_n(&mount->page_cache->writeback_cycles, 0u,
-                         __ATOMIC_RELAXED);
-        __atomic_store_n(&mount->page_cache->readahead_issued, 0u,
-                         __ATOMIC_RELAXED);
-        __atomic_store_n(&mount->page_cache->readahead_useful, 0u,
-                         __ATOMIC_RELAXED);
-        __atomic_store_n(&mount->page_cache->readahead_wasted, 0u,
-                         __ATOMIC_RELAXED);
-        __atomic_store_n(&mount->page_cache->lock_wait_count, 0u,
-                         __ATOMIC_RELAXED);
-        __atomic_store_n(&mount->page_cache->lock_wait_cycles, 0u,
-                         __ATOMIC_RELAXED);
+        mount->page_cache->hits = 0u;
+        mount->page_cache->misses = 0u;
+        mount->page_cache->evictions = 0u;
+        mount->page_cache->writeback_errors = 0u;
+        mount->page_cache->writeback_ops = 0u;
+        mount->page_cache->writeback_pages = 0u;
+        mount->page_cache->writeback_cycles = 0u;
+        mount->page_cache->readahead_issued = 0u;
+        mount->page_cache->readahead_useful = 0u;
+        mount->page_cache->readahead_wasted = 0u;
+        mount->page_cache->lock_wait_count = 0u;
+        mount->page_cache->lock_wait_cycles = 0u;
         for (uint32_t index = 0u; index < RINFS_PAGE_CACHE_CAPACITY; ++index)
             mount->page_cache->entries[index].readahead = 0u;
         rinfs_page_cache_unlock(mount->page_cache);
@@ -2130,7 +2122,7 @@ static int rinfs_page_cache_choose_victim_locked(RinFS_PageCache* cache) {
 static void rinfs_page_cache_account_readahead_waste_locked(
     RinFS_PageCache* cache, RinFS_PageCacheEntry* entry) {
     if (!cache || !entry || !entry->readahead) return;
-    __atomic_add_fetch(&cache->readahead_wasted, 1u, __ATOMIC_RELAXED);
+    ++cache->readahead_wasted;
     entry->readahead = 0u;
 }
 
@@ -2256,11 +2248,10 @@ static int rinfs_page_cache_acquire(RinFS_Mount* mount, uint64_t inode_num,
         entry->references++;
         entry->last_used = ++cache->clock;
         entry->generation = RINFS_PAGE_CACHE_ACTIVE;
-        __atomic_add_fetch(&cache->hits, 1u, __ATOMIC_RELAXED);
+        ++cache->hits;
         if (entry->readahead) {
             entry->readahead = 0u;
-            __atomic_add_fetch(&cache->readahead_useful, 1u,
-                               __ATOMIC_RELAXED);
+            ++cache->readahead_useful;
         }
         *entry_out = entry;
         rinfs_page_cache_unlock(cache);
@@ -2272,7 +2263,7 @@ static int rinfs_page_cache_acquire(RinFS_Mount* mount, uint64_t inode_num,
 
     victim = rinfs_page_cache_choose_victim_locked(cache);
     if (victim < 0) {
-        __atomic_add_fetch(&cache->misses, 1u, __ATOMIC_RELAXED);
+        ++cache->misses;
         rinfs_page_cache_unlock(cache);
         RIN_TRACE_EMIT(RINFS_TRACE_CPU_ID(), RIN_TRACE_ID_UNKNOWN,
                        RIN_TRACE_ID_UNKNOWN, RIN_TRACE_PAGE_CACHE_MISS,
@@ -2282,7 +2273,7 @@ static int rinfs_page_cache_acquire(RinFS_Mount* mount, uint64_t inode_num,
     {
         RinFS_PageCacheEntry* entry = &cache->entries[(uint32_t)victim];
         if (entry->valid) {
-            __atomic_add_fetch(&cache->evictions, 1u, __ATOMIC_RELAXED);
+            ++cache->evictions;
             rinfs_page_cache_account_readahead_waste_locked(cache, entry);
         }
         entry->mount_epoch = mount->mount_epoch;
@@ -2307,7 +2298,7 @@ static int rinfs_page_cache_acquire(RinFS_Mount* mount, uint64_t inode_num,
         if (err != RINFS_OK) {
             rinfs_page_cache_lock(cache);
             rinfs_page_cache_discard_locked(cache, entry);
-            __atomic_add_fetch(&cache->misses, 1u, __ATOMIC_RELAXED);
+            ++cache->misses;
             rinfs_page_cache_unlock(cache);
             RIN_TRACE_EMIT(RINFS_TRACE_CPU_ID(), RIN_TRACE_ID_UNKNOWN,
                            RIN_TRACE_ID_UNKNOWN, RIN_TRACE_PAGE_CACHE_MISS,
@@ -2328,7 +2319,7 @@ static int rinfs_page_cache_acquire(RinFS_Mount* mount, uint64_t inode_num,
         rinfs_page_cache_lock(cache);
         if (err != RINFS_OK) {
             rinfs_page_cache_discard_locked(cache, entry);
-            __atomic_add_fetch(&cache->misses, 1u, __ATOMIC_RELAXED);
+            ++cache->misses;
             rinfs_page_cache_unlock(cache);
             RIN_TRACE_EMIT(RINFS_TRACE_CPU_ID(), RIN_TRACE_ID_UNKNOWN,
                            RIN_TRACE_ID_UNKNOWN, RIN_TRACE_PAGE_CACHE_MISS,
@@ -2337,7 +2328,7 @@ static int rinfs_page_cache_acquire(RinFS_Mount* mount, uint64_t inode_num,
         }
         entry->physical_block = physical;
         entry->state = RINFS_PAGE_CACHE_CLEAN;
-        __atomic_add_fetch(&cache->misses, 1u, __ATOMIC_RELAXED);
+        ++cache->misses;
         *entry_out = entry;
         rinfs_page_cache_unlock(cache);
     }
@@ -2464,7 +2455,7 @@ static int rinfs_page_cache_reserve_fill(
     {
         RinFS_PageCacheEntry* entry = &cache->entries[(uint32_t)victim];
         if (entry->valid) {
-            __atomic_add_fetch(&cache->evictions, 1u, __ATOMIC_RELAXED);
+            ++cache->evictions;
             rinfs_page_cache_account_readahead_waste_locked(cache, entry);
         }
         entry->mount_epoch = mount->mount_epoch;
@@ -2511,7 +2502,7 @@ static void rinfs_page_cache_finish_fill(RinFS_Mount* mount,
     if (result == RINFS_OK) {
         entry->state = RINFS_PAGE_CACHE_CLEAN;
         entry->readahead = 1u;
-        __atomic_add_fetch(&cache->readahead_issued, 1u, __ATOMIC_RELAXED);
+        ++cache->readahead_issued;
     } else {
         rinfs_page_cache_discard_locked(cache, entry);
     }
@@ -2825,17 +2816,14 @@ static int rinfs_page_cache_sync(RinFS_Mount* mount, uint64_t inode_num,
             } else {
                 entry->state = RINFS_PAGE_CACHE_DIRTY;
                 entry->writeback_error = err;
-                __atomic_add_fetch(&cache->writeback_errors, 1u,
-                                   __ATOMIC_RELAXED);
+                ++cache->writeback_errors;
             }
             if (entry->references != 0u) entry->references--;
         }
-        __atomic_add_fetch(&cache->writeback_ops, 1u, __ATOMIC_RELAXED);
-        __atomic_add_fetch(&cache->writeback_pages, selected_count,
-                           __ATOMIC_RELAXED);
+        ++cache->writeback_ops;
+        cache->writeback_pages += selected_count;
 #if defined(RIN_PERFORMANCE_TRACE) && RIN_PERFORMANCE_TRACE
-        __atomic_add_fetch(&cache->writeback_cycles, writeback_cycles,
-                           __ATOMIC_RELAXED);
+        cache->writeback_cycles += writeback_cycles;
 #endif
         rinfs_page_cache_unlock(cache);
         uint64_t writeback_trace = writeback_cycles;
@@ -2929,7 +2917,7 @@ int rinfs_page_cache_reclaim(RinFS_Mount* mount, uint32_t max_entries,
             break;
         }
         rinfs_page_cache_discard_locked(cache, victim);
-        __atomic_add_fetch(&cache->evictions, 1u, __ATOMIC_RELAXED);
+        ++cache->evictions;
         reclaimed++;
         rinfs_page_cache_unlock(cache);
     }
@@ -3902,9 +3890,10 @@ static int rinfs_read_physical_run(RinFS_Mount* mount, uint64_t first_block,
     int err = disk_read(mount, block_to_sector(mount, first_block),
                         (uint32_t)sectors, output);
     if (err == RINFS_OK && block_count > 1u) {
-        __atomic_fetch_add(&mount->coalesced_read_ops, 1u, __ATOMIC_RELAXED);
-        __atomic_fetch_add(&mount->coalesced_read_bytes, bytes,
-                           __ATOMIC_RELAXED);
+        rinfs_spin_lock(&g_rinfs_coalesced_stats_lock);
+        ++mount->coalesced_read_ops;
+        mount->coalesced_read_bytes += bytes;
+        rinfs_spin_unlock(&g_rinfs_coalesced_stats_lock);
     }
     return err;
 }
@@ -3932,10 +3921,10 @@ static int rinfs_write_physical_run(RinFS_Mount* mount, uint64_t first_block,
     err = disk_write(mount, block_to_sector(mount, first_block),
                      (uint32_t)sectors, input);
     if (err == RINFS_OK && block_count > 1u) {
-        __atomic_fetch_add(&mount->coalesced_write_ops, 1u,
-                           __ATOMIC_RELAXED);
-        __atomic_fetch_add(&mount->coalesced_write_bytes, bytes,
-                           __ATOMIC_RELAXED);
+        rinfs_spin_lock(&g_rinfs_coalesced_stats_lock);
+        ++mount->coalesced_write_ops;
+        mount->coalesced_write_bytes += bytes;
+        rinfs_spin_unlock(&g_rinfs_coalesced_stats_lock);
     }
     return err;
 }
@@ -16760,7 +16749,6 @@ failed:
 #define RINFS_RESTORE_TX_MAGIC UINT32_C(0x31535452) /* RST1 */
 #define RINFS_RESTORE_RECORD_MAGIC UINT32_C(0x31525452) /* RTR1 */
 #define RINFS_RESTORE_VERSION 1u
-#define RINFS_RESTORE_NAME ".rin-restore-txn-v1"
 #define RINFS_RESTORE_STAGE_NAME "stage"
 #define RINFS_RESTORE_OLD_NAME "old"
 #define RINFS_RESTORE_MAP_NAME "map"
@@ -16977,7 +16965,7 @@ static int rinfs_restore_record_refresh_children(
     int required = record->phase == RINFS_RESTORE_PHASE_MOVING_OLD ||
                    record->phase == RINFS_RESTORE_PHASE_INSTALLING;
     error = rinfs_restore_lookup_child(mount, RINFS_INODE_ROOT,
-        RINFS_RESTORE_NAME, RINFS_FT_DIR, &tx);
+        RINFS_RESTORE_TRANSACTION_NAME, RINFS_FT_DIR, &tx);
     if (error != RINFS_OK) return error;
     if (record->transaction_inode != 0u && record->transaction_inode != tx)
         return RINFS_ERR_CORRUPT;
@@ -17350,7 +17338,8 @@ static int rinfs_restore_transaction_cleanup_children(
     uint64_t tx = record->transaction_inode;
     int error;
     if (tx == 0u) {
-        error = rinfs_lookup(mount, RINFS_INODE_ROOT, RINFS_RESTORE_NAME, &tx);
+        error = rinfs_lookup(mount, RINFS_INODE_ROOT,
+                             RINFS_RESTORE_TRANSACTION_NAME, &tx);
         if (error == RINFS_ERR_NOENT) return RINFS_OK;
         if (error != RINFS_OK) return error;
         record->transaction_inode = tx;
@@ -17376,7 +17365,7 @@ static int rinfs_restore_transaction_remove_dir(RinFS_Mount* mount,
     uint64_t tx = 0u;
     RinFS_Inode inode;
     int error = rinfs_lookup(mount, RINFS_INODE_ROOT,
-                             RINFS_RESTORE_NAME, &tx);
+                             RINFS_RESTORE_TRANSACTION_NAME, &tx);
     if (error == RINFS_ERR_NOENT) {
         if (record->phase == RINFS_RESTORE_PHASE_DONE ||
             record->phase == RINFS_RESTORE_PHASE_ABORTING) {
@@ -17394,7 +17383,7 @@ static int rinfs_restore_transaction_remove_dir(RinFS_Mount* mount,
     error = rinfs_inode_read(mount, tx, &inode);
     if (error != RINFS_OK) return error;
     error = rinfs_rmdir_expected(mount, RINFS_INODE_ROOT,
-                                 RINFS_RESTORE_NAME, tx,
+                                 RINFS_RESTORE_TRANSACTION_NAME, tx,
                                  inode.i_generation);
     if (error != RINFS_OK) return error;
     record->transaction_inode = 0u;
@@ -17525,7 +17514,7 @@ static int rinfs_restore_abort_record(RinFS_Mount* mount,
     if (error == RINFS_ERR_NOENT) {
         uint64_t transaction_inode = 0u;
         int lookup = rinfs_lookup(mount, RINFS_INODE_ROOT,
-            RINFS_RESTORE_NAME, &transaction_inode);
+            RINFS_RESTORE_TRANSACTION_NAME, &transaction_inode);
         if (lookup == RINFS_ERR_NOENT)
             return rinfs_restore_record_clear(mount);
         if (lookup != RINFS_OK) return lookup;
@@ -17641,7 +17630,8 @@ int rinfs_restore_transaction_begin(RinFS_Mount* mount,
     if (present || (mount->sb.s_incompat_features &
                     RINFS_FEATURE_INCOMPAT_RESTORE_PENDING) != 0u)
         return RINFS_ERR_PENDING;
-    error = rinfs_lookup(mount, RINFS_INODE_ROOT, RINFS_RESTORE_NAME,
+    error = rinfs_lookup(mount, RINFS_INODE_ROOT,
+                         RINFS_RESTORE_TRANSACTION_NAME,
                          &existing);
     if (error == RINFS_OK) return RINFS_ERR_EXIST;
     if (error != RINFS_ERR_NOENT) return error;
@@ -17657,7 +17647,7 @@ int rinfs_restore_transaction_begin(RinFS_Mount* mount,
     if (error != RINFS_OK) goto failed;
 
     error = rinfs_mkdirat_owned(mount, RINFS_INODE_ROOT,
-        RINFS_RESTORE_NAME, 0700u, uid, gid,
+        RINFS_RESTORE_TRANSACTION_NAME, 0700u, uid, gid,
         &internal->record.transaction_inode);
     if (error != RINFS_OK) goto failed;
     error = rinfs_restore_record_store(mount, &internal->record);
