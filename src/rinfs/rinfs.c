@@ -16801,6 +16801,7 @@ typedef struct {
 typedef struct {
     uint32_t magic;
     RinFS_Mount* mount;
+    uint64_t mount_epoch;
     RinFS_RestoreRecord record;
 } RinFS_RestoreTransactionInternal;
 
@@ -17404,22 +17405,27 @@ static void rinfs_restore_internal_destroy(
     rinfs_memset(transaction, 0, sizeof(*transaction));
 }
 
-static int rinfs_restore_transaction_valid(
+static int rinfs_restore_transaction_validate(
     RinFS_RestoreTransactionV1* transaction,
     RinFS_RestoreTransactionInternal** internal_out) {
     RinFS_RestoreTransactionInternal* internal;
     if (!transaction || transaction->magic != RINFS_RESTORE_TX_MAGIC ||
         !transaction->internal)
-        return 0;
+        return RINFS_ERR_INVAL;
     internal = (RinFS_RestoreTransactionInternal*)transaction->internal;
-    if (internal->magic != RINFS_RESTORE_TX_MAGIC || !internal->mount ||
-        !internal->mount->mounted || internal->mount->readonly ||
-        internal->record.phase != RINFS_RESTORE_PHASE_RECEIVING ||
+    if (internal->magic != RINFS_RESTORE_TX_MAGIC || !internal->mount)
+        return RINFS_ERR_INVAL;
+    if (internal->mount_epoch == 0u ||
+        internal->mount->mount_epoch != internal->mount_epoch ||
+        !internal->mount->mounted)
+        return RINFS_ERR_STALE;
+    if (internal->mount->readonly) return RINFS_ERR_ROFS;
+    if (internal->record.phase != RINFS_RESTORE_PHASE_RECEIVING ||
         (internal->mount->sb.s_incompat_features &
          RINFS_FEATURE_INCOMPAT_RESTORE_PENDING) == 0u)
-        return 0;
+        return RINFS_ERR_PENDING;
     if (internal_out) *internal_out = internal;
-    return 1;
+    return RINFS_OK;
 }
 
 static int rinfs_restore_transaction_internal_get(
@@ -17430,8 +17436,13 @@ static int rinfs_restore_transaction_internal_get(
         !transaction->internal || !internal_out)
         return RINFS_ERR_INVAL;
     internal = (RinFS_RestoreTransactionInternal*)transaction->internal;
-    if (internal->magic != RINFS_RESTORE_TX_MAGIC || !internal->mount ||
-        !internal->mount->mounted || internal->mount->readonly)
+    if (internal->magic != RINFS_RESTORE_TX_MAGIC || !internal->mount)
+        return RINFS_ERR_INVAL;
+    if (internal->mount_epoch == 0u ||
+        internal->mount->mount_epoch != internal->mount_epoch ||
+        !internal->mount->mounted)
+        return RINFS_ERR_STALE;
+    if (internal->mount->readonly)
         return RINFS_ERR_ROFS;
     *internal_out = internal;
     return RINFS_OK;
@@ -17616,7 +17627,8 @@ int rinfs_restore_transaction_begin(RinFS_Mount* mount,
     uint64_t existing = 0u;
     int present = 0;
     int error;
-    if (!mount || !mount->mounted || mount->readonly || !transaction ||
+    if (!mount || !mount->mounted || mount->mount_epoch == 0u ||
+        mount->readonly || !transaction ||
         transaction->magic != 0u || transaction->internal ||
         !staging_root_inode_out ||
         (mount->sb.s_incompat_features &
@@ -17640,6 +17652,7 @@ int rinfs_restore_transaction_begin(RinFS_Mount* mount,
     rinfs_memset(internal, 0, sizeof(*internal));
     internal->magic = RINFS_RESTORE_TX_MAGIC;
     internal->mount = mount;
+    internal->mount_epoch = mount->mount_epoch;
     internal->record.phase = RINFS_RESTORE_PHASE_RECEIVING;
     error = rinfs_restore_record_store(mount, &internal->record);
     if (error != RINFS_OK) goto failed;
@@ -17702,8 +17715,9 @@ int rinfs_restore_transaction_store_inode(
     uint64_t offset;
     int64_t written;
     int error;
-    if (!rinfs_restore_transaction_valid(transaction, &internal) ||
-        inode_number == 0u ||
+    error = rinfs_restore_transaction_validate(transaction, &internal);
+    if (error != RINFS_OK) return error;
+    if (inode_number == 0u ||
         inode_number > internal->mount->sb.s_inode_count ||
         entry_index != internal->record.map_entries ||
         entry_index >= internal->mount->sb.s_inode_count ||
@@ -17734,11 +17748,13 @@ int rinfs_restore_transaction_load_inode(
     uint64_t offset;
     int64_t read_size;
     int error;
-    if (!rinfs_restore_transaction_valid(transaction, &internal) ||
-        !inode_number_out || entry_index >= internal->record.map_entries ||
+    if (!inode_number_out) return RINFS_ERR_INVAL;
+    *inode_number_out = 0u;
+    error = rinfs_restore_transaction_validate(transaction, &internal);
+    if (error != RINFS_OK) return error;
+    if (entry_index >= internal->record.map_entries ||
         entry_index > UINT64_MAX / sizeof(inode_number))
         return RINFS_ERR_INVAL;
-    *inode_number_out = 0u;
     offset = entry_index * sizeof(inode_number);
     error = rinfs_open_ino(internal->mount, internal->record.map_inode,
                            RIN_VFS_OPEN_READ, &file);
@@ -17760,8 +17776,9 @@ int rinfs_restore_transaction_set_root_metadata(
     uint16_t persistent_flags, uint32_t uid, uint32_t gid,
     const RinFS_InodeTimes* times, int64_t change_time_seconds) {
     RinFS_RestoreTransactionInternal* internal;
-    if (!rinfs_restore_transaction_valid(transaction, &internal) ||
-        !rinfs_restore_mode_valid(mode) ||
+    int error = rinfs_restore_transaction_validate(transaction, &internal);
+    if (error != RINFS_OK) return error;
+    if (!rinfs_restore_mode_valid(mode) ||
         ((mode >> 12u) & 0x0fu) != RINFS_FT_DIR ||
         (persistent_flags &
          (uint16_t)~RINFS_RESTORE_PERSISTENT_FLAGS) != 0u ||
@@ -17788,8 +17805,9 @@ int rinfs_restore_transaction_set_inode_metadata(
     uint64_t offset;
     int64_t written;
     int error;
-    if (!rinfs_restore_transaction_valid(transaction, &internal) ||
-        inode_number == 0u ||
+    error = rinfs_restore_transaction_validate(transaction, &internal);
+    if (error != RINFS_OK) return error;
+    if (inode_number == 0u ||
         inode_number > internal->mount->sb.s_inode_count ||
         !rinfs_restore_mode_valid(mode) ||
         (persistent_flags &

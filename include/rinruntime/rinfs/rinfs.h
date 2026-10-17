@@ -618,7 +618,9 @@ typedef struct {
 
 /* Authenticated RinData restore transaction. The opaque owner stages below a
  * private transaction directory and publishes only after archive auth. The
- * caller must hold exclusive maintenance ownership of the mounted volume. */
+ * handle is bound to the boot-local mount epoch and becomes stale if that
+ * mount is invalidated or reused. The caller must hold exclusive maintenance
+ * ownership of the mounted volume. */
 /* Reserved root entry name for the transaction's recovery directory. */
 #define RINFS_RESTORE_TRANSACTION_NAME ".rin-restore-txn-v1"
 
