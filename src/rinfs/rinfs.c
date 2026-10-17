@@ -17042,7 +17042,6 @@ static int rinfs_restore_remove_tree_contents(RinFS_Mount* mount,
                  entry.d_name[1] == '.'))
                 continue;
             if (entry.d_name_len == 0u ||
-                entry.d_name_len > RINFS_NAME_MAX ||
                 entry.d_name[entry.d_name_len] != '\0' ||
                 entry.d_inode == 0u ||
                 entry.d_inode > mount->sb.s_inode_count) {
@@ -17262,7 +17261,6 @@ static int rinfs_restore_move_children(RinFS_Mount* mount,
                  entry.d_name[1] == '.') || entry.d_inode == skip_inode)
                 continue;
             if (entry.d_name_len == 0u ||
-                entry.d_name_len > RINFS_NAME_MAX ||
                 entry.d_name[entry.d_name_len] != '\0' ||
                 entry.d_inode == 0u ||
                 entry.d_inode > mount->sb.s_inode_count) {
