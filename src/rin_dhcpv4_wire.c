@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: MIT */
 
-#include "rin_dhcpv4_wire.h"
+#include "rinruntime/rin_dhcpv4_wire.h"
 
 #include <stddef.h>
 
