@@ -53,12 +53,17 @@
 #define RINFS_FEATURE_INCOMPAT_SPECIAL_INODES 0x00000004u
 /* The high d_file_type bit is a durable DELETE_ON_CLOSE dentry marker. */
 #define RINFS_FEATURE_INCOMPAT_DELETE_ON_CLOSE 0x00000008u
+/* An authenticated RinData restore owns the root namespace until mount-time
+ * recovery finishes the persisted root-content switch. Older readers reject
+ * a volume carrying this feature. */
+#define RINFS_FEATURE_INCOMPAT_RESTORE_PENDING 0x00000010u
 #define RINFS_INODE_SPECIAL_DEVICE_OFFSET 24u
 #define RINFS_FEATURE_INCOMPAT_SUPPORTED \
     (RINFS_FEATURE_INCOMPAT_NANO_TIMESTAMPS | \
      RINFS_FEATURE_INCOMPAT_CONTENT_VERSION64 | \
      RINFS_FEATURE_INCOMPAT_SPECIAL_INODES | \
-     RINFS_FEATURE_INCOMPAT_DELETE_ON_CLOSE)
+     RINFS_FEATURE_INCOMPAT_DELETE_ON_CLOSE | \
+     RINFS_FEATURE_INCOMPAT_RESTORE_PENDING)
 
 enum {
     RINFS_READ_ADVICE_NORMAL = 0,
@@ -611,6 +616,15 @@ typedef struct {
     int active;
 } RinFS_ContentSnapshot;
 
+/* Authenticated RinData restore transaction. The opaque owner stages below a
+ * private transaction directory and publishes only after archive auth. The
+ * caller must hold exclusive maintenance ownership of the mounted volume. */
+typedef struct {
+    uint32_t magic;
+    uint32_t reserved;
+    void* internal;
+} RinFS_RestoreTransactionV1;
+
 _Static_assert(sizeof(RinFS_ContentSnapshot) <= 384u,
                "RinFS content snapshot must fit the VFS opaque lease ABI");
 
@@ -771,6 +785,40 @@ int rinfs_mount_set_device_flags(RinFS_Mount* mount, uint32_t device_flags);
  * Zero retires the namespace and makes dentry sharing ineligible. */
 void rinfs_mount_set_epoch(RinFS_Mount* mount, uint64_t mount_epoch);
 int rinfs_sync(RinFS_Mount* mount);
+
+int rinfs_restore_transaction_begin(RinFS_Mount* mount,
+                                    RinFS_RestoreTransactionV1* transaction,
+                                    uint32_t uid, uint32_t gid,
+                                    uint64_t* staging_root_inode_out);
+int rinfs_restore_transaction_store_inode(
+    RinFS_RestoreTransactionV1* transaction, uint64_t entry_index,
+    uint64_t inode_number);
+int rinfs_restore_transaction_load_inode(
+    RinFS_RestoreTransactionV1* transaction, uint64_t entry_index,
+    uint64_t* inode_number_out);
+int rinfs_restore_transaction_set_root_metadata(
+    RinFS_RestoreTransactionV1* transaction, uint16_t mode,
+    uint16_t persistent_flags, uint32_t uid, uint32_t gid,
+    const RinFS_InodeTimes* times, int64_t change_time_seconds);
+int rinfs_restore_transaction_set_inode_metadata(
+    RinFS_RestoreTransactionV1* transaction, uint64_t inode_number,
+    uint16_t mode, uint16_t persistent_flags, uint32_t uid, uint32_t gid,
+    const RinFS_InodeTimes* times, int64_t change_time_seconds);
+int rinfs_restore_transaction_set_directory_metadata(
+    RinFS_RestoreTransactionV1* transaction, uint64_t inode_number,
+    uint16_t mode, uint16_t persistent_flags, uint32_t uid, uint32_t gid,
+    const RinFS_InodeTimes* times, int64_t change_time_seconds);
+int rinfs_restore_transaction_commit(
+    RinFS_RestoreTransactionV1* transaction);
+int rinfs_restore_transaction_abort(
+    RinFS_RestoreTransactionV1* transaction);
+/* Drop only the process-local handle after an ambiguous failure. The durable
+ * pending marker remains in place for mount-time recovery. */
+int rinfs_restore_transaction_forget(
+    RinFS_RestoreTransactionV1* transaction);
+/* Called after journal/orphan recovery and before mount exposes the namespace.
+ * A pending restore is resumed or discarded, or the mount fails closed. */
+int rinfs_restore_transaction_mount_recover(RinFS_Mount* mount);
 
 /* Replace the bounded UTF-8 superblock volume name and persist it. */
 int rinfs_set_volume_name(RinFS_Mount* mount, const char* name,

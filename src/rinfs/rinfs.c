@@ -10710,6 +10710,19 @@ int rinfs_mount_sized_io(int dev_id, uint64_t offset, uint64_t sector_count,
         }
     }
 
+    /* A restore transaction can temporarily move every root child while the
+     * new tree is installed. Resume it before a caller can inspect the mixed
+     * namespace; rescue/read-only mounts intentionally fail closed while the
+     * durable pending marker is present. */
+    {
+        int restore_err = rinfs_restore_transaction_mount_recover(mount);
+        if (restore_err != RINFS_OK) {
+            rinfs_mount_free_runtime_buffers(mount);
+            mount->mounted = 0;
+            return restore_err;
+        }
+    }
+
     /* An unclean shutdown can interrupt non-rename metadata operations too.
      * Do not expose a writable or ordinary read-only namespace until the
      * complete inode/block/directory graph has been validated. */
@@ -16739,4 +16752,1107 @@ failed:
     rinfs_content_mutation_poison(&mutation);
     rinfs_content_mutation_end(&mutation);
     return err;
+}
+
+/* The restore record lives in the checksummed superblock padding. The
+ * incompat feature makes old readers reject an in-progress restore, while
+ * keeping the recovery phase independent of transaction-directory cleanup. */
+#define RINFS_RESTORE_TX_MAGIC UINT32_C(0x31535452) /* RST1 */
+#define RINFS_RESTORE_RECORD_MAGIC UINT32_C(0x31525452) /* RTR1 */
+#define RINFS_RESTORE_VERSION 1u
+#define RINFS_RESTORE_NAME ".rin-restore-txn-v1"
+#define RINFS_RESTORE_STAGE_NAME "stage"
+#define RINFS_RESTORE_OLD_NAME "old"
+#define RINFS_RESTORE_MAP_NAME "map"
+#define RINFS_RESTORE_METADATA_NAME "metadata"
+#define RINFS_RESTORE_PHASE_RECEIVING 1u
+#define RINFS_RESTORE_PHASE_MOVING_OLD 2u
+#define RINFS_RESTORE_PHASE_INSTALLING 3u
+#define RINFS_RESTORE_PHASE_CLEANING 4u
+#define RINFS_RESTORE_PHASE_DONE 5u
+#define RINFS_RESTORE_PHASE_ABORTING 6u
+#define RINFS_RESTORE_PERSISTENT_FLAGS \
+    (RINFS_IFLG_SYNC | RINFS_IFLG_IMMUT | RINFS_IFLG_APPEND | \
+     RINFS_IFLG_NODUMP)
+
+typedef struct {
+    uint32_t magic;
+    uint32_t version;
+    uint32_t phase;
+    uint32_t checksum;
+    uint64_t transaction_inode;
+    uint64_t staging_inode;
+    uint64_t old_inode;
+    uint64_t map_inode;
+    uint64_t metadata_inode;
+    uint64_t map_entries;
+    uint64_t metadata_entries;
+    uint32_t root_metadata_valid;
+    uint32_t root_uid;
+    uint32_t root_gid;
+    uint16_t root_mode;
+    uint16_t root_flags;
+    RinFS_InodeTimes root_times;
+    int64_t root_change_time_seconds;
+} RinFS_RestoreRecord;
+
+typedef struct {
+    uint32_t magic;
+    uint32_t checksum;
+    uint64_t inode_number;
+    uint32_t inode_generation;
+    uint32_t reserved;
+    uint16_t mode;
+    uint16_t persistent_flags;
+    uint32_t uid;
+    uint32_t gid;
+    RinFS_InodeTimes times;
+    int64_t change_time_seconds;
+} RinFS_RestoreMetadataRecord;
+
+typedef struct {
+    uint32_t magic;
+    RinFS_Mount* mount;
+    RinFS_RestoreRecord record;
+} RinFS_RestoreTransactionInternal;
+
+typedef struct {
+    uint64_t inode_number;
+    uint64_t parent_inode;
+    uint32_t inode_generation;
+    char name[RINFS_NAME_MAX + 1u];
+} RinFS_RestoreDeleteFrame;
+
+_Static_assert(sizeof(RinFS_RestoreRecord) <=
+                   sizeof(((RinFS_Superblock*)0)->s_padding),
+               "RinFS restore record exceeds superblock padding");
+
+static uint32_t rinfs_restore_checksum(const void* bytes, uint32_t size,
+                                       uint32_t checksum_offset) {
+    uint8_t local[sizeof(RinFS_RestoreRecord) >
+                  sizeof(RinFS_RestoreMetadataRecord)
+                      ? sizeof(RinFS_RestoreRecord)
+                      : sizeof(RinFS_RestoreMetadataRecord)];
+    uint32_t index;
+    if (!bytes || size > sizeof(local) ||
+        checksum_offset > size || size - checksum_offset < sizeof(uint32_t))
+        return 0u;
+    rinfs_memcpy(local, bytes, size);
+    for (index = 0u; index < sizeof(uint32_t); ++index)
+        local[checksum_offset + index] = 0u;
+    return rinfs_checksum(local, size);
+}
+
+static int rinfs_restore_times_valid(const RinFS_InodeTimes* times) {
+    return times &&
+           (times->valid_mask & ~RINFS_INODE_TIME_MASK) == 0u &&
+           times->reserved == 0u &&
+           times->birth.nanoseconds < 1000000000u &&
+           times->birth.reserved == 0u &&
+           times->access.nanoseconds < 1000000000u &&
+           times->access.reserved == 0u &&
+           times->write.nanoseconds < 1000000000u &&
+           times->write.reserved == 0u;
+}
+
+static int rinfs_restore_mode_valid(uint16_t mode) {
+    uint16_t type = (uint16_t)((mode >> 12u) & 0x0fu);
+    return type == RINFS_FT_DIR || type == RINFS_FT_REG ||
+           type == RINFS_FT_LNK;
+}
+
+static int rinfs_restore_record_valid(const RinFS_RestoreRecord* record,
+                                     const RinFS_Mount* mount) {
+    uint32_t expected;
+    if (!record || !mount || record->magic != RINFS_RESTORE_RECORD_MAGIC ||
+        record->version != RINFS_RESTORE_VERSION ||
+        record->phase < RINFS_RESTORE_PHASE_RECEIVING ||
+        record->phase > RINFS_RESTORE_PHASE_ABORTING ||
+        record->root_metadata_valid > 1u ||
+        (record->root_metadata_valid != 0u &&
+         (!rinfs_restore_mode_valid(record->root_mode) ||
+          ((record->root_mode >> 12u) & 0x0fu) != RINFS_FT_DIR ||
+          (record->root_flags & (uint16_t)~RINFS_RESTORE_PERSISTENT_FLAGS) != 0u ||
+          !rinfs_restore_times_valid(&record->root_times) ||
+          record->root_change_time_seconds < 0)) ||
+        (mount->sb.s_incompat_features &
+         RINFS_FEATURE_INCOMPAT_RESTORE_PENDING) == 0u)
+        return 0;
+    expected = rinfs_restore_checksum(record, sizeof(*record),
+        (uint32_t)__builtin_offsetof(RinFS_RestoreRecord, checksum));
+    return record->checksum == expected;
+}
+
+static int rinfs_restore_record_load(RinFS_Mount* mount,
+                                     RinFS_RestoreRecord* record,
+                                     int* present_out) {
+    uint32_t magic;
+    if (!mount || !record || !present_out) return RINFS_ERR_INVAL;
+    rinfs_memcpy(&magic, mount->sb.s_padding, sizeof(magic));
+    *present_out = 0;
+    if (magic != RINFS_RESTORE_RECORD_MAGIC) {
+        if ((mount->sb.s_incompat_features &
+             RINFS_FEATURE_INCOMPAT_RESTORE_PENDING) != 0u)
+            return RINFS_ERR_CORRUPT;
+        return RINFS_OK;
+    }
+    if (sizeof(*record) > sizeof(mount->sb.s_padding))
+        return RINFS_ERR_CORRUPT;
+    rinfs_memcpy(record, mount->sb.s_padding, sizeof(*record));
+    if (!rinfs_restore_record_valid(record, mount))
+        return RINFS_ERR_CORRUPT;
+    *present_out = 1;
+    return RINFS_OK;
+}
+
+static int rinfs_restore_record_store(RinFS_Mount* mount,
+                                      RinFS_RestoreRecord* record) {
+    int error;
+    if (!mount || !mount->mounted || mount->readonly || !record)
+        return RINFS_ERR_ROFS;
+    record->magic = RINFS_RESTORE_RECORD_MAGIC;
+    record->version = RINFS_RESTORE_VERSION;
+    record->checksum = 0u;
+    record->checksum = rinfs_restore_checksum(record, sizeof(*record),
+        (uint32_t)__builtin_offsetof(RinFS_RestoreRecord, checksum));
+    rinfs_memcpy(mount->sb.s_padding, record, sizeof(*record));
+    mount->sb.s_incompat_features |=
+        RINFS_FEATURE_INCOMPAT_RESTORE_PENDING;
+    error = rinfs_sync(mount);
+    if (error != RINFS_OK) mount->readonly = 1;
+    return error;
+}
+
+static int rinfs_restore_record_clear(RinFS_Mount* mount) {
+    int error;
+    if (!mount || !mount->mounted) return RINFS_ERR_INVAL;
+    if (mount->readonly) return RINFS_ERR_ROFS;
+    rinfs_memset(mount->sb.s_padding, 0, sizeof(RinFS_RestoreRecord));
+    mount->sb.s_incompat_features &=
+        ~RINFS_FEATURE_INCOMPAT_RESTORE_PENDING;
+    error = rinfs_sync(mount);
+    if (error != RINFS_OK) mount->readonly = 1;
+    return error;
+}
+
+static int rinfs_restore_lookup_child(RinFS_Mount* mount, uint64_t parent,
+                                      const char* name, uint8_t type,
+                                      uint64_t* inode_out) {
+    RinFS_Inode inode;
+    uint64_t child = 0u;
+    int error;
+    if (!mount || !name || !inode_out) return RINFS_ERR_INVAL;
+    error = rinfs_lookup(mount, parent, name, &child);
+    if (error != RINFS_OK) return error;
+    if (child == 0u || child > mount->sb.s_inode_count)
+        return RINFS_ERR_CORRUPT;
+    error = rinfs_inode_read(mount, child, &inode);
+    if (error != RINFS_OK) return error;
+    if (((inode.i_mode >> 12u) & 0x0fu) != type)
+        return RINFS_ERR_CORRUPT;
+    *inode_out = child;
+    return RINFS_OK;
+}
+
+static int rinfs_restore_validate_child(RinFS_Mount* mount, uint64_t parent,
+                                        const char* name, uint8_t type,
+                                        uint64_t* inode_field,
+                                        int required) {
+    uint64_t observed = 0u;
+    int error = rinfs_restore_lookup_child(mount, parent, name, type,
+                                           &observed);
+    if (error == RINFS_ERR_NOENT)
+        return required ? RINFS_ERR_CORRUPT : RINFS_OK;
+    if (error != RINFS_OK) return error;
+    if (*inode_field != 0u && *inode_field != observed)
+        return RINFS_ERR_CORRUPT;
+    *inode_field = observed;
+    return RINFS_OK;
+}
+
+static int rinfs_restore_record_refresh_children(
+    RinFS_Mount* mount, RinFS_RestoreRecord* record) {
+    uint64_t tx = 0u;
+    int error;
+    int required = record->phase == RINFS_RESTORE_PHASE_MOVING_OLD ||
+                   record->phase == RINFS_RESTORE_PHASE_INSTALLING;
+    error = rinfs_restore_lookup_child(mount, RINFS_INODE_ROOT,
+        RINFS_RESTORE_NAME, RINFS_FT_DIR, &tx);
+    if (error != RINFS_OK) return error;
+    if (record->transaction_inode != 0u && record->transaction_inode != tx)
+        return RINFS_ERR_CORRUPT;
+    record->transaction_inode = tx;
+    error = rinfs_restore_validate_child(mount, tx,
+        RINFS_RESTORE_STAGE_NAME, RINFS_FT_DIR,
+        &record->staging_inode, required);
+    if (error != RINFS_OK) return error;
+    error = rinfs_restore_validate_child(mount, tx,
+        RINFS_RESTORE_OLD_NAME, RINFS_FT_DIR,
+        &record->old_inode, required);
+    if (error != RINFS_OK) return error;
+    error = rinfs_restore_validate_child(mount, tx,
+        RINFS_RESTORE_MAP_NAME, RINFS_FT_REG,
+        &record->map_inode, required);
+    if (error != RINFS_OK) return error;
+    return rinfs_restore_validate_child(mount, tx,
+        RINFS_RESTORE_METADATA_NAME, RINFS_FT_REG,
+        &record->metadata_inode, required);
+}
+
+static int rinfs_restore_remove_tree_contents(RinFS_Mount* mount,
+                                             uint64_t root_inode) {
+    RinFS_RestoreDeleteFrame* stack = NULL;
+    uint8_t* visited = NULL;
+    uint64_t visited_size64;
+    uint32_t capacity = (uint32_t)(RINFS_PATH_MAX / 2u + 1u);
+    uint32_t depth = 0u;
+    int result = RINFS_OK;
+    if (!mount || root_inode < RINFS_INODE_FIRST ||
+        root_inode > mount->sb.s_inode_count)
+        return RINFS_ERR_INVAL;
+    if (mount->sb.s_inode_count > UINT64_MAX - 7u)
+        return RINFS_ERR_NOSPC;
+    visited_size64 = (mount->sb.s_inode_count + 7u) / 8u;
+    if (visited_size64 == 0u || visited_size64 > (uint64_t)SIZE_MAX ||
+        (uint64_t)capacity * sizeof(*stack) > (uint64_t)SIZE_MAX)
+        return RINFS_ERR_NOSPC;
+    stack = (RinFS_RestoreDeleteFrame*)rinfs_malloc(
+        (size_t)capacity * sizeof(*stack));
+    visited = (uint8_t*)rinfs_malloc((size_t)visited_size64);
+    if (!stack || !visited) {
+        result = RINFS_ERR_NOMEM;
+        goto done;
+    }
+    rinfs_memset(stack, 0, (size_t)capacity * sizeof(*stack));
+    rinfs_memset(visited, 0, (size_t)visited_size64);
+    stack[0].inode_number = root_inode;
+    {
+        uint64_t bit = root_inode - 1u;
+        visited[bit / 8u] |= (uint8_t)(1u << (bit % 8u));
+    }
+
+    for (;;) {
+        RinFS_RestoreDeleteFrame* frame = &stack[depth];
+        RinFS_Dir directory;
+        RinFS_DirEntry entry;
+        int found = 0;
+        int error = rinfs_opendir_ino(mount, frame->inode_number,
+                                      &directory);
+        if (error != RINFS_OK) {
+            result = error;
+            break;
+        }
+        for (;;) {
+            error = rinfs_readdir(&directory, &entry);
+            if (error < 0) {
+                result = error;
+                break;
+            }
+            if (error == 0) break;
+            if ((entry.d_name_len == 1u && entry.d_name[0] == '.') ||
+                (entry.d_name_len == 2u && entry.d_name[0] == '.' &&
+                 entry.d_name[1] == '.'))
+                continue;
+            if (entry.d_name_len == 0u ||
+                entry.d_name_len > RINFS_NAME_MAX ||
+                entry.d_name[entry.d_name_len] != '\0' ||
+                entry.d_inode == 0u ||
+                entry.d_inode > mount->sb.s_inode_count) {
+                result = RINFS_ERR_CORRUPT;
+                break;
+            }
+            found = 1;
+            break;
+        }
+        if (rinfs_closedir(&directory) != RINFS_OK && result == RINFS_OK)
+            result = RINFS_ERR_IO;
+        if (result != RINFS_OK) break;
+        if (found) {
+            RinFS_Inode child_inode;
+            uint32_t child_type = (entry.d_file_type & 0x0fu);
+            error = rinfs_inode_read(mount, entry.d_inode, &child_inode);
+            if (error != RINFS_OK) {
+                result = error;
+                break;
+            }
+            if (((child_inode.i_mode >> 12u) & 0x0fu) != child_type) {
+                result = RINFS_ERR_CORRUPT;
+                break;
+            }
+            if (child_type == RINFS_FT_DIR) {
+                uint64_t bit = entry.d_inode - 1u;
+                uint8_t mask = (uint8_t)(1u << (bit % 8u));
+                if ((visited[bit / 8u] & mask) != 0u ||
+                    depth + 1u >= capacity) {
+                    result = RINFS_ERR_CORRUPT;
+                    break;
+                }
+                visited[bit / 8u] |= mask;
+                ++depth;
+                stack[depth].inode_number = entry.d_inode;
+                stack[depth].parent_inode = frame->inode_number;
+                stack[depth].inode_generation = child_inode.i_generation;
+                rinfs_memcpy(stack[depth].name, entry.d_name,
+                             (uint32_t)entry.d_name_len + 1u);
+                continue;
+            }
+            error = rinfs_unlink_expected(mount, frame->inode_number,
+                entry.d_name, entry.d_inode, child_inode.i_generation);
+            if (error != RINFS_OK) {
+                result = error;
+                break;
+            }
+            continue;
+        }
+        if (depth == 0u) break;
+        frame = &stack[depth];
+        error = rinfs_rmdir_expected(mount, frame->parent_inode,
+                                     frame->name, frame->inode_number,
+                                     frame->inode_generation);
+        if (error != RINFS_OK) {
+            result = error;
+            break;
+        }
+        --depth;
+    }
+
+done:
+    if (visited) rinfs_free(visited);
+    if (stack) rinfs_free(stack);
+    return result;
+}
+
+static int rinfs_restore_file_sync_close(RinFS_File* file) {
+    RinFS_Mount* mount;
+    int error;
+    int close_error;
+    if (!file || !file->in_use) return RINFS_ERR_INVAL;
+    mount = file->mount;
+    error = rinfs_fsync(file);
+    close_error = rinfs_close(file);
+    if (error == RINFS_OK) error = close_error;
+    if (error == RINFS_OK) error = rinfs_sync(mount);
+    return error;
+}
+
+static int rinfs_restore_metadata_record_valid(
+    const RinFS_RestoreMetadataRecord* metadata) {
+    uint32_t expected;
+    if (!metadata || metadata->magic != RINFS_RESTORE_TX_MAGIC ||
+        metadata->reserved != 0u || metadata->inode_number == 0u ||
+        metadata->inode_generation == 0u ||
+        !rinfs_restore_mode_valid(metadata->mode) ||
+        (metadata->persistent_flags &
+         (uint16_t)~RINFS_RESTORE_PERSISTENT_FLAGS) != 0u ||
+        !rinfs_restore_times_valid(&metadata->times) ||
+        metadata->change_time_seconds < 0)
+        return 0;
+    expected = rinfs_restore_checksum(metadata, sizeof(*metadata),
+        (uint32_t)__builtin_offsetof(RinFS_RestoreMetadataRecord, checksum));
+    return metadata->checksum == expected;
+}
+
+static int rinfs_restore_apply_metadata(
+    RinFS_Mount* mount, uint64_t inode_number, uint32_t generation,
+    uint16_t mode, uint16_t persistent_flags, uint32_t uid, uint32_t gid,
+    const RinFS_InodeTimes* times, int64_t change_time_seconds) {
+    RinFS_Inode inode;
+    uint32_t inode_type = (uint32_t)((mode >> 12u) & 0x0fu);
+    int error;
+    if (!mount || inode_number == 0u ||
+        inode_number > mount->sb.s_inode_count || generation == 0u ||
+        !rinfs_restore_mode_valid(mode) ||
+        (persistent_flags &
+         (uint16_t)~RINFS_RESTORE_PERSISTENT_FLAGS) != 0u ||
+        !rinfs_restore_times_valid(times) || change_time_seconds < 0)
+        return RINFS_ERR_CORRUPT;
+    error = rinfs_inode_read(mount, inode_number, &inode);
+    if (error != RINFS_OK) return error;
+    if (inode.i_generation != generation ||
+        ((inode.i_mode >> 12u) & 0x0fu) != inode_type)
+        return RINFS_ERR_STALE;
+
+    if (times->valid_mask != 0u) {
+        int has_nanoseconds = times->birth.nanoseconds != 0u ||
+                              times->access.nanoseconds != 0u ||
+                              times->write.nanoseconds != 0u;
+        if ((mount->sb.s_incompat_features &
+             RINFS_FEATURE_INCOMPAT_NANO_TIMESTAMPS) != 0u) {
+            error = rinfs_inode_set_times_precise(
+                mount, inode_number, times->valid_mask, &times->birth,
+                &times->access, &times->write, &inode);
+        } else if (has_nanoseconds) {
+            return RINFS_ERR_NOT_SUPPORTED;
+        } else {
+            if (((times->valid_mask & RINFS_INODE_TIME_BIRTH) != 0u &&
+                 times->birth.seconds < 0) ||
+                ((times->valid_mask & RINFS_INODE_TIME_ACCESS) != 0u &&
+                 times->access.seconds < 0) ||
+                ((times->valid_mask & RINFS_INODE_TIME_WRITE) != 0u &&
+                 times->write.seconds < 0))
+                return RINFS_ERR_NOT_SUPPORTED;
+            error = rinfs_inode_set_times(
+                mount, inode_number, times->valid_mask,
+                (uint64_t)times->birth.seconds,
+                (uint64_t)times->access.seconds,
+                (uint64_t)times->write.seconds, &inode);
+        }
+        if (error != RINFS_OK) return error;
+    }
+
+    error = rinfs_inode_read(mount, inode_number, &inode);
+    if (error != RINFS_OK) return error;
+    if (inode.i_generation != generation ||
+        ((inode.i_mode >> 12u) & 0x0fu) != inode_type)
+        return RINFS_ERR_STALE;
+    inode.i_mode = mode;
+    inode.i_flags = (uint16_t)((inode.i_flags &
+        (uint16_t)~RINFS_RESTORE_PERSISTENT_FLAGS) | persistent_flags);
+    inode.i_uid = uid;
+    inode.i_gid = gid;
+    inode.i_ctime = (uint64_t)change_time_seconds;
+    error = rinfs_inode_write(mount, inode_number, &inode);
+    if (error != RINFS_OK) return error;
+    return rinfs_sync(mount);
+}
+
+static int rinfs_restore_apply_metadata_log(RinFS_Mount* mount,
+                                            RinFS_RestoreRecord* record) {
+    RinFS_File file;
+    uint64_t index;
+    int error = rinfs_open_ino(mount, record->metadata_inode,
+        RIN_VFS_OPEN_READ, &file);
+    if (error != RINFS_OK) return error;
+    for (index = 0u; index < record->metadata_entries; ++index) {
+        RinFS_RestoreMetadataRecord metadata;
+        uint64_t offset;
+        int64_t read_size;
+        if (index > UINT64_MAX / sizeof(metadata)) {
+            error = RINFS_ERR_CORRUPT;
+            break;
+        }
+        offset = index * sizeof(metadata);
+        read_size = rinfs_pread(&file, &metadata, sizeof(metadata), offset);
+        if (read_size != (int64_t)sizeof(metadata) ||
+            !rinfs_restore_metadata_record_valid(&metadata) ||
+            metadata.inode_number > mount->sb.s_inode_count) {
+            error = read_size < 0 ? (int)read_size : RINFS_ERR_CORRUPT;
+            break;
+        }
+        error = rinfs_restore_apply_metadata(
+            mount, metadata.inode_number, metadata.inode_generation,
+            metadata.mode, metadata.persistent_flags, metadata.uid,
+            metadata.gid, &metadata.times,
+            metadata.change_time_seconds);
+        if (error != RINFS_OK) break;
+    }
+    {
+        int close_error = rinfs_close(&file);
+        if (error == RINFS_OK) error = close_error;
+    }
+    if (error == RINFS_OK) error = rinfs_sync(mount);
+    return error;
+}
+
+static int rinfs_restore_move_children(RinFS_Mount* mount,
+                                       uint64_t source_inode,
+                                       uint64_t destination_inode,
+                                       uint64_t skip_inode) {
+    for (;;) {
+        RinFS_Dir directory;
+        RinFS_DirEntry entry;
+        char name[RINFS_NAME_MAX + 1u];
+        int found = 0;
+        int error = rinfs_opendir_ino(mount, source_inode, &directory);
+        if (error != RINFS_OK) return error;
+        for (;;) {
+            error = rinfs_readdir(&directory, &entry);
+            if (error < 0) break;
+            if (error == 0) break;
+            if ((entry.d_name_len == 1u && entry.d_name[0] == '.') ||
+                (entry.d_name_len == 2u && entry.d_name[0] == '.' &&
+                 entry.d_name[1] == '.') || entry.d_inode == skip_inode)
+                continue;
+            if (entry.d_name_len == 0u ||
+                entry.d_name_len > RINFS_NAME_MAX ||
+                entry.d_name[entry.d_name_len] != '\0' ||
+                entry.d_inode == 0u ||
+                entry.d_inode > mount->sb.s_inode_count) {
+                error = RINFS_ERR_CORRUPT;
+                break;
+            }
+            rinfs_memcpy(name, entry.d_name,
+                         (uint32_t)entry.d_name_len + 1u);
+            found = 1;
+            break;
+        }
+        {
+            int close_error = rinfs_closedir(&directory);
+            if (error >= 0 && close_error != RINFS_OK) error = close_error;
+        }
+        if (error < 0) return error;
+        if (!found) return rinfs_sync(mount);
+        error = rinfs_rename_no_replace(mount, source_inode, name,
+                                        destination_inode, name);
+        if (error != RINFS_OK) return error;
+    }
+}
+
+static int rinfs_restore_delete_named(RinFS_Mount* mount, uint64_t parent,
+                                      const char* name, uint64_t expected,
+                                      uint32_t expected_type) {
+    uint64_t inode_number = 0u;
+    RinFS_Inode inode;
+    int error = rinfs_lookup(mount, parent, name, &inode_number);
+    if (error == RINFS_ERR_NOENT) return RINFS_OK;
+    if (error != RINFS_OK) return error;
+    if (expected != 0u && inode_number != expected)
+        return RINFS_ERR_CORRUPT;
+    error = rinfs_inode_read(mount, inode_number, &inode);
+    if (error != RINFS_OK) return error;
+    if (((inode.i_mode >> 12u) & 0x0fu) != expected_type)
+        return RINFS_ERR_CORRUPT;
+    if (expected_type == RINFS_FT_DIR) {
+        error = rinfs_restore_remove_tree_contents(mount, inode_number);
+        if (error != RINFS_OK) return error;
+        return rinfs_rmdir_expected(mount, parent, name, inode_number,
+                                    inode.i_generation);
+    }
+    return rinfs_unlink_expected(mount, parent, name, inode_number,
+                                 inode.i_generation);
+}
+
+static int rinfs_restore_directory_empty(RinFS_Mount* mount,
+                                         uint64_t inode_number) {
+    RinFS_Dir directory;
+    RinFS_DirEntry entry;
+    int error = rinfs_opendir_ino(mount, inode_number, &directory);
+    if (error != RINFS_OK) return error;
+    for (;;) {
+        error = rinfs_readdir(&directory, &entry);
+        if (error <= 0) break;
+        if ((entry.d_name_len == 1u && entry.d_name[0] == '.') ||
+            (entry.d_name_len == 2u && entry.d_name[0] == '.' &&
+             entry.d_name[1] == '.'))
+            continue;
+        error = RINFS_ERR_NOTEMPTY;
+        break;
+    }
+    {
+        int close_error = rinfs_closedir(&directory);
+        if (error >= 0 && close_error != RINFS_OK) error = close_error;
+    }
+    return error == 0 ? RINFS_OK : error;
+}
+
+static int rinfs_restore_transaction_cleanup_children(
+    RinFS_Mount* mount, RinFS_RestoreRecord* record) {
+    uint64_t tx = record->transaction_inode;
+    int error;
+    if (tx == 0u) {
+        error = rinfs_lookup(mount, RINFS_INODE_ROOT, RINFS_RESTORE_NAME, &tx);
+        if (error == RINFS_ERR_NOENT) return RINFS_OK;
+        if (error != RINFS_OK) return error;
+        record->transaction_inode = tx;
+    }
+    error = rinfs_restore_delete_named(mount, tx,
+        RINFS_RESTORE_STAGE_NAME, record->staging_inode, RINFS_FT_DIR);
+    if (error != RINFS_OK) return error;
+    error = rinfs_restore_delete_named(mount, tx,
+        RINFS_RESTORE_OLD_NAME, record->old_inode, RINFS_FT_DIR);
+    if (error != RINFS_OK) return error;
+    error = rinfs_restore_delete_named(mount, tx,
+        RINFS_RESTORE_MAP_NAME, record->map_inode, RINFS_FT_REG);
+    if (error != RINFS_OK) return error;
+    error = rinfs_restore_delete_named(mount, tx,
+        RINFS_RESTORE_METADATA_NAME, record->metadata_inode,
+        RINFS_FT_REG);
+    if (error != RINFS_OK) return error;
+    return rinfs_restore_directory_empty(mount, tx);
+}
+
+static int rinfs_restore_transaction_remove_dir(RinFS_Mount* mount,
+                                                RinFS_RestoreRecord* record) {
+    uint64_t tx = 0u;
+    RinFS_Inode inode;
+    int error = rinfs_lookup(mount, RINFS_INODE_ROOT,
+                             RINFS_RESTORE_NAME, &tx);
+    if (error == RINFS_ERR_NOENT) {
+        if (record->phase == RINFS_RESTORE_PHASE_DONE ||
+            record->phase == RINFS_RESTORE_PHASE_ABORTING) {
+            record->transaction_inode = 0u;
+            return RINFS_OK;
+        }
+        return RINFS_ERR_CORRUPT;
+    }
+    if (error != RINFS_OK) return error;
+    if (record->transaction_inode != 0u &&
+        record->transaction_inode != tx)
+        return RINFS_ERR_CORRUPT;
+    error = rinfs_restore_directory_empty(mount, tx);
+    if (error != RINFS_OK) return error;
+    error = rinfs_inode_read(mount, tx, &inode);
+    if (error != RINFS_OK) return error;
+    error = rinfs_rmdir_expected(mount, RINFS_INODE_ROOT,
+                                 RINFS_RESTORE_NAME, tx,
+                                 inode.i_generation);
+    if (error != RINFS_OK) return error;
+    record->transaction_inode = 0u;
+    record->staging_inode = 0u;
+    record->old_inode = 0u;
+    record->map_inode = 0u;
+    record->metadata_inode = 0u;
+    return rinfs_sync(mount);
+}
+
+static void rinfs_restore_internal_destroy(
+    RinFS_RestoreTransactionV1* transaction) {
+    RinFS_RestoreTransactionInternal* internal;
+    if (!transaction) return;
+    internal = (RinFS_RestoreTransactionInternal*)transaction->internal;
+    if (internal) {
+        rinfs_memset(internal, 0, sizeof(*internal));
+        rinfs_free(internal);
+    }
+    rinfs_memset(transaction, 0, sizeof(*transaction));
+}
+
+static int rinfs_restore_transaction_valid(
+    RinFS_RestoreTransactionV1* transaction,
+    RinFS_RestoreTransactionInternal** internal_out) {
+    RinFS_RestoreTransactionInternal* internal;
+    if (!transaction || transaction->magic != RINFS_RESTORE_TX_MAGIC ||
+        !transaction->internal)
+        return 0;
+    internal = (RinFS_RestoreTransactionInternal*)transaction->internal;
+    if (internal->magic != RINFS_RESTORE_TX_MAGIC || !internal->mount ||
+        !internal->mount->mounted || internal->mount->readonly ||
+        internal->record.phase != RINFS_RESTORE_PHASE_RECEIVING ||
+        (internal->mount->sb.s_incompat_features &
+         RINFS_FEATURE_INCOMPAT_RESTORE_PENDING) == 0u)
+        return 0;
+    if (internal_out) *internal_out = internal;
+    return 1;
+}
+
+static int rinfs_restore_transaction_internal_get(
+    RinFS_RestoreTransactionV1* transaction,
+    RinFS_RestoreTransactionInternal** internal_out) {
+    RinFS_RestoreTransactionInternal* internal;
+    if (!transaction || transaction->magic != RINFS_RESTORE_TX_MAGIC ||
+        !transaction->internal || !internal_out)
+        return RINFS_ERR_INVAL;
+    internal = (RinFS_RestoreTransactionInternal*)transaction->internal;
+    if (internal->magic != RINFS_RESTORE_TX_MAGIC || !internal->mount ||
+        !internal->mount->mounted || internal->mount->readonly)
+        return RINFS_ERR_ROFS;
+    *internal_out = internal;
+    return RINFS_OK;
+}
+
+static int rinfs_restore_commit_record(RinFS_Mount* mount,
+                                       RinFS_RestoreRecord* record) {
+    int error;
+    if (record->phase == RINFS_RESTORE_PHASE_MOVING_OLD) {
+        error = rinfs_restore_record_refresh_children(mount, record);
+        if (error != RINFS_OK) return error;
+        error = rinfs_restore_move_children(mount, RINFS_INODE_ROOT,
+            record->old_inode, record->transaction_inode);
+        if (error != RINFS_OK) return error;
+        record->phase = RINFS_RESTORE_PHASE_INSTALLING;
+        error = rinfs_restore_record_store(mount, record);
+        if (error != RINFS_OK) return error;
+    }
+    if (record->phase == RINFS_RESTORE_PHASE_INSTALLING) {
+        error = rinfs_restore_record_refresh_children(mount, record);
+        if (error != RINFS_OK) return error;
+        error = rinfs_restore_move_children(mount, record->staging_inode,
+                                             RINFS_INODE_ROOT, 0u);
+        if (error != RINFS_OK) return error;
+        error = rinfs_xattr_copy(mount, record->staging_inode,
+                                 mount, RINFS_INODE_ROOT);
+        if (error != RINFS_OK) return error;
+        error = rinfs_restore_apply_metadata_log(mount, record);
+        if (error != RINFS_OK) return error;
+        error = rinfs_sync(mount);
+        if (error != RINFS_OK) return error;
+        record->phase = RINFS_RESTORE_PHASE_CLEANING;
+        error = rinfs_restore_record_store(mount, record);
+        if (error != RINFS_OK) return error;
+    }
+    if (record->phase == RINFS_RESTORE_PHASE_CLEANING) {
+        error = rinfs_restore_record_refresh_children(mount, record);
+        if (error != RINFS_OK) return error;
+        error = rinfs_restore_transaction_cleanup_children(mount, record);
+        if (error != RINFS_OK) return error;
+        record->phase = RINFS_RESTORE_PHASE_DONE;
+        error = rinfs_restore_record_store(mount, record);
+        if (error != RINFS_OK) return error;
+    }
+    if (record->phase == RINFS_RESTORE_PHASE_DONE) {
+        error = rinfs_restore_transaction_remove_dir(mount, record);
+        if (error != RINFS_OK) return error;
+        if (record->root_metadata_valid == 0u)
+            return RINFS_ERR_CORRUPT;
+        {
+            RinFS_Inode root;
+            error = rinfs_inode_read(mount, RINFS_INODE_ROOT, &root);
+            if (error != RINFS_OK) return error;
+            error = rinfs_restore_apply_metadata(
+                mount, RINFS_INODE_ROOT, root.i_generation,
+                record->root_mode, record->root_flags, record->root_uid,
+                record->root_gid, &record->root_times,
+                record->root_change_time_seconds);
+        }
+        if (error != RINFS_OK) return error;
+        return rinfs_restore_record_clear(mount);
+    }
+    return RINFS_ERR_CORRUPT;
+}
+
+static int rinfs_restore_abort_record(RinFS_Mount* mount,
+                                      RinFS_RestoreRecord* record) {
+    int error;
+    if (record->phase == RINFS_RESTORE_PHASE_RECEIVING) {
+        record->phase = RINFS_RESTORE_PHASE_ABORTING;
+        error = rinfs_restore_record_store(mount, record);
+        if (error != RINFS_OK) return error;
+    }
+    if (record->phase != RINFS_RESTORE_PHASE_ABORTING)
+        return RINFS_ERR_PENDING;
+
+    error = rinfs_restore_record_refresh_children(mount, record);
+    if (error == RINFS_ERR_NOENT) {
+        uint64_t transaction_inode = 0u;
+        int lookup = rinfs_lookup(mount, RINFS_INODE_ROOT,
+            RINFS_RESTORE_NAME, &transaction_inode);
+        if (lookup == RINFS_ERR_NOENT)
+            return rinfs_restore_record_clear(mount);
+        if (lookup != RINFS_OK) return lookup;
+        return RINFS_ERR_CORRUPT;
+    }
+    if (error != RINFS_OK) return error;
+    if (record->old_inode != 0u) {
+        error = rinfs_restore_directory_empty(mount, record->old_inode);
+        if (error != RINFS_OK) return error == RINFS_ERR_NOTEMPTY
+            ? RINFS_ERR_CORRUPT : error;
+    }
+    error = rinfs_restore_transaction_cleanup_children(mount, record);
+    if (error != RINFS_OK) return error;
+    error = rinfs_restore_transaction_remove_dir(mount, record);
+    if (error != RINFS_OK) return error;
+    return rinfs_restore_record_clear(mount);
+}
+
+int rinfs_restore_transaction_commit(
+    RinFS_RestoreTransactionV1* transaction) {
+    RinFS_RestoreTransactionInternal* internal;
+    int error = rinfs_restore_transaction_internal_get(transaction, &internal);
+    if (error != RINFS_OK) return error;
+    if (internal->record.phase == RINFS_RESTORE_PHASE_RECEIVING) {
+        if (internal->record.root_metadata_valid == 0u)
+            return RINFS_ERR_INVAL;
+        internal->record.phase = RINFS_RESTORE_PHASE_MOVING_OLD;
+        error = rinfs_restore_record_store(internal->mount,
+                                            &internal->record);
+        if (error != RINFS_OK) return error;
+    }
+    if (internal->record.phase != RINFS_RESTORE_PHASE_MOVING_OLD &&
+        internal->record.phase != RINFS_RESTORE_PHASE_INSTALLING &&
+        internal->record.phase != RINFS_RESTORE_PHASE_CLEANING &&
+        internal->record.phase != RINFS_RESTORE_PHASE_DONE)
+        return RINFS_ERR_PENDING;
+    error = rinfs_restore_commit_record(internal->mount, &internal->record);
+    if (error != RINFS_OK) {
+        internal->mount->readonly = 1;
+        return error;
+    }
+    rinfs_restore_internal_destroy(transaction);
+    return RINFS_OK;
+}
+
+int rinfs_restore_transaction_abort(
+    RinFS_RestoreTransactionV1* transaction) {
+    RinFS_RestoreTransactionInternal* internal;
+    int error = rinfs_restore_transaction_internal_get(transaction, &internal);
+    if (error != RINFS_OK) return error;
+    if (internal->record.phase != RINFS_RESTORE_PHASE_RECEIVING &&
+        internal->record.phase != RINFS_RESTORE_PHASE_ABORTING)
+        return RINFS_ERR_PENDING;
+    error = rinfs_restore_abort_record(internal->mount, &internal->record);
+    if (error != RINFS_OK) {
+        internal->mount->readonly = 1;
+        return error;
+    }
+    rinfs_restore_internal_destroy(transaction);
+    return RINFS_OK;
+}
+
+int rinfs_restore_transaction_forget(
+    RinFS_RestoreTransactionV1* transaction) {
+    RinFS_RestoreTransactionInternal* internal;
+    if (!transaction || transaction->magic != RINFS_RESTORE_TX_MAGIC ||
+        !transaction->internal)
+        return RINFS_ERR_INVAL;
+    internal = (RinFS_RestoreTransactionInternal*)transaction->internal;
+    if (internal->magic != RINFS_RESTORE_TX_MAGIC)
+        return RINFS_ERR_INVAL;
+    /* This intentionally does not touch the volume. The checksummed pending
+     * record remains authoritative and recovery runs on the next mount. */
+    rinfs_restore_internal_destroy(transaction);
+    return RINFS_OK;
+}
+
+int rinfs_restore_transaction_mount_recover(RinFS_Mount* mount) {
+    RinFS_RestoreRecord record;
+    int present = 0;
+    int error;
+    if (!mount || !mount->mounted) return RINFS_ERR_INVAL;
+    error = rinfs_restore_record_load(mount, &record, &present);
+    if (error != RINFS_OK || !present) return error;
+    if (mount->readonly) return RINFS_ERR_ROFS;
+    if (record.phase == RINFS_RESTORE_PHASE_RECEIVING ||
+        record.phase == RINFS_RESTORE_PHASE_ABORTING)
+        error = rinfs_restore_abort_record(mount, &record);
+    else
+        error = rinfs_restore_commit_record(mount, &record);
+    if (error != RINFS_OK) mount->readonly = 1;
+    return error;
+}
+
+int rinfs_restore_transaction_begin(RinFS_Mount* mount,
+                                    RinFS_RestoreTransactionV1* transaction,
+                                    uint32_t uid, uint32_t gid,
+                                    uint64_t* staging_root_inode_out) {
+    RinFS_RestoreTransactionInternal* internal;
+    RinFS_RestoreRecord record;
+    uint64_t existing = 0u;
+    int present = 0;
+    int error;
+    if (!mount || !mount->mounted || mount->readonly || !transaction ||
+        transaction->magic != 0u || transaction->internal ||
+        !staging_root_inode_out ||
+        (mount->sb.s_incompat_features &
+         RINFS_FEATURE_INCOMPAT_CONTENT_VERSION64) == 0u)
+        return RINFS_ERR_INVAL;
+    *staging_root_inode_out = 0u;
+    error = rinfs_restore_record_load(mount, &record, &present);
+    if (error != RINFS_OK) return error;
+    if (present || (mount->sb.s_incompat_features &
+                    RINFS_FEATURE_INCOMPAT_RESTORE_PENDING) != 0u)
+        return RINFS_ERR_PENDING;
+    error = rinfs_lookup(mount, RINFS_INODE_ROOT, RINFS_RESTORE_NAME,
+                         &existing);
+    if (error == RINFS_OK) return RINFS_ERR_EXIST;
+    if (error != RINFS_ERR_NOENT) return error;
+
+    internal = (RinFS_RestoreTransactionInternal*)rinfs_malloc(
+        sizeof(*internal));
+    if (!internal) return RINFS_ERR_NOMEM;
+    rinfs_memset(internal, 0, sizeof(*internal));
+    internal->magic = RINFS_RESTORE_TX_MAGIC;
+    internal->mount = mount;
+    internal->record.phase = RINFS_RESTORE_PHASE_RECEIVING;
+    error = rinfs_restore_record_store(mount, &internal->record);
+    if (error != RINFS_OK) goto failed;
+
+    error = rinfs_mkdirat_owned(mount, RINFS_INODE_ROOT,
+        RINFS_RESTORE_NAME, 0700u, uid, gid,
+        &internal->record.transaction_inode);
+    if (error != RINFS_OK) goto failed;
+    error = rinfs_restore_record_store(mount, &internal->record);
+    if (error != RINFS_OK) goto failed;
+
+    error = rinfs_mkdirat_owned(mount, internal->record.transaction_inode,
+        RINFS_RESTORE_STAGE_NAME, 0700u, uid, gid,
+        &internal->record.staging_inode);
+    if (error != RINFS_OK) goto failed;
+    error = rinfs_restore_record_store(mount, &internal->record);
+    if (error != RINFS_OK) goto failed;
+    error = rinfs_mkdirat_owned(mount, internal->record.transaction_inode,
+        RINFS_RESTORE_OLD_NAME, 0700u, uid, gid,
+        &internal->record.old_inode);
+    if (error != RINFS_OK) goto failed;
+    error = rinfs_restore_record_store(mount, &internal->record);
+    if (error != RINFS_OK) goto failed;
+    error = rinfs_createat_owned(mount, internal->record.transaction_inode,
+        RINFS_RESTORE_MAP_NAME, 0600u, uid, gid,
+        &internal->record.map_inode);
+    if (error != RINFS_OK) goto failed;
+    error = rinfs_restore_record_store(mount, &internal->record);
+    if (error != RINFS_OK) goto failed;
+    error = rinfs_createat_owned(mount, internal->record.transaction_inode,
+        RINFS_RESTORE_METADATA_NAME, 0600u, uid, gid,
+        &internal->record.metadata_inode);
+    if (error != RINFS_OK) goto failed;
+    error = rinfs_restore_record_store(mount, &internal->record);
+    if (error != RINFS_OK) goto failed;
+
+    transaction->magic = RINFS_RESTORE_TX_MAGIC;
+    transaction->internal = internal;
+    *staging_root_inode_out = internal->record.staging_inode;
+    return RINFS_OK;
+
+failed:
+    if (mount->readonly == 0) {
+        if (error == RINFS_ERR_EXIST &&
+            internal->record.transaction_inode == 0u)
+            (void)rinfs_restore_record_clear(mount);
+        else
+            (void)rinfs_restore_transaction_mount_recover(mount);
+    }
+    rinfs_memset(internal, 0, sizeof(*internal));
+    rinfs_free(internal);
+    return error;
+}
+
+int rinfs_restore_transaction_store_inode(
+    RinFS_RestoreTransactionV1* transaction, uint64_t entry_index,
+    uint64_t inode_number) {
+    RinFS_RestoreTransactionInternal* internal;
+    RinFS_File file;
+    uint64_t offset;
+    int64_t written;
+    int error;
+    if (!rinfs_restore_transaction_valid(transaction, &internal) ||
+        inode_number == 0u ||
+        inode_number > internal->mount->sb.s_inode_count ||
+        entry_index != internal->record.map_entries ||
+        entry_index >= internal->mount->sb.s_inode_count ||
+        entry_index > UINT64_MAX / sizeof(inode_number))
+        return RINFS_ERR_INVAL;
+    offset = entry_index * sizeof(inode_number);
+    error = rinfs_open_ino(internal->mount, internal->record.map_inode,
+        RIN_VFS_OPEN_READ | RIN_VFS_OPEN_WRITE, &file);
+    if (error != RINFS_OK) return error;
+    written = rinfs_pwrite(&file, &inode_number, sizeof(inode_number), offset);
+    if (written != (int64_t)sizeof(inode_number)) {
+        error = written < 0 ? (int)written : RINFS_ERR_IO;
+        (void)rinfs_close(&file);
+        return error;
+    }
+    error = rinfs_restore_file_sync_close(&file);
+    if (error != RINFS_OK) return error;
+    ++internal->record.map_entries;
+    return rinfs_restore_record_store(internal->mount, &internal->record);
+}
+
+int rinfs_restore_transaction_load_inode(
+    RinFS_RestoreTransactionV1* transaction, uint64_t entry_index,
+    uint64_t* inode_number_out) {
+    RinFS_RestoreTransactionInternal* internal;
+    RinFS_File file;
+    uint64_t inode_number = 0u;
+    uint64_t offset;
+    int64_t read_size;
+    int error;
+    if (!rinfs_restore_transaction_valid(transaction, &internal) ||
+        !inode_number_out || entry_index >= internal->record.map_entries ||
+        entry_index > UINT64_MAX / sizeof(inode_number))
+        return RINFS_ERR_INVAL;
+    *inode_number_out = 0u;
+    offset = entry_index * sizeof(inode_number);
+    error = rinfs_open_ino(internal->mount, internal->record.map_inode,
+                           RIN_VFS_OPEN_READ, &file);
+    if (error != RINFS_OK) return error;
+    read_size = rinfs_pread(&file, &inode_number, sizeof(inode_number), offset);
+    error = rinfs_close(&file);
+    if (read_size != (int64_t)sizeof(inode_number))
+        return read_size < 0 ? (int)read_size : RINFS_ERR_CORRUPT;
+    if (error != RINFS_OK) return error;
+    if (inode_number == 0u ||
+        inode_number > internal->mount->sb.s_inode_count)
+        return RINFS_ERR_CORRUPT;
+    *inode_number_out = inode_number;
+    return RINFS_OK;
+}
+
+int rinfs_restore_transaction_set_root_metadata(
+    RinFS_RestoreTransactionV1* transaction, uint16_t mode,
+    uint16_t persistent_flags, uint32_t uid, uint32_t gid,
+    const RinFS_InodeTimes* times, int64_t change_time_seconds) {
+    RinFS_RestoreTransactionInternal* internal;
+    if (!rinfs_restore_transaction_valid(transaction, &internal) ||
+        !rinfs_restore_mode_valid(mode) ||
+        ((mode >> 12u) & 0x0fu) != RINFS_FT_DIR ||
+        (persistent_flags &
+         (uint16_t)~RINFS_RESTORE_PERSISTENT_FLAGS) != 0u ||
+        !rinfs_restore_times_valid(times) || change_time_seconds < 0)
+        return RINFS_ERR_INVAL;
+    internal->record.root_mode = mode;
+    internal->record.root_flags = persistent_flags;
+    internal->record.root_uid = uid;
+    internal->record.root_gid = gid;
+    internal->record.root_times = *times;
+    internal->record.root_change_time_seconds = change_time_seconds;
+    internal->record.root_metadata_valid = 1u;
+    return rinfs_restore_record_store(internal->mount, &internal->record);
+}
+
+int rinfs_restore_transaction_set_inode_metadata(
+    RinFS_RestoreTransactionV1* transaction, uint64_t inode_number,
+    uint16_t mode, uint16_t persistent_flags, uint32_t uid, uint32_t gid,
+    const RinFS_InodeTimes* times, int64_t change_time_seconds) {
+    RinFS_RestoreTransactionInternal* internal;
+    RinFS_RestoreMetadataRecord metadata;
+    RinFS_Inode inode;
+    RinFS_File file;
+    uint64_t offset;
+    int64_t written;
+    int error;
+    if (!rinfs_restore_transaction_valid(transaction, &internal) ||
+        inode_number == 0u ||
+        inode_number > internal->mount->sb.s_inode_count ||
+        !rinfs_restore_mode_valid(mode) ||
+        (persistent_flags &
+         (uint16_t)~RINFS_RESTORE_PERSISTENT_FLAGS) != 0u ||
+        !rinfs_restore_times_valid(times) || change_time_seconds < 0 ||
+        internal->record.metadata_entries >=
+            internal->mount->sb.s_inode_count ||
+        internal->record.metadata_entries >
+            UINT64_MAX / sizeof(metadata))
+        return RINFS_ERR_INVAL;
+    error = rinfs_inode_read(internal->mount, inode_number, &inode);
+    if (error != RINFS_OK) return error;
+    if (inode.i_generation == 0u ||
+        ((inode.i_mode >> 12u) & 0x0fu) != ((mode >> 12u) & 0x0fu))
+        return RINFS_ERR_STALE;
+    rinfs_memset(&metadata, 0, sizeof(metadata));
+    metadata.magic = RINFS_RESTORE_TX_MAGIC;
+    metadata.inode_number = inode_number;
+    metadata.inode_generation = inode.i_generation;
+    metadata.mode = mode;
+    metadata.persistent_flags = persistent_flags;
+    metadata.uid = uid;
+    metadata.gid = gid;
+    metadata.times = *times;
+    metadata.change_time_seconds = change_time_seconds;
+    metadata.checksum = rinfs_restore_checksum(&metadata, sizeof(metadata),
+        (uint32_t)__builtin_offsetof(RinFS_RestoreMetadataRecord, checksum));
+    offset = internal->record.metadata_entries * sizeof(metadata);
+    error = rinfs_open_ino(internal->mount,
+        internal->record.metadata_inode,
+        RIN_VFS_OPEN_READ | RIN_VFS_OPEN_WRITE, &file);
+    if (error != RINFS_OK) return error;
+    written = rinfs_pwrite(&file, &metadata, sizeof(metadata), offset);
+    if (written != (int64_t)sizeof(metadata)) {
+        error = written < 0 ? (int)written : RINFS_ERR_IO;
+        (void)rinfs_close(&file);
+        return error;
+    }
+    error = rinfs_restore_file_sync_close(&file);
+    if (error != RINFS_OK) return error;
+    ++internal->record.metadata_entries;
+    return rinfs_restore_record_store(internal->mount, &internal->record);
+}
+
+int rinfs_restore_transaction_set_directory_metadata(
+    RinFS_RestoreTransactionV1* transaction, uint64_t inode_number,
+    uint16_t mode, uint16_t persistent_flags, uint32_t uid, uint32_t gid,
+    const RinFS_InodeTimes* times, int64_t change_time_seconds) {
+    if (((mode >> 12u) & 0x0fu) != RINFS_FT_DIR)
+        return RINFS_ERR_INVAL;
+    return rinfs_restore_transaction_set_inode_metadata(
+        transaction, inode_number, mode, persistent_flags, uid, gid,
+        times, change_time_seconds);
 }
