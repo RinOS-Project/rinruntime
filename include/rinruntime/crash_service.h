@@ -8,6 +8,7 @@
 #include <stdint.h>
 
 #include <rin/crash_service.h>
+#include <rin/crash_summary.h>
 #include "session_recovery.h"
 
 #ifdef __cplusplus
@@ -48,6 +49,15 @@ RinRuntimeCrashServiceResult
 rinruntime_crash_service_query_recovery_crash(
     const RinRuntimeSessionRecoveryMetadataV1* metadata,
     uint32_t expected_service_slot);
+
+/* Explicitly request a kernel-managed local physical-consent gesture, then
+ * read the current crash summary over the same authenticated crashd
+ * connection. This is not a readiness/poll API and opens the secure consent
+ * UI on each call. It can wait up to 25 seconds; invoke it from a worker,
+ * never from the Desktop input/render loop. summary_out is cleared on every
+ * failure. */
+RinRuntimeCrashServiceResult rinruntime_crash_service_read_summary_with_consent(
+    uint32_t expected_service_slot, RinCrashSummaryV1* summary_out);
 
 /* Send one already-redacted, bounded diagnostic to crashd. The service slot
  * must come from the authenticated service manager; a path alone is not an
