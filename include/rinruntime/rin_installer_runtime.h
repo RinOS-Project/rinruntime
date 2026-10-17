@@ -1,0 +1,48 @@
+/* SPDX-License-Identifier: MIT */
+/* RinRuntime clients for Installer's capability-backed storage syscalls. */
+
+#ifndef RINRUNTIME_INSTALLER_RUNTIME_H
+#define RINRUNTIME_INSTALLER_RUNTIME_H
+
+#include <stdint.h>
+
+#include <rin/contract_abi.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/* Returns the visible block-device count, or a negative RinResultCode. */
+int32_t rin_app_block_count(void);
+
+/* Enumerates the stable V1 inventory ABI used by existing applications. */
+RinResultCode rin_app_block_enumerate(uint32_t index,
+                                      RinBlockInfoV1* info_out);
+
+/* Looks up a live V2 block snapshot and returns its kernel-assigned media ID
+ * only when generation, ancestry, and unique physical-medium attestation are
+ * all present. Current root-registration IDs do not satisfy this contract. */
+RinResultCode rin_app_block_physical_device_id(
+    uint32_t block_id, uint32_t* physical_device_id_out);
+
+RinResultCode rin_app_install_target_open(
+    uint32_t block_id, uint64_t minimum_blocks,
+    RinInstallTargetSessionV1* session_out);
+RinResultCode rin_app_install_target_validate(uint64_t handle);
+RinResultCode rin_app_install_target_close(uint64_t handle);
+RinResultCode rin_app_install_target_authorize(uint64_t target_handle,
+                                                uint64_t source_handle);
+RinResultCode rin_app_install_target_read(uint64_t handle, uint64_t lba,
+                                          uint32_t block_count,
+                                          void* output);
+RinResultCode rin_app_install_target_write(uint64_t handle, uint64_t lba,
+                                           uint32_t block_count,
+                                           const void* input);
+RinResultCode rin_app_install_target_flush(uint64_t handle);
+RinResultCode rin_app_install_target_end(uint64_t handle);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* RINRUNTIME_INSTALLER_RUNTIME_H */

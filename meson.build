@@ -23,6 +23,7 @@ runtime_sources = files('src/portal.c', 'src/crash.c',
                         'src/firewall/conntrack_query.c')
 if host_machine.system() != 'windows'
   runtime_sources += files('src/backup_payload.c')
+  runtime_sources += files('src/rin_installer_runtime.c')
   runtime_sources += files('src/poll_wait.c')
   runtime_sources += files('src/platform.c')
   runtime_sources += files('src/service.c')

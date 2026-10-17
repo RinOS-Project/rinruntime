@@ -1,0 +1,265 @@
+/* SPDX-License-Identifier: MIT */
+/* Public adapters for kernel-owned installer target sessions. */
+
+#include <rinruntime/rin_installer_runtime.h>
+
+#include <limits.h>
+#include <stddef.h>
+#include <stdint.h>
+
+#include <rin/syscall_abi.h>
+
+#if !defined(_WIN32)
+#include "../../libc/sys/syscall.h"
+#endif
+
+static RinResultCode installer_runtime_result(intptr_t result)
+{
+    if (result == 0) return RIN_RESULT_OK;
+    if (result < 0 && result >= INT32_MIN)
+        return (RinResultCode)(int32_t)result;
+    return RIN_RESULT_IO;
+}
+
+static void installer_runtime_zero(void* memory, size_t size)
+{
+    volatile uint8_t* bytes = (volatile uint8_t*)memory;
+    if (bytes == NULL) return;
+    while (size != 0u) {
+        *bytes++ = 0u;
+        --size;
+    }
+}
+
+static int installer_block_info_v1_valid(const RinBlockInfoV1* info)
+{
+    return info != NULL && info->struct_size == sizeof(*info) &&
+           info->version == RIN_CONTRACT_STRUCT_VERSION_1 &&
+           info->block_id != 0u && info->logical_block_size != 0u &&
+           info->physical_block_size >= info->logical_block_size &&
+           info->block_count != 0u && info->max_transfer_blocks != 0u;
+}
+
+int32_t rin_app_block_count(void)
+{
+#if defined(_WIN32)
+    return (int32_t)RIN_RESULT_NOT_SUPPORTED;
+#else
+    intptr_t result = _syscall0((uintptr_t)RIN_SYS_BLOCK_GET_COUNT);
+    if (result < 0) return result >= INT32_MIN ? (int32_t)result
+                                               : (int32_t)RIN_RESULT_IO;
+    if (result > INT32_MAX) return (int32_t)RIN_RESULT_LIMIT_EXCEEDED;
+    return (int32_t)result;
+#endif
+}
+
+RinResultCode rin_app_block_enumerate(uint32_t index,
+                                      RinBlockInfoV1* info_out)
+{
+    RinBlockInfoV1 result_info;
+    intptr_t result;
+    if (info_out == NULL) return RIN_RESULT_INVALID_ARGUMENT;
+    installer_runtime_zero(info_out, sizeof(*info_out));
+    installer_runtime_zero(&result_info, sizeof(result_info));
+    result_info.struct_size = (uint32_t)sizeof(result_info);
+    result_info.version = RIN_CONTRACT_STRUCT_VERSION_1;
+#if defined(_WIN32)
+    (void)index;
+    return RIN_RESULT_NOT_SUPPORTED;
+#else
+    result = _syscall3((uintptr_t)RIN_SYS_BLOCK_ENUMERATE,
+                       (uintptr_t)index, (uintptr_t)&result_info,
+                       (uintptr_t)sizeof(result_info));
+    if (installer_runtime_result(result) != RIN_RESULT_OK)
+        return installer_runtime_result(result);
+    if (!installer_block_info_v1_valid(&result_info))
+        return RIN_RESULT_CORRUPT_DATA;
+    *info_out = result_info;
+    return RIN_RESULT_OK;
+#endif
+}
+
+RinResultCode rin_app_block_physical_device_id(
+    uint32_t block_id, uint32_t* physical_device_id_out)
+{
+    RinBlockInfoV2 info;
+    intptr_t result;
+    const uint32_t required_flags =
+        RIN_BLOCK_IDENTITY_FLAG_GENERATION_BOUND |
+        RIN_BLOCK_IDENTITY_FLAG_ANCESTRY_COMPLETE |
+        RIN_BLOCK_IDENTITY_FLAG_MEDIA_UNIQUE_ATTESTED;
+    if (physical_device_id_out != NULL) *physical_device_id_out = 0u;
+    if (block_id == 0u || physical_device_id_out == NULL)
+        return RIN_RESULT_INVALID_ARGUMENT;
+    installer_runtime_zero(&info, sizeof(info));
+    info.struct_size = (uint32_t)sizeof(info);
+    info.version = RIN_BLOCK_INFO_VERSION_2;
+#if defined(_WIN32)
+    return RIN_RESULT_NOT_SUPPORTED;
+#else
+    result = _syscall3((uintptr_t)RIN_SYS_BLOCK_GET_INFO,
+                       (uintptr_t)block_id, (uintptr_t)&info,
+                       (uintptr_t)sizeof(info));
+    if (installer_runtime_result(result) != RIN_RESULT_OK)
+        return installer_runtime_result(result);
+    if (info.struct_size != sizeof(info) ||
+        info.version != RIN_BLOCK_INFO_VERSION_2 ||
+        info.block_id != block_id || info.physical_device_id == 0u ||
+        (info.identity_flags & required_flags) != required_flags ||
+        (info.identity_flags & ~RIN_BLOCK_IDENTITY_FLAG_MASK) != 0u) {
+        installer_runtime_zero(&info, sizeof(info));
+        return RIN_RESULT_NOT_SUPPORTED;
+    }
+    *physical_device_id_out = info.physical_device_id;
+    installer_runtime_zero(&info, sizeof(info));
+    return RIN_RESULT_OK;
+#endif
+}
+
+RinResultCode rin_app_install_target_open(
+    uint32_t block_id, uint64_t minimum_blocks,
+    RinInstallTargetSessionV1* session_out)
+{
+    RinInstallTargetSessionV1 session;
+    intptr_t result;
+    if (session_out == NULL) return RIN_RESULT_INVALID_ARGUMENT;
+    installer_runtime_zero(session_out, sizeof(*session_out));
+    if (block_id == 0u || minimum_blocks == 0u)
+        return RIN_RESULT_INVALID_ARGUMENT;
+    installer_runtime_zero(&session, sizeof(session));
+    session.struct_size = (uint32_t)sizeof(session);
+    session.version = RIN_CONTRACT_STRUCT_VERSION_1;
+#if defined(_WIN32)
+    return RIN_RESULT_NOT_SUPPORTED;
+#else
+    result = _syscall3((uintptr_t)RIN_SYS_INSTALL_TARGET_OPEN,
+                       (uintptr_t)block_id, (uintptr_t)minimum_blocks,
+                       (uintptr_t)&session);
+    if (installer_runtime_result(result) != RIN_RESULT_OK)
+        return installer_runtime_result(result);
+    if (session.struct_size != sizeof(session) ||
+        session.version != RIN_CONTRACT_STRUCT_VERSION_1 ||
+        session.handle == 0u || session.block_id != block_id ||
+        session.block_count < minimum_blocks ||
+        session.logical_block_size == 0u ||
+        session.physical_block_size < session.logical_block_size ||
+        session.max_transfer_blocks == 0u) {
+        if (session.handle != 0u)
+            (void)_syscall1((uintptr_t)RIN_SYS_INSTALL_TARGET_CLOSE,
+                            (uintptr_t)session.handle);
+        installer_runtime_zero(&session, sizeof(session));
+        return RIN_RESULT_CORRUPT_DATA;
+    }
+    *session_out = session;
+    installer_runtime_zero(&session, sizeof(session));
+    return RIN_RESULT_OK;
+#endif
+}
+
+RinResultCode rin_app_install_target_validate(uint64_t handle)
+{
+    if (handle == 0u) return RIN_RESULT_INVALID_HANDLE;
+#if defined(_WIN32)
+    return RIN_RESULT_NOT_SUPPORTED;
+#else
+    return installer_runtime_result(_syscall1(
+        (uintptr_t)RIN_SYS_INSTALL_TARGET_VALIDATE, (uintptr_t)handle));
+#endif
+}
+
+RinResultCode rin_app_install_target_close(uint64_t handle)
+{
+    if (handle == 0u) return RIN_RESULT_INVALID_HANDLE;
+#if defined(_WIN32)
+    return RIN_RESULT_NOT_SUPPORTED;
+#else
+    return installer_runtime_result(_syscall1(
+        (uintptr_t)RIN_SYS_INSTALL_TARGET_CLOSE, (uintptr_t)handle));
+#endif
+}
+
+RinResultCode rin_app_install_target_authorize(uint64_t target_handle,
+                                                uint64_t source_handle)
+{
+    if (target_handle == 0u || source_handle == 0u)
+        return RIN_RESULT_INVALID_HANDLE;
+#if defined(_WIN32)
+    return RIN_RESULT_NOT_SUPPORTED;
+#else
+    return installer_runtime_result(_syscall2(
+        (uintptr_t)RIN_SYS_INSTALL_TARGET_AUTHORIZE,
+        (uintptr_t)target_handle, (uintptr_t)source_handle));
+#endif
+}
+
+static RinResultCode installer_target_io(uintptr_t syscall_number,
+                                         uint64_t handle, uint64_t lba,
+                                         uint32_t block_count, void* buffer)
+{
+    RinInstallTargetReadV1 request;
+    uint64_t byte_count;
+    intptr_t result;
+    if (handle == 0u) return RIN_RESULT_INVALID_HANDLE;
+    if (buffer == NULL || block_count == 0u || block_count > 128u ||
+        lba > UINT64_MAX - block_count)
+        return RIN_RESULT_INVALID_ARGUMENT;
+    byte_count = (uint64_t)block_count * UINT64_C(512);
+    if (byte_count > UINTPTR_MAX - (uintptr_t)buffer)
+        return RIN_RESULT_INVALID_ARGUMENT;
+#if defined(_WIN32)
+    (void)syscall_number;
+    (void)lba;
+    (void)byte_count;
+    return RIN_RESULT_NOT_SUPPORTED;
+#else
+    installer_runtime_zero(&request, sizeof(request));
+    request.struct_size = (uint32_t)sizeof(request);
+    request.version = RIN_CONTRACT_STRUCT_VERSION_1;
+    request.handle = handle;
+    request.lba = lba;
+    request.buffer = (uint64_t)(uintptr_t)buffer;
+    request.block_count = block_count;
+    result = _syscall2(syscall_number, (uintptr_t)&request,
+                       (uintptr_t)sizeof(request));
+    installer_runtime_zero(&request, sizeof(request));
+    return installer_runtime_result(result);
+#endif
+}
+
+RinResultCode rin_app_install_target_read(uint64_t handle, uint64_t lba,
+                                          uint32_t block_count,
+                                          void* output)
+{
+    return installer_target_io((uintptr_t)RIN_SYS_INSTALL_TARGET_READ,
+                               handle, lba, block_count, output);
+}
+
+RinResultCode rin_app_install_target_write(uint64_t handle, uint64_t lba,
+                                           uint32_t block_count,
+                                           const void* input)
+{
+    return installer_target_io((uintptr_t)RIN_SYS_INSTALL_TARGET_WRITE,
+                               handle, lba, block_count, (void*)input);
+}
+
+RinResultCode rin_app_install_target_flush(uint64_t handle)
+{
+    if (handle == 0u) return RIN_RESULT_INVALID_HANDLE;
+#if defined(_WIN32)
+    return RIN_RESULT_NOT_SUPPORTED;
+#else
+    return installer_runtime_result(_syscall1(
+        (uintptr_t)RIN_SYS_INSTALL_TARGET_FLUSH, (uintptr_t)handle));
+#endif
+}
+
+RinResultCode rin_app_install_target_end(uint64_t handle)
+{
+    if (handle == 0u) return RIN_RESULT_INVALID_HANDLE;
+#if defined(_WIN32)
+    return RIN_RESULT_NOT_SUPPORTED;
+#else
+    return installer_runtime_result(_syscall1(
+        (uintptr_t)RIN_SYS_INSTALL_TARGET_END, (uintptr_t)handle));
+#endif
+}
