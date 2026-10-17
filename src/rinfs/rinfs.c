@@ -5,6 +5,7 @@
  */
 
 #include <rinruntime/rinfs/rinfs.h>
+#include <rinruntime/rinfs/vfs_open_flags.h>
 #if !defined(RIN_KERNEL)
 /* The portable filesystem keeps kernel performance tracing private. */
 #define RIN_TRACE_ID_UNKNOWN UINT32_MAX
