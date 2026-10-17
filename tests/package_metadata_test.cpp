@@ -48,7 +48,9 @@ int main() {
     assert(!PackageVersion::parse("", ignored));
     assert(!PackageVersion::parse("01.2", ignored));
     assert(!PackageVersion::parse("1.2.3.4.5", ignored));
+    assert(PackageVersion::parse("4294967295", ignored));
     assert(!PackageVersion::parse("4294967296", ignored));
+    assert(!PackageVersion::parse("18446744073709551616", ignored));
 
     PackageMetadata metadata = validMetadata();
     assert(metadata.valid());

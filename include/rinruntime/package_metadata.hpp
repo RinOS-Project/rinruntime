@@ -70,8 +70,11 @@ struct PackageVersion {
             for (std::size_t index = start; index < end; ++index) {
                 const char digit = text[index];
                 if (digit < '0' || digit > '9') return false;
-                value = value * 10u + static_cast<unsigned>(digit - '0');
-                if (value > UINT32_MAX) return false;
+                const std::uint32_t decimalDigit =
+                    static_cast<std::uint32_t>(digit - '0');
+                if (value > (static_cast<std::uint64_t>(UINT32_MAX) -
+                             decimalDigit) / 10u) return false;
+                value = value * 10u + decimalDigit;
             }
             candidate.component[candidate.count++] =
                 static_cast<std::uint32_t>(value);
