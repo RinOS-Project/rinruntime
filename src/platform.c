@@ -51,6 +51,19 @@ void* rin_shm_at(int handle, void* address_hint, uint32_t prot)
         (uintptr_t)address_hint, (uintptr_t)prot));
 }
 
+void* rin_shm_at_range(int handle, void* address_hint, uint64_t offset,
+                       uint64_t size, uint32_t prot)
+{
+    if (handle < 0 || size == 0u) {
+        errno = handle < 0 ? EBADF : EINVAL;
+        return (void*)0;
+    }
+    return platform_pointer_result(_syscall5(
+        (uintptr_t)RIN_SYS_SHM_ATTACH_RANGE, (uintptr_t)(intptr_t)handle,
+        (uintptr_t)address_hint, (uintptr_t)offset, (uintptr_t)size,
+        (uintptr_t)prot));
+}
+
 int rin_shm_dt(int handle, void* address)
 {
     intptr_t result;
@@ -67,6 +80,27 @@ int rin_shm_dt(int handle, void* address)
     }
     if (result != 0) {
         errno = result > INT_MAX ? EOVERFLOW : EIO;
+        return -1;
+    }
+    return 0;
+}
+
+int rin_shm_protect(void* address, uint64_t size, uint32_t prot)
+{
+    intptr_t result;
+    if (!address || size == 0u) {
+        errno = EINVAL;
+        return -1;
+    }
+    result = _syscall3((uintptr_t)RIN_SYS_SHM_PROTECT,
+                       (uintptr_t)address, (uintptr_t)size,
+                       (uintptr_t)prot);
+    if (result < 0) {
+        errno = result >= -4095 ? (int)(-result) : EIO;
+        return -1;
+    }
+    if (result != 0) {
+        errno = result > INT_MAX ? ERANGE : EIO;
         return -1;
     }
     return 0;
