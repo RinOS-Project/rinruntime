@@ -2799,6 +2799,8 @@ static int rinfs_page_cache_write(RinFS_Mount* mount, uint64_t inode_num,
 static int rinfs_page_cache_sync(RinFS_Mount* mount, uint64_t inode_num,
                                  uint32_t inode_generation,
                                  uint64_t content_version,
+                                 uint64_t range_page_start,
+                                 uint64_t page_end,
                                  uint32_t entry_budget) {
     RinFS_PageCache* cache;
     uint8_t* run_buffer = NULL;
@@ -2858,7 +2860,10 @@ static int rinfs_page_cache_sync(RinFS_Mount* mount, uint64_t inode_num,
                 (inode_generation != 0u &&
                  entry->inode_generation != inode_generation) ||
                 (content_version != 0u &&
-                 entry->content_version != content_version)) continue;
+                 entry->content_version != content_version) ||
+                (page_end != 0u &&
+                 (entry->page_index < range_page_start ||
+                  entry->page_index >= page_end))) continue;
             if (entry->state == RINFS_PAGE_CACHE_WRITEBACK) {
                 matching_writeback_in_progress = 1;
                 continue;
@@ -2905,6 +2910,7 @@ static int rinfs_page_cache_sync(RinFS_Mount* mount, uint64_t inode_num,
                     first_physical > UINT64_MAX - selected_count) break;
                 next_page = first_page + selected_count;
                 next_physical = first_physical + selected_count;
+                if (page_end != 0u && next_page >= page_end) break;
                 for (index = 0u; index < RINFS_PAGE_CACHE_CAPACITY; ++index) {
                     RinFS_PageCacheEntry* entry = &cache->entries[index];
                     if (!entry->valid ||
@@ -3246,7 +3252,8 @@ int rinfs_page_cache_writeback_step(RinFS_Mount* mount, uint32_t max_entries,
         effective_budget < 8u)
         effective_budget = 8u;
 
-    err = rinfs_page_cache_sync(mount, 0u, 0u, 0u, effective_budget);
+    err = rinfs_page_cache_sync(
+        mount, 0u, 0u, 0u, 0u, 0u, effective_budget);
 
     rinfs_page_cache_lock(mount->page_cache);
     for (index = 0u; index < RINFS_PAGE_CACHE_CAPACITY; ++index) {
@@ -11544,7 +11551,8 @@ int rinfs_sync(RinFS_Mount* mount) {
     /* File data is committed before inode metadata and the final device
      * barrier.  A failed page writeback remains dirty and is returned to the
      * caller; it is never converted into a successful fsync. */
-    int page_cache_err = rinfs_page_cache_sync(mount, 0u, 0u, 0u, 0u);
+    int page_cache_err = rinfs_page_cache_sync(
+        mount, 0u, 0u, 0u, 0u, 0u, 0u);
     if (page_cache_err != RINFS_OK) return page_cache_err;
     
     /* Flush block buffer */
@@ -12144,6 +12152,59 @@ int64_t rinfs_mmap_source_read(RinFS_MmapSource* source,
         identity.mount, identity.inode_num, identity.inode_generation,
         lease_token, 0);
     return result;
+}
+
+int rinfs_mmap_source_sync_range(RinFS_MmapSource* source,
+                                uint64_t expected_inode,
+                                uint64_t reference_generation,
+                                uint64_t reference_cookie,
+                                uint64_t first_page,
+                                uint64_t page_count) {
+    RinFS_MmapSourceIdentity identity;
+    RinFS_ContentLeaseNode* lease = NULL;
+    RinFS_Inode inode;
+    uint64_t lease_token = 0u;
+    uint64_t page_end;
+    int err;
+
+    if (!source || expected_inode == 0u || page_count == 0u ||
+        first_page > UINT64_MAX - page_count)
+        return RINFS_ERR_INVAL;
+    page_end = first_page + page_count;
+    err = rinfs_mmap_source_copy_identity(
+        source, reference_generation, reference_cookie, &identity);
+    if (err != RINFS_OK || identity.inode_num != expected_inode)
+        return err == RINFS_OK ? RINFS_ERR_STALE : err;
+    if (identity.mount->readonly) return RINFS_ERR_ROFS;
+
+    /* The read lease keeps the content-version key and block map stable from
+     * selection through device flush. A concurrent descriptor write or
+     * truncate must wait or make this operation fail closed. */
+    err = rinfs_content_lease_acquire(
+        identity.mount, identity.inode_num, identity.inode_generation, 0,
+        &lease, &lease_token);
+    if (err != RINFS_OK) return err;
+    if (lease_token != identity.pin_token) {
+        err = RINFS_ERR_STALE;
+        goto sync_range_finish;
+    }
+    err = rinfs_inode_read(identity.mount, identity.inode_num, &inode);
+    if (err != RINFS_OK) goto sync_range_finish;
+    if (inode.i_generation != identity.inode_generation ||
+        (inode.i_mode >> 12u) != RINFS_FT_REG) {
+        err = RINFS_ERR_STALE;
+        goto sync_range_finish;
+    }
+    err = rinfs_page_cache_sync(
+        identity.mount, identity.inode_num, identity.inode_generation,
+        rinfs_inode_content_version_raw(&inode), first_page, page_end, 0u);
+    if (err == RINFS_OK) err = disk_flush(identity.mount);
+
+sync_range_finish:
+    rinfs_content_lease_release(
+        identity.mount, identity.inode_num, identity.inode_generation,
+        lease_token, 0);
+    return err;
 }
 
 int rinfs_mmap_source_release(RinFS_MmapSource* source,
@@ -14001,7 +14062,7 @@ int64_t rinfs_write(RinFS_File* file, const void* buf, uint64_t size) {
      * identity.  Otherwise a later writeback could overwrite the new block
      * map with bytes from the previous generation. */
     int preflush_err = rinfs_page_cache_sync(
-        mount, file->inode_num, 0u, 0u, 0u);
+        mount, file->inode_num, 0u, 0u, 0u, 0u, 0u);
     if (preflush_err != RINFS_OK) return preflush_err;
     
     uint8_t* block_buf = (uint8_t*)rinfs_malloc(block_size);
@@ -14151,7 +14212,7 @@ int64_t rinfs_write(RinFS_File* file, const void* buf, uint64_t size) {
     if (use_page_cache && bytes_written != 0u) {
         int cache_err = rinfs_page_cache_sync(
             mount, file->inode_num, file->inode.i_generation,
-            rinfs_inode_content_version_raw(&file->inode), 0u);
+            rinfs_inode_content_version_raw(&file->inode), 0u, 0u, 0u);
         if (cache_err != RINFS_OK && write_error == RINFS_OK)
             write_error = cache_err;
     }
@@ -16986,7 +17047,7 @@ int rinfs_truncate_ino(RinFS_Mount* mount, uint64_t ino, uint64_t size) {
     if (mount->readonly) return RINFS_ERR_ROFS;
     block_size = mount->sb.s_block_size;
 
-    err = rinfs_page_cache_sync(mount, ino, 0u, 0u, 0u);
+    err = rinfs_page_cache_sync(mount, ino, 0u, 0u, 0u, 0u, 0u);
     if (err != RINFS_OK) return err;
     err = rinfs_page_cache_invalidate_inode(mount, ino);
     if (err != RINFS_OK) return err;
