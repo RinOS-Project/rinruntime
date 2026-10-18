@@ -14153,7 +14153,30 @@ int64_t rinfs_write(RinFS_File* file, const void* buf, uint64_t size) {
             new_block = 1;
         }
 
+        /* A mapped writer may have changed bytes in the zero-filled tail of
+         * the last partial page. When a positioned descriptor write extends
+         * beyond EOF inside that same block, clear the sparse gap before
+         * exposing it through the new inode size. */
+        uint32_t gap_start = 0u;
+        uint32_t gap_length = 0u;
+        if (file->position > file->inode.i_size &&
+            (file->inode.i_size % block_size) != 0u &&
+            file_block == file->inode.i_size / block_size) {
+            gap_start = (uint32_t)(file->inode.i_size % block_size);
+            gap_length = block_off > gap_start ? block_off - gap_start : 0u;
+        }
+
         if (use_page_cache) {
+            if (gap_length != 0u) {
+                rinfs_memset(block_buf, 0, gap_length);
+                err = rinfs_page_cache_write(
+                    mount, file->inode_num, &file->inode, file_block,
+                    phys_block, new_block, gap_start, block_buf, gap_length);
+                if (err != RINFS_OK) {
+                    write_error = err;
+                    break;
+                }
+            }
             err = rinfs_page_cache_write(
                 mount, file->inode_num, &file->inode, file_block,
                 phys_block, new_block, block_off, src, chunk);
@@ -14181,6 +14204,8 @@ int64_t rinfs_write(RinFS_File* file, const void* buf, uint64_t size) {
                     break;
                 }
             }
+            if (gap_length != 0u)
+                rinfs_memset(block_buf + gap_start, 0, gap_length);
             /* Copy data and write the block through the checked direct path. */
             rinfs_memcpy(block_buf + block_off, src, chunk);
             err = rinfs_block_write(mount, phys_block, block_buf);
