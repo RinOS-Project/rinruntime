@@ -927,6 +927,10 @@ int rinfs_mmap_source_retain_page(RinFS_MmapSource* source,
 /* Release a mapping reference by its exact physical page. */
 int rinfs_page_cache_release_mapped_page(RinFS_Mount* mount,
                                          uint64_t physical_address);
+/* Mark one cache page with a live mmap reference dirty before allowing a
+ * writable shared PTE to expose it. */
+int rinfs_page_cache_mark_mapped_page_dirty(RinFS_Mount* mount,
+                                            uint64_t physical_address);
 int rinfs_page_cache_release_view(RinFS_Mount* mount,
                                   uintptr_t cache_token);
 int64_t rinfs_mmap_source_read(RinFS_MmapSource* source,

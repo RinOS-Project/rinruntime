@@ -2258,6 +2258,55 @@ int rinfs_page_cache_release_mapped_page(RinFS_Mount* mount,
     return RINFS_ERR_NOENT;
 }
 
+int rinfs_page_cache_mark_mapped_page_dirty(RinFS_Mount* mount,
+                                            uint64_t physical_address) {
+    RinFS_PageCache* cache;
+    uint32_t index;
+    if (!mount || !mount->page_cache || physical_address == 0u)
+        return RINFS_ERR_NOENT;
+    if (mount->readonly) return RINFS_ERR_ROFS;
+    if (mount->sb.s_block_size != RINFS_PAGE_CACHE_PAGE_SIZE)
+        return RINFS_ERR_NOT_SUPPORTED;
+    cache = mount->page_cache;
+    rinfs_page_cache_lock(cache);
+    for (index = 0u; index < RINFS_PAGE_CACHE_CAPACITY; ++index) {
+        RinFS_PageCacheEntry* entry = &cache->entries[index];
+        uint32_t* mapped_references;
+        uint32_t old_length;
+        if (!entry->valid || entry->physical_address != physical_address)
+            continue;
+        mapped_references =
+            rinfs_page_cache_mapping_reference_slot(cache, entry);
+        if (!mapped_references || *mapped_references == 0u ||
+            (entry->state != RINFS_PAGE_CACHE_CLEAN &&
+             entry->state != RINFS_PAGE_CACHE_DIRTY &&
+             entry->state != RINFS_PAGE_CACHE_WRITEBACK) ||
+            (entry->state != RINFS_PAGE_CACHE_CLEAN &&
+             (entry->dirty_end < entry->dirty_start ||
+              entry->dirty_end > mount->sb.s_block_size))) {
+            rinfs_page_cache_unlock(cache);
+            return RINFS_ERR_STALE;
+        }
+        old_length = entry->state == RINFS_PAGE_CACHE_CLEAN
+            ? 0u : entry->dirty_end - entry->dirty_start;
+        if (entry->state == RINFS_PAGE_CACHE_CLEAN) {
+            ++cache->dirty_pages;
+            entry->dirty_since = ++cache->clock;
+        }
+        entry->dirty_start = 0u;
+        entry->dirty_end = mount->sb.s_block_size;
+        cache->dirty_bytes += (uint64_t)mount->sb.s_block_size - old_length;
+        /* Keep an in-flight writer's state intact. Its completion sees this
+         * live mapping reference and preserves the enlarged dirty range. */
+        if (entry->state != RINFS_PAGE_CACHE_WRITEBACK)
+            entry->state = RINFS_PAGE_CACHE_DIRTY;
+        rinfs_page_cache_unlock(cache);
+        return RINFS_OK;
+    }
+    rinfs_page_cache_unlock(cache);
+    return RINFS_ERR_NOENT;
+}
+
 static int rinfs_page_cache_acquire(RinFS_Mount* mount, uint64_t inode_num,
                                     RinFS_Inode* inode, uint64_t page_index,
                                     uint64_t physical_hint, int use_hint,
