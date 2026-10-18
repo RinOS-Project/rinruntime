@@ -24,6 +24,7 @@ typedef enum RinRuntimeCrashServiceResult {
     RINRUNTIME_CRASH_SERVICE_UNAVAILABLE = -2,
     RINRUNTIME_CRASH_SERVICE_PROTOCOL_ERROR = -3,
     RINRUNTIME_CRASH_SERVICE_REJECTED = -4,
+    RINRUNTIME_CRASH_SERVICE_STALE_HISTORY_STATUS = -5,
     RINRUNTIME_CRASH_SERVICE_CRASH_DETECTED = 1
 } RinRuntimeCrashServiceResult;
 
@@ -58,6 +59,23 @@ rinruntime_crash_service_query_recovery_crash(
  * failure. */
 RinRuntimeCrashServiceResult rinruntime_crash_service_read_summary_with_consent(
     uint32_t expected_service_slot, RinCrashSummaryV1* summary_out);
+
+/* Read only the count and sequence boundary of inaccessible exact-session
+ * history records. No crash contents are returned. The caller must display
+ * this count before offering its explicit cleanup confirmation. */
+RinRuntimeCrashServiceResult
+rinruntime_crash_service_get_legacy_history_status(
+    uint32_t expected_service_slot,
+    RinCrashServiceLegacyHistoryStatusV1* status_out);
+
+/* Purge the exact count/high-water snapshot shown to the administrator. The
+ * call requests fresh kernel-managed physical consent on a worker thread.
+ * The service returns STALE_HISTORY_STATUS if the inaccessible set changed;
+ * the caller must query and display a fresh count before retrying. */
+RinRuntimeCrashServiceResult
+rinruntime_crash_service_purge_legacy_history_with_consent(
+    uint32_t expected_service_slot,
+    const RinCrashServiceLegacyHistoryStatusV1* confirmed_status);
 
 /* Send one already-redacted, bounded diagnostic to crashd. The service slot
  * must come from the authenticated service manager; a path alone is not an
