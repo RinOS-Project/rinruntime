@@ -2789,6 +2789,7 @@ static int rinfs_page_cache_sync(RinFS_Mount* mount, uint64_t inode_num,
         uint32_t index;
         int first_index = -1;
         int mapped_snapshot_unavailable = 0;
+        int matching_writeback_in_progress = 0;
         uint64_t first_page = UINT64_MAX;
         uint64_t first_dirty_since = UINT64_MAX;
         uint64_t first_physical = 0u;
@@ -2803,13 +2804,18 @@ static int rinfs_page_cache_sync(RinFS_Mount* mount, uint64_t inode_num,
         rinfs_page_cache_lock(cache);
         for (index = 0u; index < RINFS_PAGE_CACHE_CAPACITY; ++index) {
             RinFS_PageCacheEntry* entry = &cache->entries[index];
-            if (!entry->valid || entry->state != RINFS_PAGE_CACHE_DIRTY ||
-                processed_mapped[index] ||
+            if (!entry->valid ||
                 (inode_num != 0u && entry->inode_num != inode_num) ||
                 (inode_generation != 0u &&
                  entry->inode_generation != inode_generation) ||
                 (content_version != 0u &&
                  entry->content_version != content_version)) continue;
+            if (entry->state == RINFS_PAGE_CACHE_WRITEBACK) {
+                matching_writeback_in_progress = 1;
+                continue;
+            }
+            if (entry->state != RINFS_PAGE_CACHE_DIRTY ||
+                processed_mapped[index]) continue;
             uint64_t dirty_order = entry->dirty_since != 0u
                                        ? entry->dirty_since
                                        : entry->last_used;
@@ -2908,7 +2914,11 @@ static int rinfs_page_cache_sync(RinFS_Mount* mount, uint64_t inode_num,
 
         if (first_index < 0) {
             if (run_buffer) rinfs_free(run_buffer);
-            return RINFS_OK;
+            /* A concurrent sync owns matching pages in WRITEBACK state.
+             * Returning success here would let this sync pass its durability
+             * barrier without knowing whether that writeback completed. */
+            return matching_writeback_in_progress
+                ? RINFS_ERR_PENDING : RINFS_OK;
         }
 
         uint64_t writeback_started = RIN_TRACE_CYCLES_NOW();
