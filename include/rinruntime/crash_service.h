@@ -74,6 +74,14 @@ rinruntime_crash_service_read_notice_with_consent(
     uint32_t expected_service_slot, const RinCrashServiceNoticeV1* notice,
     RinCrashSummaryV1* summary_out);
 
+/* Read one consented notice together with recovery authority that is matched
+ * to the same boot ID and sequence. Both outputs are cleared on failure. */
+RinRuntimeCrashServiceResult
+rinruntime_crash_service_read_notice_with_consent_and_recovery(
+    uint32_t expected_service_slot, const RinCrashServiceNoticeV1* notice,
+    RinCrashSummaryV1* summary_out,
+    RinCrashServiceRecoveryAuthorityV1* recovery_out);
+
 /* Export a local minidump for this exact notice after a fresh physical
  * consent gesture. The output buffer must hold the public maximum size; both
  * its contents and size_out are cleared on failure. */
