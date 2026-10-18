@@ -2753,6 +2753,7 @@ static int rinfs_page_cache_sync(RinFS_Mount* mount, uint64_t inode_num,
                                  uint32_t entry_budget) {
     RinFS_PageCache* cache;
     uint8_t* run_buffer = NULL;
+    uint8_t processed_mapped[RINFS_PAGE_CACHE_CAPACITY] = {0};
     uint32_t run_capacity = 1u;
     uint32_t processed = 0u;
     if (!mount || !mount->page_cache) return RINFS_OK;
@@ -2775,14 +2776,19 @@ static int rinfs_page_cache_sync(RinFS_Mount* mount, uint64_t inode_num,
                 (size_t)run_capacity * mount->sb.s_block_size);
             if (!run_buffer) run_capacity = 1u;
         }
+        if (!run_buffer) {
+            run_buffer = (uint8_t*)rinfs_malloc(mount->sb.s_block_size);
+        }
     }
 
     for (;;) {
         RinFS_PageCacheEntry* entries[RINFS_PAGE_CACHE_CAPACITY];
+        uint32_t mapping_refs_at_start[RINFS_PAGE_CACHE_CAPACITY];
         uint32_t selected_count = 0u;
         uint32_t batch_capacity = run_capacity;
         uint32_t index;
         int first_index = -1;
+        int mapped_snapshot_unavailable = 0;
         uint64_t first_page = UINT64_MAX;
         uint64_t first_dirty_since = UINT64_MAX;
         uint64_t first_physical = 0u;
@@ -2798,6 +2804,7 @@ static int rinfs_page_cache_sync(RinFS_Mount* mount, uint64_t inode_num,
         for (index = 0u; index < RINFS_PAGE_CACHE_CAPACITY; ++index) {
             RinFS_PageCacheEntry* entry = &cache->entries[index];
             if (!entry->valid || entry->state != RINFS_PAGE_CACHE_DIRTY ||
+                processed_mapped[index] ||
                 (inode_num != 0u && entry->inode_num != inode_num) ||
                 (inode_generation != 0u &&
                  entry->inode_generation != inode_generation) ||
@@ -2829,6 +2836,8 @@ static int rinfs_page_cache_sync(RinFS_Mount* mount, uint64_t inode_num,
             first->state = RINFS_PAGE_CACHE_WRITEBACK;
             first->references++;
             entries[selected_count++] = first;
+            mapping_refs_at_start[0] =
+                rinfs_page_cache_mapping_references(cache, first);
 
             /* Select only the exact logical and physical continuation.  This
              * preserves sparse/fragmented-file semantics and lets unrelated
@@ -2845,6 +2854,7 @@ static int rinfs_page_cache_sync(RinFS_Mount* mount, uint64_t inode_num,
                     RinFS_PageCacheEntry* entry = &cache->entries[index];
                     if (!entry->valid ||
                         entry->state != RINFS_PAGE_CACHE_DIRTY ||
+                        processed_mapped[index] ||
                         entry->mount_epoch != mount->mount_epoch ||
                         entry->inode_num != selected_inode ||
                         entry->inode_generation != selected_generation ||
@@ -2861,11 +2871,40 @@ static int rinfs_page_cache_sync(RinFS_Mount* mount, uint64_t inode_num,
                         &cache->entries[(uint32_t)continuation];
                     entry->state = RINFS_PAGE_CACHE_WRITEBACK;
                     entry->references++;
-                    entries[selected_count++] = entry;
+                    entries[selected_count] = entry;
+                    mapping_refs_at_start[selected_count] =
+                        rinfs_page_cache_mapping_references(cache, entry);
+                    ++selected_count;
+                }
+            }
+        }
+        if (run_buffer) {
+            for (index = 0u; index < selected_count; ++index) {
+                rinfs_memcpy(run_buffer +
+                                 (size_t)index * mount->sb.s_block_size,
+                             entries[index]->data, mount->sb.s_block_size);
+            }
+        } else {
+            for (index = 0u; index < selected_count; ++index) {
+                if (mapping_refs_at_start[index] != 0u) {
+                    mapped_snapshot_unavailable = 1;
+                    break;
+                }
+            }
+            if (mapped_snapshot_unavailable) {
+                for (index = 0u; index < selected_count; ++index) {
+                    entries[index]->state = RINFS_PAGE_CACHE_DIRTY;
+                    if (entries[index]->references != 0u)
+                        entries[index]->references--;
                 }
             }
         }
         rinfs_page_cache_unlock(cache);
+
+        if (mapped_snapshot_unavailable) {
+            if (run_buffer) rinfs_free(run_buffer);
+            return RINFS_ERR_NOMEM;
+        }
 
         if (first_index < 0) {
             if (run_buffer) rinfs_free(run_buffer);
@@ -2878,16 +2917,17 @@ static int rinfs_page_cache_sync(RinFS_Mount* mount, uint64_t inode_num,
             /* A dirty entry without a physical block would make success
              * indistinguishable from data loss; retain the dirty state. */
             err = RINFS_ERR_CORRUPT;
+        } else if (run_buffer) {
+            if (selected_count == 1u) {
+                err = rinfs_block_write(mount, first_physical, run_buffer);
+            } else {
+                err = rinfs_write_physical_run(mount, first_physical,
+                                                selected_count, run_buffer);
+            }
         } else if (selected_count == 1u) {
             err = rinfs_block_write(mount, first_physical, entries[0]->data);
         } else {
-            uint32_t copy;
-            for (copy = 0u; copy < selected_count; ++copy)
-                rinfs_memcpy(run_buffer + (size_t)copy *
-                                 mount->sb.s_block_size,
-                             entries[copy]->data, mount->sb.s_block_size);
-            err = rinfs_write_physical_run(mount, first_physical,
-                                            selected_count, run_buffer);
+            err = RINFS_ERR_CORRUPT;
         }
         uint64_t writeback_cycles = RIN_TRACE_CYCLES_NOW() -
                                     writeback_started;
@@ -2897,6 +2937,21 @@ static int rinfs_page_cache_sync(RinFS_Mount* mount, uint64_t inode_num,
             RinFS_PageCacheEntry* entry = entries[index];
             if (err == RINFS_OK) {
                 entry->writeback_error = 0;
+                uint32_t current_mapping_refs =
+                    rinfs_page_cache_mapping_references(cache, entry);
+                if (mapping_refs_at_start[index] != 0u ||
+                    current_mapping_refs != 0u) {
+                    uint32_t entry_index = (uint32_t)(entry -
+                        &cache->entries[0]);
+                    /* A live cache mapping may still be modified without a
+                     * kernel trap. Keep its dirty latch set so a write racing
+                     * this snapshot cannot be lost when writeback completes. */
+                    entry->state = RINFS_PAGE_CACHE_DIRTY;
+                    if (entry_index < RINFS_PAGE_CACHE_CAPACITY)
+                        processed_mapped[entry_index] = 1u;
+                    if (entry->references != 0u) entry->references--;
+                    continue;
+                }
                 uint32_t length = entry->dirty_end >= entry->dirty_start
                                       ? entry->dirty_end - entry->dirty_start
                                       : 0u;
