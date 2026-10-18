@@ -25,7 +25,8 @@ typedef enum RinRuntimeCrashServiceResult {
     RINRUNTIME_CRASH_SERVICE_PROTOCOL_ERROR = -3,
     RINRUNTIME_CRASH_SERVICE_REJECTED = -4,
     RINRUNTIME_CRASH_SERVICE_STALE_HISTORY_STATUS = -5,
-    RINRUNTIME_CRASH_SERVICE_CRASH_DETECTED = 1
+    RINRUNTIME_CRASH_SERVICE_CRASH_DETECTED = 1,
+    RINRUNTIME_CRASH_SERVICE_NO_NOTICE = 2
 } RinRuntimeCrashServiceResult;
 
 /* Convert the public session metadata into the path-free crashd wire record.
@@ -59,6 +60,19 @@ rinruntime_crash_service_query_recovery_crash(
  * failure. */
 RinRuntimeCrashServiceResult rinruntime_crash_service_read_summary_with_consent(
     uint32_t expected_service_slot, RinCrashSummaryV1* summary_out);
+
+/* Read only a content-free notice for a user-minidump owned by the exact
+ * authenticated Desktop session. No consent is needed for this signal; the
+ * returned boot ID and sequence must be supplied to the consented read. */
+RinRuntimeCrashServiceResult rinruntime_crash_service_get_desktop_notice(
+    uint32_t expected_service_slot, RinCrashServiceNoticeV1* notice_out);
+
+/* Read one noticed, session-owned archived summary after fresh local physical
+ * consent. The request is bound to the notice's exact boot ID and sequence. */
+RinRuntimeCrashServiceResult
+rinruntime_crash_service_read_notice_with_consent(
+    uint32_t expected_service_slot, const RinCrashServiceNoticeV1* notice,
+    RinCrashSummaryV1* summary_out);
 
 /* Read only the count and sequence boundary of inaccessible exact-session
  * history records. No crash contents are returned. The caller must display
