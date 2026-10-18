@@ -74,6 +74,15 @@ rinruntime_crash_service_read_notice_with_consent(
     uint32_t expected_service_slot, const RinCrashServiceNoticeV1* notice,
     RinCrashSummaryV1* summary_out);
 
+/* Export a local minidump for this exact notice after a fresh physical
+ * consent gesture. The output buffer must hold the public maximum size; both
+ * its contents and size_out are cleared on failure. */
+RinRuntimeCrashServiceResult
+rinruntime_crash_service_export_notice_with_consent(
+    uint32_t expected_service_slot, const RinCrashServiceNoticeV1* notice,
+    uint8_t* minidump_out, uint32_t minidump_capacity,
+    uint32_t* minidump_size_out);
+
 /* Read only the count and sequence boundary of inaccessible exact-session
  * history records. No crash contents are returned. The caller must display
  * this count before offering its explicit cleanup confirmation. */

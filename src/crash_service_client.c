@@ -262,7 +262,8 @@ static RinRuntimeCrashServiceResult crash_service_desktop_notice_request(
         reply.version != RIN_CRASH_SERVICE_ABI_VERSION ||
         reply.opcode != request.opcode || reply.request_id != request_id ||
         reply.flags != 0u || reply.reserved != 0u ||
-        !crash_service_result_valid(reply.status)) {
+        (reply.status != RIN_CRASH_SERVICE_STATUS_CONSENT_REQUIRED &&
+         !crash_service_result_valid(reply.status))) {
         result = RINRUNTIME_CRASH_SERVICE_PROTOCOL_ERROR;
         goto done;
     }
@@ -442,6 +443,131 @@ done:
     memset(&notice_read, 0, sizeof(notice_read));
     memset(&address, 0, sizeof(address));
     if (fd >= 0) close(fd);
+    return result;
+}
+
+static RinRuntimeCrashServiceResult crash_service_export_notice_request(
+    uint32_t expected_service_slot, const RinCrashServiceNoticeV1* notice,
+    uint8_t* minidump_out, uint32_t minidump_capacity,
+    uint32_t* minidump_size_out)
+{
+    RinCrashServiceMessageHeaderV1 request = {};
+    RinCrashServiceMessageHeaderV1 reply = {};
+    RinCrashConsentProofV1 proof = {};
+    RinCrashServiceNoticeReadV1 notice_read = {};
+    struct sockaddr_un address = {};
+    const size_t path_size = sizeof(RINRUNTIME_CRASH_SERVICE_PATH) - 1u;
+    uint64_t request_id = 0u;
+    uint64_t request_generation = 0u;
+    uint32_t wait_step;
+    int fd = -1;
+    RinRuntimeCrashServiceResult result =
+        RINRUNTIME_CRASH_SERVICE_UNAVAILABLE;
+
+    if (minidump_size_out != NULL) *minidump_size_out = 0u;
+    if (minidump_out != NULL && minidump_capacity != 0u)
+        memset(minidump_out, 0,
+               minidump_capacity < RIN_CRASH_SERVICE_MINIDUMP_MAX_BYTES
+                   ? minidump_capacity
+                   : RIN_CRASH_SERVICE_MINIDUMP_MAX_BYTES);
+    if (expected_service_slot == 0u || !crash_service_notice_valid(notice) ||
+        minidump_out == NULL || minidump_size_out == NULL ||
+        minidump_capacity != RIN_CRASH_SERVICE_MINIDUMP_MAX_BYTES ||
+        path_size >= sizeof(address.sun_path))
+        return RINRUNTIME_CRASH_SERVICE_INVALID_ARGUMENT;
+    fd = rinruntime_create_private_unix_stream_socket();
+    if (fd < 0) goto done;
+    address.sun_family = AF_UNIX;
+    memcpy(address.sun_path, RINRUNTIME_CRASH_SERVICE_PATH, path_size);
+    if (connect(fd, (const struct sockaddr*)&address, sizeof(address)) != 0 ||
+        !crash_service_endpoint_valid(fd, expected_service_slot))
+        goto done;
+
+    request_id = crash_service_next_request_id();
+    if (!crash_service_request_id_valid(request_id)) {
+        result = RINRUNTIME_CRASH_SERVICE_PROTOCOL_ERROR;
+        goto done;
+    }
+    if (rin_crash_consent_request(fd, request_id, &request_generation) !=
+            (int)RIN_RESULT_OK || request_generation == 0u) {
+        result = RINRUNTIME_CRASH_SERVICE_REJECTED;
+        goto done;
+    }
+    for (wait_step = 0u;
+         wait_step < RINRUNTIME_CRASH_SERVICE_CONSENT_WAIT_STEPS;
+         ++wait_step) {
+        const int consent_result = rin_crash_consent_take(
+            fd, request_id, request_generation, &proof);
+        if (consent_result == (int)RIN_RESULT_OK) break;
+        if (consent_result != (int)RIN_RESULT_ACCESS_DENIED) {
+            result = consent_result == (int)RIN_RESULT_TIMED_OUT ||
+                     consent_result == (int)RIN_RESULT_NOT_FOUND
+                ? RINRUNTIME_CRASH_SERVICE_REJECTED
+                : RINRUNTIME_CRASH_SERVICE_UNAVAILABLE;
+            goto done;
+        }
+        rin_sleep(RINRUNTIME_CRASH_SERVICE_CONSENT_WAIT_MS);
+    }
+    if (wait_step == RINRUNTIME_CRASH_SERVICE_CONSENT_WAIT_STEPS) {
+        result = RINRUNTIME_CRASH_SERVICE_REJECTED;
+        goto done;
+    }
+
+    request.struct_size = sizeof(request);
+    request.version = RIN_CRASH_SERVICE_ABI_VERSION;
+    request.opcode = RIN_CRASH_SERVICE_OP_EXPORT_NOTICE;
+    request.request_id = request_id;
+    request.payload_size = sizeof(notice_read);
+    notice_read.proof = proof;
+    notice_read.notice = *notice;
+    if (!crash_service_send_exact(fd, &request, sizeof(request)) ||
+        !crash_service_send_exact(fd, &notice_read, sizeof(notice_read)) ||
+        !crash_service_receive_exact(fd, &reply, sizeof(reply)))
+        goto done;
+    if (reply.struct_size != sizeof(reply) ||
+        reply.version != RIN_CRASH_SERVICE_ABI_VERSION ||
+        reply.opcode != request.opcode || reply.request_id != request_id ||
+        reply.flags != 0u || reply.reserved != 0u ||
+        !crash_service_result_valid(reply.status)) {
+        result = RINRUNTIME_CRASH_SERVICE_PROTOCOL_ERROR;
+        goto done;
+    }
+    if (reply.status != RIN_RESULT_OK) {
+        result = reply.payload_size == 0u
+            ? RINRUNTIME_CRASH_SERVICE_REJECTED
+            : RINRUNTIME_CRASH_SERVICE_PROTOCOL_ERROR;
+        goto done;
+    }
+    if (reply.payload_size < 32u ||
+        reply.payload_size > RIN_CRASH_SERVICE_MINIDUMP_MAX_BYTES ||
+        reply.payload_size > minidump_capacity ||
+        !crash_service_receive_exact(fd, minidump_out, reply.payload_size)) {
+        result = RINRUNTIME_CRASH_SERVICE_PROTOCOL_ERROR;
+        goto done;
+    }
+    if (minidump_out[0] != 'M' || minidump_out[1] != 'D' ||
+        minidump_out[2] != 'M' || minidump_out[3] != 'P' ||
+        minidump_out[4] != 0x93u || minidump_out[5] != 0xa7u ||
+        minidump_out[6] != 0u || minidump_out[7] != 0u) {
+        result = RINRUNTIME_CRASH_SERVICE_PROTOCOL_ERROR;
+        goto done;
+    }
+    *minidump_size_out = reply.payload_size;
+    result = RINRUNTIME_CRASH_SERVICE_OK;
+
+done:
+    if (request_generation != 0u)
+        (void)rin_crash_consent_cancel(fd, request_id, request_generation);
+    memset(&request, 0, sizeof(request));
+    memset(&reply, 0, sizeof(reply));
+    memset(&proof, 0, sizeof(proof));
+    memset(&notice_read, 0, sizeof(notice_read));
+    memset(&address, 0, sizeof(address));
+    if (fd >= 0) close(fd);
+    if (result != RINRUNTIME_CRASH_SERVICE_OK) {
+        memset(minidump_out, 0, RIN_CRASH_SERVICE_MINIDUMP_MAX_BYTES);
+        *minidump_size_out = 0u;
+    }
     return result;
 }
 
@@ -662,6 +788,17 @@ rinruntime_crash_service_read_notice_with_consent(
         return RINRUNTIME_CRASH_SERVICE_INVALID_ARGUMENT;
     return crash_service_read_summary_request(expected_service_slot, notice,
                                               summary_out);
+}
+
+RinRuntimeCrashServiceResult
+rinruntime_crash_service_export_notice_with_consent(
+    uint32_t expected_service_slot, const RinCrashServiceNoticeV1* notice,
+    uint8_t* minidump_out, uint32_t minidump_capacity,
+    uint32_t* minidump_size_out)
+{
+    return crash_service_export_notice_request(
+        expected_service_slot, notice, minidump_out, minidump_capacity,
+        minidump_size_out);
 }
 
 RinRuntimeCrashServiceResult
