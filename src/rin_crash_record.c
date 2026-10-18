@@ -170,8 +170,9 @@ static int crash_section_content_valid(uint32_t type, const void* data,
                 (const uint8_t*)process.image_name, index))
             return 0;
         if (size >= RIN_CRASH_PROCESS_INFO_PRE_SESSION_SIZE &&
-            process.reserved != 0u)
-            return 0;
+            process.reserved !=
+                RIN_CRASH_PROCESS_OWNER_IDENTITY_SESSION &&
+            size != sizeof(process)) return 0;
         for (index = 0u; index < sizeof(process.package_digest); ++index)
             package_digest_nonzero |= process.package_digest[index] != 0u;
         if (!((process.package_generation == 0u &&
@@ -179,9 +180,8 @@ static int crash_section_content_valid(uint32_t type, const void* data,
               (process.package_generation != 0u &&
                package_digest_nonzero != 0u)))
             return 0;
-        if (size < sizeof(process)) return 1;
-        return rin_crash_owner_session_valid(&process.owner_session,
-                                             process.owner_uid);
+        if (size < sizeof(process)) return process.reserved == 0u;
+        return rin_crash_process_owner_identity_valid(&process);
     } else if (type == RIN_CRASH_SECTION_SCHEDULER) {
         RinCrashSchedulerInfo scheduler;
         crash_copy(&scheduler, data, sizeof(scheduler));
@@ -376,7 +376,7 @@ RinCrashRecordResult rin_crash_record_validate(
     crash_copy(&header_value, record, sizeof(header_value));
     if (
         header->magic != RIN_CRASH_RECORD_MAGIC ||
-        header->version != RIN_CRASH_RECORD_VERSION ||
+        !rin_crash_record_version_valid(header->version) ||
         header->header_size != sizeof(*header) ||
         header->total_size < sizeof(*header) ||
         header->total_size > available_size ||
@@ -433,6 +433,15 @@ RinCrashRecordResult rin_crash_record_validate(
         if (!crash_section_content_valid(section->type, section_data,
                                          section->size)) {
             return RIN_CRASH_RECORD_CORRUPT;
+        }
+        if (section->type == RIN_CRASH_SECTION_PROCESS &&
+            section->size == sizeof(RinCrashProcessInfo)) {
+            RinCrashProcessInfo process;
+            crash_copy(&process, section_data, sizeof(process));
+            if (process.reserved ==
+                    RIN_CRASH_PROCESS_OWNER_IDENTITY_ACCOUNT_V1 &&
+                header->version < RIN_CRASH_RECORD_VERSION)
+                return RIN_CRASH_RECORD_CORRUPT;
         }
         for (padding = section->size; padding < padded_size; ++padding) {
             if (section_data[padding] != 0u)
