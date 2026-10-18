@@ -2891,6 +2891,88 @@ static int rinfs_page_cache_invalidate_stale(
     return RINFS_OK;
 }
 
+/* A descriptor write advances the durable content version before publishing
+ * its new bytes. Read-only mmap users may still hold clean cache pages from
+ * the previous version. Preserve those physical pages and move their cache
+ * keys forward so the descriptor write updates the same bytes that existing
+ * mappings observe. Other stale entries remain the invalidation routine's
+ * responsibility. */
+static int rinfs_page_cache_rekey_mapped_clean(
+    RinFS_Mount* mount, uint64_t inode_num, uint32_t inode_generation,
+    uint64_t content_version) {
+    RinFS_PageCache* cache;
+    uint32_t index;
+    if (!mount || !mount->page_cache) return RINFS_OK;
+    if (inode_num == 0u || inode_generation == 0u || content_version == 0u)
+        return RINFS_ERR_INVAL;
+    cache = mount->page_cache;
+    rinfs_page_cache_lock(cache);
+
+    /* Validate the whole rekey before changing any key. A duplicate key would
+     * make the cache identity ambiguous and must leave the mutation fail
+     * closed. */
+    for (index = 0u; index < RINFS_PAGE_CACHE_CAPACITY; ++index) {
+        RinFS_PageCacheEntry* entry = &cache->entries[index];
+        uint32_t other;
+        if (!entry->valid || entry->mount_epoch != mount->mount_epoch ||
+            entry->inode_num != inode_num ||
+            entry->inode_generation != inode_generation ||
+            entry->content_version == content_version ||
+            entry->references == 0u)
+            continue;
+        if (entry->state != RINFS_PAGE_CACHE_CLEAN ||
+            content_version == 0u ||
+            entry->content_version != content_version - 1u) {
+            rinfs_page_cache_unlock(cache);
+            return RINFS_ERR_PENDING;
+        }
+        for (other = 0u; other < RINFS_PAGE_CACHE_CAPACITY; ++other) {
+            const RinFS_PageCacheEntry* candidate = &cache->entries[other];
+            if (other != index && candidate->valid &&
+                candidate->mount_epoch == entry->mount_epoch &&
+                candidate->inode_num == inode_num &&
+                candidate->inode_generation == inode_generation &&
+                candidate->content_version == content_version &&
+                candidate->page_index == entry->page_index) {
+                rinfs_page_cache_unlock(cache);
+                return RINFS_ERR_PENDING;
+            }
+        }
+    }
+
+    for (index = 0u; index < RINFS_PAGE_CACHE_CAPACITY; ++index) {
+        RinFS_PageCacheEntry* entry = &cache->entries[index];
+        if (!entry->valid || entry->mount_epoch != mount->mount_epoch ||
+            entry->inode_num != inode_num ||
+            entry->inode_generation != inode_generation ||
+            entry->content_version == content_version ||
+            entry->references == 0u)
+            continue;
+        entry->content_version = content_version;
+    }
+    rinfs_page_cache_unlock(cache);
+    return RINFS_OK;
+}
+
+static int rinfs_page_cache_has_inode_references(RinFS_Mount* mount,
+                                                  uint64_t inode_num) {
+    RinFS_PageCache* cache;
+    uint32_t index;
+    if (!mount || !mount->page_cache) return 0;
+    cache = mount->page_cache;
+    rinfs_page_cache_lock(cache);
+    for (index = 0u; index < RINFS_PAGE_CACHE_CAPACITY; ++index) {
+        const RinFS_PageCacheEntry* entry = &cache->entries[index];
+        if (entry->valid && entry->inode_num == inode_num &&
+            entry->references != 0u) {
+            rinfs_page_cache_unlock(cache);
+            return 1;
+        }
+    }
+    rinfs_page_cache_unlock(cache);
+    return 0;
+}
+
 int rinfs_page_cache_reclaim(RinFS_Mount* mount, uint32_t max_entries,
                              uint32_t* reclaimed_out) {
     RinFS_PageCache* cache;
@@ -13685,6 +13767,16 @@ int64_t rinfs_write(RinFS_File* file, const void* buf, uint64_t size) {
         return mutation_err;
     }
     file->inode = mutation.inode;
+    /* Direct I/O bypasses the cache and cannot update a page that remains
+     * visible through an existing mapping. Refuse it before publishing a new
+     * content version; cached writes below can instead rekey clean mapped
+     * pages and update them in place. */
+    if ((file->flags & RINFS_O_DIRECT) != 0 &&
+        rinfs_page_cache_has_inode_references(mount, file->inode_num)) {
+        rinfs_content_mutation_end(&mutation);
+        rinfs_free(block_buf);
+        return RINFS_ERR_PENDING;
+    }
     mutation_err = rinfs_content_mutation_prepare(&mutation);
     if (mutation_err != RINFS_OK) {
         (void)rinfs_inode_read(mount, file->inode_num, &file->inode);
@@ -13693,6 +13785,18 @@ int64_t rinfs_write(RinFS_File* file, const void* buf, uint64_t size) {
         return mutation_err;
     }
     file->inode = mutation.inode;
+    if ((file->flags & RINFS_O_DIRECT) == 0) {
+        mutation_err = rinfs_page_cache_rekey_mapped_clean(
+            mount, file->inode_num, file->inode.i_generation,
+            rinfs_inode_content_version_raw(&file->inode));
+        if (mutation_err != RINFS_OK) {
+            rinfs_content_mutation_started(&mutation);
+            rinfs_content_mutation_poison(&mutation);
+            rinfs_content_mutation_end(&mutation);
+            rinfs_free(block_buf);
+            return mutation_err;
+        }
+    }
     if (rinfs_page_cache_invalidate_stale(
             mount, file->inode_num, file->inode.i_generation,
             rinfs_inode_content_version_raw(&file->inode)) != RINFS_OK) {
