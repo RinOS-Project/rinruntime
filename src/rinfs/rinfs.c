@@ -2248,6 +2248,10 @@ static int rinfs_page_cache_acquire(RinFS_Mount* mount, uint64_t inode_num,
             rinfs_page_cache_unlock(cache);
             return RINFS_ERR_PENDING;
         }
+        if (entry->references == UINT32_MAX) {
+            rinfs_page_cache_unlock(cache);
+            return RINFS_ERR_OVERFLOW;
+        }
         entry->references++;
         entry->last_used = ++cache->clock;
         entry->generation = RINFS_PAGE_CACHE_ACTIVE;
@@ -2460,6 +2464,10 @@ static int rinfs_page_cache_reserve_fill(
             entry->state == RINFS_PAGE_CACHE_WRITEBACK) {
             rinfs_page_cache_unlock(cache);
             return RINFS_ERR_PENDING;
+        }
+        if (entry->references == UINT32_MAX) {
+            rinfs_page_cache_unlock(cache);
+            return RINFS_ERR_OVERFLOW;
         }
         entry->references++;
         entry->last_used = ++cache->clock;
@@ -2751,6 +2759,11 @@ static int rinfs_page_cache_sync(RinFS_Mount* mount, uint64_t inode_num,
 
         if (first_index >= 0) {
             RinFS_PageCacheEntry* first = &cache->entries[(uint32_t)first_index];
+            if (first->references == UINT32_MAX) {
+                rinfs_page_cache_unlock(cache);
+                if (run_buffer) rinfs_free(run_buffer);
+                return RINFS_ERR_OVERFLOW;
+            }
             first_physical = first->physical_block;
             selected_inode = first->inode_num;
             selected_version = first->content_version;
@@ -2779,7 +2792,8 @@ static int rinfs_page_cache_sync(RinFS_Mount* mount, uint64_t inode_num,
                         entry->inode_generation != selected_generation ||
                         entry->content_version != selected_version ||
                         entry->page_index != next_page ||
-                        entry->physical_block != next_physical) continue;
+                        entry->physical_block != next_physical ||
+                        entry->references == UINT32_MAX) continue;
                     continuation = (int)index;
                     break;
                 }
