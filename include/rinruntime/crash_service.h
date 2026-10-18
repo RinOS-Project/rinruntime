@@ -83,6 +83,15 @@ rinruntime_crash_service_export_notice_with_consent(
     uint8_t* minidump_out, uint32_t minidump_capacity,
     uint32_t* minidump_size_out);
 
+/* Read one bounded page of the caller's authorized local crash history after
+ * a fresh physical-consent gesture. Each call presents its own consent UI and
+ * can wait up to 25 seconds; invoke it from a worker. page_out is cleared on
+ * every failure. */
+RinRuntimeCrashServiceResult
+rinruntime_crash_service_read_history_with_consent(
+    uint32_t expected_service_slot, uint64_t after_sequence,
+    uint16_t capacity, RinCrashServiceHistoryPageV1* page_out);
+
 /* Read only the count and sequence boundary of inaccessible exact-session
  * history records. No crash contents are returned. The caller must display
  * this count before offering its explicit cleanup confirmation. */
