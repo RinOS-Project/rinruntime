@@ -575,6 +575,34 @@ static void rinfs_page_cache_unlock(RinFS_PageCache* cache) {
     rinfs_spin_unlock(&cache->lock);
 }
 
+/* Keep mapping-reference metadata out of the public RinFS_PageCacheEntry
+ * layout.  cache->storage begins with one sidecar counter per entry; hosted
+ * builds place page bytes after that sidecar, while kernel builds allocate
+ * cache pages separately from PMM. */
+static uint32_t* rinfs_page_cache_mapping_reference_slot(
+    RinFS_PageCache* cache, const RinFS_PageCacheEntry* entry) {
+    uintptr_t first;
+    uintptr_t address;
+    uintptr_t offset;
+    uint32_t index;
+    if (!cache || !cache->storage || !entry) return NULL;
+    first = (uintptr_t)&cache->entries[0];
+    address = (uintptr_t)entry;
+    if (address < first) return NULL;
+    offset = address - first;
+    if (offset % sizeof(RinFS_PageCacheEntry) != 0u) return NULL;
+    index = (uint32_t)(offset / sizeof(RinFS_PageCacheEntry));
+    if (index >= RINFS_PAGE_CACHE_CAPACITY) return NULL;
+    return &((uint32_t*)cache->storage)[index];
+}
+
+static uint32_t rinfs_page_cache_mapping_references(
+    RinFS_PageCache* cache, const RinFS_PageCacheEntry* entry) {
+    const uint32_t* slot =
+        rinfs_page_cache_mapping_reference_slot(cache, entry);
+    return slot ? *slot : UINT32_MAX;
+}
+
 static uint64_t g_rinfs_mount_epoch_next = 1u;
 /* Keep RinFS_Mount's public field layout stable on IA-32 while synchronizing
  * its 64-bit coalesced-I/O telemetry. */
@@ -2146,7 +2174,11 @@ static void rinfs_page_cache_discard_locked(RinFS_PageCache* cache,
     entry->dirty_end = 0u;
     entry->writeback_error = 0;
     entry->references = 0u;
-    entry->mapped_references = 0u;
+    {
+        uint32_t* mapped_references =
+            rinfs_page_cache_mapping_reference_slot(cache, entry);
+        if (mapped_references) *mapped_references = 0u;
+    }
     entry->state = RINFS_PAGE_CACHE_FREE;
     entry->valid = 0u;
     entry->generation = RINFS_PAGE_CACHE_INACTIVE;
@@ -2187,7 +2219,9 @@ int rinfs_page_cache_release_view(RinFS_Mount* mount,
         return RINFS_ERR_STALE;
     entry = (RinFS_PageCacheEntry*)address;
     rinfs_page_cache_lock(cache);
-    if (!entry->valid || entry->references <= entry->mapped_references) {
+    if (!entry->valid || entry->references <=
+                             rinfs_page_cache_mapping_references(cache,
+                                                                entry)) {
         rinfs_page_cache_unlock(cache);
         return RINFS_ERR_STALE;
     }
@@ -2208,11 +2242,14 @@ int rinfs_page_cache_release_mapped_page(RinFS_Mount* mount,
         RinFS_PageCacheEntry* entry = &cache->entries[index];
         if (!entry->valid || entry->physical_address != physical_address)
             continue;
-        if (entry->references == 0u || entry->mapped_references == 0u) {
+        uint32_t* mapped_references =
+            rinfs_page_cache_mapping_reference_slot(cache, entry);
+        if (entry->references == 0u || !mapped_references ||
+            *mapped_references == 0u) {
             rinfs_page_cache_unlock(cache);
             return RINFS_ERR_STALE;
         }
-        entry->mapped_references--;
+        (*mapped_references)--;
         entry->references--;
         rinfs_page_cache_unlock(cache);
         return RINFS_OK;
@@ -2295,7 +2332,16 @@ static int rinfs_page_cache_acquire(RinFS_Mount* mount, uint64_t inode_num,
         entry->dirty_end = 0u;
         entry->writeback_error = 0;
         entry->references = 1u;
-        entry->mapped_references = 0u;
+        {
+            uint32_t* mapped_references =
+                rinfs_page_cache_mapping_reference_slot(cache, entry);
+            if (!mapped_references) {
+                rinfs_page_cache_discard_locked(cache, entry);
+                rinfs_page_cache_unlock(cache);
+                return RINFS_ERR_CORRUPT;
+            }
+            *mapped_references = 0u;
+        }
         entry->state = RINFS_PAGE_CACHE_FILLING;
         entry->valid = 1u;
         entry->generation = RINFS_PAGE_CACHE_INACTIVE;
@@ -2350,7 +2396,8 @@ static void rinfs_page_cache_release(RinFS_Mount* mount,
                                      RinFS_PageCacheEntry* entry) {
     if (!mount || !mount->page_cache || !entry) return;
     rinfs_page_cache_lock(mount->page_cache);
-    if (entry->references > entry->mapped_references)
+    if (entry->references > rinfs_page_cache_mapping_references(
+                                mount->page_cache, entry))
         entry->references--;
     rinfs_page_cache_unlock(mount->page_cache);
 }
@@ -2361,13 +2408,15 @@ static int rinfs_page_cache_retain_mapping(RinFS_Mount* mount,
     if (!mount || !mount->page_cache || !entry) return RINFS_ERR_INVAL;
     cache = mount->page_cache;
     rinfs_page_cache_lock(cache);
-    if (!entry->valid ||
-        entry->references <= entry->mapped_references ||
-        entry->mapped_references == UINT32_MAX) {
+    uint32_t* mapped_references =
+        rinfs_page_cache_mapping_reference_slot(cache, entry);
+    if (!entry->valid || !mapped_references ||
+        entry->references <= *mapped_references ||
+        *mapped_references == UINT32_MAX) {
         rinfs_page_cache_unlock(cache);
         return RINFS_ERR_STALE;
     }
-    entry->mapped_references++;
+    (*mapped_references)++;
     rinfs_page_cache_unlock(cache);
     return RINFS_OK;
 }
@@ -2500,7 +2549,16 @@ static int rinfs_page_cache_reserve_fill(
         entry->dirty_end = 0u;
         entry->writeback_error = 0;
         entry->references = 1u;
-        entry->mapped_references = 0u;
+        {
+            uint32_t* mapped_references =
+                rinfs_page_cache_mapping_reference_slot(cache, entry);
+            if (!mapped_references) {
+                rinfs_page_cache_discard_locked(cache, entry);
+                rinfs_page_cache_unlock(cache);
+                return RINFS_ERR_CORRUPT;
+            }
+            *mapped_references = 0u;
+        }
         entry->state = RINFS_PAGE_CACHE_FILLING;
         entry->valid = 1u;
         entry->generation = RINFS_PAGE_CACHE_INACTIVE;
@@ -2959,7 +3017,7 @@ static int rinfs_page_cache_rekey_mapped_clean(
             continue;
         if ((entry->state != RINFS_PAGE_CACHE_CLEAN &&
              !(entry->state == RINFS_PAGE_CACHE_DIRTY &&
-               entry->mapped_references != 0u)) ||
+               rinfs_page_cache_mapping_references(cache, entry) != 0u)) ||
             content_version == 0u ||
             entry->content_version != content_version - 1u) {
             rinfs_page_cache_unlock(cache);
@@ -10706,6 +10764,14 @@ int rinfs_mount_sized_io(int dev_id, uint64_t offset, uint64_t sector_count,
         (mount->sb.s_incompat_features &
          RINFS_FEATURE_INCOMPAT_CONTENT_VERSION64) != 0u) {
         uint32_t index;
+        size_t mapped_reference_bytes;
+        if ((size_t)RINFS_PAGE_CACHE_CAPACITY >
+            ((size_t)-1) / sizeof(uint32_t)) {
+            rinfs_mount_free_runtime_buffers(mount);
+            return RINFS_ERR_OVERFLOW;
+        }
+        mapped_reference_bytes =
+            (size_t)RINFS_PAGE_CACHE_CAPACITY * sizeof(uint32_t);
         mount->page_cache = (RinFS_PageCache*)rinfs_malloc(
             sizeof(RinFS_PageCache));
         if (!mount->page_cache) {
@@ -10721,6 +10787,14 @@ int rinfs_mount_sized_io(int dev_id, uint64_t offset, uint64_t sector_count,
                                                 RINFS_DEVICE_FLAG_SLOW)) != 0u)
             mount->page_cache->readahead_limit_pages = 2u;
 #if defined(RIN_KERNEL) && defined(RIN_FREESTANDING) && defined(__x86_64__)
+        mount->page_cache->storage = (uint8_t*)rinfs_malloc(
+            mapped_reference_bytes);
+        if (!mount->page_cache->storage) {
+            rinfs_mount_free_runtime_buffers(mount);
+            return RINFS_ERR_NOMEM;
+        }
+        rinfs_memset(mount->page_cache->storage, 0,
+                     mapped_reference_bytes);
         /* Kernel file pages are allocator-owned physical pages, not a
          * kmalloc blob. This permits read-only mmap to install the cache page
          * itself while keeping the PMM lifetime separate from metadata. */
@@ -10737,16 +10811,28 @@ int rinfs_mount_sized_io(int dev_id, uint64_t offset, uint64_t sector_count,
                          RINFS_PAGE_CACHE_PAGE_SIZE);
         }
 #else
-        mount->page_cache->storage = (uint8_t*)rinfs_malloc(
+        size_t page_storage_bytes;
+        if ((size_t)RINFS_PAGE_CACHE_CAPACITY >
+                ((size_t)-1) / RINFS_PAGE_CACHE_PAGE_SIZE ||
             (size_t)RINFS_PAGE_CACHE_CAPACITY *
-            RINFS_PAGE_CACHE_PAGE_SIZE);
+                    RINFS_PAGE_CACHE_PAGE_SIZE >
+                ((size_t)-1) - mapped_reference_bytes) {
+            rinfs_mount_free_runtime_buffers(mount);
+            return RINFS_ERR_OVERFLOW;
+        }
+        page_storage_bytes = (size_t)RINFS_PAGE_CACHE_CAPACITY *
+                             RINFS_PAGE_CACHE_PAGE_SIZE;
+        mount->page_cache->storage = (uint8_t*)rinfs_malloc(
+            mapped_reference_bytes + page_storage_bytes);
         if (!mount->page_cache->storage) {
             rinfs_mount_free_runtime_buffers(mount);
             return RINFS_ERR_NOMEM;
         }
+        rinfs_memset(mount->page_cache->storage, 0,
+                     mapped_reference_bytes);
         for (index = 0u; index < RINFS_PAGE_CACHE_CAPACITY; ++index) {
             mount->page_cache->entries[index].data =
-                mount->page_cache->storage +
+                mount->page_cache->storage + mapped_reference_bytes +
                 (size_t)index * RINFS_PAGE_CACHE_PAGE_SIZE;
         }
 #endif

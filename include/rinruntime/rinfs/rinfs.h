@@ -471,7 +471,6 @@ typedef struct {
     uint32_t dirty_end;
     int32_t writeback_error;
     uint32_t references;
-    uint32_t mapped_references;
     uint8_t state;
     uint8_t valid;
     uint8_t generation;
