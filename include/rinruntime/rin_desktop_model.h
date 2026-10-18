@@ -19,7 +19,7 @@
 extern "C" {
 #endif
 
-#define RIN_DESKTOP_MODEL_VERSION 2u
+#define RIN_DESKTOP_MODEL_VERSION 3u
 #define RIN_DESKTOP_MAX_WINDOWS 64u
 #define RIN_DESKTOP_MAX_TASK_ITEMS 64u
 #define RIN_DESKTOP_MAX_PINS 32u
@@ -354,6 +354,7 @@ typedef struct RinDesktopSettings {
     uint32_t taskbar_use_accent_color;
     uint32_t taskbar_transparency_percent;
     uint32_t taskbar_corner_radius_px;
+    uint32_t text_scale_percent;
 } RinDesktopSettings;
 
 typedef struct RinDesktopTrayPreference {

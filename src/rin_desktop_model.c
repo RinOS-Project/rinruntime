@@ -243,6 +243,30 @@ typedef struct RinDesktopSettingsV1 {
     uint32_t tray_policy;
 } RinDesktopSettingsV1;
 
+typedef struct RinDesktopSettingsV2 {
+    uint32_t version;
+    uint32_t flags;
+    uint8_t taskbar_visible;
+    uint8_t tray_visible;
+    uint8_t auto_hide;
+    uint8_t show_on_all_outputs;
+    uint8_t clock_24_hour;
+    uint8_t dnd;
+    uint8_t notification_privacy;
+    uint8_t clock_show_seconds;
+    uint32_t position;
+    uint32_t output_mode;
+    uint32_t theme_id;
+    uint32_t reduced_motion;
+    uint32_t high_contrast;
+    uint32_t reduced_transparency;
+    uint32_t system_icon_visibility;
+    uint32_t tray_policy;
+    uint32_t taskbar_use_accent_color;
+    uint32_t taskbar_transparency_percent;
+    uint32_t taskbar_corner_radius_px;
+} RinDesktopSettingsV2;
+
 void rin_desktop_model_init(RinDesktopModel* model)
 {
     if (!model) return;
@@ -255,6 +279,7 @@ void rin_desktop_model_init(RinDesktopModel* model)
     model->settings.taskbar_use_accent_color = 1u;
     model->settings.taskbar_transparency_percent = 80u;
     model->settings.taskbar_corner_radius_px = 8u;
+    model->settings.text_scale_percent = 100u;
     model->settings.notification_privacy = RIN_DESKTOP_NOTIFICATION_HIDE_BACKGROUND;
     model->settings.position = RIN_DESKTOP_TASKBAR_BOTTOM;
     model->settings.output_mode = RIN_DESKTOP_OUTPUT_PRIMARY_ONLY;
@@ -1151,6 +1176,15 @@ int rin_desktop_model_deserialize_settings(RinDesktopModel* model, const uint8_t
         settings.taskbar_use_accent_color = 1u;
         settings.taskbar_transparency_percent = 80u;
         settings.taskbar_corner_radius_px = 8u;
+        settings.text_scale_percent = 100u;
+        settings_bytes = (uint32_t)sizeof(old_settings);
+    } else if (settings_version == 2u) {
+        RinDesktopSettingsV2 old_settings;
+        if (size < 16u + sizeof(old_settings)) return -1;
+        memcpy(&old_settings, input + 8u, sizeof(old_settings));
+        memcpy(&settings, &old_settings, sizeof(old_settings));
+        settings.version = RIN_DESKTOP_MODEL_VERSION;
+        settings.text_scale_percent = 100u;
         settings_bytes = (uint32_t)sizeof(old_settings);
     } else if (settings_version == RIN_DESKTOP_MODEL_VERSION) {
         if (size < 16u + sizeof(settings)) return -1;
@@ -1193,6 +1227,8 @@ int rin_desktop_model_deserialize_settings(RinDesktopModel* model, const uint8_t
         settings.output_mode > RIN_DESKTOP_OUTPUT_ALL_WINDOWS ||
         settings.reduced_motion > 1u || settings.high_contrast > 1u ||
         settings.reduced_transparency > 1u ||
+        settings.text_scale_percent < 100u ||
+        settings.text_scale_percent > 200u ||
         settings.taskbar_use_accent_color > 1u ||
         settings.taskbar_transparency_percent > 100u ||
         settings.taskbar_corner_radius_px > 20u ||
