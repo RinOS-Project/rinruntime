@@ -548,6 +548,9 @@ typedef struct {
     /* Boot-local mount identity.  Zero disables dentry sharing; it is not a
      * persistent filesystem generation and is never serialized to disk. */
     uint64_t           mount_epoch;
+    /* Userland-only, kernel-owned cache-lifetime lease. Zero in kernel and
+     * host builds; released only after all mount owners have drained. */
+    uint64_t           external_mount_lease_token;
     RinFS_DentryCache* dentry_cache;
     RinFS_DirectoryIndex* directory_index;
     RinFS_InodeCache*  inode_cache;

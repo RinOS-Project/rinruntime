@@ -38,6 +38,19 @@ RinResultCode rin_app_install_target_open(
 RinResultCode rin_app_install_backup_source_open(
     uint32_t block_id, uint64_t minimum_blocks,
     RinInstallTargetSessionV1* session_out);
+/* Registers the lifetime of one user-space RinFS cache on this target root.
+ * A live lease prevents a destructive maintenance transaction from starting. */
+RinResultCode rin_app_install_target_rinfs_mount_begin(
+    uint64_t target_handle, uint64_t first_lba, uint64_t sector_count,
+    uint64_t* mount_lease_token_out);
+RinResultCode rin_app_install_target_rinfs_mount_end(
+    uint64_t target_handle, uint64_t mount_lease_token);
+/* Registers any user-space RinFS cache against the live block-root range.
+ * The owner-bound lease is released only after mount owners and mappings drain. */
+RinResultCode rin_app_rinfs_cache_lease_begin(
+    uint32_t block_id, uint64_t first_lba, uint64_t sector_count,
+    uint64_t* mount_lease_token_out);
+RinResultCode rin_app_rinfs_cache_lease_end(uint64_t mount_lease_token);
 RinResultCode rin_app_install_target_validate(uint64_t handle);
 RinResultCode rin_app_install_target_close(uint64_t handle);
 RinResultCode rin_app_install_target_authorize(uint64_t target_handle,

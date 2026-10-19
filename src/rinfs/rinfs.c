@@ -6,6 +6,9 @@
 
 #include <rinruntime/rinfs/rinfs.h>
 #include <rinruntime/rinfs/vfs_open_flags.h>
+#if defined(RINFS_USERLAND_MOUNT_LEASES) && !defined(RIN_KERNEL)
+#include <rinruntime/rin_installer_runtime.h>
+#endif
 #if !defined(RIN_KERNEL)
 /* The portable filesystem keeps kernel performance tracing private. */
 #define RIN_TRACE_ID_UNKNOWN UINT32_MAX
@@ -10666,10 +10669,9 @@ static void rinfs_mount_free_runtime_buffers(RinFS_Mount* mount) {
 }
 
 /* Mount filesystem */
-int rinfs_mount_sized_io(int dev_id, uint64_t offset, uint64_t sector_count,
-                         uint32_t flags,
-                         const RinFS_DeviceOps* device_ops,
-                         RinFS_Mount* mount) {
+static int rinfs_mount_sized_io_unleased(
+    int dev_id, uint64_t offset, uint64_t sector_count, uint32_t flags,
+    const RinFS_DeviceOps* device_ops, RinFS_Mount* mount) {
     uint64_t filesystem_sectors;
     uint64_t bits_per_bitmap_block;
     uint64_t block_bitmap_blocks;
@@ -11115,6 +11117,53 @@ int rinfs_mount_sized_io(int dev_id, uint64_t offset, uint64_t sector_count,
     return RINFS_OK;
 }
 
+int rinfs_mount_sized_io(int dev_id, uint64_t offset, uint64_t sector_count,
+                         uint32_t flags,
+                         const RinFS_DeviceOps* device_ops,
+                         RinFS_Mount* mount) {
+    uint64_t lease_token = 0u;
+    int result;
+    if (!mount) return RINFS_ERR_INVAL;
+#if defined(RINFS_USERLAND_MOUNT_LEASES) && !defined(RIN_KERNEL)
+    if (dev_id > 0) {
+        if (rin_app_rinfs_cache_lease_begin(
+                (uint32_t)dev_id, offset, sector_count, &lease_token) !=
+            RIN_RESULT_OK)
+            return RINFS_ERR_BUSY;
+    }
+#endif
+    result = rinfs_mount_sized_io_unleased(
+        dev_id, offset, sector_count, flags, device_ops, mount);
+    if (result != RINFS_OK) {
+        if (lease_token != 0u) {
+            mount->external_mount_lease_token = lease_token;
+            mount->mounted = 0;
+#if defined(RINFS_USERLAND_MOUNT_LEASES) && !defined(RIN_KERNEL)
+            if (rin_app_rinfs_cache_lease_end(lease_token) == RIN_RESULT_OK) {
+                mount->external_mount_lease_token = 0u;
+            } else {
+                return RINFS_ERR_PENDING;
+            }
+#endif
+        }
+        return result;
+    }
+    mount->external_mount_lease_token = lease_token;
+    return RINFS_OK;
+}
+
+static int rinfs_mount_external_lease_end(RinFS_Mount* mount) {
+    if (!mount) return RINFS_ERR_INVAL;
+    if (mount->external_mount_lease_token == 0u) return RINFS_OK;
+#if defined(RINFS_USERLAND_MOUNT_LEASES) && !defined(RIN_KERNEL)
+    if (rin_app_rinfs_cache_lease_end(
+            mount->external_mount_lease_token) != RIN_RESULT_OK)
+        return RINFS_ERR_PENDING;
+#endif
+    mount->external_mount_lease_token = 0u;
+    return RINFS_OK;
+}
+
 /* Unmount filesystem */
 int rinfs_abandon_dirty_mount(RinFS_Mount* mount) {
     if (!mount || !mount->mounted) return RINFS_ERR_INVAL;
@@ -11185,11 +11234,16 @@ int rinfs_abandon_dirty_mount(RinFS_Mount* mount) {
      * any partially completed operation on the next mount. */
     rinfs_mount_free_runtime_buffers(mount);
     mount->mounted = 0;
-    return RINFS_OK;
+    return rinfs_mount_external_lease_end(mount);
 }
 
 int rinfs_unmount(RinFS_Mount* mount) {
-    if (!mount || !mount->mounted) return RINFS_ERR_INVAL;
+    if (!mount) return RINFS_ERR_INVAL;
+    if (!mount->mounted) {
+        if (mount->external_mount_lease_token != 0u)
+            return rinfs_mount_external_lease_end(mount);
+        return RINFS_ERR_INVAL;
+    }
 
     /* A final descriptor close may have retained a pathname obligation after
      * a transient unlink/rmdir failure. Retry it before deciding whether the
@@ -11323,7 +11377,7 @@ int rinfs_unmount(RinFS_Mount* mount) {
     mount->mounted = 0;
     rinfs_debug("[RinFS] Unmounted\n");
     
-    return RINFS_OK;
+    return rinfs_mount_external_lease_end(mount);
 }
 
 int rinfs_mount_set_device_flags(RinFS_Mount* mount, uint32_t device_flags) {

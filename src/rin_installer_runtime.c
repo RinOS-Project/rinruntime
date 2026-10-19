@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: MIT */
 /* Public adapters for kernel-owned installer target sessions. */
 
-#include <rinruntime/rin_installer_runtime.h>
+#include "../include/rinruntime/rin_installer_runtime.h"
 
 #include <limits.h>
 #include <stddef.h>
@@ -199,6 +199,87 @@ RinResultCode rin_app_install_backup_source_open(
     return installer_target_open_with_syscall(
         (uintptr_t)RIN_SYS_INSTALL_BACKUP_SOURCE_OPEN, block_id,
         minimum_blocks, session_out);
+}
+
+RinResultCode rin_app_install_target_rinfs_mount_begin(
+    uint64_t target_handle, uint64_t first_lba, uint64_t sector_count,
+    uint64_t* mount_lease_token_out)
+{
+#if !defined(_WIN32)
+    intptr_t result;
+#endif
+    if (mount_lease_token_out) *mount_lease_token_out = 0u;
+    if (target_handle == 0u || target_handle > (uint64_t)UINTPTR_MAX ||
+        first_lba > (uint64_t)UINTPTR_MAX ||
+        sector_count == 0u || sector_count > (uint64_t)UINTPTR_MAX ||
+        !mount_lease_token_out)
+        return RIN_RESULT_INVALID_ARGUMENT;
+#if defined(_WIN32)
+    return RIN_RESULT_NOT_SUPPORTED;
+#else
+    result = _syscall3(
+        (uintptr_t)RIN_SYS_INSTALL_TARGET_RINFS_MOUNT_BEGIN,
+        (uintptr_t)target_handle, (uintptr_t)first_lba,
+        (uintptr_t)sector_count);
+    if (result < 0) return installer_runtime_result(result);
+    if (result == 0) return RIN_RESULT_IO;
+    *mount_lease_token_out = (uint64_t)result;
+    return RIN_RESULT_OK;
+#endif
+}
+
+RinResultCode rin_app_install_target_rinfs_mount_end(
+    uint64_t target_handle, uint64_t mount_lease_token)
+{
+    if (target_handle == 0u || target_handle > (uint64_t)UINTPTR_MAX ||
+        mount_lease_token == 0u ||
+        mount_lease_token > (uint64_t)UINTPTR_MAX)
+        return RIN_RESULT_INVALID_HANDLE;
+#if defined(_WIN32)
+    return RIN_RESULT_NOT_SUPPORTED;
+#else
+    return installer_runtime_result(_syscall2(
+        (uintptr_t)RIN_SYS_INSTALL_TARGET_RINFS_MOUNT_END,
+        (uintptr_t)target_handle, (uintptr_t)mount_lease_token));
+#endif
+}
+
+RinResultCode rin_app_rinfs_cache_lease_begin(
+    uint32_t block_id, uint64_t first_lba, uint64_t sector_count,
+    uint64_t* mount_lease_token_out)
+{
+#if !defined(_WIN32)
+    intptr_t result;
+#endif
+    if (mount_lease_token_out) *mount_lease_token_out = 0u;
+    if (block_id == 0u || !mount_lease_token_out ||
+        (sector_count != 0u && first_lba > UINT64_MAX - sector_count))
+        return RIN_RESULT_INVALID_ARGUMENT;
+#if defined(_WIN32)
+    return RIN_RESULT_NOT_SUPPORTED;
+#else
+    result = _syscall3(
+        (uintptr_t)RIN_SYS_RINFS_CACHE_LEASE_BEGIN, (uintptr_t)block_id,
+        (uintptr_t)first_lba, (uintptr_t)sector_count);
+    if (result < 0) return installer_runtime_result(result);
+    if (result == 0) return RIN_RESULT_IO;
+    *mount_lease_token_out = (uint64_t)result;
+    return RIN_RESULT_OK;
+#endif
+}
+
+RinResultCode rin_app_rinfs_cache_lease_end(uint64_t mount_lease_token)
+{
+    if (mount_lease_token == 0u ||
+        mount_lease_token > (uint64_t)UINTPTR_MAX)
+        return RIN_RESULT_INVALID_ARGUMENT;
+#if defined(_WIN32)
+    return RIN_RESULT_NOT_SUPPORTED;
+#else
+    return installer_runtime_result(_syscall1(
+        (uintptr_t)RIN_SYS_RINFS_CACHE_LEASE_END,
+        (uintptr_t)mount_lease_token));
+#endif
 }
 
 RinResultCode rin_app_install_target_validate(uint64_t handle)
