@@ -244,7 +244,8 @@ RinResultCode rin_app_install_target_authorize(uint64_t target_handle,
 static RinResultCode installer_target_io(uintptr_t syscall_number,
                                          uint64_t handle, uint64_t lba,
                                          uint32_t block_count,
-                                         const void* buffer)
+                                         const void* buffer,
+                                         uint16_t flags)
 {
     RinInstallTargetReadV1 request;
     uint64_t byte_count;
@@ -252,7 +253,8 @@ static RinResultCode installer_target_io(uintptr_t syscall_number,
     if (handle == 0u || handle > (uint64_t)UINTPTR_MAX)
         return RIN_RESULT_INVALID_HANDLE;
     if (buffer == NULL || block_count == 0u || block_count > 128u ||
-        lba > UINT64_MAX - block_count)
+        lba > UINT64_MAX - block_count ||
+        (flags & ~(RIN_STORAGE_IO_FUA | RIN_STORAGE_IO_BARRIER)) != 0u)
         return RIN_RESULT_INVALID_ARGUMENT;
     byte_count = (uint64_t)block_count * UINT64_C(512);
     if (byte_count > UINTPTR_MAX - (uintptr_t)buffer)
@@ -267,6 +269,7 @@ static RinResultCode installer_target_io(uintptr_t syscall_number,
     request.struct_size = (uint32_t)sizeof(request);
     request.version = RIN_CONTRACT_STRUCT_VERSION_1;
     request.handle = handle;
+    request.flags = flags;
     request.lba = lba;
     request.buffer = (uint64_t)(uintptr_t)buffer;
     request.block_count = block_count;
@@ -282,15 +285,16 @@ RinResultCode rin_app_install_target_read(uint64_t handle, uint64_t lba,
                                           void* output)
 {
     return installer_target_io((uintptr_t)RIN_SYS_INSTALL_TARGET_READ,
-                               handle, lba, block_count, output);
+                               handle, lba, block_count, output, 0u);
 }
 
 RinResultCode rin_app_install_target_write(uint64_t handle, uint64_t lba,
                                            uint32_t block_count,
-                                           const void* input)
+                                           const void* input,
+                                           uint16_t flags)
 {
     return installer_target_io((uintptr_t)RIN_SYS_INSTALL_TARGET_WRITE,
-                               handle, lba, block_count, input);
+                               handle, lba, block_count, input, flags);
 }
 
 RinResultCode rin_app_install_target_flush(uint64_t handle)

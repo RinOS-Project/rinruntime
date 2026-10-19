@@ -47,7 +47,8 @@ RinResultCode rin_app_install_target_read(uint64_t handle, uint64_t lba,
                                           void* output);
 RinResultCode rin_app_install_target_write(uint64_t handle, uint64_t lba,
                                            uint32_t block_count,
-                                           const void* input);
+                                           const void* input,
+                                           uint16_t flags);
 RinResultCode rin_app_install_target_flush(uint64_t handle);
 RinResultCode rin_app_install_target_end(uint64_t handle);
 
