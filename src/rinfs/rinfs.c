@@ -11407,7 +11407,6 @@ int rinfs_abandon_dirty_mount(RinFS_Mount* mount) {
     int result;
     if (!mount) return RINFS_ERR_INVAL;
     mount_epoch = mount->mount_epoch;
-    if (mount_epoch == 0u) return rinfs_abandon_dirty_mount_core(mount);
     result = rinfs_restore_mount_teardown_begin(mount, mount_epoch);
     if (result != RINFS_OK) return result;
     result = rinfs_abandon_dirty_mount_core(mount);
@@ -11566,7 +11565,6 @@ int rinfs_unmount(RinFS_Mount* mount) {
     int result;
     if (!mount) return RINFS_ERR_INVAL;
     mount_epoch = mount->mount_epoch;
-    if (mount_epoch == 0u) return rinfs_unmount_core(mount);
     result = rinfs_restore_mount_teardown_begin(mount, mount_epoch);
     if (result != RINFS_OK) return result;
     result = rinfs_unmount_core(mount);
@@ -18016,7 +18014,7 @@ static int rinfs_restore_mount_teardown_begin(RinFS_Mount* mount,
                                               uint64_t mount_epoch) {
     RinFS_RestoreMountGateRecord* gate;
     uint32_t free_gate = RINFS_MAX_RESTORE_MOUNT_GATES;
-    if (!mount || mount_epoch == 0u) return RINFS_ERR_INVAL;
+    if (!mount) return RINFS_ERR_INVAL;
     rinfs_spin_lock(&g_rinfs_restore_transaction_lock);
     if (!rinfs_restore_transaction_registry_audit_locked()) {
         rinfs_spin_unlock(&g_rinfs_restore_transaction_lock);
@@ -18045,7 +18043,10 @@ static int rinfs_restore_mount_teardown_begin(RinFS_Mount* mount,
         }
         gate = &g_rinfs_restore_mount_gates[free_gate];
         gate->mount = mount;
-        gate->mount_epoch = mount_epoch;
+        /* The kernel VFS retires the public mount epoch before entering the
+         * library unmount path. Keep a private teardown sentinel so a new
+         * transaction cannot enter while that retired mount is dismantled. */
+        gate->mount_epoch = mount_epoch != 0u ? mount_epoch : UINT64_MAX;
         gate->teardown_active = 1u;
     }
     rinfs_spin_unlock(&g_rinfs_restore_transaction_lock);
@@ -18056,12 +18057,13 @@ static void rinfs_restore_mount_teardown_end(RinFS_Mount* mount,
                                              uint64_t mount_epoch,
                                              int unmounted) {
     RinFS_RestoreMountGateRecord* gate;
+    (void)mount_epoch;
     (void)unmounted;
-    if (!mount || mount_epoch == 0u) return;
+    if (!mount) return;
     rinfs_spin_lock(&g_rinfs_restore_transaction_lock);
     if (rinfs_restore_transaction_registry_audit_locked()) {
         gate = rinfs_restore_mount_gate_find_locked(mount);
-        if (gate && gate->mount_epoch == mount_epoch &&
+        if (gate && gate->teardown_active != 0u &&
             gate->transaction_references == 0u)
             rinfs_memset(gate, 0, sizeof(*gate));
     }
