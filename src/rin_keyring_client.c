@@ -244,6 +244,24 @@ static int client_kerberos_operation_ranges_alias(
     return 0;
 }
 
+static int client_kerberos_principal_ranges_alias(
+    const RinKeyringHandleV1* handle, uint8_t* output,
+    uint32_t output_capacity, uint32_t* output_size, uint64_t* generation)
+{
+    return client_ranges_overlap(handle, (uint32_t)sizeof(*handle), output,
+                                 output_capacity) ||
+           client_ranges_overlap(handle, (uint32_t)sizeof(*handle),
+                                 output_size, (uint32_t)sizeof(*output_size)) ||
+           client_ranges_overlap(handle, (uint32_t)sizeof(*handle), generation,
+                                 (uint32_t)sizeof(*generation)) ||
+           client_ranges_overlap(output, output_capacity, output_size,
+                                 (uint32_t)sizeof(*output_size)) ||
+           client_ranges_overlap(output, output_capacity, generation,
+                                 (uint32_t)sizeof(*generation)) ||
+           client_ranges_overlap(output_size, (uint32_t)sizeof(*output_size),
+                                 generation, (uint32_t)sizeof(*generation));
+}
+
 static int keyring_result_valid(int status);
 
 void rin_keyring_client_clear(void* memory, size_t size)
@@ -740,8 +758,19 @@ int rin_keyring_client_kerberos_principal(
     int fd;
     int status;
 
+    /* Reject aliases before clearing anything: output_size/generation are
+     * caller-owned metadata, and an overlapping output buffer would make a
+     * failure cleanup overwrite the very metadata used to report failure. */
+    if (client_kerberos_principal_ranges_alias(
+            handle, output, output_capacity, output_size, generation))
+        return RIN_KEYRING_INVALID;
     if (output_size) *output_size = 0u;
     if (generation) *generation = 0u;
+    /* Every failure path must discard a principal that may have belonged to
+     * an earlier successful request.  Do not wipe an unbounded caller range;
+     * capacities above the public maximum are rejected without dereference. */
+    if (output != NULL && output_capacity <= RIN_KEYRING_MAX_SECRET_SIZE)
+        secure_clear(output, output_capacity);
     memset(&response, 0, sizeof(response));
     memset(&principal_response, 0, sizeof(principal_response));
     if (!handle || !output || output_capacity == 0u ||
@@ -749,7 +778,6 @@ int rin_keyring_client_kerberos_principal(
         !generation || rin_wire_capability_generation_valid(handle->generation) !=
             RIN_WIRE_CAPABILITY_OK)
         return RIN_KEYRING_INVALID;
-    secure_clear(output, output_capacity);
     fd = connect_service();
     if (fd < 0) return RIN_KEYRING_LOCKED;
     memset(&request_body, 0, sizeof(request_body));
