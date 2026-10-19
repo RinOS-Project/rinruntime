@@ -138,7 +138,8 @@ RinResultCode rin_app_block_physical_device_id(
     return RIN_RESULT_OK;
 }
 
-RinResultCode rin_app_install_target_open(
+static RinResultCode installer_target_open_with_syscall(
+    uintptr_t syscall_number,
     uint32_t block_id, uint64_t minimum_blocks,
     RinInstallTargetSessionV1* session_out)
 {
@@ -153,9 +154,10 @@ RinResultCode rin_app_install_target_open(
     session.struct_size = (uint32_t)sizeof(session);
     session.version = RIN_CONTRACT_STRUCT_VERSION_1;
 #if defined(_WIN32)
+    (void)syscall_number;
     return RIN_RESULT_NOT_SUPPORTED;
 #else
-    result = _syscall3((uintptr_t)RIN_SYS_INSTALL_TARGET_OPEN,
+    result = _syscall3(syscall_number,
                        (uintptr_t)block_id, (uintptr_t)minimum_blocks,
                        (uintptr_t)&session);
     if (installer_runtime_result(result) != RIN_RESULT_OK)
@@ -179,6 +181,24 @@ RinResultCode rin_app_install_target_open(
     installer_runtime_zero(&session, sizeof(session));
     return RIN_RESULT_OK;
 #endif
+}
+
+RinResultCode rin_app_install_target_open(
+    uint32_t block_id, uint64_t minimum_blocks,
+    RinInstallTargetSessionV1* session_out)
+{
+    return installer_target_open_with_syscall(
+        (uintptr_t)RIN_SYS_INSTALL_TARGET_OPEN, block_id, minimum_blocks,
+        session_out);
+}
+
+RinResultCode rin_app_install_backup_source_open(
+    uint32_t block_id, uint64_t minimum_blocks,
+    RinInstallTargetSessionV1* session_out)
+{
+    return installer_target_open_with_syscall(
+        (uintptr_t)RIN_SYS_INSTALL_BACKUP_SOURCE_OPEN, block_id,
+        minimum_blocks, session_out);
 }
 
 RinResultCode rin_app_install_target_validate(uint64_t handle)
