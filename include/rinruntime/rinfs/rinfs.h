@@ -1125,6 +1125,12 @@ int rinfs_rename_no_replace_expected(
     RinFS_Mount* mount, uint64_t old_dir, const char* old_name,
     uint64_t new_dir, const char* new_name, uint64_t expected_source_inode,
     uint32_t expected_source_generation);
+/* Atomically replace the destination only when the source name still resolves
+ * to the caller's pinned inode and generation. */
+int rinfs_rename_expected(
+    RinFS_Mount* mount, uint64_t old_dir, const char* old_name,
+    uint64_t new_dir, const char* new_name, uint64_t expected_source_inode,
+    uint32_t expected_source_generation);
 int rinfs_link(RinFS_Mount* mount, uint64_t dir_ino, const char* name, uint64_t target_ino);
 /* Publish an O_TMPFILE lifetime under one name, recovering a persisted
  * directory entry through its orphan-intent marker if power is lost. */
