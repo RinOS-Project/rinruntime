@@ -447,7 +447,7 @@ typedef struct RinFS_CloseReferenceRecord {
     uint32_t wincompat_share_access;
     uint32_t wincompat_share_mode;
     uint32_t wincompat_share_registered;
-    uint32_t reserved3;
+    uint32_t active_operations;
 } RinFS_CloseReferenceRecord;
 
 #define RINFS_MAX_CLOSE_REFERENCES 512u
@@ -1017,7 +1017,7 @@ static uint64_t rinfs_close_ref_integrity_value(
             hash, record->wincompat_share_mode, 4u);
         hash = rinfs_close_ref_hash_u64(
             hash, record->wincompat_share_registered, 4u);
-        hash = rinfs_close_ref_hash_u64(hash, record->reserved3, 4u);
+        hash = rinfs_close_ref_hash_u64(hash, record->active_operations, 4u);
     }
     return hash != 0u ? hash : UINT64_C(1);
 }
@@ -1040,7 +1040,7 @@ static int rinfs_close_ref_record_equal(
            left->wincompat_share_mode == right->wincompat_share_mode &&
            left->wincompat_share_registered ==
                right->wincompat_share_registered &&
-           left->reserved3 == right->reserved3;
+           left->active_operations == right->active_operations;
 }
 
 static int rinfs_close_ref_image_equal(
@@ -1142,7 +1142,7 @@ static int rinfs_close_ref_zero_state_locked(
             record->wincompat_share_access != 0u ||
             record->wincompat_share_mode != 0u ||
             record->wincompat_share_registered != 0u ||
-            record->reserved3 != 0u) return 0;
+            record->active_operations != 0u) return 0;
     }
     return 1;
 }
@@ -1314,11 +1314,13 @@ static int rinfs_close_ref_audit_locked(void) {
                 record->cookie != 0u || record->wincompat_share_access != 0u ||
                 record->wincompat_share_mode != 0u ||
                 record->wincompat_share_registered != 0u ||
-                record->reserved3 != 0u) return 0;
+                record->active_operations != 0u) return 0;
             continue;
         }
         if (record->in_use != 1u || record->reserved != 0u ||
-            record->reserved2 != 0u || record->reserved3 != 0u ||
+            record->reserved2 != 0u ||
+            (record->state != RINFS_CLOSE_REF_ACTIVE &&
+             record->active_operations != 0u) ||
             record->wincompat_share_registered > 1u ||
             (record->wincompat_share_registered != 0u &&
              record->kind != RINFS_CLOSE_REF_FILE) ||
@@ -3602,22 +3604,33 @@ static int rinfs_close_ref_fields_match(
            record->cookie == cookie;
 }
 
-/* A copied RinFS_File/RinFS_Dir retains its scalar fields after the original
- * handle is closed.  Inode generations usually make such a copy stale after
- * reuse, but they do not protect an unchanged inode or a copied handle used
- * after the mount object is reused.  Validate the exact live close-reference
- * owner before any operation that consumes a handle. */
-static int rinfs_close_ref_validate_active(
+typedef struct RinFS_CloseReferenceOperationLease {
+    RinFS_Mount* mount;
+    uint64_t mount_epoch;
+    uint64_t inode_num;
+    uint32_t inode_generation;
+    uint64_t content_pin_token;
+    uint64_t generation;
+    uint64_t cookie;
+    uint32_t kind;
+    uint32_t active;
+} RinFS_CloseReferenceOperationLease;
+
+/* Every operation holds the exact open-reference record until it has stopped
+ * using the mount. Close may begin only after this count returns to zero. */
+static int rinfs_close_ref_begin_operation(
     RinFS_Mount* mount, uint64_t mount_epoch, uint64_t inode_num,
     uint32_t inode_generation, uint64_t content_pin_token, uint32_t kind,
-    uint64_t generation, uint64_t cookie) {
+    uint64_t generation, uint64_t cookie,
+    RinFS_CloseReferenceOperationLease* operation) {
     RinFS_CloseReferenceRecord* record;
     int result = RINFS_ERR_STALE;
+    if (operation) rinfs_memset(operation, 0, sizeof(*operation));
     if (!mount || mount_epoch == 0u || inode_num == 0u ||
         inode_generation == 0u || content_pin_token == 0u ||
         generation == 0u || cookie == 0u ||
         (kind != RINFS_CLOSE_REF_FILE &&
-         kind != RINFS_CLOSE_REF_DIRECTORY))
+         kind != RINFS_CLOSE_REF_DIRECTORY) || !operation)
         return RINFS_ERR_INVAL;
     if (!mount->mounted || mount->mount_epoch != mount_epoch)
         return RINFS_ERR_STALE;
@@ -3630,37 +3643,88 @@ static int rinfs_close_ref_validate_active(
         if (rinfs_close_ref_fields_match(
                 record, mount, mount_epoch, inode_num, inode_generation,
                 content_pin_token, kind, generation, cookie) &&
-            record->state == RINFS_CLOSE_REF_ACTIVE)
-            result = RINFS_OK;
+            record->state == RINFS_CLOSE_REF_ACTIVE) {
+            if (record->active_operations == UINT32_MAX) {
+                result = RINFS_ERR_OVERFLOW;
+            } else {
+                ++record->active_operations;
+                operation->mount = mount;
+                operation->mount_epoch = mount_epoch;
+                operation->inode_num = inode_num;
+                operation->inode_generation = inode_generation;
+                operation->content_pin_token = content_pin_token;
+                operation->generation = generation;
+                operation->cookie = cookie;
+                operation->kind = kind;
+                operation->active = 1u;
+                rinfs_close_ref_integrity_update();
+                result = RINFS_OK;
+            }
+        }
     }
     rinfs_spin_unlock(&g_rinfs_close_reference_lock);
     return result;
 }
 
-static int rinfs_file_handle_validate(const RinFS_File* file) {
+static int rinfs_close_ref_end_operation(
+    RinFS_CloseReferenceOperationLease* operation) {
+    RinFS_CloseReferenceRecord* record;
+    int result = RINFS_ERR_STALE;
+    if (!operation || operation->active != 1u || !operation->mount ||
+        operation->generation == 0u || operation->cookie == 0u)
+        return RINFS_ERR_INVAL;
+    rinfs_spin_lock(&g_rinfs_close_reference_lock);
+    if (!rinfs_close_ref_audit_locked()) {
+        result = RINFS_ERR_CORRUPT;
+    } else {
+        record = rinfs_close_ref_find_locked(operation->generation);
+        if (rinfs_close_ref_fields_match(
+                record, operation->mount, operation->mount_epoch,
+                operation->inode_num, operation->inode_generation,
+                operation->content_pin_token, operation->kind,
+                operation->generation, operation->cookie) &&
+            record->state == RINFS_CLOSE_REF_ACTIVE &&
+            record->active_operations != 0u) {
+            --record->active_operations;
+            rinfs_close_ref_integrity_update();
+            result = RINFS_OK;
+        } else {
+            result = RINFS_ERR_CORRUPT;
+        }
+    }
+    rinfs_spin_unlock(&g_rinfs_close_reference_lock);
+    rinfs_memset(operation, 0, sizeof(*operation));
+    return result;
+}
+
+static int rinfs_file_operation_begin(
+    const RinFS_File* file, RinFS_CloseReferenceOperationLease* operation) {
     if (!file || file->in_use != 1 || !file->mount)
         return RINFS_ERR_INVAL;
     if (file->content_pin_active != 1 ||
         file->content_reclaim_pending != 0)
         return RINFS_ERR_STALE;
-    return rinfs_close_ref_validate_active(
+    return rinfs_close_ref_begin_operation(
         file->mount, file->close_reference_mount_epoch,
         file->inode_num, file->content_pin_generation,
         file->content_pin_token, RINFS_CLOSE_REF_FILE,
-        file->close_reference_generation, file->close_reference_cookie);
+        file->close_reference_generation, file->close_reference_cookie,
+        operation);
 }
 
-static int rinfs_directory_handle_validate(const RinFS_Dir* dir) {
+static int rinfs_directory_operation_begin(
+    const RinFS_Dir* dir, RinFS_CloseReferenceOperationLease* operation) {
     if (!dir || dir->in_use != 1 || !dir->mount)
         return RINFS_ERR_INVAL;
     if (dir->content_pin_active != 1 ||
         dir->content_reclaim_pending != 0)
         return RINFS_ERR_STALE;
-    return rinfs_close_ref_validate_active(
+    return rinfs_close_ref_begin_operation(
         dir->mount, dir->close_reference_mount_epoch,
         dir->inode_num, dir->content_pin_generation,
         dir->content_pin_token, RINFS_CLOSE_REF_DIRECTORY,
-        dir->close_reference_generation, dir->close_reference_cookie);
+        dir->close_reference_generation, dir->close_reference_cookie,
+        operation);
 }
 
 static int rinfs_close_ref_finish(
@@ -3748,6 +3812,11 @@ static int rinfs_close_ref_begin(RinFS_Mount* mount, uint64_t mount_epoch,
          record->state != RINFS_CLOSE_REF_RELEASED)) {
         rinfs_spin_unlock(&g_rinfs_close_reference_lock);
         return RINFS_ERR_CORRUPT;
+    }
+    if (record->state == RINFS_CLOSE_REF_ACTIVE &&
+        record->active_operations != 0u) {
+        rinfs_spin_unlock(&g_rinfs_close_reference_lock);
+        return RINFS_ERR_PENDING;
     }
     rinfs_spin_lock(&mount->content_lease_lock);
     node = rinfs_content_lease_find(mount, inode_num, inode_generation);
@@ -11913,12 +11982,10 @@ void rinfs_content_snapshot_end(RinFS_ContentSnapshot* snapshot) {
     rinfs_content_lease_release(mount, ino, inode_generation, generation, 0);
 }
 
-int rinfs_mmap_source_create(const RinFS_File* file,
-                             RinFS_MmapSource** source_out,
-                             uint64_t* inode_out,
-                             uint64_t* size_out,
-                             uint64_t* reference_generation_out,
-                             uint64_t* reference_cookie_out) {
+static int rinfs_mmap_source_create_core(
+    const RinFS_File* file, RinFS_MmapSource** source_out,
+    uint64_t* inode_out, uint64_t* size_out,
+    uint64_t* reference_generation_out, uint64_t* reference_cookie_out) {
     RinFS_MmapSource* source;
     RinFS_ContentLeaseNode* lease = NULL;
     RinFS_Inode inode;
@@ -11933,8 +12000,10 @@ int rinfs_mmap_source_create(const RinFS_File* file,
     if (!source_out || !inode_out || !size_out) {
         return RINFS_ERR_INVAL;
     }
-    err = rinfs_file_handle_validate(file);
-    if (err != RINFS_OK) return err;
+    if (!file || !file->in_use || !file->mount ||
+        !file->content_pin_active || file->content_pin_token == 0u ||
+        file->content_pin_generation == 0u)
+        return RINFS_ERR_INVAL;
 
     source = (RinFS_MmapSource*)rinfs_malloc(sizeof(*source));
     if (!source) return RINFS_ERR_NOMEM;
@@ -11979,6 +12048,29 @@ int rinfs_mmap_source_create(const RinFS_File* file,
     *size_out = inode.i_size;
     *source_out = source;
     return RINFS_OK;
+}
+
+int rinfs_mmap_source_create(const RinFS_File* file,
+                             RinFS_MmapSource** source_out,
+                             uint64_t* inode_out,
+                             uint64_t* size_out,
+                             uint64_t* reference_generation_out,
+                             uint64_t* reference_cookie_out) {
+    RinFS_CloseReferenceOperationLease operation;
+    int result;
+    int release_result;
+    if (source_out) *source_out = NULL;
+    if (inode_out) *inode_out = 0u;
+    if (size_out) *size_out = 0u;
+    if (reference_generation_out) *reference_generation_out = 0u;
+    if (reference_cookie_out) *reference_cookie_out = 0u;
+    result = rinfs_file_operation_begin(file, &operation);
+    if (result != RINFS_OK) return result;
+    result = rinfs_mmap_source_create_core(
+        file, source_out, inode_out, size_out,
+        reference_generation_out, reference_cookie_out);
+    release_result = rinfs_close_ref_end_operation(&operation);
+    return release_result == RINFS_OK ? result : release_result;
 }
 
 int rinfs_mmap_source_retain(const RinFS_MmapSource* source,
@@ -12598,32 +12690,47 @@ int rinfs_close(RinFS_File* file) {
 }
 
 int rinfs_fsync(RinFS_File* file) {
-    int validation = rinfs_file_handle_validate(file);
-    if (validation != RINFS_OK) return validation;
-    if (file->mount->readonly) return RINFS_OK;
+    RinFS_CloseReferenceOperationLease operation;
+    int result = rinfs_file_operation_begin(file, &operation);
+    int release_result;
+    if (result != RINFS_OK) return result;
+    if (file->mount->readonly) {
+        release_result = rinfs_close_ref_end_operation(&operation);
+        return release_result == RINFS_OK ? RINFS_OK : release_result;
+    }
 
     /* Never write the cached open-handle inode: a different handle may have
      * committed a newer size/block map and content generation. */
-    int err = rinfs_sync(file->mount);
-    if (err != RINFS_OK) return err;
-    return rinfs_inode_read(file->mount, file->inode_num, &file->inode);
+    result = rinfs_sync(file->mount);
+    if (result == RINFS_OK)
+        result = rinfs_inode_read(file->mount, file->inode_num,
+                                  &file->inode);
+    release_result = rinfs_close_ref_end_operation(&operation);
+    return release_result == RINFS_OK ? result : release_result;
 }
 
 int rinfs_truncate(RinFS_File* file, uint64_t size) {
-    int validation = rinfs_file_handle_validate(file);
-    if (validation != RINFS_OK) return validation;
+    RinFS_CloseReferenceOperationLease operation;
+    int result = rinfs_file_operation_begin(file, &operation);
+    int release_result;
+    if (result != RINFS_OK) return result;
 
-    int err = rinfs_truncate_ino(file->mount, file->inode_num, size);
-    if (err != RINFS_OK) return err;
-    err = rinfs_inode_read(file->mount, file->inode_num, &file->inode);
-    if (err != RINFS_OK) return err;
+    result = rinfs_truncate_ino(file->mount, file->inode_num, size);
+    if (result == RINFS_OK)
+        result = rinfs_inode_read(file->mount, file->inode_num,
+                                  &file->inode);
+    if (result != RINFS_OK) {
+        release_result = rinfs_close_ref_end_operation(&operation);
+        return release_result == RINFS_OK ? result : release_result;
+    }
     if (file->position > size) file->position = size;
 
     if ((file->mount->mount_flags & RINFS_MNT_SYNC) != 0 ||
         (file->inode.i_flags & RINFS_IFLG_SYNC) != 0) {
-        return rinfs_fsync(file);
+        result = rinfs_fsync(file);
     }
-    return RINFS_OK;
+    release_result = rinfs_close_ref_end_operation(&operation);
+    return release_result == RINFS_OK ? result : release_result;
 }
 
 /* Path lookup (resolve full path to inode). */
@@ -12816,7 +12923,7 @@ static int64_t rinfs_read_unleased(RinFS_File* file, void* buf, uint64_t size) {
     return (int64_t)bytes_read;
 }
 
-int64_t rinfs_read(RinFS_File* file, void* buf, uint64_t size) {
+static int64_t rinfs_read_core(RinFS_File* file, void* buf, uint64_t size) {
     RinFS_Mount* mount;
     RinFS_Inode observed;
     RinFS_ContentLeaseNode* lease = NULL;
@@ -12824,9 +12931,7 @@ int64_t rinfs_read(RinFS_File* file, void* buf, uint64_t size) {
     int err;
     int64_t result;
 
-    if (!buf) return RINFS_ERR_INVAL;
-    err = rinfs_file_handle_validate(file);
-    if (err != RINFS_OK) return err;
+    if (!file || !buf) return RINFS_ERR_INVAL;
     mount = file->mount;
 
     /* Never traverse a handle's stale block map.  The generation-bound
@@ -12854,13 +12959,27 @@ int64_t rinfs_read(RinFS_File* file, void* buf, uint64_t size) {
     return result;
 }
 
+int64_t rinfs_read(RinFS_File* file, void* buf, uint64_t size) {
+    RinFS_CloseReferenceOperationLease operation;
+    int64_t result;
+    int release_result;
+    if (!buf) return RINFS_ERR_INVAL;
+    result = rinfs_file_operation_begin(file, &operation);
+    if (result != RINFS_OK) return result;
+    result = rinfs_read_core(file, buf, size);
+    release_result = rinfs_close_ref_end_operation(&operation);
+    return release_result == RINFS_OK ? result : release_result;
+}
+
 int64_t rinfs_pread(RinFS_File* file, void* buf, uint64_t size,
                     uint64_t offset) {
     RinFS_File positioned;
     int64_t result;
+    RinFS_CloseReferenceOperationLease operation;
+    int release_result;
 
     if (!buf) return RINFS_ERR_INVAL;
-    result = rinfs_file_handle_validate(file);
+    result = rinfs_file_operation_begin(file, &operation);
     if (result != RINFS_OK) return result;
 
     /* rinfs_read() intentionally owns position for ordinary read(2).  A
@@ -12879,12 +12998,11 @@ int64_t rinfs_pread(RinFS_File* file, void* buf, uint64_t size,
         file->read_pattern_kind = positioned.read_pattern_kind;
         file->read_pattern_valid = positioned.read_pattern_valid;
     }
-    return result;
+    release_result = rinfs_close_ref_end_operation(&operation);
+    return release_result == RINFS_OK ? result : release_result;
 }
 
-int64_t rinfs_seek(RinFS_File* file, int64_t offset, int whence) {
-    int validation = rinfs_file_handle_validate(file);
-    if (validation != RINFS_OK) return validation;
+static int64_t rinfs_seek_core(RinFS_File* file, int64_t offset, int whence) {
     if (whence == RINFS_SEEK_DATA || whence == RINFS_SEEK_HOLE) {
         RinFS_Mount* mount = file->mount;
         uint64_t logical_blocks;
@@ -12939,10 +13057,25 @@ int64_t rinfs_seek(RinFS_File* file, int64_t offset, int whence) {
     return new_pos;
 }
 
+int64_t rinfs_seek(RinFS_File* file, int64_t offset, int whence) {
+    RinFS_CloseReferenceOperationLease operation;
+    int64_t result = rinfs_file_operation_begin(file, &operation);
+    int release_result;
+    if (result != RINFS_OK) return result;
+    result = rinfs_seek_core(file, offset, whence);
+    release_result = rinfs_close_ref_end_operation(&operation);
+    return release_result == RINFS_OK ? result : release_result;
+}
+
 int64_t rinfs_tell(RinFS_File* file) {
-    int validation = rinfs_file_handle_validate(file);
-    if (validation != RINFS_OK) return validation;
-    return (int64_t)file->position;
+    RinFS_CloseReferenceOperationLease operation;
+    int result = rinfs_file_operation_begin(file, &operation);
+    int release_result;
+    int64_t position;
+    if (result != RINFS_OK) return result;
+    position = (int64_t)file->position;
+    release_result = rinfs_close_ref_end_operation(&operation);
+    return release_result == RINFS_OK ? position : release_result;
 }
 
 /* Stat (get file info) */
@@ -14188,11 +14321,9 @@ int rinfs_mkdir(RinFS_Mount* mount, const char* path, uint16_t mode) {
 }
 
 /* Write to file */
-int64_t rinfs_write(RinFS_File* file, const void* buf, uint64_t size) {
-    int validation;
+static int64_t rinfs_write_core(RinFS_File* file, const void* buf,
+                                uint64_t size) {
     if (!buf) return RINFS_ERR_INVAL;
-    validation = rinfs_file_handle_validate(file);
-    if (validation != RINFS_OK) return validation;
     if (file->mount->readonly) return RINFS_ERR_ROFS;
     if (size == 0u) return 0;
     if (file->position > UINT64_MAX - size) return RINFS_ERR_OVERFLOW;
@@ -14426,13 +14557,27 @@ int64_t rinfs_write(RinFS_File* file, const void* buf, uint64_t size) {
     return (int64_t)bytes_written;
 }
 
+int64_t rinfs_write(RinFS_File* file, const void* buf, uint64_t size) {
+    RinFS_CloseReferenceOperationLease operation;
+    int64_t result;
+    int release_result;
+    if (!buf) return RINFS_ERR_INVAL;
+    result = rinfs_file_operation_begin(file, &operation);
+    if (result != RINFS_OK) return result;
+    result = rinfs_write_core(file, buf, size);
+    release_result = rinfs_close_ref_end_operation(&operation);
+    return release_result == RINFS_OK ? result : release_result;
+}
+
 int64_t rinfs_pwrite(RinFS_File* file, const void* buf, uint64_t size,
                      uint64_t offset) {
     RinFS_File positioned;
     int64_t result;
+    RinFS_CloseReferenceOperationLease operation;
+    int release_result;
 
     if (!buf) return RINFS_ERR_INVAL;
-    result = rinfs_file_handle_validate(file);
+    result = rinfs_file_operation_begin(file, &operation);
     if (result != RINFS_OK) return result;
 
     /* pwrite(2) ignores O_APPEND and must not alter the shared descriptor
@@ -14444,7 +14589,8 @@ int64_t rinfs_pwrite(RinFS_File* file, const void* buf, uint64_t size,
     /* The positioned worker refreshes its inode on both success and failure;
      * propagate that live image without moving the caller's file position. */
     file->inode = positioned.inode;
-    return result;
+    release_result = rinfs_close_ref_end_operation(&operation);
+    return release_result == RINFS_OK ? result : release_result;
 }
 
 /* Read directory entries */
@@ -14518,15 +14664,13 @@ static int rinfs_readdir_unleased(RinFS_Dir* dir, RinFS_DirEntry* entry) {
     return 0;  /* End of directory */
 }
 
-int rinfs_readdir(RinFS_Dir* dir, RinFS_DirEntry* entry) {
+static int rinfs_readdir_core(RinFS_Dir* dir, RinFS_DirEntry* entry) {
     RinFS_Inode observed;
     RinFS_ContentLeaseNode* lease = NULL;
     uint64_t token = 0u;
     int err;
     int result;
     if (!entry) return RINFS_ERR_INVAL;
-    err = rinfs_directory_handle_validate(dir);
-    if (err != RINFS_OK) return err;
     err = rinfs_inode_read(dir->mount, dir->inode_num, &observed);
     if (err != RINFS_OK) return err;
     if (dir->content_pin_active &&
@@ -14546,6 +14690,18 @@ int rinfs_readdir(RinFS_Dir* dir, RinFS_DirEntry* entry) {
     rinfs_content_lease_release(dir->mount, dir->inode_num,
                                 observed.i_generation, token, 0);
     return result;
+}
+
+int rinfs_readdir(RinFS_Dir* dir, RinFS_DirEntry* entry) {
+    RinFS_CloseReferenceOperationLease operation;
+    int result;
+    int release_result;
+    if (!entry) return RINFS_ERR_INVAL;
+    result = rinfs_directory_operation_begin(dir, &operation);
+    if (result != RINFS_OK) return result;
+    result = rinfs_readdir_core(dir, entry);
+    release_result = rinfs_close_ref_end_operation(&operation);
+    return release_result == RINFS_OK ? result : release_result;
 }
 
 /* Reposition a directory iterator only to a boundary the on-disk directory
@@ -14633,14 +14789,12 @@ static int rinfs_seekdir_unleased(RinFS_Dir* dir, uint64_t position) {
     return RINFS_OK;
 }
 
-int rinfs_seekdir(RinFS_Dir* dir, uint64_t position) {
+static int rinfs_seekdir_core(RinFS_Dir* dir, uint64_t position) {
     RinFS_Inode observed;
     RinFS_ContentLeaseNode* lease = NULL;
     uint64_t token = 0u;
     int err;
     int result;
-    err = rinfs_directory_handle_validate(dir);
-    if (err != RINFS_OK) return err;
     err = rinfs_inode_read(dir->mount, dir->inode_num, &observed);
     if (err != RINFS_OK) return err;
     if (dir->content_pin_active &&
@@ -14660,6 +14814,16 @@ int rinfs_seekdir(RinFS_Dir* dir, uint64_t position) {
     rinfs_content_lease_release(dir->mount, dir->inode_num,
                                 observed.i_generation, token, 0);
     return result;
+}
+
+int rinfs_seekdir(RinFS_Dir* dir, uint64_t position) {
+    RinFS_CloseReferenceOperationLease operation;
+    int result = rinfs_directory_operation_begin(dir, &operation);
+    int release_result;
+    if (result != RINFS_OK) return result;
+    result = rinfs_seekdir_core(dir, position);
+    release_result = rinfs_close_ref_end_operation(&operation);
+    return release_result == RINFS_OK ? result : release_result;
 }
 
 /* Open directory */
@@ -14865,8 +15029,10 @@ int rinfs_closedir(RinFS_Dir* dir) {
 
 /* Rewind directory to start */
 void rinfs_rewinddir(RinFS_Dir* dir) {
-    if (rinfs_directory_handle_validate(dir) != RINFS_OK) return;
+    RinFS_CloseReferenceOperationLease operation;
+    if (rinfs_directory_operation_begin(dir, &operation) != RINFS_OK) return;
     dir->position = 0;
+    (void)rinfs_close_ref_end_operation(&operation);
 }
 
 /* ═══════════════════════════════════════════════════════════════
@@ -16989,8 +17155,8 @@ int rinfs_link(RinFS_Mount* mount, uint64_t dir_ino, const char* name, uint64_t 
  * recovery recounts directory references for marked inodes, so every crash
  * boundary resolves to either a live named inode or a reclaimed anonymous
  * inode. */
-int rinfs_link_tmpfile(RinFS_File* file, uint64_t dir_ino,
-                       const char* name) {
+static int rinfs_link_tmpfile_core(RinFS_File* file, uint64_t dir_ino,
+                                   const char* name) {
     RinFS_Mount* mount;
     RinFS_ContentLeaseNode* lease = NULL;
     uint64_t lease_token = 0u;
@@ -17000,8 +17166,6 @@ int rinfs_link_tmpfile(RinFS_File* file, uint64_t dir_ino,
     uint32_t observed_links = 0u;
     int result;
 
-    result = rinfs_file_handle_validate(file);
-    if (result != RINFS_OK) return result;
     if (!name || file->inode_num == 0u || file->content_pin_token == 0u)
         return RINFS_ERR_INVAL;
     mount = file->mount;
@@ -17097,6 +17261,17 @@ done:
     rinfs_content_lease_release(mount, file->inode_num,
                                 file->content_pin_generation, lease_token, 1);
     return result;
+}
+
+int rinfs_link_tmpfile(RinFS_File* file, uint64_t dir_ino,
+                       const char* name) {
+    RinFS_CloseReferenceOperationLease operation;
+    int result = rinfs_file_operation_begin(file, &operation);
+    int release_result;
+    if (result != RINFS_OK) return result;
+    result = rinfs_link_tmpfile_core(file, dir_ino, name);
+    release_result = rinfs_close_ref_end_operation(&operation);
+    return release_result == RINFS_OK ? result : release_result;
 }
 
 /* Create a symbolic link */
