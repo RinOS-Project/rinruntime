@@ -658,6 +658,11 @@ static uint64_t rinfs_mmap_source_cookie_value(
 static uint64_t rinfs_mmap_source_integrity_value(void);
 static void rinfs_mmap_source_integrity_update(void);
 static int rinfs_mmap_source_audit_locked(void);
+static int rinfs_restore_mount_teardown_begin(RinFS_Mount* mount,
+                                               uint64_t mount_epoch);
+static void rinfs_restore_mount_teardown_end(RinFS_Mount* mount,
+                                              uint64_t mount_epoch,
+                                              int unmounted);
 
 /* When both are needed, the global exact-reference ledger lock precedes a
  * mount's content_lease_lock. Never acquire the global lock while holding a
@@ -11323,7 +11328,7 @@ static int rinfs_mount_external_lease_end(RinFS_Mount* mount) {
 }
 
 /* Unmount filesystem */
-int rinfs_abandon_dirty_mount(RinFS_Mount* mount) {
+static int rinfs_abandon_dirty_mount_core(RinFS_Mount* mount) {
     if (!mount || !mount->mounted) return RINFS_ERR_INVAL;
 
     /* A dirty-mount teardown cannot discard a deferred pathname obligation.
@@ -11397,7 +11402,21 @@ int rinfs_abandon_dirty_mount(RinFS_Mount* mount) {
     return rinfs_mount_external_lease_end(mount);
 }
 
-int rinfs_unmount(RinFS_Mount* mount) {
+int rinfs_abandon_dirty_mount(RinFS_Mount* mount) {
+    uint64_t mount_epoch;
+    int result;
+    if (!mount) return RINFS_ERR_INVAL;
+    mount_epoch = mount->mount_epoch;
+    if (mount_epoch == 0u) return rinfs_abandon_dirty_mount_core(mount);
+    result = rinfs_restore_mount_teardown_begin(mount, mount_epoch);
+    if (result != RINFS_OK) return result;
+    result = rinfs_abandon_dirty_mount_core(mount);
+    rinfs_restore_mount_teardown_end(
+        mount, mount_epoch, result == RINFS_OK);
+    return result;
+}
+
+static int rinfs_unmount_core(RinFS_Mount* mount) {
     if (!mount) return RINFS_ERR_INVAL;
     if (!mount->mounted) {
         if (mount->external_mount_lease_token != 0u)
@@ -11540,6 +11559,20 @@ int rinfs_unmount(RinFS_Mount* mount) {
     rinfs_debug("[RinFS] Unmounted\n");
     
     return rinfs_mount_external_lease_end(mount);
+}
+
+int rinfs_unmount(RinFS_Mount* mount) {
+    uint64_t mount_epoch;
+    int result;
+    if (!mount) return RINFS_ERR_INVAL;
+    mount_epoch = mount->mount_epoch;
+    if (mount_epoch == 0u) return rinfs_unmount_core(mount);
+    result = rinfs_restore_mount_teardown_begin(mount, mount_epoch);
+    if (result != RINFS_OK) return result;
+    result = rinfs_unmount_core(mount);
+    rinfs_restore_mount_teardown_end(
+        mount, mount_epoch, result == RINFS_OK);
+    return result;
 }
 
 int rinfs_mount_set_device_flags(RinFS_Mount* mount, uint32_t device_flags) {
@@ -17606,6 +17639,435 @@ typedef struct {
     RinFS_RestoreRecord record;
 } RinFS_RestoreTransactionInternal;
 
+#define RINFS_MAX_RESTORE_TRANSACTION_HANDLES 32u
+#define RINFS_MAX_RESTORE_MOUNT_GATES 32u
+#define RINFS_RESTORE_HANDLE_RESERVED 1u
+#define RINFS_RESTORE_HANDLE_ACTIVE 2u
+
+typedef struct {
+    uint32_t state;
+    uint32_t token;
+    uint32_t operation_active;
+    uint32_t reserved;
+    RinFS_RestoreTransactionV1* handle;
+    void* internal;
+    RinFS_Mount* mount;
+    uint64_t mount_epoch;
+} RinFS_RestoreTransactionHandleRecord;
+
+typedef struct {
+    RinFS_Mount* mount;
+    uint64_t mount_epoch;
+    uint32_t transaction_references;
+    uint32_t teardown_active;
+} RinFS_RestoreMountGateRecord;
+
+typedef struct {
+    uint32_t slot;
+    uint32_t token;
+    RinFS_RestoreTransactionV1* handle;
+    RinFS_RestoreTransactionInternal* internal;
+    uint32_t active;
+} RinFS_RestoreTransactionOperation;
+
+static volatile uint32_t g_rinfs_restore_transaction_lock;
+static RinFS_RestoreTransactionHandleRecord
+    g_rinfs_restore_transaction_handles[RINFS_MAX_RESTORE_TRANSACTION_HANDLES];
+static RinFS_RestoreMountGateRecord
+    g_rinfs_restore_mount_gates[RINFS_MAX_RESTORE_MOUNT_GATES];
+static uint32_t g_rinfs_restore_transaction_next_token = 1u;
+
+static RinFS_RestoreMountGateRecord* rinfs_restore_mount_gate_find_locked(
+    RinFS_Mount* mount) {
+    for (uint32_t index = 0u; index < RINFS_MAX_RESTORE_MOUNT_GATES; ++index) {
+        if (g_rinfs_restore_mount_gates[index].mount == mount)
+            return &g_rinfs_restore_mount_gates[index];
+    }
+    return NULL;
+}
+
+static RinFS_RestoreTransactionHandleRecord*
+rinfs_restore_transaction_handle_find_locked(uint32_t token) {
+    for (uint32_t index = 0u;
+         index < RINFS_MAX_RESTORE_TRANSACTION_HANDLES; ++index) {
+        RinFS_RestoreTransactionHandleRecord* record =
+            &g_rinfs_restore_transaction_handles[index];
+        if (record->state != 0u && record->token == token) return record;
+    }
+    return NULL;
+}
+
+static int rinfs_restore_transaction_operation_end(
+    RinFS_RestoreTransactionOperation* operation, int retire);
+
+static int rinfs_restore_transaction_registry_audit_locked(void) {
+    uint32_t handle_count[RINFS_MAX_RESTORE_MOUNT_GATES] = {0u};
+    for (uint32_t index = 0u;
+         index < RINFS_MAX_RESTORE_TRANSACTION_HANDLES; ++index) {
+        const RinFS_RestoreTransactionHandleRecord* record =
+            &g_rinfs_restore_transaction_handles[index];
+        if (record->state == 0u) {
+            if (record->token != 0u || record->operation_active != 0u ||
+                record->reserved != 0u || record->handle || record->internal ||
+                record->mount || record->mount_epoch != 0u)
+                return 0;
+            continue;
+        }
+        if ((record->state != RINFS_RESTORE_HANDLE_RESERVED &&
+             record->state != RINFS_RESTORE_HANDLE_ACTIVE) ||
+            record->token == 0u || record->reserved != 0u ||
+            record->operation_active > 1u || !record->handle ||
+            !record->mount || record->mount_epoch == 0u ||
+            (record->state == RINFS_RESTORE_HANDLE_RESERVED &&
+             (record->internal || record->operation_active != 0u)) ||
+            (record->state == RINFS_RESTORE_HANDLE_ACTIVE &&
+             !record->internal))
+            return 0;
+        int gate_found = 0;
+        for (uint32_t gate_index = 0u;
+             gate_index < RINFS_MAX_RESTORE_MOUNT_GATES; ++gate_index) {
+            const RinFS_RestoreMountGateRecord* gate =
+                &g_rinfs_restore_mount_gates[gate_index];
+            if (gate->mount == record->mount &&
+                gate->mount_epoch == record->mount_epoch) {
+                ++handle_count[gate_index];
+                gate_found = 1;
+                break;
+            }
+        }
+        if (!gate_found) return 0;
+    }
+    for (uint32_t index = 0u; index < RINFS_MAX_RESTORE_MOUNT_GATES; ++index) {
+        const RinFS_RestoreMountGateRecord* gate =
+            &g_rinfs_restore_mount_gates[index];
+        if (!gate->mount) {
+            if (gate->mount_epoch != 0u ||
+                gate->transaction_references != 0u ||
+                gate->teardown_active != 0u || handle_count[index] != 0u)
+                return 0;
+            continue;
+        }
+        if (gate->mount_epoch == 0u || gate->teardown_active > 1u ||
+            gate->transaction_references != handle_count[index] ||
+            (gate->transaction_references == 0u &&
+             gate->teardown_active == 0u))
+            return 0;
+    }
+    return 1;
+}
+
+static int rinfs_restore_transaction_reserve(
+    RinFS_Mount* mount, uint64_t mount_epoch,
+    RinFS_RestoreTransactionV1* handle, uint32_t* token_out) {
+    RinFS_RestoreMountGateRecord* gate;
+    RinFS_RestoreTransactionHandleRecord* free_record = NULL;
+    uint32_t free_gate = RINFS_MAX_RESTORE_MOUNT_GATES;
+    uint32_t token;
+    if (token_out) *token_out = 0u;
+    if (!mount || mount_epoch == 0u || !handle || !token_out)
+        return RINFS_ERR_INVAL;
+    rinfs_spin_lock(&g_rinfs_restore_transaction_lock);
+    if (!rinfs_restore_transaction_registry_audit_locked()) {
+        rinfs_spin_unlock(&g_rinfs_restore_transaction_lock);
+        return RINFS_ERR_CORRUPT;
+    }
+    if (handle->magic != 0u || handle->reserved != 0u || handle->internal) {
+        rinfs_spin_unlock(&g_rinfs_restore_transaction_lock);
+        return RINFS_ERR_STALE;
+    }
+    gate = rinfs_restore_mount_gate_find_locked(mount);
+    if (gate && (gate->mount_epoch != mount_epoch ||
+                 gate->teardown_active != 0u ||
+                 gate->transaction_references != 0u)) {
+        rinfs_spin_unlock(&g_rinfs_restore_transaction_lock);
+        return RINFS_ERR_PENDING;
+    }
+    if (!mount->mounted || mount->mount_epoch != mount_epoch) {
+        rinfs_spin_unlock(&g_rinfs_restore_transaction_lock);
+        return RINFS_ERR_STALE;
+    }
+    if (mount->readonly) {
+        rinfs_spin_unlock(&g_rinfs_restore_transaction_lock);
+        return RINFS_ERR_ROFS;
+    }
+    if (g_rinfs_restore_transaction_next_token == 0u ||
+        g_rinfs_restore_transaction_next_token == UINT32_MAX) {
+        rinfs_spin_unlock(&g_rinfs_restore_transaction_lock);
+        return RINFS_ERR_OVERFLOW;
+    }
+    for (uint32_t index = 0u;
+         index < RINFS_MAX_RESTORE_TRANSACTION_HANDLES; ++index) {
+        RinFS_RestoreTransactionHandleRecord* record =
+            &g_rinfs_restore_transaction_handles[index];
+        if (record->state != 0u && record->handle == handle) {
+            rinfs_spin_unlock(&g_rinfs_restore_transaction_lock);
+            return RINFS_ERR_PENDING;
+        }
+        if (record->state == 0u) {
+            free_record = &g_rinfs_restore_transaction_handles[index];
+            break;
+        }
+    }
+    if (!gate) {
+        for (uint32_t index = 0u;
+             index < RINFS_MAX_RESTORE_MOUNT_GATES; ++index) {
+            if (!g_rinfs_restore_mount_gates[index].mount) {
+                free_gate = index;
+                break;
+            }
+        }
+    }
+    if (!free_record || (!gate && free_gate == RINFS_MAX_RESTORE_MOUNT_GATES)) {
+        rinfs_spin_unlock(&g_rinfs_restore_transaction_lock);
+        return RINFS_ERR_NOSPC;
+    }
+    if (!gate) {
+        gate = &g_rinfs_restore_mount_gates[free_gate];
+        gate->mount = mount;
+        gate->mount_epoch = mount_epoch;
+    }
+    token = g_rinfs_restore_transaction_next_token++;
+    free_record->state = RINFS_RESTORE_HANDLE_RESERVED;
+    free_record->token = token;
+    free_record->handle = handle;
+    free_record->mount = mount;
+    free_record->mount_epoch = mount_epoch;
+    ++gate->transaction_references;
+    *token_out = token;
+    rinfs_spin_unlock(&g_rinfs_restore_transaction_lock);
+    return RINFS_OK;
+}
+
+static int rinfs_restore_transaction_publish(
+    RinFS_RestoreTransactionV1* handle,
+    RinFS_RestoreTransactionInternal* internal, uint32_t token) {
+    RinFS_RestoreTransactionHandleRecord* record;
+    if (!handle || !internal || token == 0u) return RINFS_ERR_INVAL;
+    rinfs_spin_lock(&g_rinfs_restore_transaction_lock);
+    if (!rinfs_restore_transaction_registry_audit_locked()) {
+        rinfs_spin_unlock(&g_rinfs_restore_transaction_lock);
+        return RINFS_ERR_CORRUPT;
+    }
+    record = rinfs_restore_transaction_handle_find_locked(token);
+    if (!record || record->state != RINFS_RESTORE_HANDLE_RESERVED ||
+        record->handle != handle || record->mount != internal->mount ||
+        record->mount_epoch != internal->mount_epoch ||
+        handle->magic != 0u || handle->reserved != 0u || handle->internal) {
+        rinfs_spin_unlock(&g_rinfs_restore_transaction_lock);
+        return RINFS_ERR_STALE;
+    }
+    handle->magic = RINFS_RESTORE_TX_MAGIC;
+    handle->reserved = token;
+    handle->internal = internal;
+    record->internal = internal;
+    record->state = RINFS_RESTORE_HANDLE_ACTIVE;
+    rinfs_spin_unlock(&g_rinfs_restore_transaction_lock);
+    return RINFS_OK;
+}
+
+static int rinfs_restore_transaction_reservation_abort(
+    RinFS_RestoreTransactionV1* handle, uint32_t token) {
+    RinFS_RestoreTransactionHandleRecord* record;
+    RinFS_RestoreMountGateRecord* gate;
+    if (!handle || token == 0u) return RINFS_ERR_INVAL;
+    rinfs_spin_lock(&g_rinfs_restore_transaction_lock);
+    if (!rinfs_restore_transaction_registry_audit_locked()) {
+        rinfs_spin_unlock(&g_rinfs_restore_transaction_lock);
+        return RINFS_ERR_CORRUPT;
+    }
+    record = rinfs_restore_transaction_handle_find_locked(token);
+    if (!record || record->state != RINFS_RESTORE_HANDLE_RESERVED ||
+        record->handle != handle) {
+        rinfs_spin_unlock(&g_rinfs_restore_transaction_lock);
+        return RINFS_ERR_STALE;
+    }
+    gate = rinfs_restore_mount_gate_find_locked(record->mount);
+    if (!gate || gate->mount_epoch != record->mount_epoch ||
+        gate->transaction_references == 0u) {
+        rinfs_spin_unlock(&g_rinfs_restore_transaction_lock);
+        return RINFS_ERR_CORRUPT;
+    }
+    --gate->transaction_references;
+    rinfs_memset(record, 0, sizeof(*record));
+    if (gate->transaction_references == 0u && gate->teardown_active == 0u)
+        rinfs_memset(gate, 0, sizeof(*gate));
+    rinfs_spin_unlock(&g_rinfs_restore_transaction_lock);
+    return RINFS_OK;
+}
+
+static int rinfs_restore_transaction_operation_begin(
+    RinFS_RestoreTransactionV1* handle, int allow_stale_mount,
+    RinFS_RestoreTransactionOperation* operation,
+    RinFS_RestoreTransactionInternal** internal_out) {
+    RinFS_RestoreTransactionHandleRecord* record;
+    RinFS_RestoreTransactionInternal* internal;
+    uint32_t token;
+    void* public_internal;
+    if (operation) rinfs_memset(operation, 0, sizeof(*operation));
+    if (internal_out) *internal_out = NULL;
+    if (!handle || !operation || !internal_out)
+        return RINFS_ERR_INVAL;
+    rinfs_spin_lock(&g_rinfs_restore_transaction_lock);
+    if (!rinfs_restore_transaction_registry_audit_locked()) {
+        rinfs_spin_unlock(&g_rinfs_restore_transaction_lock);
+        return RINFS_ERR_CORRUPT;
+    }
+    record = NULL;
+    for (uint32_t index = 0u;
+         index < RINFS_MAX_RESTORE_TRANSACTION_HANDLES; ++index) {
+        if (g_rinfs_restore_transaction_handles[index].handle == handle &&
+            g_rinfs_restore_transaction_handles[index].state != 0u) {
+            record = &g_rinfs_restore_transaction_handles[index];
+            break;
+        }
+    }
+    if (!record) {
+        rinfs_spin_unlock(&g_rinfs_restore_transaction_lock);
+        return RINFS_ERR_STALE;
+    }
+    if (record->state == RINFS_RESTORE_HANDLE_RESERVED ||
+        record->operation_active != 0u) {
+        rinfs_spin_unlock(&g_rinfs_restore_transaction_lock);
+        return RINFS_ERR_PENDING;
+    }
+    token = handle->reserved;
+    public_internal = handle->internal;
+    if (record->state != RINFS_RESTORE_HANDLE_ACTIVE ||
+        handle->magic != RINFS_RESTORE_TX_MAGIC || token != record->token ||
+        public_internal != record->internal) {
+        rinfs_spin_unlock(&g_rinfs_restore_transaction_lock);
+        return RINFS_ERR_STALE;
+    }
+    record->operation_active = 1u;
+    operation->slot = (uint32_t)(record -
+        g_rinfs_restore_transaction_handles);
+    operation->token = token;
+    operation->handle = handle;
+    operation->internal =
+        (RinFS_RestoreTransactionInternal*)record->internal;
+    operation->active = 1u;
+    rinfs_spin_unlock(&g_rinfs_restore_transaction_lock);
+
+    internal = operation->internal;
+    if (internal->magic != RINFS_RESTORE_TX_MAGIC ||
+        internal->mount == NULL || internal->mount_epoch == 0u) {
+        (void)rinfs_restore_transaction_operation_end(operation, 0);
+        return RINFS_ERR_CORRUPT;
+    }
+    if (!allow_stale_mount &&
+        (internal->mount->mount_epoch != internal->mount_epoch ||
+         !internal->mount->mounted)) {
+        (void)rinfs_restore_transaction_operation_end(operation, 0);
+        return RINFS_ERR_STALE;
+    }
+    if (!allow_stale_mount && internal->mount->readonly) {
+        (void)rinfs_restore_transaction_operation_end(operation, 0);
+        return RINFS_ERR_ROFS;
+    }
+    *internal_out = internal;
+    return RINFS_OK;
+}
+
+static int rinfs_restore_transaction_operation_end(
+    RinFS_RestoreTransactionOperation* operation, int retire) {
+    RinFS_RestoreTransactionHandleRecord* record;
+    RinFS_RestoreMountGateRecord* gate;
+    int result = RINFS_ERR_CORRUPT;
+    if (!operation || operation->active != 1u ||
+        operation->slot >= RINFS_MAX_RESTORE_TRANSACTION_HANDLES ||
+        operation->token == 0u || !operation->handle ||
+        !operation->internal)
+        return RINFS_ERR_INVAL;
+    rinfs_spin_lock(&g_rinfs_restore_transaction_lock);
+    if (rinfs_restore_transaction_registry_audit_locked()) {
+        record = &g_rinfs_restore_transaction_handles[operation->slot];
+        if (record->state == RINFS_RESTORE_HANDLE_ACTIVE &&
+            record->token == operation->token &&
+            record->handle == operation->handle &&
+            record->internal == operation->internal &&
+            record->operation_active == 1u) {
+            if (retire) {
+                gate = rinfs_restore_mount_gate_find_locked(record->mount);
+                if (!gate || gate->mount_epoch != record->mount_epoch ||
+                    gate->transaction_references == 0u) {
+                    result = RINFS_ERR_CORRUPT;
+                } else {
+                    --gate->transaction_references;
+                    rinfs_memset(record->handle, 0,
+                                 sizeof(*record->handle));
+                    rinfs_memset(record, 0, sizeof(*record));
+                    if (gate->transaction_references == 0u &&
+                        gate->teardown_active == 0u)
+                        rinfs_memset(gate, 0, sizeof(*gate));
+                    result = RINFS_OK;
+                }
+            } else {
+                record->operation_active = 0u;
+                result = RINFS_OK;
+            }
+        }
+    }
+    rinfs_spin_unlock(&g_rinfs_restore_transaction_lock);
+    rinfs_memset(operation, 0, sizeof(*operation));
+    return result;
+}
+
+static int rinfs_restore_mount_teardown_begin(RinFS_Mount* mount,
+                                              uint64_t mount_epoch) {
+    RinFS_RestoreMountGateRecord* gate;
+    uint32_t free_gate = RINFS_MAX_RESTORE_MOUNT_GATES;
+    if (!mount || mount_epoch == 0u) return RINFS_ERR_INVAL;
+    rinfs_spin_lock(&g_rinfs_restore_transaction_lock);
+    if (!rinfs_restore_transaction_registry_audit_locked()) {
+        rinfs_spin_unlock(&g_rinfs_restore_transaction_lock);
+        return RINFS_ERR_CORRUPT;
+    }
+    gate = rinfs_restore_mount_gate_find_locked(mount);
+    if (gate) {
+        if (gate->transaction_references != 0u ||
+            gate->teardown_active != 0u) {
+            rinfs_spin_unlock(&g_rinfs_restore_transaction_lock);
+            return RINFS_ERR_PENDING;
+        }
+        gate->mount_epoch = mount_epoch;
+        gate->teardown_active = 1u;
+    } else {
+        for (uint32_t index = 0u;
+             index < RINFS_MAX_RESTORE_MOUNT_GATES; ++index) {
+            if (!g_rinfs_restore_mount_gates[index].mount) {
+                free_gate = index;
+                break;
+            }
+        }
+        if (free_gate == RINFS_MAX_RESTORE_MOUNT_GATES) {
+            rinfs_spin_unlock(&g_rinfs_restore_transaction_lock);
+            return RINFS_ERR_NOSPC;
+        }
+        gate = &g_rinfs_restore_mount_gates[free_gate];
+        gate->mount = mount;
+        gate->mount_epoch = mount_epoch;
+        gate->teardown_active = 1u;
+    }
+    rinfs_spin_unlock(&g_rinfs_restore_transaction_lock);
+    return RINFS_OK;
+}
+
+static void rinfs_restore_mount_teardown_end(RinFS_Mount* mount,
+                                             uint64_t mount_epoch,
+                                             int unmounted) {
+    RinFS_RestoreMountGateRecord* gate;
+    (void)unmounted;
+    if (!mount || mount_epoch == 0u) return;
+    rinfs_spin_lock(&g_rinfs_restore_transaction_lock);
+    if (rinfs_restore_transaction_registry_audit_locked()) {
+        gate = rinfs_restore_mount_gate_find_locked(mount);
+        if (gate && gate->mount_epoch == mount_epoch &&
+            gate->transaction_references == 0u)
+            rinfs_memset(gate, 0, sizeof(*gate));
+    }
+    rinfs_spin_unlock(&g_rinfs_restore_transaction_lock);
+}
+
 typedef struct {
     uint64_t inode_number;
     uint64_t parent_inode;
@@ -18203,19 +18665,13 @@ static void rinfs_restore_internal_destroy(
         rinfs_memset(internal, 0, sizeof(*internal));
         rinfs_free(internal);
     }
-    rinfs_memset(transaction, 0, sizeof(*transaction));
 }
 
-static int rinfs_restore_transaction_validate(
-    RinFS_RestoreTransactionV1* transaction,
-    RinFS_RestoreTransactionInternal** internal_out) {
-    RinFS_RestoreTransactionInternal* internal;
-    if (!transaction || transaction->magic != RINFS_RESTORE_TX_MAGIC ||
-        !transaction->internal)
-        return RINFS_ERR_INVAL;
-    internal = (RinFS_RestoreTransactionInternal*)transaction->internal;
-    if (internal->magic != RINFS_RESTORE_TX_MAGIC || !internal->mount)
-        return RINFS_ERR_INVAL;
+static int rinfs_restore_transaction_validate_internal(
+    RinFS_RestoreTransactionInternal* internal) {
+    if (!internal || internal->magic != RINFS_RESTORE_TX_MAGIC ||
+        !internal->mount)
+        return RINFS_ERR_CORRUPT;
     if (internal->mount_epoch == 0u ||
         internal->mount->mount_epoch != internal->mount_epoch ||
         !internal->mount->mounted)
@@ -18225,27 +18681,6 @@ static int rinfs_restore_transaction_validate(
         (internal->mount->sb.s_incompat_features &
          RINFS_FEATURE_INCOMPAT_RESTORE_PENDING) == 0u)
         return RINFS_ERR_PENDING;
-    if (internal_out) *internal_out = internal;
-    return RINFS_OK;
-}
-
-static int rinfs_restore_transaction_internal_get(
-    RinFS_RestoreTransactionV1* transaction,
-    RinFS_RestoreTransactionInternal** internal_out) {
-    RinFS_RestoreTransactionInternal* internal;
-    if (!transaction || transaction->magic != RINFS_RESTORE_TX_MAGIC ||
-        !transaction->internal || !internal_out)
-        return RINFS_ERR_INVAL;
-    internal = (RinFS_RestoreTransactionInternal*)transaction->internal;
-    if (internal->magic != RINFS_RESTORE_TX_MAGIC || !internal->mount)
-        return RINFS_ERR_INVAL;
-    if (internal->mount_epoch == 0u ||
-        internal->mount->mount_epoch != internal->mount_epoch ||
-        !internal->mount->mounted)
-        return RINFS_ERR_STALE;
-    if (internal->mount->readonly)
-        return RINFS_ERR_ROFS;
-    *internal_out = internal;
     return RINFS_OK;
 }
 
@@ -18343,11 +18778,10 @@ static int rinfs_restore_abort_record(RinFS_Mount* mount,
     return rinfs_restore_record_clear(mount);
 }
 
-int rinfs_restore_transaction_commit(
-    RinFS_RestoreTransactionV1* transaction) {
-    RinFS_RestoreTransactionInternal* internal;
-    int error = rinfs_restore_transaction_internal_get(transaction, &internal);
-    if (error != RINFS_OK) return error;
+static int rinfs_restore_transaction_commit_core(
+    RinFS_RestoreTransactionV1* transaction,
+    RinFS_RestoreTransactionInternal* internal) {
+    int error;
     if (internal->record.phase == RINFS_RESTORE_PHASE_RECEIVING) {
         if (internal->record.root_metadata_valid == 0u)
             return RINFS_ERR_INVAL;
@@ -18370,11 +18804,24 @@ int rinfs_restore_transaction_commit(
     return RINFS_OK;
 }
 
-int rinfs_restore_transaction_abort(
+int rinfs_restore_transaction_commit(
     RinFS_RestoreTransactionV1* transaction) {
-    RinFS_RestoreTransactionInternal* internal;
-    int error = rinfs_restore_transaction_internal_get(transaction, &internal);
+    RinFS_RestoreTransactionOperation operation;
+    RinFS_RestoreTransactionInternal* internal = NULL;
+    int error = rinfs_restore_transaction_operation_begin(
+        transaction, 0, &operation, &internal);
+    int release_error;
     if (error != RINFS_OK) return error;
+    error = rinfs_restore_transaction_commit_core(transaction, internal);
+    release_error = rinfs_restore_transaction_operation_end(
+        &operation, error == RINFS_OK);
+    return release_error == RINFS_OK ? error : release_error;
+}
+
+static int rinfs_restore_transaction_abort_core(
+    RinFS_RestoreTransactionV1* transaction,
+    RinFS_RestoreTransactionInternal* internal) {
+    int error;
     if (internal->record.phase != RINFS_RESTORE_PHASE_RECEIVING &&
         internal->record.phase != RINFS_RESTORE_PHASE_ABORTING)
         return RINFS_ERR_PENDING;
@@ -18387,19 +18834,44 @@ int rinfs_restore_transaction_abort(
     return RINFS_OK;
 }
 
-int rinfs_restore_transaction_forget(
+int rinfs_restore_transaction_abort(
     RinFS_RestoreTransactionV1* transaction) {
-    RinFS_RestoreTransactionInternal* internal;
-    if (!transaction || transaction->magic != RINFS_RESTORE_TX_MAGIC ||
-        !transaction->internal)
-        return RINFS_ERR_INVAL;
-    internal = (RinFS_RestoreTransactionInternal*)transaction->internal;
-    if (internal->magic != RINFS_RESTORE_TX_MAGIC)
-        return RINFS_ERR_INVAL;
+    RinFS_RestoreTransactionOperation operation;
+    RinFS_RestoreTransactionInternal* internal = NULL;
+    int error = rinfs_restore_transaction_operation_begin(
+        transaction, 0, &operation, &internal);
+    int release_error;
+    if (error != RINFS_OK) return error;
+    error = rinfs_restore_transaction_abort_core(transaction, internal);
+    release_error = rinfs_restore_transaction_operation_end(
+        &operation, error == RINFS_OK);
+    return release_error == RINFS_OK ? error : release_error;
+}
+
+static int rinfs_restore_transaction_forget_core(
+    RinFS_RestoreTransactionV1* transaction,
+    RinFS_RestoreTransactionInternal* internal) {
+    if (!transaction || !internal ||
+        internal->magic != RINFS_RESTORE_TX_MAGIC)
+        return RINFS_ERR_CORRUPT;
     /* This intentionally does not touch the volume. The checksummed pending
      * record remains authoritative and recovery runs on the next mount. */
     rinfs_restore_internal_destroy(transaction);
     return RINFS_OK;
+}
+
+int rinfs_restore_transaction_forget(
+    RinFS_RestoreTransactionV1* transaction) {
+    RinFS_RestoreTransactionOperation operation;
+    RinFS_RestoreTransactionInternal* internal = NULL;
+    int error = rinfs_restore_transaction_operation_begin(
+        transaction, 1, &operation, &internal);
+    int release_error;
+    if (error != RINFS_OK) return error;
+    error = rinfs_restore_transaction_forget_core(transaction, internal);
+    release_error = rinfs_restore_transaction_operation_end(
+        &operation, error == RINFS_OK);
+    return release_error == RINFS_OK ? error : release_error;
 }
 
 int rinfs_restore_transaction_mount_recover(RinFS_Mount* mount) {
@@ -18426,30 +18898,41 @@ int rinfs_restore_transaction_begin(RinFS_Mount* mount,
     RinFS_RestoreTransactionInternal* internal;
     RinFS_RestoreRecord record;
     uint64_t existing = 0u;
+    uint32_t handle_token = 0u;
     int present = 0;
     int error;
     if (!mount || !mount->mounted || mount->mount_epoch == 0u ||
         mount->readonly || !transaction ||
-        transaction->magic != 0u || transaction->internal ||
         !staging_root_inode_out ||
         (mount->sb.s_incompat_features &
          RINFS_FEATURE_INCOMPAT_CONTENT_VERSION64) == 0u)
         return RINFS_ERR_INVAL;
     *staging_root_inode_out = 0u;
-    error = rinfs_restore_record_load(mount, &record, &present);
+    error = rinfs_restore_transaction_reserve(
+        mount, mount->mount_epoch, transaction, &handle_token);
     if (error != RINFS_OK) return error;
+    error = rinfs_restore_record_load(mount, &record, &present);
+    if (error != RINFS_OK) goto preflight_failed;
     if (present || (mount->sb.s_incompat_features &
-                    RINFS_FEATURE_INCOMPAT_RESTORE_PENDING) != 0u)
-        return RINFS_ERR_PENDING;
+                    RINFS_FEATURE_INCOMPAT_RESTORE_PENDING) != 0u) {
+        error = RINFS_ERR_PENDING;
+        goto preflight_failed;
+    }
     error = rinfs_lookup(mount, RINFS_INODE_ROOT,
                          RINFS_RESTORE_TRANSACTION_NAME,
                          &existing);
-    if (error == RINFS_OK) return RINFS_ERR_EXIST;
-    if (error != RINFS_ERR_NOENT) return error;
+    if (error == RINFS_OK) {
+        error = RINFS_ERR_EXIST;
+        goto preflight_failed;
+    }
+    if (error != RINFS_ERR_NOENT) goto preflight_failed;
 
     internal = (RinFS_RestoreTransactionInternal*)rinfs_malloc(
         sizeof(*internal));
-    if (!internal) return RINFS_ERR_NOMEM;
+    if (!internal) {
+        error = RINFS_ERR_NOMEM;
+        goto preflight_failed;
+    }
     rinfs_memset(internal, 0, sizeof(*internal));
     internal->magic = RINFS_RESTORE_TX_MAGIC;
     internal->mount = mount;
@@ -18490,10 +18973,19 @@ int rinfs_restore_transaction_begin(RinFS_Mount* mount,
     error = rinfs_restore_record_store(mount, &internal->record);
     if (error != RINFS_OK) goto failed;
 
-    transaction->magic = RINFS_RESTORE_TX_MAGIC;
-    transaction->internal = internal;
+    error = rinfs_restore_transaction_publish(
+        transaction, internal, handle_token);
+    if (error != RINFS_OK) goto failed;
     *staging_root_inode_out = internal->record.staging_inode;
     return RINFS_OK;
+
+preflight_failed:
+    {
+        int release_error = rinfs_restore_transaction_reservation_abort(
+            transaction, handle_token);
+        if (release_error != RINFS_OK) return release_error;
+    }
+    return error;
 
 failed:
     if (mount->readonly == 0) {
@@ -18505,18 +18997,22 @@ failed:
     }
     rinfs_memset(internal, 0, sizeof(*internal));
     rinfs_free(internal);
+    {
+        int release_error = rinfs_restore_transaction_reservation_abort(
+            transaction, handle_token);
+        if (release_error != RINFS_OK) return release_error;
+    }
     return error;
 }
 
-int rinfs_restore_transaction_store_inode(
-    RinFS_RestoreTransactionV1* transaction, uint64_t entry_index,
+static int rinfs_restore_transaction_store_inode_core(
+    RinFS_RestoreTransactionInternal* internal, uint64_t entry_index,
     uint64_t inode_number) {
-    RinFS_RestoreTransactionInternal* internal;
     RinFS_File file;
     uint64_t offset;
     int64_t written;
     int error;
-    error = rinfs_restore_transaction_validate(transaction, &internal);
+    error = rinfs_restore_transaction_validate_internal(internal);
     if (error != RINFS_OK) return error;
     if (inode_number == 0u ||
         inode_number > internal->mount->sb.s_inode_count ||
@@ -18540,10 +19036,24 @@ int rinfs_restore_transaction_store_inode(
     return rinfs_restore_record_store(internal->mount, &internal->record);
 }
 
-int rinfs_restore_transaction_load_inode(
+int rinfs_restore_transaction_store_inode(
     RinFS_RestoreTransactionV1* transaction, uint64_t entry_index,
+    uint64_t inode_number) {
+    RinFS_RestoreTransactionOperation operation;
+    RinFS_RestoreTransactionInternal* internal = NULL;
+    int error = rinfs_restore_transaction_operation_begin(
+        transaction, 0, &operation, &internal);
+    int release_error;
+    if (error != RINFS_OK) return error;
+    error = rinfs_restore_transaction_store_inode_core(
+        internal, entry_index, inode_number);
+    release_error = rinfs_restore_transaction_operation_end(&operation, 0);
+    return release_error == RINFS_OK ? error : release_error;
+}
+
+static int rinfs_restore_transaction_load_inode_core(
+    RinFS_RestoreTransactionInternal* internal, uint64_t entry_index,
     uint64_t* inode_number_out) {
-    RinFS_RestoreTransactionInternal* internal;
     RinFS_File file;
     uint64_t inode_number = 0u;
     uint64_t offset;
@@ -18551,7 +19061,7 @@ int rinfs_restore_transaction_load_inode(
     int error;
     if (!inode_number_out) return RINFS_ERR_INVAL;
     *inode_number_out = 0u;
-    error = rinfs_restore_transaction_validate(transaction, &internal);
+    error = rinfs_restore_transaction_validate_internal(internal);
     if (error != RINFS_OK) return error;
     if (entry_index >= internal->record.map_entries ||
         entry_index > UINT64_MAX / sizeof(inode_number))
@@ -18572,12 +19082,29 @@ int rinfs_restore_transaction_load_inode(
     return RINFS_OK;
 }
 
-int rinfs_restore_transaction_set_root_metadata(
-    RinFS_RestoreTransactionV1* transaction, uint16_t mode,
+int rinfs_restore_transaction_load_inode(
+    RinFS_RestoreTransactionV1* transaction, uint64_t entry_index,
+    uint64_t* inode_number_out) {
+    RinFS_RestoreTransactionOperation operation;
+    RinFS_RestoreTransactionInternal* internal = NULL;
+    int error;
+    int release_error;
+    if (!inode_number_out) return RINFS_ERR_INVAL;
+    *inode_number_out = 0u;
+    error = rinfs_restore_transaction_operation_begin(
+        transaction, 0, &operation, &internal);
+    if (error != RINFS_OK) return error;
+    error = rinfs_restore_transaction_load_inode_core(
+        internal, entry_index, inode_number_out);
+    release_error = rinfs_restore_transaction_operation_end(&operation, 0);
+    return release_error == RINFS_OK ? error : release_error;
+}
+
+static int rinfs_restore_transaction_set_root_metadata_core(
+    RinFS_RestoreTransactionInternal* internal, uint16_t mode,
     uint16_t persistent_flags, uint32_t uid, uint32_t gid,
     const RinFS_InodeTimes* times, int64_t change_time_seconds) {
-    RinFS_RestoreTransactionInternal* internal;
-    int error = rinfs_restore_transaction_validate(transaction, &internal);
+    int error = rinfs_restore_transaction_validate_internal(internal);
     if (error != RINFS_OK) return error;
     if (!rinfs_restore_mode_valid(mode) ||
         ((mode >> 12u) & 0x0fu) != RINFS_FT_DIR ||
@@ -18595,18 +19122,34 @@ int rinfs_restore_transaction_set_root_metadata(
     return rinfs_restore_record_store(internal->mount, &internal->record);
 }
 
-int rinfs_restore_transaction_set_inode_metadata(
-    RinFS_RestoreTransactionV1* transaction, uint64_t inode_number,
+int rinfs_restore_transaction_set_root_metadata(
+    RinFS_RestoreTransactionV1* transaction, uint16_t mode,
+    uint16_t persistent_flags, uint32_t uid, uint32_t gid,
+    const RinFS_InodeTimes* times, int64_t change_time_seconds) {
+    RinFS_RestoreTransactionOperation operation;
+    RinFS_RestoreTransactionInternal* internal = NULL;
+    int error = rinfs_restore_transaction_operation_begin(
+        transaction, 0, &operation, &internal);
+    int release_error;
+    if (error != RINFS_OK) return error;
+    error = rinfs_restore_transaction_set_root_metadata_core(
+        internal, mode, persistent_flags, uid, gid, times,
+        change_time_seconds);
+    release_error = rinfs_restore_transaction_operation_end(&operation, 0);
+    return release_error == RINFS_OK ? error : release_error;
+}
+
+static int rinfs_restore_transaction_set_inode_metadata_core(
+    RinFS_RestoreTransactionInternal* internal, uint64_t inode_number,
     uint16_t mode, uint16_t persistent_flags, uint32_t uid, uint32_t gid,
     const RinFS_InodeTimes* times, int64_t change_time_seconds) {
-    RinFS_RestoreTransactionInternal* internal;
     RinFS_RestoreMetadataRecord metadata;
     RinFS_Inode inode;
     RinFS_File file;
     uint64_t offset;
     int64_t written;
     int error;
-    error = rinfs_restore_transaction_validate(transaction, &internal);
+    error = rinfs_restore_transaction_validate_internal(internal);
     if (error != RINFS_OK) return error;
     if (inode_number == 0u ||
         inode_number > internal->mount->sb.s_inode_count ||
@@ -18651,6 +19194,23 @@ int rinfs_restore_transaction_set_inode_metadata(
     if (error != RINFS_OK) return error;
     ++internal->record.metadata_entries;
     return rinfs_restore_record_store(internal->mount, &internal->record);
+}
+
+int rinfs_restore_transaction_set_inode_metadata(
+    RinFS_RestoreTransactionV1* transaction, uint64_t inode_number,
+    uint16_t mode, uint16_t persistent_flags, uint32_t uid, uint32_t gid,
+    const RinFS_InodeTimes* times, int64_t change_time_seconds) {
+    RinFS_RestoreTransactionOperation operation;
+    RinFS_RestoreTransactionInternal* internal = NULL;
+    int error = rinfs_restore_transaction_operation_begin(
+        transaction, 0, &operation, &internal);
+    int release_error;
+    if (error != RINFS_OK) return error;
+    error = rinfs_restore_transaction_set_inode_metadata_core(
+        internal, inode_number, mode, persistent_flags, uid, gid, times,
+        change_time_seconds);
+    release_error = rinfs_restore_transaction_operation_end(&operation, 0);
+    return release_error == RINFS_OK ? error : release_error;
 }
 
 int rinfs_restore_transaction_set_directory_metadata(
