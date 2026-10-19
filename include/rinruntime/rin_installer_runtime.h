@@ -25,8 +25,14 @@ RinResultCode rin_app_block_enumerate(uint32_t index,
 RinResultCode rin_app_block_get_info_v2(uint32_t block_id,
                                         RinBlockInfoV2* info_out);
 
-/* Returns the root ID only when generation, ancestry, and unique
- * physical-medium attestation are all present. */
+/* V3 includes both the registration-root coordinate and conservative alias
+ * group used to correlate reported media identifiers. */
+RinResultCode rin_app_block_get_info_v3(uint32_t block_id,
+                                        RinBlockInfoV3* info_out);
+
+/* Returns the alias-group ID only when generation, ancestry, and unique
+ * physical-medium attestation are all present. Equal IDs are a conservative
+ * alias signal; distinct IDs still require the attestation flags. */
 RinResultCode rin_app_block_physical_device_id(
     uint32_t block_id, uint32_t* physical_device_id_out);
 

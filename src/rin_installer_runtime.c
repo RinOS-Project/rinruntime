@@ -101,9 +101,44 @@ RinResultCode rin_app_block_get_info_v2(uint32_t block_id,
     if (info.struct_size != sizeof(info) ||
         info.version != RIN_BLOCK_INFO_VERSION_2 ||
         info.block_id != block_id ||
+        info.physical_device_id == 0u ||
+        (info.identity_flags & ~RIN_BLOCK_IDENTITY_FLAG_MASK) != 0u ||
+        info.reserved0 != 0u) {
+        installer_runtime_zero(&info, sizeof(info));
+        return RIN_RESULT_CORRUPT_DATA;
+    }
+    *info_out = info;
+    installer_runtime_zero(&info, sizeof(info));
+    return RIN_RESULT_OK;
+#endif
+}
+
+RinResultCode rin_app_block_get_info_v3(uint32_t block_id,
+                                        RinBlockInfoV3* info_out)
+{
+    RinBlockInfoV3 info;
+    intptr_t result;
+    if (info_out != NULL) installer_runtime_zero(info_out, sizeof(*info_out));
+    if (block_id == 0u || info_out == NULL)
+        return RIN_RESULT_INVALID_ARGUMENT;
+    installer_runtime_zero(&info, sizeof(info));
+    info.struct_size = (uint32_t)sizeof(info);
+    info.version = RIN_BLOCK_INFO_VERSION_3;
+#if defined(_WIN32)
+    return RIN_RESULT_NOT_SUPPORTED;
+#else
+    result = _syscall3((uintptr_t)RIN_SYS_BLOCK_GET_INFO,
+                       (uintptr_t)block_id, (uintptr_t)&info,
+                       (uintptr_t)sizeof(info));
+    if (installer_runtime_result(result) != RIN_RESULT_OK)
+        return installer_runtime_result(result);
+    if (info.struct_size != sizeof(info) ||
+        info.version != RIN_BLOCK_INFO_VERSION_3 ||
+        info.block_id != block_id || info.root_registration_id == 0u ||
         (info.identity_flags & ~RIN_BLOCK_IDENTITY_FLAG_MASK) != 0u ||
         ((info.physical_device_id == 0u) !=
-         (info.identity_flags == 0u))) {
+         (info.identity_flags == 0u)) ||
+        info.reserved0 != 0u || info.reserved1 != 0u) {
         installer_runtime_zero(&info, sizeof(info));
         return RIN_RESULT_CORRUPT_DATA;
     }
@@ -116,7 +151,7 @@ RinResultCode rin_app_block_get_info_v2(uint32_t block_id,
 RinResultCode rin_app_block_physical_device_id(
     uint32_t block_id, uint32_t* physical_device_id_out)
 {
-    RinBlockInfoV2 info;
+    RinBlockInfoV3 info;
     const uint32_t required_flags =
         RIN_BLOCK_IDENTITY_FLAG_GENERATION_BOUND |
         RIN_BLOCK_IDENTITY_FLAG_ANCESTRY_COMPLETE |
@@ -126,7 +161,7 @@ RinResultCode rin_app_block_physical_device_id(
     if (physical_device_id_out == NULL)
         return RIN_RESULT_INVALID_ARGUMENT;
     installer_runtime_zero(&info, sizeof(info));
-    result = rin_app_block_get_info_v2(block_id, &info);
+    result = rin_app_block_get_info_v3(block_id, &info);
     if (result != RIN_RESULT_OK) return result;
     if (info.physical_device_id == 0u ||
         (info.identity_flags & required_flags) != required_flags) {
