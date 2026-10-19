@@ -12368,6 +12368,11 @@ int rinfs_mmap_source_retain_page(RinFS_MmapSource* source,
     return err;
 }
 
+/* mmap-source reads use a synthetic RinFS_File protected by the mmap source's
+ * own identity operation and content lease, rather than an open descriptor
+ * close-reference record. */
+static int64_t rinfs_read_unleased(RinFS_File* file, void* buf, uint64_t size);
+
 int64_t rinfs_mmap_source_read(RinFS_MmapSource* source,
                                uint64_t expected_inode,
                                uint64_t reference_generation,
@@ -12416,7 +12421,7 @@ int64_t rinfs_mmap_source_read(RinFS_MmapSource* source,
     file.position = offset;
     file.flags = 0;
     file.mount = identity.mount;
-    result = rinfs_read(&file, output, size);
+    result = rinfs_read_unleased(&file, output, size);
     rinfs_content_lease_release(
         identity.mount, identity.inode_num, identity.inode_generation,
         lease_token, 0);
