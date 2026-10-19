@@ -10671,16 +10671,23 @@ static void rinfs_mount_free_runtime_buffers(RinFS_Mount* mount) {
 /* A successful owner-ledger drain should also leave no pinned or transitional
  * cache page behind. Releasing backing storage while a page is mapped or being
  * filled/writeback would turn a missed owner record into a use-after-free. */
-static int rinfs_mount_page_cache_quiescent(RinFS_Mount* mount) {
+static int rinfs_mount_page_cache_quiescent(RinFS_Mount* mount,
+                                            int allow_dirty_pages) {
     RinFS_PageCache* cache;
     if (!mount || !mount->page_cache) return RINFS_OK;
     cache = mount->page_cache;
     rinfs_page_cache_lock(cache);
+    if (!allow_dirty_pages && cache->dirty_pages != 0u) {
+        rinfs_page_cache_unlock(cache);
+        return RINFS_ERR_PENDING;
+    }
     for (uint32_t index = 0u; index < RINFS_PAGE_CACHE_CAPACITY; ++index) {
         const RinFS_PageCacheEntry* entry = &cache->entries[index];
         if (entry->references != 0u ||
             entry->state == RINFS_PAGE_CACHE_FILLING ||
-            entry->state == RINFS_PAGE_CACHE_WRITEBACK) {
+            entry->state == RINFS_PAGE_CACHE_WRITEBACK ||
+            (!allow_dirty_pages &&
+             entry->state == RINFS_PAGE_CACHE_DIRTY)) {
             rinfs_page_cache_unlock(cache);
             return RINFS_ERR_PENDING;
         }
@@ -11253,7 +11260,7 @@ int rinfs_abandon_dirty_mount(RinFS_Mount* mount) {
 
     /* Do not sync filesystem contents or publish CLEAN; recovery must inspect
      * any partially completed operation on the next mount. */
-    int quiescent_err = rinfs_mount_page_cache_quiescent(mount);
+    int quiescent_err = rinfs_mount_page_cache_quiescent(mount, 1);
     if (quiescent_err != RINFS_OK) return quiescent_err;
     rinfs_mount_free_runtime_buffers(mount);
     mount->mounted = 0;
@@ -11395,7 +11402,7 @@ int rinfs_unmount(RinFS_Mount* mount) {
         }
     }
     
-    int quiescent_err = rinfs_mount_page_cache_quiescent(mount);
+    int quiescent_err = rinfs_mount_page_cache_quiescent(mount, 0);
     if (quiescent_err != RINFS_OK) return quiescent_err;
     rinfs_mount_free_runtime_buffers(mount);
     
