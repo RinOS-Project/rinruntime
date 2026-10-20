@@ -30,6 +30,14 @@ rinruntime_crash_service_export_pending_minidump_with_consent(
     uint8_t* minidump_out, uint32_t minidump_capacity,
     uint32_t* minidump_size_out);
 
+/* Deletes one attributed retained dump after a separate physical-confirmation
+ * gesture. Corrupt or unattributed files cannot be deleted through this
+ * account-scoped operation. */
+RinRuntimeCrashServiceResult
+rinruntime_crash_service_delete_pending_minidump_with_consent(
+    uint32_t expected_service_slot,
+    const RinCrashServicePendingDumpInfoV1* info);
+
 #ifdef __cplusplus
 }
 #endif
