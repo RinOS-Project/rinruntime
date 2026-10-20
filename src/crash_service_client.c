@@ -1404,3 +1404,44 @@ rinruntime_crash_service_export_pending_minidump_with_consent(
     *minidump_size_out = response_size;
     return RINRUNTIME_CRASH_SERVICE_OK;
 }
+
+RinRuntimeCrashServiceResult
+rinruntime_crash_service_delete_pending_minidump_with_consent(
+    uint32_t expected_service_slot,
+    const RinCrashServicePendingDumpInfoV1* info)
+{
+    RinCrashServicePendingDumpDeleteV1 request = {};
+    RinCrashServicePendingDumpDeleteResultV1 reply = {};
+    const size_t tail_offset = offsetof(
+        RinCrashServicePendingDumpDeleteV1, boot_id_high);
+    uint32_t response_size = 0u;
+    RinRuntimeCrashServiceResult result;
+    if (expected_service_slot == 0u || info == NULL ||
+        (info->boot_id_high == 0u && info->boot_id_low == 0u) ||
+        info->queue_sequence == 0u)
+        return RINRUNTIME_CRASH_SERVICE_INVALID_ARGUMENT;
+    request.boot_id_high = info->boot_id_high;
+    request.boot_id_low = info->boot_id_low;
+    request.queue_sequence = info->queue_sequence;
+    request.version = RIN_CRASH_SERVICE_PENDING_DUMP_DELETE_VERSION;
+    result = crash_service_pending_exchange(
+        expected_service_slot, RIN_CRASH_SERVICE_OP_DELETE_PENDING_DUMP,
+        (const uint8_t*)&request + tail_offset,
+        sizeof(request) - (uint32_t)tail_offset,
+        &reply, sizeof(reply), sizeof(reply), &response_size);
+    memset(&request, 0, sizeof(request));
+    if (result != RINRUNTIME_CRASH_SERVICE_OK) {
+        memset(&reply, 0, sizeof(reply));
+        return result;
+    }
+    if (response_size != sizeof(reply) ||
+        reply.struct_size != sizeof(reply) ||
+        reply.version !=
+            RIN_CRASH_SERVICE_PENDING_DUMP_DELETE_RESULT_VERSION ||
+        reply.reserved != 0u) {
+        memset(&reply, 0, sizeof(reply));
+        return RINRUNTIME_CRASH_SERVICE_PROTOCOL_ERROR;
+    }
+    memset(&reply, 0, sizeof(reply));
+    return RINRUNTIME_CRASH_SERVICE_OK;
+}
