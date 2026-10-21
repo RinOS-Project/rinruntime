@@ -17,6 +17,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include "../cxx_compat.h"
 
 /* ═══════════════════════════════════════════════════════════════
  * RinFS Disk Layout
@@ -258,8 +259,8 @@ typedef struct __attribute__((packed)) {
     uint8_t  s_padding[736];    /* 0x120-0x3FF */
 } RinFS_Superblock;
 
-_Static_assert(sizeof(RinFS_Superblock) == 1024,
-               "RinFS superblock must occupy exactly two sectors");
+RINRUNTIME_STATIC_ASSERT(sizeof(RinFS_Superblock) == 1024,
+                          "RinFS superblock must occupy exactly two sectors");
 
 /* Inode (304-byte deployed v1 ABI). Historical comments described a
  * 256-byte/6-direct-pointer draft, but mkfs has always serialized the actual
@@ -308,14 +309,14 @@ typedef struct __attribute__((packed)) {
     uint8_t  i_reserved[104];   /* 0xC8-0x12F */
 } RinFS_Inode;
 
-_Static_assert(sizeof(RinFS_Inode) == 304u,
-               "RinFS inode disk ABI must remain 304 bytes");
-_Static_assert(offsetof(RinFS_Inode, i_generation) == 0xC0u &&
-               offsetof(RinFS_Inode, i_version) == 0xC4u &&
-               offsetof(RinFS_Inode, i_reserved) == 0xC8u,
-               "RinFS inode disk ABI offsets changed");
-_Static_assert(offsetof(RinFS_Inode, i_reserved) + 20u == 0xDCu,
-               "RinFS content-version high word must remain at 0xDC");
+RINRUNTIME_STATIC_ASSERT(sizeof(RinFS_Inode) == 304u,
+                         "RinFS inode disk ABI must remain 304 bytes");
+RINRUNTIME_STATIC_ASSERT(offsetof(RinFS_Inode, i_generation) == 0xC0u &&
+                         offsetof(RinFS_Inode, i_version) == 0xC4u &&
+                         offsetof(RinFS_Inode, i_reserved) == 0xC8u,
+                         "RinFS inode disk ABI offsets changed");
+RINRUNTIME_STATIC_ASSERT(offsetof(RinFS_Inode, i_reserved) + 20u == 0xDCu,
+                         "RinFS content-version high word must remain at 0xDC");
 
 typedef struct __attribute__((packed)) {
     uint32_t magic;
@@ -325,8 +326,8 @@ typedef struct __attribute__((packed)) {
     uint32_t reserved;
 } RinFS_XattrHeader;
 
-_Static_assert(sizeof(RinFS_XattrHeader) == 16,
-               "RinFS xattr header ABI must remain fixed");
+RINRUNTIME_STATIC_ASSERT(sizeof(RinFS_XattrHeader) == 16,
+                          "RinFS xattr header ABI must remain fixed");
 
 /* Directory entry (variable size, 8-264 bytes) */
 typedef struct __attribute__((packed)) {
@@ -636,8 +637,8 @@ typedef struct {
     void* internal;
 } RinFS_RestoreTransactionV1;
 
-_Static_assert(sizeof(RinFS_ContentSnapshot) <= 384u,
-               "RinFS content snapshot must fit the VFS opaque lease ABI");
+RINRUNTIME_STATIC_ASSERT(sizeof(RinFS_ContentSnapshot) <= 384u,
+                          "RinFS content snapshot must fit the VFS opaque lease ABI");
 
 /* A file-backed VMA owns an opaque reference to one exact inode lifetime.
  * Unlike an open-file cursor this object is shareable by split/forked VMAs;
@@ -758,10 +759,10 @@ typedef struct {
     uint32_t reserved;
 } RinFS_InodeTimes;
 
-_Static_assert(sizeof(RinFS_InodeTimestamp) == 16u,
-               "RinFS inode timestamp ABI must remain fixed");
-_Static_assert(sizeof(RinFS_InodeTimes) == 56u,
-               "RinFS inode times ABI must remain fixed");
+RINRUNTIME_STATIC_ASSERT(sizeof(RinFS_InodeTimestamp) == 16u,
+                         "RinFS inode timestamp ABI must remain fixed");
+RINRUNTIME_STATIC_ASSERT(sizeof(RinFS_InodeTimes) == 56u,
+                         "RinFS inode times ABI must remain fixed");
 
 /* ═══════════════════════════════════════════════════════════════
  * API Functions

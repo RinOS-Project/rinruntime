@@ -135,7 +135,8 @@ runtime = library('RinRuntime', runtime_sources, include_directories: inc,
                   install: true, version: '1.0.0')
 runtime_dep = declare_dependency(link_with: runtime, include_directories: inc,
                                  dependencies: runtime_deps)
-install_subdir('include/rinruntime', install_dir: get_option('includedir'))
+install_subdir('include/rinruntime', install_dir: get_option('includedir'),
+               exclude_directories: ['crypt'])
 install_subdir('include/rincompression', install_dir: get_option('includedir'))
 install_headers(files(join_paths(aquamarine_root, 'aq_types.h')),
                 subdir: 'aquamarine')

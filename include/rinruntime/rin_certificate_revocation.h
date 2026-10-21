@@ -5,6 +5,7 @@
 #define RIN_SHARED_RIN_CERTIFICATE_REVOCATION_H
 
 #include <stdint.h>
+#include "cxx_compat.h"
 
 #define RIN_CERTIFICATE_REVOCATION_VERSION UINT32_C(0x00010000)
 
@@ -99,9 +100,9 @@ RinCertificateRevocationResult rin_certificate_revocation_validate(
     const uint8_t certificate_sha256[32],
     const RinCertificateRevocationEvidenceV1* evidence);
 
-_Static_assert(sizeof(RinCertificateRevocationEvidenceV1) == 136u,
-               "certificate revocation evidence ABI drift");
-_Static_assert(sizeof(RinCertificateRevocationPolicyV1) == 56u,
-               "certificate revocation policy ABI drift");
+RINRUNTIME_STATIC_ASSERT(sizeof(RinCertificateRevocationEvidenceV1) == 136u,
+                          "certificate revocation evidence ABI drift");
+RINRUNTIME_STATIC_ASSERT(sizeof(RinCertificateRevocationPolicyV1) == 56u,
+                          "certificate revocation policy ABI drift");
 
 #endif /* RIN_SHARED_RIN_CERTIFICATE_REVOCATION_H */

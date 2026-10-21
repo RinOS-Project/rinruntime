@@ -1,4 +1,4 @@
-name: rinruntime CI
+name: RinRuntime CI
 
 on:
   push:
@@ -7,14 +7,118 @@ on:
 jobs:
   host-build:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - build_system: cmake
+            cc: gcc
+            cxx: g++
+          - build_system: cmake
+            cc: clang
+            cxx: clang++
+          - build_system: meson
+            cc: gcc
+            cxx: g++
+          - build_system: meson
+            cc: clang
+            cxx: clang++
+    env:
+      CC: ${{ matrix.cc }}
+      CXX: ${{ matrix.cxx }}
+      RINRUNTIME_DEPENDENCY_CACHE_ROOT: ${{ runner.temp }}/rinruntime-deps
+      RINRUNTIME_INSTALL_PREFIX: ${{ runner.temp }}/rinruntime-install
     steps:
       - uses: actions/checkout@v4
-      - name: Configure
+      - name: Install host build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y meson ninja-build pkg-config python3
+      - name: Configure CMake
+        if: matrix.build_system == 'cmake'
         run: >-
           cmake -S . -B build
           -DRINRUNTIME_BUILD_TESTS=ON
           -DRINRUNTIME_BUILD_EXAMPLES=ON
+          -DRINRUNTIME_BUILD_SHARED=ON
+          -DRINRUNTIME_BUILD_GUI=OFF
+          -DCMAKE_INSTALL_PREFIX="$RINRUNTIME_INSTALL_PREFIX"
+      - name: Configure Meson
+        if: matrix.build_system == 'meson'
+        run: >-
+          meson setup build --prefix "$RINRUNTIME_INSTALL_PREFIX"
+          -Ddefault_library=shared -Dbuildtype=debugoptimized
       - name: Build
-        run: cmake --build build --parallel
+        if: always()
+        run: |
+          if [[ "${{ matrix.build_system }}" == "cmake" ]]; then
+            cmake --build build --parallel 2
+          else
+            meson compile -C build
+          fi
       - name: Test
-        run: ctest --test-dir build --output-on-failure
+        if: always()
+        run: |
+          if [[ "${{ matrix.build_system }}" == "cmake" ]]; then
+            ctest --test-dir build --output-on-failure
+          else
+            meson test -C build --print-errorlogs
+          fi
+      - name: Install
+        if: always()
+        run: |
+          if [[ "${{ matrix.build_system }}" == "cmake" ]]; then
+            cmake --install build
+          else
+            meson install -C build --no-rebuild
+          fi
+      - name: Verify installed public headers
+        if: success()
+        run: >-
+          python3 scripts/check_installed_headers.py
+          --prefix "$RINRUNTIME_INSTALL_PREFIX"
+          --cc "$CC" --cxx "$CXX" --jobs 4
+      - name: Build and run installed CMake consumers
+        if: matrix.build_system == 'cmake' && success()
+        run: |
+          cmake -S ci/consumer/cmake -B "$RUNNER_TEMP/rinruntime-consumer" \
+            -DCMAKE_PREFIX_PATH="$RINRUNTIME_INSTALL_PREFIX" \
+            -DCMAKE_BUILD_RPATH="$RINRUNTIME_INSTALL_PREFIX/lib"
+          cmake --build "$RUNNER_TEMP/rinruntime-consumer" --parallel 2
+          "$RUNNER_TEMP/rinruntime-consumer/rinruntime-consumer-c"
+          "$RUNNER_TEMP/rinruntime-consumer/rinruntime-consumer-cxx"
+      - name: Build and run installed pkg-config consumers
+        if: matrix.build_system == 'meson' && success()
+        run: >-
+          python3 scripts/verify_installed_consumers.py
+          --prefix "$RINRUNTIME_INSTALL_PREFIX"
+          --cc "$CC" --cxx "$CXX"
+          --output-dir "$RUNNER_TEMP/rinruntime-consumer"
+
+  sanitizer:
+    runs-on: ubuntu-latest
+    env:
+      CC: gcc
+      CXX: g++
+      RINRUNTIME_DEPENDENCY_CACHE_ROOT: ${{ runner.temp }}/rinruntime-deps
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install host build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y meson ninja-build pkg-config python3
+      - name: Configure AddressSanitizer and UndefinedBehaviorSanitizer
+        run: >-
+          cmake -S . -B build-sanitized
+          -DRINRUNTIME_BUILD_TESTS=ON
+          -DRINRUNTIME_BUILD_EXAMPLES=OFF
+          -DRINRUNTIME_BUILD_GUI=OFF
+          -DCMAKE_C_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer"
+          -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer"
+          -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
+      - name: Build sanitized targets
+        if: always()
+        run: cmake --build build-sanitized --parallel 2
+      - name: Run sanitized tests
+        if: always()
+        run: ctest --test-dir build-sanitized --output-on-failure

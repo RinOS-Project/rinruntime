@@ -26,7 +26,7 @@
     },
     "libcxx": {
       "url": "https://github.com/RinOS-Project/libcxx.git",
-      "revision": "cd0deda9dae53c4d42a875cb3543fbdf661cc09e",
+      "revision": "802d39df9d151fe470eaf35044646a0440f2c7f0",
       "checkout": "../libcxx",
       "corePath": "public-base/libs/libcxx",
       "requiredPaths": ["cstddef.h", "cstdint.h", "limits.h", "string.h", "vector.h"],

@@ -196,7 +196,9 @@ install(TARGETS RinRuntime EXPORT RinRuntimeTargets
         ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
         LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
         RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
-install(DIRECTORY include/rinruntime/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/rinruntime)
+install(DIRECTORY include/rinruntime/
+        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/rinruntime
+        PATTERN "crypt" EXCLUDE)
 install(DIRECTORY include/rincompression/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/rincompression)
 install(DIRECTORY ${RINRUNTIME_RINPATH_ROOT}/include/rinpath/
         DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/rinpath)

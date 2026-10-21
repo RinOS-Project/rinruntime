@@ -28,6 +28,15 @@ implicitly rebuilding unrelated default targets. Use GCC or Clang for host
 builds; the current Windows MSVC path is not supported by the runtime's
 compiler-specific packed-record declarations.
 
+The CI matrix builds with GCC and Clang through both CMake and Meson, then
+installs the library and compiles standalone C11/C++20 consumers and the
+installed runtime headers. CMake and Meson configuration failures do not skip
+the build and test steps. A separate GCC job runs the host suite under
+AddressSanitizer and UndefinedBehaviorSanitizer. The product-tree
+`rinruntime/crypt` headers are internal kernel/installer contracts and are
+excluded from the external install because they depend on the private AES
+implementation.
+
 `theme.hpp` と `theme_json.hpp` は、backend-independentなThemeProfileと
 bounded JSON／`TYPE_THEME` resource consumerを提供する。palette生成、認証済み
 catalog publication、theme service、filesystem、window／compositor ownershipは

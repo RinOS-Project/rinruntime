@@ -5,6 +5,7 @@
 #define RIN_SHARED_RIN_CERTIFICATE_REVOCATION_CACHE_H
 
 #include "rin_certificate_revocation.h"
+#include "cxx_compat.h"
 
 #include <stdint.h>
 
@@ -59,9 +60,9 @@ RinCertificateRevocationCacheResult rin_certificate_revocation_cache_lookup(
     const uint8_t certificate_sha256[32], const uint8_t issuer_sha256[32],
     RinCertificateRevocationEvidenceV1* evidence_out);
 
-_Static_assert(sizeof(RinCertificateRevocationCacheSlotV1) == 208u,
-               "certificate revocation cache slot ABI drift");
-_Static_assert(sizeof(RinCertificateRevocationCacheV1) == 3376u,
-               "certificate revocation cache ABI drift");
+RINRUNTIME_STATIC_ASSERT(sizeof(RinCertificateRevocationCacheSlotV1) == 208u,
+                          "certificate revocation cache slot ABI drift");
+RINRUNTIME_STATIC_ASSERT(sizeof(RinCertificateRevocationCacheV1) == 3376u,
+                          "certificate revocation cache ABI drift");
 
 #endif /* RIN_SHARED_RIN_CERTIFICATE_REVOCATION_CACHE_H */
