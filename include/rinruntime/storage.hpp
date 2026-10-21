@@ -19,6 +19,7 @@
 #include "known_folders.hpp"
 #include "rinfs/rinfs.h"
 #include "safe_save.h"
+#include "storage_health_snapshot_v1.h"
 #include "volume_service.hpp"
 
 #endif /* RINRUNTIME_STORAGE_HPP */

@@ -61,6 +61,7 @@
 #include "permission_revocation.hpp"
 #include "window_layout.hpp"
 #include "archive_policy.h"
+#include "storage_health_snapshot_v1.h"
 #include "archive.hpp"
 #include "archive_container.hpp"
 #include "backup_archive.hpp"

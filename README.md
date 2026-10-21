@@ -740,3 +740,22 @@ overlap before writing. Format conversion swaps red and blue while preserving
 green and alpha; it does not blend, premultiply alpha, or convert color space.
 GPU synchronization, compositor ownership, and IPC remain the caller's
 separate responsibilities.
+
+`storage.hpp` includes `storage_health_snapshot_v1.h`, a pointer-free,
+versioned storage health value model. Each metric carries a transport-scoped
+ID, unit, validity flag, and exact 128-bit-capable value; saturation is an
+explicit lower-bound flag. NVMe retains native SMART names and semantics,
+including Percentage Used saturation. Missing, unsupported, or uncollected
+metrics are absent and never imply zero or healthy. NVMe, ATA, SCSI, and SD
+transport identifiers are reserved by the contract, while the current
+conversion adapter publishes NVMe values only; other provider mappings remain
+unfinished.
+
+`rin_storage_health_from_nvme_v1` validates and converts a caller-owned NVMe
+snapshot in memory. It performs no device I/O and grants no access. Consumers
+obtain diagnostics through the existing read-only Management
+`DEVICE_DIAGNOSTIC_GET` operation, which binds the request to the current device
+ID, generation, and revision. The operation has no separate per-call
+capability check today; this API adds no new capability or authority. Device
+health inspection belongs to DeviceManager. DiskManager continues to own disk
+and partition operations, including storage mutations.
