@@ -21,7 +21,7 @@ set(RINRUNTIME_RLL_TARGET "x86_64-unknown-rinos" CACHE STRING
 set(RINRUNTIME_RLL_SIGN_PROFILE "release" CACHE STRING
     "RinCompiler signing profile used by the target .rll route")
 set(RINRUNTIME_RLL_SOURCES
-    "src/portal.c;src/crash.c;src/backup_restore.c;src/known_folders.c;src/file_operation.c;src/safe_save.c;src/safe_save_posix.c;src/session_recovery.c;src/crash_service.c;src/frame_copy.c;src/serial_portal_protocol.c;src/unicode_grapheme.c;src/unicode.c;src/platform.c;src/service.c;src/clipboard.c;src/crash_service_client.c;src/file_portal.c;src/file_portal_startup.c;src/durable_file_portal.c;src/file_chooser_portal.c;src/file_operation_service_client.c;src/accessibility_service_client.c;src/audio/rin_audio_service_client.c;src/firewall/rule_engine.c;src/firewall/namespace_policy.c;src/firewall/profile.c;src/firewall/application.c;src/firewall/conntrack_query.c"
+    "src/portal.c;src/crash.c;src/rin_crash_record.c;src/rin_crash_summary.c;src/rin_crash_consent.c;src/backup_restore.c;src/known_folders.c;src/file_operation.c;src/safe_save.c;src/safe_save_posix.c;src/session_recovery.c;src/crash_service.c;src/frame_copy.c;src/serial_portal_protocol.c;src/unicode_grapheme.c;src/unicode.c;src/platform.c;src/service.c;src/clipboard.c;src/crash_service_client.c;src/file_portal.c;src/file_portal_startup.c;src/durable_file_portal.c;src/file_chooser_portal.c;src/file_operation_service_client.c;src/accessibility_service_client.c;src/audio/rin_audio_service_client.c;src/firewall/rule_engine.c;src/firewall/namespace_policy.c;src/firewall/profile.c;src/firewall/application.c;src/firewall/conntrack_query.c"
     CACHE STRING "semicolon-separated RinRuntime sources for the target .rll route")
 set(RINRUNTIME_RLL_DEPENDENCIES "" CACHE STRING
     "semicolon-separated dependency .rll images for the target .rll route")
@@ -95,6 +95,9 @@ endif()
 set(RINRUNTIME_SOURCES
     src/portal.c
     src/crash.c
+    src/rin_crash_record.c
+    src/rin_crash_summary.c
+    src/rin_crash_consent.c
     src/backup_restore.c
     src/known_folders.c
     src/file_operation.c
@@ -213,11 +216,17 @@ install(DIRECTORY ${RINRUNTIME_RINGPU_ROOT}/include/ringpu/
         DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/ringpu)
 install(DIRECTORY ${RINRUNTIME_LIBC_ROOT}/
         DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/libc
-        FILES_MATCHING PATTERN "*.h" PATTERN "*.hh" PATTERN "*.hpp"
+        FILES_MATCHING
+        PATTERN ".git" EXCLUDE
+        PATTERN ".github" EXCLUDE
+        PATTERN "*.h" PATTERN "*.hh" PATTERN "*.hpp"
                         PATTERN "*.hxx" PATTERN "*.inc")
 install(DIRECTORY ${RINRUNTIME_LIBCXX_ROOT}/
         DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/libcxx
-        FILES_MATCHING PATTERN "*.h" PATTERN "*.hh" PATTERN "*.hpp"
+        FILES_MATCHING
+        PATTERN ".git" EXCLUDE
+        PATTERN ".github" EXCLUDE
+        PATTERN "*.h" PATTERN "*.hh" PATTERN "*.hpp"
                         PATTERN "*.hxx" PATTERN "*.inc")
 install(FILES ${RINRUNTIME_AQUAMARINE_ROOT}/aq_types.h
         DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/aquamarine)

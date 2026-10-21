@@ -20,7 +20,13 @@ _HEADER_SUFFIXES = {".h", ".hh", ".hpp", ".hxx", ".inc"}
 
 
 def _git(repository: Path, *arguments: str, check: bool = True) -> str:
-    command = ["git", "-c", f"safe.directory={repository}", "-C", str(repository),
+    repository = repository.resolve()
+    # Git expects safe.directory paths in normalized form on Windows.  A
+    # backslash path can be treated as a different value on filesystems that
+    # do not expose an ownership SID, causing even our newly-created cache to
+    # be rejected as dubious.
+    command = ["git", "-c", f"safe.directory={repository.as_posix()}",
+               "-C", str(repository),
                *arguments]
     result = subprocess.run(command, text=True, stdout=subprocess.PIPE,
                             stderr=subprocess.PIPE, check=False)
@@ -56,7 +62,19 @@ def _ensure_cache_checkout(path: Path, dependency: dict[str, object]) -> Path:
             raise RuntimeError(f"dependency cache path is occupied: {path}")
         origin = _git(path, "remote", "get-url", "origin", check=False)
         normalize = lambda value: value.removesuffix(".git").rstrip("/").casefold()
-        if not origin or normalize(origin) != normalize(url):
+        if not origin:
+            # Recover only the empty repository left by an interrupted cache
+            # initialization.  Never adopt a populated repository without a
+            # verifiable origin.
+            current = _git(path, "rev-parse", "--verify", "HEAD", check=False)
+            status = _git(path, "status", "--porcelain", "--untracked-files=all",
+                          check=False)
+            if current or status:
+                raise RuntimeError(
+                    f"dependency cache has no verifiable origin; preserve it manually: {path}")
+            _git(path, "remote", "add", "origin", url)
+            origin = url
+        if normalize(origin) != normalize(url):
             raise RuntimeError(f"dependency cache has unexpected origin: {path}")
         if _git(path, "status", "--porcelain", "--untracked-files=all"):
             raise RuntimeError(f"dependency cache has local changes; preserve and clear it manually: {path}")
@@ -145,7 +163,9 @@ def _resolve(source_root: Path, build_root: Path, names: list[str],
     if use_local:
         resolved = local_roots
     else:
-        cache_root = build_root / "rinruntime-deps"
+        configured_cache = os.environ.get("RINRUNTIME_DEPENDENCY_CACHE_ROOT")
+        cache_root = (Path(configured_cache).expanduser().resolve()
+                      if configured_cache else build_root / "rinruntime-deps")
         resolved = {
             name: _ensure_cache_checkout(cache_root / cache_names[name], entries[name])
             for name in names
@@ -171,7 +191,7 @@ def _print_public_headers(header_roots: list[str]) -> None:
                                          (install_subdir.strip("/"),
                                           str(Path(relative).parent).replace("\\", "/"))
                                          if part not in ("", "."))
-                print(f"{header.resolve()}|{install_path}")
+                print(f"{header.resolve().as_posix()}|{install_path}")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -199,7 +219,10 @@ def main(argv: list[str] | None = None) -> int:
             prepare_i18n_header(resolved["libi18n"] / "rin_i18n.h",
                                 build_root / "rin_i18n.h")
         for name in args.dependency:
-            print(resolved[name])
+            # Forward slashes are accepted by CMake and Meson on Windows and
+            # keep generated install scripts from interpreting drive-letter
+            # backslashes as CMake string escapes.
+            print(resolved[name].as_posix())
     except (OSError, ValueError, json.JSONDecodeError, RuntimeError,
             KeyError, TypeError) as error:
         print(f"rinruntime dependency resolution failed: {error}", file=sys.stderr)

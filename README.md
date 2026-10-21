@@ -1,5 +1,33 @@
 # RinRuntime public window API
 
+## Standalone dependency resolution
+
+`dependencies.lock.json` pins the dependency revisions used by both CMake and
+Meson. In the RinOS Core checkout, configuration also checks every pin against
+the corresponding Core gitlink. The resolver reuses the complete sibling set
+only when every checkout is clean and at its pinned revision. Otherwise it
+fetches the full set into the build directory's `rinruntime-deps` cache, so a
+dirty or missing sibling checkout is never changed and relative includes keep
+their expected sibling layout. Set `RINRUNTIME_DEPENDENCY_CACHE_ROOT` to share
+that cache between separate CMake and Meson build directories.
+
+For example:
+
+```sh
+cmake -S . -B build/cmake -DCMAKE_BUILD_TYPE=Release -DRINRUNTIME_BUILD_GUI=OFF
+cmake --build build/cmake
+cmake --install build/cmake --prefix build/install
+
+meson setup build/meson --prefix "$PWD/build/install" -Dbuild_rll=false
+meson compile -C build/meson RinRuntime
+meson install -C build/meson --no-rebuild
+```
+
+The last Meson option installs an already-built runtime target without
+implicitly rebuilding unrelated default targets. Use GCC or Clang for host
+builds; the current Windows MSVC path is not supported by the runtime's
+compiler-specific packed-record declarations.
+
 `theme.hpp` と `theme_json.hpp` は、backend-independentなThemeProfileと
 bounded JSON／`TYPE_THEME` resource consumerを提供する。palette生成、認証済み
 catalog publication、theme service、filesystem、window／compositor ownershipは

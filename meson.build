@@ -42,7 +42,7 @@ rinwire_root = dependency_paths[10]
 aquamarine_root = dependency_paths[11]
 ringpu_root = dependency_paths[12]
 generated_include = meson.current_build_dir()
-inc = include_directories('include', generated_include,
+inc = include_directories('include', '.',
                           join_paths(sdk_root, 'include'),
                           join_paths(rinjson_root, 'include'),
                           join_paths(rinpath_root, 'include'),
@@ -59,6 +59,7 @@ if host_machine.system() != 'windows'
   inc += include_directories(aquamarine_root)
 endif
 runtime_sources = files('src/portal.c', 'src/crash.c',
+                        'src/rin_crash_record.c',
                         'src/rin_crash_summary.c', 'src/rin_crash_consent.c',
                         'src/backup_restore.c',
                         'src/known_folders.c', 'src/file_operation.c',
