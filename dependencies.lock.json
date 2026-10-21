@@ -1,0 +1,106 @@
+{
+  "schemaVersion": 1,
+  "dependencies": {
+    "rinpath": {
+      "url": "https://github.com/RinOS-Project/rinpath.git",
+      "revision": "748b784a111c8744744eacb1341a0dd566c0bd04",
+      "checkout": "../rinpath",
+      "corePath": "public-base/libs/rinpath",
+      "requiredPaths": ["path.c", "include/rinpath/path.h"],
+      "publicHeaders": [{"source": "include/rinpath", "installSubdir": "rinpath"}]
+    },
+    "libunicode": {
+      "url": "https://github.com/RinOS-Project/libunicode",
+      "revision": "5d02c0d544cc665bb061c05e9e0de1596286e98a",
+      "checkout": "../libunicode",
+      "corePath": "public-base/libs/libunicode",
+      "requiredPaths": ["core.c", "locale_adapter.c", "rin_unicode.h"]
+    },
+    "libc": {
+      "url": "https://github.com/RinOS-Project/libc.git",
+      "revision": "150fdb1864ce426f1cebdbac0a2a41b54acc9fe5",
+      "checkout": "../libc",
+      "corePath": "public-base/libs/libc",
+      "requiredPaths": ["errno.h", "poll.h", "sys/syscall.h"],
+      "publicHeaders": [{"source": ".", "installSubdir": "libc"}]
+    },
+    "libcxx": {
+      "url": "https://github.com/RinOS-Project/libcxx.git",
+      "revision": "819b30e4ddb2e2faa453738c121f547afa9320b8",
+      "checkout": "../libcxx",
+      "corePath": "public-base/libs/libcxx",
+      "requiredPaths": ["cstddef.h", "cstdint.h", "limits.h", "string.h", "vector.h"],
+      "publicHeaders": [{"source": ".", "installSubdir": "libcxx"}]
+    },
+    "libi18n": {
+      "url": "https://github.com/RinOS-Project/libi18n",
+      "revision": "b3b73677a90d6453303d26407af387e4ee49748b",
+      "checkout": "../libi18n",
+      "corePath": "public-base/libs/libi18n",
+      "requiredPaths": ["rin_i18n.c", "rin_i18n.h"]
+    },
+    "rinresource": {
+      "url": "https://github.com/RinOS-Project/rinresource",
+      "revision": "0661159fdc8b80372fa3accdde1d09912f96cb50",
+      "checkout": "../rinresource",
+      "corePath": "public-base/libs/rinresource",
+      "requiredPaths": ["include/rinresource/catalog.h", "include/rinresource/loader.h"],
+      "publicHeaders": [{"source": "include/rinresource", "installSubdir": "rinresource"}]
+    },
+    "rinjson": {
+      "url": "https://github.com/RinOS-Project/rinjson",
+      "revision": "c32b7ed6265e2df694d27fa1d6ebe1331c2947e1",
+      "checkout": "../rinjson",
+      "corePath": "public-base/libs/rinjson",
+      "requiredPaths": ["src/json.cpp", "include/rinjson/json.hpp"],
+      "publicHeaders": [{"source": "include/rinjson", "installSubdir": "rinjson"}]
+    },
+    "rinos-sdk": {
+      "url": "https://github.com/RinOS-Project/RinOS-SDK",
+      "revision": "c14d4ed91e63fe06d3b1e609166d45e44131e9ac",
+      "checkout": "../../RinOS-SDK",
+      "corePath": "public-base/RinOS-SDK",
+      "requiredPaths": ["include/rin/abi.h", "include/rin/crash_service.h"],
+      "publicHeaders": [{"source": "include/rin", "installSubdir": "rin"}]
+    },
+    "rinuri": {
+      "url": "https://github.com/RinOS-Project/rinuri",
+      "revision": "aab05e635e89d440a487d394378c8f9fd85eedd4",
+      "checkout": "../rinuri",
+      "corePath": "public-base/libs/rinuri",
+      "requiredPaths": ["include/rinuri/uri.h"],
+      "publicHeaders": [{"source": "include/rinuri", "installSubdir": "rinuri"}]
+    },
+    "rinhttp": {
+      "url": "https://github.com/RinOS-Project/rinhttp",
+      "revision": "37d5c09c2c35f10ace8db28a6b488b0f7e6a9714",
+      "checkout": "../rinhttp",
+      "corePath": "public-base/libs/rinhttp",
+      "requiredPaths": ["include/rinhttp/http.h"],
+      "publicHeaders": [{"source": "include/rinhttp", "installSubdir": "rinhttp"}]
+    },
+    "rinwire": {
+      "url": "https://github.com/RinOS-Project/rinwire",
+      "revision": "7edf26cf538df8e0b84152f3751fc98ca93c8566",
+      "checkout": "../rinwire",
+      "corePath": "public-base/libs/rinwire",
+      "requiredPaths": ["include/rinwire/validation.h"],
+      "publicHeaders": [{"source": "include/rinwire", "installSubdir": "rinwire"}]
+    },
+    "aquamarine": {
+      "url": "https://github.com/RinOS-Project/aquamarine.git",
+      "revision": "02695d1c27de2226894d5972f932376cfc176f95",
+      "checkout": "../aquamarine",
+      "corePath": "public-base/libs/aquamarine",
+      "requiredPaths": ["aq_blend.c", "aq_transform.c", "aq_types.h"]
+    },
+    "ringpu": {
+      "url": "https://github.com/RinOS-Project/RinGPU",
+      "revision": "2ef293143ebf9234b029b98375e145103a3f0324",
+      "checkout": "../RinGPU",
+      "corePath": "public-base/libs/RinGPU",
+      "requiredPaths": ["include/ringpu/ringpu.h"],
+      "publicHeaders": [{"source": "include/ringpu", "installSubdir": "ringpu"}]
+    }
+  }
+}

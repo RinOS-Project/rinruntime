@@ -10,7 +10,7 @@
 #include <rin/syscall_abi.h>
 
 #if !defined(_WIN32)
-#include "../../libc/sys/syscall.h"
+#include <libc/sys/syscall.h>
 #endif
 
 static RinResultCode installer_runtime_result(intptr_t result)

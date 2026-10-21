@@ -1,26 +1,91 @@
 project('RinRuntime', ['c', 'cpp'], version: '1.0.0',
         default_options: ['cpp_std=c++17', 'warning_level=3'])
 
-python = import('python').find_installation(required: true)
+python = import('python').find_installation('python3', required: true)
+if not python.language_version().version_compare('>=3.10')
+  error('RinRuntime dependency tools require Python 3.10 or newer')
+endif
 fs = import('fs')
-inc = include_directories('include', '../../RinOS-SDK/include',
-                          '../rinjson/include', '../rinpath/include',
-                          '../libunicode')
+dependency_names = ['rinpath', 'libunicode', 'libc', 'libcxx', 'libi18n',
+                    'rinresource', 'rinjson', 'rinos-sdk', 'rinuri', 'rinhttp',
+                    'rinwire', 'aquamarine', 'ringpu']
+dependency_command = [python, files('scripts/resolve_dependencies.py'),
+                      '--source-root', meson.current_source_dir(),
+                      '--build-root', meson.current_build_dir(),
+                      '--skip-i18n-header']
+foreach dependency_name : dependency_names
+  dependency_command += ['--dependency', dependency_name]
+endforeach
+dependency_result = run_command(dependency_command, check: false)
+if dependency_result.returncode() != 0
+  error('RinRuntime dependency resolution failed: ' +
+        dependency_result.stderr().strip())
+endif
+dependency_paths = []
+foreach dependency_path : dependency_result.stdout().strip().split('\n')
+  dependency_paths += [dependency_path.strip()]
+endforeach
+if dependency_paths.length() != dependency_names.length()
+  error('RinRuntime dependency resolver returned an incomplete path list')
+endif
+rinpath_root = dependency_paths[0]
+libunicode_root = dependency_paths[1]
+libc_root = dependency_paths[2]
+libcxx_root = dependency_paths[3]
+libi18n_root = dependency_paths[4]
+rinresource_root = dependency_paths[5]
+rinjson_root = dependency_paths[6]
+sdk_root = dependency_paths[7]
+rinuri_root = dependency_paths[8]
+rinhttp_root = dependency_paths[9]
+rinwire_root = dependency_paths[10]
+aquamarine_root = dependency_paths[11]
+ringpu_root = dependency_paths[12]
+generated_include = meson.current_build_dir()
+inc = include_directories('include', generated_include,
+                          join_paths(sdk_root, 'include'),
+                          join_paths(rinjson_root, 'include'),
+                          join_paths(rinpath_root, 'include'),
+                          join_paths(rinresource_root, 'include'),
+                          join_paths(rinuri_root, 'include'),
+                          join_paths(rinhttp_root, 'include'),
+                          join_paths(rinwire_root, 'include'),
+                          join_paths(ringpu_root, 'include'),
+                          join_paths(libc_root, '..'),
+                          join_paths(libcxx_root, '..'),
+                          join_paths(aquamarine_root, '..'),
+                          libunicode_root, libi18n_root)
+if host_machine.system() != 'windows'
+  inc += include_directories(aquamarine_root)
+endif
 runtime_sources = files('src/portal.c', 'src/crash.c',
                         'src/rin_crash_summary.c', 'src/rin_crash_consent.c',
                         'src/backup_restore.c',
                         'src/known_folders.c', 'src/file_operation.c',
                         'src/safe_save.c', 'src/safe_save_posix.c',
                         'src/session_recovery.c', 'src/crash_service.c',
-                        '../rinpath/path.c', 'src/serial_portal_protocol.c',
+                        join_paths(rinpath_root, 'path.c'),
+                        'src/serial_portal_protocol.c',
                         'src/firewall/rule_engine.c',
                         'src/firewall/namespace_policy.c',
                         'src/firewall/profile.c',
                         'src/firewall/application.c', 'src/unicode_grapheme.c',
                         'src/unicode.c',
-                        '../libunicode/core.c', '../libunicode/locale_adapter.c',
-                        '../libi18n/rin_i18n.c',
+                        join_paths(libunicode_root, 'core.c'),
+                        join_paths(libunicode_root, 'locale_adapter.c'),
+                        join_paths(libi18n_root, 'rin_i18n.c'),
+                        join_paths(rinjson_root, 'src/json.cpp'),
                         'src/firewall/conntrack_query.c')
+i18n_header = custom_target(
+  'rinruntime-i18n-v1-header',
+  input: files(join_paths(libi18n_root, 'rin_i18n.h')),
+  output: 'rin_i18n.h',
+  command: [python, files('scripts/prepare_i18n_header.py'), '@INPUT@', '@OUTPUT@'],
+  build_by_default: true,
+  install: true,
+  install_dir: join_paths(get_option('includedir'), 'rini18n', 'v1'),
+)
+runtime_sources += [i18n_header]
 if host_machine.system() != 'windows'
   runtime_sources += files('src/backup_payload.c')
   runtime_sources += files('src/rin_installer_runtime.c')
@@ -38,16 +103,16 @@ if host_machine.system() != 'windows'
                            'src/accessibility_service_client.c',
                            'src/audio/rin_audio_service_client.c',
                            'src/rin_keyring_client.c')
-  aq_inc = include_directories('../aquamarine', '../libunicode', '../../RinOS-SDK/include')
-  aq_sources = files('../aquamarine/aq_blend.c', '../aquamarine/aq_color.c',
-                     '../aquamarine/aq_draw.c', '../aquamarine/aq_gradient.c',
-                     '../aquamarine/aq_path.c', '../aquamarine/aq_render3d.c',
-                     '../aquamarine/aq_surface.c', '../aquamarine/aq_text.c',
-                     '../aquamarine/aq_transform.c')
-  aquamarine = static_library('Aquamarine', aq_sources,
-                              include_directories: aq_inc)
-  aquamarine_dep = declare_dependency(link_with: aquamarine,
-                                       include_directories: aq_inc)
+  aq_sources = files(join_paths(aquamarine_root, 'aq_blend.c'),
+                     join_paths(aquamarine_root, 'aq_color.c'),
+                     join_paths(aquamarine_root, 'aq_draw.c'),
+                     join_paths(aquamarine_root, 'aq_gradient.c'),
+                     join_paths(aquamarine_root, 'aq_path.c'),
+                     join_paths(aquamarine_root, 'aq_render3d.c'),
+                     join_paths(aquamarine_root, 'aq_surface.c'),
+                     join_paths(aquamarine_root, 'aq_text.c'),
+                     join_paths(aquamarine_root, 'aq_transform.c'))
+  runtime_sources += aq_sources
   runtime_sources += files('src/compositor_gui.c',
                            'src/compositor_gpu_bridge.c', 'src/render.c',
                            'src/render_context.cpp')
@@ -56,7 +121,6 @@ runtime_deps = []
 runtime_link_args = []
 test_override_options = []
 if host_machine.system() != 'windows'
-  runtime_deps += aquamarine_dep
   # The public runtime carries its real RinOS syscall adapters.  Service
   # implementations remain outside this library.
   runtime_link_args += ['-Wl,--allow-shlib-undefined']
@@ -70,19 +134,86 @@ runtime = library('RinRuntime', runtime_sources, include_directories: inc,
 runtime_dep = declare_dependency(link_with: runtime, include_directories: inc,
                                  dependencies: runtime_deps)
 install_subdir('include/rinruntime', install_dir: get_option('includedir'))
-install_headers('../rinpath/include/rinpath/path.h', subdir: 'rinpath')
 install_subdir('include/rincompression', install_dir: get_option('includedir'))
+install_headers(files(join_paths(aquamarine_root, 'aq_types.h')),
+                subdir: 'aquamarine')
+public_header_command = [python, files('scripts/resolve_dependencies.py'),
+                         '--list-public-headers']
+public_header_roots = [
+  [libc_root, 'libc'],
+  [libcxx_root, 'libcxx'],
+  [join_paths(rinpath_root, 'include/rinpath'), 'rinpath'],
+  [join_paths(rinjson_root, 'include/rinjson'), 'rinjson'],
+  [join_paths(rinresource_root, 'include/rinresource'), 'rinresource'],
+  [join_paths(sdk_root, 'include/rin'), 'rin'],
+  [join_paths(rinuri_root, 'include/rinuri'), 'rinuri'],
+  [join_paths(rinhttp_root, 'include/rinhttp'), 'rinhttp'],
+  [join_paths(rinwire_root, 'include/rinwire'), 'rinwire'],
+  [join_paths(ringpu_root, 'include/ringpu'), 'ringpu'],
+]
+foreach header_root : public_header_roots
+  public_header_command += ['--header-root', header_root[0] + '=' + header_root[1]]
+endforeach
+public_header_result = run_command(public_header_command, check: false)
+if public_header_result.returncode() != 0
+  error('RinRuntime public header enumeration failed: ' +
+        public_header_result.stderr().strip())
+endif
+foreach header_entry : public_header_result.stdout().strip().split('\n')
+  header_fields = header_entry.strip().split('|')
+  if header_fields.length() != 2
+    error('RinRuntime public header map contains a malformed entry')
+  endif
+  install_headers(files(header_fields[0]),
+                  install_dir: join_paths(get_option('includedir'),
+                                          header_fields[1]))
+endforeach
+pkgconfig = import('pkgconfig')
+pkgconfig.generate(runtime,
+  name: 'RinRuntime',
+  filebase: 'rinruntime',
+  description: 'RinOS public application models and service-client contracts',
+  version: meson.project_version())
 
 if get_option('build_rll')
   if get_option('rll_sign_key') == '' or get_option('rll_public_key') == ''
     error('build_rll requires rll_sign_key and rll_public_key')
   endif
-  rll_sources = get_option('rll_sources')
-  if rll_sources.length() == 0
+  configured_rll_sources = get_option('rll_sources')
+  if configured_rll_sources.length() == 0
     error('build_rll requires at least one rll_sources entry')
   endif
+  rll_sources = []
+  foreach rll_source : configured_rll_sources
+    if rll_source == '../rinpath/path.c'
+      rll_sources += [join_paths(rinpath_root, 'path.c')]
+    elif rll_source == '../libunicode/core.c'
+      rll_sources += [join_paths(libunicode_root, 'core.c')]
+    elif rll_source == '../libunicode/locale_adapter.c'
+      rll_sources += [join_paths(libunicode_root, 'locale_adapter.c')]
+    elif rll_source == '../libi18n/rin_i18n.c'
+      rll_sources += [join_paths(libi18n_root, 'rin_i18n.c')]
+    elif rll_source == '../rinjson/src/json.cpp'
+      rll_sources += [join_paths(rinjson_root, 'src/json.cpp')]
+    else
+      rll_sources += [rll_source]
+    endif
+  endforeach
+  foreach dependency_source : [join_paths(rinpath_root, 'path.c'),
+                               join_paths(libunicode_root, 'core.c'),
+                               join_paths(libunicode_root, 'locale_adapter.c'),
+                               join_paths(libi18n_root, 'rin_i18n.c'),
+                               join_paths(rinjson_root, 'src/json.cpp')]
+    if dependency_source not in rll_sources
+      rll_sources += [dependency_source]
+    endif
+  endforeach
   foreach rll_source : rll_sources
-    if not fs.is_file(join_paths(meson.current_source_dir(), rll_source))
+    rll_source_path = rll_source
+    if not fs.is_absolute(rll_source_path)
+      rll_source_path = join_paths(meson.current_source_dir(), rll_source)
+    endif
+    if not fs.is_file(rll_source_path)
       error('build_rll source does not exist: ' + rll_source)
     endif
   endforeach
@@ -102,9 +233,19 @@ if get_option('build_rll')
     '--source-root', meson.current_source_dir(),
     '--output', '@OUTPUT@',
     '--include', join_paths(meson.current_source_dir(), 'include'),
-    '--include', join_paths(meson.current_source_dir(), '../rinpath/include'),
-    '--include', join_paths(meson.current_source_dir(), '../../RinOS-SDK/include'),
+    '--include', generated_include,
+    '--include', join_paths(rinpath_root, 'include'),
+    '--include', join_paths(sdk_root, 'include'),
+    '--include', join_paths(libc_root, '..'),
+    '--include', join_paths(libcxx_root, '..'),
+    '--include', libunicode_root,
+    '--include', libi18n_root,
+    '--include', join_paths(rinresource_root, 'include'),
+    '--include', join_paths(rinjson_root, 'include'),
   ]
+  foreach dependency_root : dependency_paths
+    rll_command += ['--dependency-root', dependency_root]
+  endforeach
   foreach rll_source : rll_sources
     rll_command += ['--source', rll_source]
   endforeach
@@ -113,7 +254,7 @@ if get_option('build_rll')
   endforeach
   rinruntime_rll = custom_target(
     'RinRuntime-rll',
-    input: rll_source_files,
+    input: rll_source_files + [i18n_header],
     output: 'RinRuntime.rll',
     command: rll_command,
     build_by_default: false,
@@ -208,45 +349,45 @@ if get_option('buildtype') != 'plain'
         'tests/device_manifest_test.cpp', dependencies: runtime_dep,
         override_options: test_override_options, cpp_args: ['-std=c++17']))
   test('rinruntime-device-manifest-json', executable('rinruntime-device-manifest-json-test',
-        'tests/device_manifest_json_test.cpp', '../rinjson/src/json.cpp',
+        'tests/device_manifest_json_test.cpp',
         dependencies: runtime_dep, override_options: test_override_options,
         cpp_args: ['-std=c++17']))
   test('rinruntime-event-loop-rin', executable('rinruntime-event-loop-rin-test',
-        'tests/event_loop_rin_contract_test.cpp', '../../RinOS-SDK/src/rinsdk_v1.c',
+        'tests/event_loop_rin_contract_test.cpp', join_paths(sdk_root, 'src/rinsdk_v1.c'),
         dependencies: runtime_dep, override_options: test_override_options,
         cpp_args: ['-std=c++17']))
   test('rinruntime-clipboard', executable('rinruntime-clipboard-test',
         'tests/clipboard_contract_test.c', dependencies: runtime_dep,
         override_options: test_override_options))
   test('rinruntime-update-metadata-json', executable('rinruntime-update-metadata-json-test',
-        'tests/update_metadata_json_test.cpp', '../rinjson/src/json.cpp',
+        'tests/update_metadata_json_test.cpp',
         dependencies: runtime_dep, override_options: test_override_options,
         cpp_args: ['-std=c++17']))
   test('rinruntime-package-metadata-json', executable('rinruntime-package-metadata-json-test',
-        'tests/package_metadata_json_test.cpp', '../rinjson/src/json.cpp',
+        'tests/package_metadata_json_test.cpp',
         dependencies: runtime_dep, override_options: test_override_options,
         cpp_args: ['-std=c++17']))
   test('rinruntime-package-metadata-catalog-json', executable('rinruntime-package-metadata-catalog-json-test',
-        'tests/package_metadata_catalog_json_test.cpp', '../rinjson/src/json.cpp',
+        'tests/package_metadata_catalog_json_test.cpp',
         dependencies: runtime_dep, override_options: test_override_options,
         cpp_args: ['-std=c++17']))
   test('rinruntime-application-metadata-json', executable('rinruntime-application-metadata-json-test',
-        'tests/application_metadata_json_test.cpp', '../rinjson/src/json.cpp',
+        'tests/application_metadata_json_test.cpp',
         dependencies: runtime_dep, override_options: test_override_options,
         cpp_args: ['-std=c++17']))
   test('rinruntime-application-metadata-catalog-json', executable('rinruntime-application-metadata-catalog-json-test',
-        'tests/application_metadata_catalog_json_test.cpp', '../rinjson/src/json.cpp',
+        'tests/application_metadata_catalog_json_test.cpp',
         dependencies: runtime_dep, override_options: test_override_options,
         cpp_args: ['-std=c++17']))
   test('rinruntime-update-metadata-catalog-json', executable('rinruntime-update-metadata-catalog-json-test',
-        'tests/update_metadata_catalog_json_test.cpp', '../rinjson/src/json.cpp',
+        'tests/update_metadata_catalog_json_test.cpp',
         dependencies: runtime_dep, override_options: test_override_options,
         cpp_args: ['-std=c++17']))
   test('rinruntime-theme-profile', executable('rinruntime-theme-profile-test',
         'tests/theme_profile_test.cpp', dependencies: runtime_dep,
         override_options: test_override_options, cpp_args: ['-std=c++17']))
   test('rinruntime-theme-profile-json', executable('rinruntime-theme-profile-json-test',
-        'tests/theme_profile_json_test.cpp', '../rinjson/src/json.cpp',
+        'tests/theme_profile_json_test.cpp',
         dependencies: runtime_dep, override_options: test_override_options,
         cpp_args: ['-std=c++17']))
   test('rinruntime-cursor', executable('rinruntime-cursor-test',

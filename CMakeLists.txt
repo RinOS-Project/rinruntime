@@ -21,8 +21,8 @@ set(RINRUNTIME_RLL_TARGET "x86_64-unknown-rinos" CACHE STRING
 set(RINRUNTIME_RLL_SIGN_PROFILE "release" CACHE STRING
     "RinCompiler signing profile used by the target .rll route")
 set(RINRUNTIME_RLL_SOURCES
-    "src/portal.c;src/crash.c;src/backup_restore.c;src/known_folders.c;src/file_operation.c;src/safe_save.c;src/safe_save_posix.c;src/session_recovery.c;src/crash_service.c;../rinpath/path.c;src/serial_portal_protocol.c;src/unicode_grapheme.c;src/unicode.c;../libunicode/core.c;../libunicode/locale_adapter.c;../libi18n/rin_i18n.c;src/platform.c;src/service.c;src/clipboard.c;src/crash_service_client.c;src/file_portal.c;src/file_portal_startup.c;src/durable_file_portal.c;src/file_chooser_portal.c;src/file_operation_service_client.c;src/accessibility_service_client.c;src/audio/rin_audio_service_client.c;src/firewall/rule_engine.c;src/firewall/namespace_policy.c;src/firewall/profile.c;src/firewall/application.c;src/firewall/conntrack_query.c"
-    CACHE STRING "semicolon-separated RinRuntime C sources for the target .rll route")
+    "src/portal.c;src/crash.c;src/backup_restore.c;src/known_folders.c;src/file_operation.c;src/safe_save.c;src/safe_save_posix.c;src/session_recovery.c;src/crash_service.c;src/serial_portal_protocol.c;src/unicode_grapheme.c;src/unicode.c;src/platform.c;src/service.c;src/clipboard.c;src/crash_service_client.c;src/file_portal.c;src/file_portal_startup.c;src/durable_file_portal.c;src/file_chooser_portal.c;src/file_operation_service_client.c;src/accessibility_service_client.c;src/audio/rin_audio_service_client.c;src/firewall/rule_engine.c;src/firewall/namespace_policy.c;src/firewall/profile.c;src/firewall/application.c;src/firewall/conntrack_query.c"
+    CACHE STRING "semicolon-separated RinRuntime sources for the target .rll route")
 set(RINRUNTIME_RLL_DEPENDENCIES "" CACHE STRING
     "semicolon-separated dependency .rll images for the target .rll route")
 set(RINRUNTIME_GUI_DEFAULT ON)
@@ -31,6 +31,63 @@ if(WIN32)
 endif()
 option(RINRUNTIME_BUILD_GUI
        "Build the public compositor-backed native window API" ${RINRUNTIME_GUI_DEFAULT})
+find_package(Python3 3.10 COMPONENTS Interpreter REQUIRED)
+set(RINRUNTIME_DEPENDENCY_NAMES
+    rinpath libunicode libc libcxx libi18n rinresource rinjson rinos-sdk rinuri
+    rinhttp rinwire aquamarine ringpu)
+set(RINRUNTIME_DEPENDENCY_COMMAND
+    ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/scripts/resolve_dependencies.py
+    --source-root ${CMAKE_CURRENT_SOURCE_DIR}
+    --build-root ${CMAKE_CURRENT_BINARY_DIR})
+foreach(dependency_name IN LISTS RINRUNTIME_DEPENDENCY_NAMES)
+    list(APPEND RINRUNTIME_DEPENDENCY_COMMAND --dependency ${dependency_name})
+endforeach()
+execute_process(
+    COMMAND ${RINRUNTIME_DEPENDENCY_COMMAND}
+    RESULT_VARIABLE RINRUNTIME_DEPENDENCY_RESULT
+    OUTPUT_VARIABLE RINRUNTIME_DEPENDENCY_PATHS
+    ERROR_VARIABLE RINRUNTIME_DEPENDENCY_ERROR
+    OUTPUT_STRIP_TRAILING_WHITESPACE)
+if(NOT RINRUNTIME_DEPENDENCY_RESULT EQUAL 0)
+    message(FATAL_ERROR "RinRuntime dependency resolution failed: ${RINRUNTIME_DEPENDENCY_ERROR}")
+endif()
+string(REPLACE "\r\n" "\n" RINRUNTIME_DEPENDENCY_PATHS "${RINRUNTIME_DEPENDENCY_PATHS}")
+string(REPLACE "\n" ";" RINRUNTIME_DEPENDENCY_PATHS "${RINRUNTIME_DEPENDENCY_PATHS}")
+list(LENGTH RINRUNTIME_DEPENDENCY_PATHS RINRUNTIME_RESOLVED_DEPENDENCY_COUNT)
+list(LENGTH RINRUNTIME_DEPENDENCY_NAMES RINRUNTIME_EXPECTED_DEPENDENCY_COUNT)
+if(NOT RINRUNTIME_RESOLVED_DEPENDENCY_COUNT EQUAL RINRUNTIME_EXPECTED_DEPENDENCY_COUNT)
+    message(FATAL_ERROR "RinRuntime dependency resolver returned an incomplete path list")
+endif()
+list(GET RINRUNTIME_DEPENDENCY_PATHS 0 RINRUNTIME_RINPATH_ROOT)
+list(GET RINRUNTIME_DEPENDENCY_PATHS 1 RINRUNTIME_LIBUNICODE_ROOT)
+list(GET RINRUNTIME_DEPENDENCY_PATHS 2 RINRUNTIME_LIBC_ROOT)
+list(GET RINRUNTIME_DEPENDENCY_PATHS 3 RINRUNTIME_LIBCXX_ROOT)
+list(GET RINRUNTIME_DEPENDENCY_PATHS 4 RINRUNTIME_LIBI18N_ROOT)
+list(GET RINRUNTIME_DEPENDENCY_PATHS 5 RINRUNTIME_RINRESOURCE_ROOT)
+list(GET RINRUNTIME_DEPENDENCY_PATHS 6 RINRUNTIME_RINJSON_ROOT)
+list(GET RINRUNTIME_DEPENDENCY_PATHS 7 RINRUNTIME_SDK_ROOT)
+list(GET RINRUNTIME_DEPENDENCY_PATHS 8 RINRUNTIME_RINURI_ROOT)
+list(GET RINRUNTIME_DEPENDENCY_PATHS 9 RINRUNTIME_RINHTTP_ROOT)
+list(GET RINRUNTIME_DEPENDENCY_PATHS 10 RINRUNTIME_RINWIRE_ROOT)
+list(GET RINRUNTIME_DEPENDENCY_PATHS 11 RINRUNTIME_AQUAMARINE_ROOT)
+list(GET RINRUNTIME_DEPENDENCY_PATHS 12 RINRUNTIME_RINGPU_ROOT)
+list(REMOVE_ITEM RINRUNTIME_RLL_SOURCES
+     ../rinpath/path.c ../libunicode/core.c ../libunicode/locale_adapter.c
+     ../libi18n/rin_i18n.c ../rinjson/src/json.cpp)
+list(APPEND RINRUNTIME_RLL_SOURCES
+     ${RINRUNTIME_RINPATH_ROOT}/path.c
+     ${RINRUNTIME_LIBUNICODE_ROOT}/core.c
+     ${RINRUNTIME_LIBUNICODE_ROOT}/locale_adapter.c
+     ${RINRUNTIME_LIBI18N_ROOT}/rin_i18n.c
+     ${RINRUNTIME_RINJSON_ROOT}/src/json.cpp)
+set(RINRUNTIME_GENERATED_INCLUDE
+    ${CMAKE_CURRENT_BINARY_DIR})
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+             ${CMAKE_CURRENT_SOURCE_DIR}/dependencies.lock.json
+             ${CMAKE_CURRENT_SOURCE_DIR}/scripts/resolve_dependencies.py
+             ${CMAKE_CURRENT_SOURCE_DIR}/scripts/prepare_i18n_header.py
+             ${RINRUNTIME_LIBI18N_ROOT}/rin_i18n.h)
 set(RINRUNTIME_LIBRARY_TYPE STATIC)
 if(RINRUNTIME_BUILD_SHARED)
     set(RINRUNTIME_LIBRARY_TYPE SHARED)
@@ -45,13 +102,14 @@ set(RINRUNTIME_SOURCES
     src/safe_save_posix.c
     src/session_recovery.c
     src/crash_service.c
-    ../rinpath/path.c
+    ${RINRUNTIME_RINPATH_ROOT}/path.c
     src/serial_portal_protocol.c
     src/unicode_grapheme.c
     src/unicode.c
-    ../libunicode/core.c
-    ../libunicode/locale_adapter.c
-    ../libi18n/rin_i18n.c
+    ${RINRUNTIME_LIBUNICODE_ROOT}/core.c
+    ${RINRUNTIME_LIBUNICODE_ROOT}/locale_adapter.c
+    ${RINRUNTIME_LIBI18N_ROOT}/rin_i18n.c
+    ${RINRUNTIME_RINJSON_ROOT}/src/json.cpp
     src/firewall/rule_engine.c
     src/firewall/namespace_policy.c
     src/firewall/profile.c
@@ -85,9 +143,16 @@ if(RINRUNTIME_BUILD_GUI)
         message(FATAL_ERROR
                 "RINRUNTIME_BUILD_GUI requires the RinOS Unix compositor transport")
     endif()
-    add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../aquamarine
-                     ${CMAKE_CURRENT_BINARY_DIR}/aquamarine EXCLUDE_FROM_ALL)
     list(APPEND RINRUNTIME_SOURCES
+         ${RINRUNTIME_AQUAMARINE_ROOT}/aq_blend.c
+         ${RINRUNTIME_AQUAMARINE_ROOT}/aq_color.c
+         ${RINRUNTIME_AQUAMARINE_ROOT}/aq_draw.c
+         ${RINRUNTIME_AQUAMARINE_ROOT}/aq_gradient.c
+         ${RINRUNTIME_AQUAMARINE_ROOT}/aq_path.c
+         ${RINRUNTIME_AQUAMARINE_ROOT}/aq_render3d.c
+         ${RINRUNTIME_AQUAMARINE_ROOT}/aq_surface.c
+         ${RINRUNTIME_AQUAMARINE_ROOT}/aq_text.c
+         ${RINRUNTIME_AQUAMARINE_ROOT}/aq_transform.c
          src/compositor_gui.c
          src/compositor_gpu_bridge.c
          src/render.c
@@ -97,18 +162,27 @@ add_library(RinRuntime ${RINRUNTIME_LIBRARY_TYPE}
     ${RINRUNTIME_SOURCES})
 add_library(RinRuntime::RinRuntime ALIAS RinRuntime)
 target_compile_features(RinRuntime PUBLIC c_std_11)
-if(RINRUNTIME_BUILD_GUI)
-    target_compile_features(RinRuntime PUBLIC cxx_std_17)
-    target_link_libraries(RinRuntime PUBLIC Aquamarine::Aquamarine)
-endif()
 target_include_directories(RinRuntime PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../../RinOS-SDK/include>
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../rinjson/include>
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../rinpath/include>
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../aquamarine>
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../libunicode>
+    $<BUILD_INTERFACE:${RINRUNTIME_GENERATED_INCLUDE}>
+    $<BUILD_INTERFACE:${RINRUNTIME_SDK_ROOT}/include>
+    $<BUILD_INTERFACE:${RINRUNTIME_LIBC_ROOT}/..>
+    $<BUILD_INTERFACE:${RINRUNTIME_LIBCXX_ROOT}/..>
+    $<BUILD_INTERFACE:${RINRUNTIME_RINJSON_ROOT}/include>
+    $<BUILD_INTERFACE:${RINRUNTIME_RINPATH_ROOT}/include>
+    $<BUILD_INTERFACE:${RINRUNTIME_RINRESOURCE_ROOT}/include>
+    $<BUILD_INTERFACE:${RINRUNTIME_RINURI_ROOT}/include>
+    $<BUILD_INTERFACE:${RINRUNTIME_RINHTTP_ROOT}/include>
+    $<BUILD_INTERFACE:${RINRUNTIME_RINWIRE_ROOT}/include>
+    $<BUILD_INTERFACE:${RINRUNTIME_RINGPU_ROOT}/include>
+    $<BUILD_INTERFACE:${RINRUNTIME_AQUAMARINE_ROOT}/..>
+    $<BUILD_INTERFACE:${RINRUNTIME_LIBUNICODE_ROOT}>
     $<INSTALL_INTERFACE:include>)
+target_compile_features(RinRuntime PUBLIC cxx_std_17)
+if(RINRUNTIME_BUILD_GUI)
+    target_include_directories(RinRuntime PUBLIC
+        $<BUILD_INTERFACE:${RINRUNTIME_AQUAMARINE_ROOT}>)
+endif()
 if(NOT MSVC)
     target_compile_options(RinRuntime PRIVATE -Wall -Wextra -Wpedantic)
 endif()
@@ -118,12 +192,52 @@ install(TARGETS RinRuntime EXPORT RinRuntimeTargets
         ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
         LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
         RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
-install(DIRECTORY include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
-install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/../rinpath/include/rinpath
-        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+install(DIRECTORY include/rinruntime/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/rinruntime)
+install(DIRECTORY include/rincompression/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/rincompression)
+install(DIRECTORY ${RINRUNTIME_RINPATH_ROOT}/include/rinpath/
+        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/rinpath)
+install(DIRECTORY ${RINRUNTIME_RINJSON_ROOT}/include/rinjson/
+        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/rinjson)
+install(DIRECTORY ${RINRUNTIME_RINRESOURCE_ROOT}/include/rinresource/
+        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/rinresource)
+install(DIRECTORY ${RINRUNTIME_SDK_ROOT}/include/rin/
+        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/rin)
+install(DIRECTORY ${RINRUNTIME_RINURI_ROOT}/include/rinuri/
+        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/rinuri)
+install(DIRECTORY ${RINRUNTIME_RINHTTP_ROOT}/include/rinhttp/
+        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/rinhttp)
+install(DIRECTORY ${RINRUNTIME_RINWIRE_ROOT}/include/rinwire/
+        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/rinwire)
+install(DIRECTORY ${RINRUNTIME_RINGPU_ROOT}/include/ringpu/
+        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/ringpu)
+install(DIRECTORY ${RINRUNTIME_LIBC_ROOT}/
+        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/libc
+        FILES_MATCHING PATTERN "*.h" PATTERN "*.hh" PATTERN "*.hpp"
+                        PATTERN "*.hxx" PATTERN "*.inc")
+install(DIRECTORY ${RINRUNTIME_LIBCXX_ROOT}/
+        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/libcxx
+        FILES_MATCHING PATTERN "*.h" PATTERN "*.hh" PATTERN "*.hpp"
+                        PATTERN "*.hxx" PATTERN "*.inc")
+install(FILES ${RINRUNTIME_AQUAMARINE_ROOT}/aq_types.h
+        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/aquamarine)
+install(FILES ${RINRUNTIME_GENERATED_INCLUDE}/rin_i18n.h
+        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/rini18n/v1)
 install(EXPORT RinRuntimeTargets
         FILE RinRuntimeTargets.cmake
         NAMESPACE RinRuntime::
+        DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/RinRuntime)
+include(CMakePackageConfigHelpers)
+configure_package_config_file(
+    cmake/RinRuntimeConfig.cmake.in
+    ${CMAKE_CURRENT_BINARY_DIR}/RinRuntimeConfig.cmake
+    INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/RinRuntime)
+write_basic_package_version_file(
+    ${CMAKE_CURRENT_BINARY_DIR}/RinRuntimeConfigVersion.cmake
+    VERSION ${PROJECT_VERSION}
+    COMPATIBILITY SameMajorVersion)
+install(FILES
+        ${CMAKE_CURRENT_BINARY_DIR}/RinRuntimeConfig.cmake
+        ${CMAKE_CURRENT_BINARY_DIR}/RinRuntimeConfigVersion.cmake
         DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/RinRuntime)
 
 configure_file(rinruntime.pc.in rinruntime.pc @ONLY)
@@ -157,8 +271,18 @@ if(RINRUNTIME_BUILD_RLL)
         --source-root ${CMAKE_CURRENT_SOURCE_DIR}
         --output ${CMAKE_CURRENT_BINARY_DIR}/RinRuntime.rll
         --include ${CMAKE_CURRENT_SOURCE_DIR}/include
-        --include ${CMAKE_CURRENT_SOURCE_DIR}/../rinpath/include
-        --include ${CMAKE_CURRENT_SOURCE_DIR}/../../RinOS-SDK/include)
+        --include ${RINRUNTIME_GENERATED_INCLUDE}
+        --include ${RINRUNTIME_RINPATH_ROOT}/include
+        --include ${RINRUNTIME_SDK_ROOT}/include
+        --include ${RINRUNTIME_LIBC_ROOT}/..
+        --include ${RINRUNTIME_LIBCXX_ROOT}/..
+        --include ${RINRUNTIME_LIBUNICODE_ROOT}
+        --include ${RINRUNTIME_LIBI18N_ROOT}
+        --include ${RINRUNTIME_RINRESOURCE_ROOT}/include
+        --include ${RINRUNTIME_RINJSON_ROOT}/include)
+    foreach(dependency_root IN LISTS RINRUNTIME_DEPENDENCY_PATHS)
+        list(APPEND RINRUNTIME_RLL_COMMAND --dependency-root ${dependency_root})
+    endforeach()
     foreach(rll_source IN LISTS RINRUNTIME_RLL_SOURCES)
         list(APPEND RINRUNTIME_RLL_COMMAND --source ${rll_source})
     endforeach()
@@ -289,8 +413,8 @@ if(RINRUNTIME_BUILD_TESTS)
                        tests/window_callback_contract_test.cpp)
         target_include_directories(rinruntime-window-callback-test
                                    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include
-                                           ${CMAKE_CURRENT_SOURCE_DIR}/../../RinOS-SDK/include
-                                           ${CMAKE_CURRENT_SOURCE_DIR}/../aquamarine)
+                                           ${RINRUNTIME_SDK_ROOT}/include
+                                           ${RINRUNTIME_AQUAMARINE_ROOT})
         set_target_properties(rinruntime-window-callback-test
                               PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES)
         add_test(NAME rinruntime-window-callback
@@ -324,7 +448,8 @@ if(RINRUNTIME_BUILD_TESTS)
         add_executable(rinruntime-poll-wait-test
                        tests/poll_wait_contract_test.c src/poll_wait.c)
         target_include_directories(rinruntime-poll-wait-test
-                                   PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+                                   PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include
+                                           ${RINRUNTIME_LIBC_ROOT}/..)
         add_test(NAME rinruntime-poll-wait
                  COMMAND rinruntime-poll-wait-test)
         add_executable(rinruntime-event-loop-poll-test
@@ -342,7 +467,7 @@ if(RINRUNTIME_BUILD_TESTS)
                        src/backup_payload.c)
         target_include_directories(rinruntime-backup-payload-test
                                    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include
-                                           ${CMAKE_CURRENT_SOURCE_DIR}/../../RinOS-SDK/include)
+                                           ${RINRUNTIME_SDK_ROOT}/include)
         add_test(NAME rinruntime-backup-payload
                  COMMAND rinruntime-backup-payload-test)
     endif()
@@ -408,25 +533,24 @@ if(RINRUNTIME_BUILD_TESTS)
     add_test(NAME rinruntime-device-manifest
              COMMAND rinruntime-device-manifest-test)
     add_executable(rinruntime-device-manifest-json-test
-                   tests/device_manifest_json_test.cpp
-                   ../rinjson/src/json.cpp)
+                   tests/device_manifest_json_test.cpp)
     target_link_libraries(rinruntime-device-manifest-json-test
                           PRIVATE RinRuntime::RinRuntime)
     target_include_directories(rinruntime-device-manifest-json-test
                                PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include
-                                       ${CMAKE_CURRENT_SOURCE_DIR}/../rinjson/include)
+                                       ${RINRUNTIME_RINJSON_ROOT}/include)
     set_target_properties(rinruntime-device-manifest-json-test PROPERTIES
                           CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES)
     add_test(NAME rinruntime-device-manifest-json
              COMMAND rinruntime-device-manifest-json-test)
     add_executable(rinruntime-event-loop-rin-test
                    tests/event_loop_rin_contract_test.cpp
-                   ../../RinOS-SDK/src/rinsdk_v1.c)
+                   ${RINRUNTIME_SDK_ROOT}/src/rinsdk_v1.c)
     target_link_libraries(rinruntime-event-loop-rin-test
                           PRIVATE RinRuntime::RinRuntime)
     target_include_directories(rinruntime-event-loop-rin-test
                                PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include
-                                       ${CMAKE_CURRENT_SOURCE_DIR}/../../RinOS-SDK/include)
+                                       ${RINRUNTIME_SDK_ROOT}/include)
     set_target_properties(rinruntime-event-loop-rin-test PROPERTIES
                           CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES)
     add_test(NAME rinruntime-event-loop-rin
@@ -435,73 +559,67 @@ if(RINRUNTIME_BUILD_TESTS)
     target_link_libraries(rinruntime-clipboard-test PRIVATE RinRuntime::RinRuntime)
     add_test(NAME rinruntime-clipboard COMMAND rinruntime-clipboard-test)
     add_executable(rinruntime-update-metadata-json-test
-                   tests/update_metadata_json_test.cpp
-                   ../rinjson/src/json.cpp)
+                   tests/update_metadata_json_test.cpp)
     target_link_libraries(rinruntime-update-metadata-json-test
                           PRIVATE RinRuntime::RinRuntime)
     target_include_directories(rinruntime-update-metadata-json-test
                                PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include
-                                       ${CMAKE_CURRENT_SOURCE_DIR}/../rinjson/include)
+                                       ${RINRUNTIME_RINJSON_ROOT}/include)
     set_target_properties(rinruntime-update-metadata-json-test PROPERTIES
                           CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES)
     add_test(NAME rinruntime-update-metadata-json
              COMMAND rinruntime-update-metadata-json-test)
     add_executable(rinruntime-package-metadata-json-test
-                   tests/package_metadata_json_test.cpp
-                   ../rinjson/src/json.cpp)
+                   tests/package_metadata_json_test.cpp)
     target_link_libraries(rinruntime-package-metadata-json-test
                           PRIVATE RinRuntime::RinRuntime)
     target_include_directories(rinruntime-package-metadata-json-test
                                PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include
-                                       ${CMAKE_CURRENT_SOURCE_DIR}/../rinjson/include)
+                                       ${RINRUNTIME_RINJSON_ROOT}/include)
     set_target_properties(rinruntime-package-metadata-json-test PROPERTIES
                           CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES)
     add_test(NAME rinruntime-package-metadata-json
              COMMAND rinruntime-package-metadata-json-test)
     add_executable(rinruntime-package-metadata-catalog-json-test
-                   tests/package_metadata_catalog_json_test.cpp
-                   ../rinjson/src/json.cpp)
+                   tests/package_metadata_catalog_json_test.cpp)
     target_link_libraries(rinruntime-package-metadata-catalog-json-test
                           PRIVATE RinRuntime::RinRuntime)
     target_include_directories(rinruntime-package-metadata-catalog-json-test
                                PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include
-                                       ${CMAKE_CURRENT_SOURCE_DIR}/../rinjson/include)
+                                       ${RINRUNTIME_RINJSON_ROOT}/include)
     set_target_properties(rinruntime-package-metadata-catalog-json-test PROPERTIES
                           CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES)
     add_test(NAME rinruntime-package-metadata-catalog-json
              COMMAND rinruntime-package-metadata-catalog-json-test)
     add_executable(rinruntime-application-metadata-json-test
-                   tests/application_metadata_json_test.cpp
-                   ../rinjson/src/json.cpp)
+                   tests/application_metadata_json_test.cpp)
     target_link_libraries(rinruntime-application-metadata-json-test
                           PRIVATE RinRuntime::RinRuntime)
     target_include_directories(rinruntime-application-metadata-json-test
                                PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include
-                                       ${CMAKE_CURRENT_SOURCE_DIR}/../rinjson/include)
+                                       ${RINRUNTIME_RINJSON_ROOT}/include)
     set_target_properties(rinruntime-application-metadata-json-test PROPERTIES
                           CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES)
     add_test(NAME rinruntime-application-metadata-json
              COMMAND rinruntime-application-metadata-json-test)
     add_executable(rinruntime-application-metadata-catalog-json-test
-                   tests/application_metadata_catalog_json_test.cpp
-                   ../rinjson/src/json.cpp)
+                   tests/application_metadata_catalog_json_test.cpp)
     target_link_libraries(rinruntime-application-metadata-catalog-json-test
                           PRIVATE RinRuntime::RinRuntime)
     target_include_directories(rinruntime-application-metadata-catalog-json-test
                                PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include
-                                       ${CMAKE_CURRENT_SOURCE_DIR}/../rinjson/include)
+                                       ${RINRUNTIME_RINJSON_ROOT}/include)
     set_target_properties(rinruntime-application-metadata-catalog-json-test PROPERTIES
                           CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES)
     add_test(NAME rinruntime-application-metadata-catalog-json
              COMMAND rinruntime-application-metadata-catalog-json-test)
     add_executable(rinruntime-update-metadata-catalog-json-test
-                   tests/update_metadata_catalog_json_test.cpp
-                   ../rinjson/src/json.cpp)
+                   tests/update_metadata_catalog_json_test.cpp)
     target_link_libraries(rinruntime-update-metadata-catalog-json-test
                           PRIVATE RinRuntime::RinRuntime)
     target_include_directories(rinruntime-update-metadata-catalog-json-test
                                PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include
-                                       ${CMAKE_CURRENT_SOURCE_DIR}/../rinjson/include)
+                                       ${RINRUNTIME_RINJSON_ROOT}/include)
     set_target_properties(rinruntime-update-metadata-catalog-json-test PROPERTIES
                           CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES)
     add_test(NAME rinruntime-update-metadata-catalog-json
@@ -517,13 +635,12 @@ if(RINRUNTIME_BUILD_TESTS)
     add_test(NAME rinruntime-theme-profile
              COMMAND rinruntime-theme-profile-test)
     add_executable(rinruntime-theme-profile-json-test
-                   tests/theme_profile_json_test.cpp
-                   ../rinjson/src/json.cpp)
+                   tests/theme_profile_json_test.cpp)
     target_link_libraries(rinruntime-theme-profile-json-test
                           PRIVATE RinRuntime::RinRuntime)
     target_include_directories(rinruntime-theme-profile-json-test
                                PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include
-                                       ${CMAKE_CURRENT_SOURCE_DIR}/../rinjson/include)
+                                       ${RINRUNTIME_RINJSON_ROOT}/include)
     set_target_properties(rinruntime-theme-profile-json-test PROPERTIES
                           CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES)
     add_test(NAME rinruntime-theme-profile-json

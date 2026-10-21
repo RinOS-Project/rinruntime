@@ -4,12 +4,13 @@
 #ifndef RINRUNTIME_DOWNLOAD_RESUME_HPP
 #define RINRUNTIME_DOWNLOAD_RESUME_HPP
 
-#if defined(RIN_FREESTANDING) || defined(RINCXX_CSTDDEF_H) || \
-    defined(RINCXX_STRING_H)
-#include "../../../../libs/libcxx/cstddef.h"
-#include "../../../../libs/libcxx/cstdint.h"
-#include "../../../../libs/libcxx/limits.h"
-#include "../../../../libs/libcxx/string.h"
+#if defined(RIN_FREESTANDING) && RIN_FREESTANDING && \
+    defined(RIN_USERSPACE) && RIN_USERSPACE
+#include <libcxx/cstddef.h>
+#include <libcxx/cstdint.h>
+#include <libcxx/limits.h>
+#include <libcxx/string.h>
+#include <libcxx/cstring.h>
 #else
 #include <cstddef>
 #include <cstdint>
@@ -19,7 +20,12 @@
 #endif
 
 #if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+#if defined(RIN_FREESTANDING) && RIN_FREESTANDING && \
+    defined(RIN_USERSPACE) && RIN_USERSPACE
+#include <libcxx/new.h>
+#else
 #include <new>
+#endif
 #endif
 
 namespace RinRuntime {

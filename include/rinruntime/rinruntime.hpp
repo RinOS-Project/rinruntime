@@ -87,8 +87,8 @@
 #include "events.hpp"
 #include "render_context.hpp"
 #include "window.hpp"
-#include "../../../libi18n/rin_i18n.h"
-#include "../rincompression/lz4.hpp"
-#include "../rincompression/zstd.hpp"
+#include <rini18n/v1/rin_i18n.h>
+#include <rincompression/lz4.hpp>
+#include <rincompression/zstd.hpp>
 
 #endif

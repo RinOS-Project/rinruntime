@@ -4,9 +4,16 @@
 #ifndef RINRUNTIME_VOLUME_SERVICE_HPP
 #define RINRUNTIME_VOLUME_SERVICE_HPP
 
-#include "../../../../libs/libc/stdint.h"
-#include "../../../../libs/libcxx/string.h"
-#include "../../../../libs/libcxx/vector.h"
+#if defined(RIN_FREESTANDING) && RIN_FREESTANDING && \
+    defined(RIN_USERSPACE) && RIN_USERSPACE
+#include <libc/stdint.h>
+#include <libcxx/string.h>
+#include <libcxx/vector.h>
+#else
+#include <stdint.h>
+#include <string>
+#include <vector>
+#endif
 
 namespace RinRuntime {
 

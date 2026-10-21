@@ -14,7 +14,7 @@
 
 #include <rinjson/json.hpp>
 
-#include "../../../rinresource/include/rinresource/loader.h"
+#include <rinresource/loader.h>
 #include "json_input_alias.hpp"
 #include "theme.hpp"
 

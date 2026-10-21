@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: MIT */
 
 #include "../include/rinruntime/unicode.h"
-#include "../../libunicode/rin_unicode.h"
+#include <rin_unicode.h>
 
 RinRuntimeUnicodeGraphemeProperty rinruntime_unicode_grapheme_property(
     uint32_t codepoint)

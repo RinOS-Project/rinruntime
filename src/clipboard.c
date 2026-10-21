@@ -3,7 +3,7 @@
 
 #include <rinruntime/clipboard.h>
 
-#include "../../libc/sys/syscall.h"
+#include <libc/sys/syscall.h>
 
 #include <rin/contract_abi.h>
 #include <rin/syscall_abi.h>

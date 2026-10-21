@@ -3,7 +3,7 @@
 
 #include "platform.h"
 
-#include "../../libc/sys/syscall.h"
+#include <libc/sys/syscall.h>
 #include <limits.h>
 #include <rin/syscall_abi.h>
 

@@ -31,14 +31,18 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--include", action="append", default=[])
     parser.add_argument("--source", action="append", required=True)
+    parser.add_argument("--dependency-root", action="append", default=[])
     parser.add_argument("--dependency", action="append", default=[])
     return parser
 
 
-def _resolve_source(root: Path, value: str) -> Path:
-    path = (root / value).resolve()
-    if path != root and root not in path.parents:
-        raise ValueError(f"source escapes source root: {value}")
+def _resolve_source(root: Path, value: str,
+                    allowed_roots: list[Path]) -> Path:
+    candidate = Path(value)
+    path = (candidate if candidate.is_absolute() else root / candidate).resolve()
+    if not any(path == allowed or allowed in path.parents
+               for allowed in allowed_roots):
+        raise ValueError(f"source is outside the project and pinned dependency roots: {value}")
     return path
 
 
@@ -57,7 +61,10 @@ def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     root = args.source_root.resolve()
     output = args.output.resolve()
-    sources = [_resolve_source(root, item) for item in args.source]
+    allowed_source_roots = [root, *(Path(item).resolve()
+                                    for item in args.dependency_root)]
+    sources = [_resolve_source(root, item, allowed_source_roots)
+               for item in args.source]
     includes = [_resolve_path(root, item) for item in args.include]
     dependencies = [_resolve_path(root, item) for item in args.dependency]
 

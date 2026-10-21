@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: MIT */
 #include "../include/rinruntime/performance_trace.h"
 
-#include "../../libc/sys/syscall.h"
+#include <libc/sys/syscall.h>
 #include <errno.h>
 #include <limits.h>
 #include <rin/syscall_abi.h>

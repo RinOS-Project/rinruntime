@@ -6,9 +6,9 @@
 
 #if defined(RIN_FREESTANDING) && RIN_FREESTANDING && \
     defined(RIN_USERSPACE) && RIN_USERSPACE
-#include "../../libc/errno.h"
-#include "../../libc/limits.h"
-#include "../../libc/poll.h"
+#include <libc/errno.h>
+#include <libc/limits.h>
+#include <libc/poll.h>
 #else
 #include <errno.h>
 #include <limits.h>

@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: MIT */
 
 #include "../include/rinruntime/unicode.h"
-#include "../../libunicode/rin_unicode.h"
+#include <rin_unicode.h>
 
 int rinruntime_unicode_line_break_opportunity(const char* value, size_t size,
                                               size_t offset)

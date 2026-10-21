@@ -5,7 +5,7 @@
 #define RINRUNTIME_ARCHIVE_DEFLATE_HPP
 
 #include "archive_policy.h"
-#include "../rincompression/deflate.hpp"
+#include <rincompression/deflate.hpp>
 
 #include <cstddef>
 #include <cstdint>

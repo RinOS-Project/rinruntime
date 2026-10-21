@@ -7,7 +7,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include "../../../../libs/rinuri/include/rinuri/uri.h"
+#include <rinuri/uri.h>
 
 #define RIN_BROWSER_DOWNLOAD_MAX_URL_BYTES UINT32_C(2047)
 #define RIN_BROWSER_DOWNLOAD_MAX_FILENAME_BYTES UINT32_C(255)

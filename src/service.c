@@ -5,7 +5,7 @@
 #include <rin/service.h>
 #include <rin/contract_abi.h>
 
-#include "../../libc/sys/syscall.h"
+#include <libc/sys/syscall.h>
 
 #include <rin/syscall_abi.h>
 
