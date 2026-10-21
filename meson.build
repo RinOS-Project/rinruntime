@@ -267,6 +267,17 @@ if get_option('build_rll')
 endif
 
 if get_option('buildtype') != 'plain'
+  test('rinruntime-frame-copy', executable('rinruntime-frame-copy-test',
+        'tests/frame_copy_contract_test.c', dependencies: runtime_dep,
+        override_options: test_override_options))
+  test('rinruntime-domain-headers', executable('rinruntime-domain-headers-test',
+        'tests/domain_headers_compile_test.cpp',
+        'tests/domain_header_core_test.cpp', 'tests/domain_header_ui_test.cpp',
+        'tests/domain_header_media_test.cpp',
+        'tests/domain_header_storage_test.cpp',
+        'tests/domain_header_system_test.cpp',
+        'tests/domain_header_legacy_test.cpp', dependencies: runtime_dep,
+        override_options: test_override_options, cpp_args: ['-std=c++17']))
   test('rinruntime-model', executable('rinruntime-model-test',
         'tests/runtime_model_test.cpp', dependencies: runtime_dep,
         override_options: test_override_options))

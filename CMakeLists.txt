@@ -315,6 +315,25 @@ endif()
 
 if(RINRUNTIME_BUILD_TESTS)
     enable_testing()
+    add_executable(rinruntime-frame-copy-test
+                   tests/frame_copy_contract_test.c)
+    target_link_libraries(rinruntime-frame-copy-test
+                          PRIVATE RinRuntime::RinRuntime)
+    add_test(NAME rinruntime-frame-copy COMMAND rinruntime-frame-copy-test)
+    add_executable(rinruntime-domain-headers-test
+                   tests/domain_headers_compile_test.cpp
+                   tests/domain_header_core_test.cpp
+                   tests/domain_header_ui_test.cpp
+                   tests/domain_header_media_test.cpp
+                   tests/domain_header_storage_test.cpp
+                   tests/domain_header_system_test.cpp
+                   tests/domain_header_legacy_test.cpp)
+    target_link_libraries(rinruntime-domain-headers-test
+                          PRIVATE RinRuntime::RinRuntime)
+    set_target_properties(rinruntime-domain-headers-test PROPERTIES
+                          CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES)
+    add_test(NAME rinruntime-domain-headers
+             COMMAND rinruntime-domain-headers-test)
     add_executable(rinruntime-model-test tests/runtime_model_test.cpp)
     target_link_libraries(rinruntime-model-test PRIVATE RinRuntime::RinRuntime)
     target_include_directories(rinruntime-model-test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)

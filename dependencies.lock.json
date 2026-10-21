@@ -18,7 +18,7 @@
     },
     "libc": {
       "url": "https://github.com/RinOS-Project/libc.git",
-      "revision": "0365f038f86fa534c9732a916b53988933eb300d",
+      "revision": "3ae4e2e8f74529a1a62a1d6ed93a168c3f47387c",
       "checkout": "../libc",
       "corePath": "public-base/libs/libc",
       "requiredPaths": ["errno.h", "poll.h", "sys/syscall.h"],
@@ -57,7 +57,7 @@
     },
     "rinos-sdk": {
       "url": "https://github.com/RinOS-Project/RinOS-SDK",
-      "revision": "186a04ece059e0301a51f71503de6535c4f040fb",
+      "revision": "88a6fada08160ecfc10e2a5910e2784242463818",
       "checkout": "../../RinOS-SDK",
       "corePath": "public-base/RinOS-SDK",
       "requiredPaths": ["include/rin/abi.h", "include/rin/crash_service.h"],

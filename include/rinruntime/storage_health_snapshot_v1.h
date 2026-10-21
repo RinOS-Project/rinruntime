@@ -67,7 +67,11 @@ static inline int rin_storage_health_from_nvme_v1(
     const RinNvmeHealthSnapshotV1* source,
     RinStorageHealthSnapshotV1* output)
 {
+#ifdef __cplusplus
+    RinNvmeHealthSnapshotV1 health = {};
+#else
     RinNvmeHealthSnapshotV1 health = {0};
+#endif
     uint8_t* healthBytes = (uint8_t*)&health;
     uint8_t* outputBytes;
     uint32_t index;
