@@ -82,6 +82,7 @@
 #include "application_data.hpp"
 #include "application_data_lifecycle.hpp"
 #include "application.hpp"
+#include "frame_copy.h"
 #include "window.h"
 #include "render.h"
 #include "events.hpp"

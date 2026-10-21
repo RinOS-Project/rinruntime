@@ -726,3 +726,17 @@ API.
 audio service request allocator. Audio format/ring/client contracts remain
 public, while audiod ownership and physical audio backend authority remain
 private.
+
+## Domain headers and frame copy
+
+New consumers can include the focused `core.hpp`, `ui.hpp`, `media.hpp`,
+`storage.hpp`, or `system.hpp` umbrella under `rinruntime/`. The existing
+`rinruntime.hpp` umbrella remains available with its prior full include set.
+
+`media.hpp` includes `frame_copy.h`, a versioned CPU-only pixel copy API that
+accepts bounded `RinSliceV1` buffers. It supports BGRA8 and RGBA8, checks
+dimensions, pitches, address ranges, buffer lengths, and source/destination
+overlap before writing. Format conversion swaps red and blue while preserving
+green and alpha; it does not blend, premultiply alpha, or convert color space.
+GPU synchronization, compositor ownership, and IPC remain the caller's
+separate responsibilities.
