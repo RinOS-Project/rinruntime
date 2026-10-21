@@ -10,14 +10,14 @@
 
 #ifdef __cplusplus
 extern "C" {
+#endif
+
 /* Query only whether the authenticated account has any saved dump. This
  * content-free availability signal is for Desktop's notice; it does not
  * disclose dump tuples or bytes and does not replace consented listing. */
 RinRuntimeCrashServiceResult
 rinruntime_crash_service_get_pending_dump_notice(
     uint32_t expected_service_slot, uint32_t* available_out);
-
-#endif
 
 /* Reads the current account's bounded pending-dump index after a fresh local
  * physical-confirmation gesture. Call from a worker; the consent flow can
