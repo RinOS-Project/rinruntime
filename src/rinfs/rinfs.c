@@ -12854,8 +12854,6 @@ int rinfs_truncate(RinFS_File* file, uint64_t size) {
         release_result = rinfs_close_ref_end_operation(&operation);
         return release_result == RINFS_OK ? result : release_result;
     }
-    if (file->position > size) file->position = size;
-
     if ((file->mount->mount_flags & RINFS_MNT_SYNC) != 0 ||
         (file->inode.i_flags & RINFS_IFLG_SYNC) != 0) {
         result = rinfs_fsync(file);

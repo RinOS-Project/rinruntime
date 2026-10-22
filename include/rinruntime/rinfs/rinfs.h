@@ -1186,6 +1186,8 @@ int64_t rinfs_pwrite(RinFS_File* file, const void* buf, uint64_t size,
 #define RINFS_SEEK_HOLE 4
 int64_t rinfs_seek(RinFS_File* file, int64_t offset, int whence);
 int64_t rinfs_tell(RinFS_File* file);
+/* POSIX ftruncate semantics: change file size without changing this open
+ * file description's current position. */
 int rinfs_truncate(RinFS_File* file, uint64_t size);
 int rinfs_fsync(RinFS_File* file);
 
