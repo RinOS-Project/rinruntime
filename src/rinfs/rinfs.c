@@ -1082,6 +1082,14 @@ static int rinfs_shared_content_unlock(RinFS_Mount* mount)
     __attribute__((warn_unused_result));
 static void rinfs_shared_content_unlock_best_effort(RinFS_Mount* mount);
 static void rinfs_keep_first_error(int* first_error, int next_error);
+static int rinfs_content_lease_release(RinFS_Mount* mount, uint64_t ino,
+                                       uint32_t inode_generation,
+                                       uint64_t token, int writer)
+    __attribute__((warn_unused_result));
+static int rinfs_content_delete_clear(RinFS_Mount* mount, uint64_t ino,
+                                      uint32_t inode_generation,
+                                      uint64_t token)
+    __attribute__((warn_unused_result));
 static int rinfs_scan_bitmap(RinFS_Mount* mount, uint64_t bitmap_start,
                              uint64_t bit_count, uint64_t reserved_bits,
                              uint64_t* free_count, int* reserved_clear);
@@ -1780,8 +1788,8 @@ static void rinfs_shared_content_unlock_best_effort(RinFS_Mount* mount) {
     if (mount && err != RINFS_OK) mount->readonly = 1;
 }
 
-static int rinfs_content_unlock_status(int operation_error,
-                                       int unlock_error) {
+static int64_t rinfs_content_unlock_status(int64_t operation_error,
+                                           int unlock_error) {
     if (unlock_error != RINFS_OK &&
         (unlock_error != RINFS_ERR_ROFS || operation_error == RINFS_OK))
         return unlock_error;
@@ -6131,21 +6139,28 @@ static int rinfs_content_lease_acquire(RinFS_Mount* mount, uint64_t ino,
     }
 }
 
-static void rinfs_content_lease_release(RinFS_Mount* mount, uint64_t ino,
-                                        uint32_t inode_generation,
-                                        uint64_t token, int writer) {
+static int rinfs_content_lease_release(RinFS_Mount* mount, uint64_t ino,
+                                       uint32_t inode_generation,
+                                       uint64_t token, int writer) {
     RinFS_ContentLeaseNode *node;
     RinFS_ContentLeaseNode** link;
     uint32_t shared_owner_row = 0u;
     int free_node = 0;
-    if (!mount) return;
-    if (mount->shared_mapping_base && mount->shared_mount_ready != 0u &&
-        rinfs_shared_owner_query_row(mount, &shared_owner_row) != RINFS_OK)
-        return;
+    int err;
+    if (!mount) return RINFS_ERR_INVAL;
+    if (mount->shared_mapping_base && mount->shared_mount_ready != 0u) {
+        err = rinfs_shared_owner_query_row(mount, &shared_owner_row);
+        if (err != RINFS_OK) {
+            mount->readonly = 1;
+            return err;
+        }
+    }
     {
         int content_lock_error = rinfs_shared_content_lock(mount);
-        if (content_lock_error != RINFS_OK)
-            return;
+        if (content_lock_error != RINFS_OK) {
+            mount->readonly = 1;
+            return content_lock_error;
+        }
     }
     node = rinfs_content_lease_find(mount, ino, inode_generation);
     /* Lookup by stable identity before checking the token: a copied stale
@@ -6153,14 +6168,21 @@ static void rinfs_content_lease_release(RinFS_Mount* mount, uint64_t ino,
      * recreated for the same inode lifetime. */
     if (node == NULL || node->token_generation != token ||
         node->references == 0u ||
-        !rinfs_wincompat_share_counts_consistent(node) ||
-        (writer ? node->writer == 0u : node->readers == 0u) ||
+        (writer ? node->writer == 0u : node->readers == 0u)) {
+        int unlock_error = rinfs_shared_content_unlock(mount);
+        mount->readonly = 1;
+        return (int)rinfs_content_unlock_status(RINFS_ERR_STALE,
+                                                unlock_error);
+    }
+    if (!rinfs_wincompat_share_counts_consistent(node) ||
         (shared_owner_row != 0u &&
          (shared_owner_row > RINFS_SHARED_OWNER_CAPACITY ||
           (writer ? node->shared_writers[shared_owner_row - 1u] == 0u
                   : node->shared_readers[shared_owner_row - 1u] == 0u)))) {
-        (void)rinfs_shared_content_unlock_best_effort(mount);
-        return;
+        int unlock_error = rinfs_shared_content_unlock(mount);
+        mount->readonly = 1;
+        return (int)rinfs_content_unlock_status(RINFS_ERR_CORRUPT,
+                                                unlock_error);
     }
     if (writer) {
         if (shared_owner_row != 0u)
@@ -6186,8 +6208,13 @@ static void rinfs_content_lease_release(RinFS_Mount* mount, uint64_t ino,
             free_node = 1;
         }
     }
-    (void)rinfs_shared_content_unlock_best_effort(mount);
+    err = rinfs_shared_content_unlock(mount);
+    if (err != RINFS_OK) {
+        mount->readonly = 1;
+        return err;
+    }
     if (free_node) rinfs_mount_runtime_free(mount, node);
+    return RINFS_OK;
 }
 
 static int rinfs_content_pin_acquire(RinFS_Mount* mount, uint64_t ino,
@@ -6228,18 +6255,18 @@ static int rinfs_content_pin_acquire(RinFS_Mount* mount, uint64_t ino,
         if (err != RINFS_OK ||
             inode_out->i_generation != observed.i_generation ||
             !rinfs_check_inode_type(inode_out->i_mode)) {
-            rinfs_content_lease_release(mount, ino,
+            rinfs_keep_first_error(&content_unlock_error, rinfs_content_lease_release(mount, ino,
                                         observed.i_generation,
-                                        lease_token, 0);
+                                        lease_token, 0));
             if (err != RINFS_OK) return rinfs_content_unlock_status((err), content_unlock_error);
             continue;
         }
         rinfs_spin_lock(&g_rinfs_close_reference_lock);
         if (!rinfs_close_ref_audit_locked()) {
             rinfs_spin_unlock(&g_rinfs_close_reference_lock);
-            rinfs_content_lease_release(mount, ino,
+            rinfs_keep_first_error(&content_unlock_error, rinfs_content_lease_release(mount, ino,
                                         observed.i_generation,
-                                        lease_token, 0);
+                                        lease_token, 0));
             return rinfs_content_unlock_status((RINFS_ERR_CORRUPT), content_unlock_error);
         }
         close_record = rinfs_close_ref_find_locked(close_generation);
@@ -6250,25 +6277,25 @@ static int rinfs_content_pin_acquire(RinFS_Mount* mount, uint64_t ino,
             close_record->inode_generation != observed.i_generation ||
             close_record->kind != close_kind) {
             rinfs_spin_unlock(&g_rinfs_close_reference_lock);
-            rinfs_content_lease_release(mount, ino,
+            rinfs_keep_first_error(&content_unlock_error, rinfs_content_lease_release(mount, ino,
                                         observed.i_generation,
-                                        lease_token, 0);
+                                        lease_token, 0));
             return rinfs_content_unlock_status((RINFS_ERR_STALE), content_unlock_error);
         }
         {
             int content_lock_error = rinfs_shared_content_lock(mount);
             if (content_lock_error != RINFS_OK) {
                 rinfs_spin_unlock(&g_rinfs_close_reference_lock);
-                rinfs_content_lease_release(mount, ino, observed.i_generation,
-                                            lease_token, 0);
+                rinfs_keep_first_error(&content_unlock_error, rinfs_content_lease_release(mount, ino, observed.i_generation,
+                                            lease_token, 0));
                 return rinfs_content_unlock_status((content_lock_error), content_unlock_error);
             }
         }
         if (rinfs_shared_owner_reap_locked(mount) != RINFS_OK) {
             rinfs_keep_first_error(&content_unlock_error, rinfs_shared_content_unlock(mount));
             rinfs_spin_unlock(&g_rinfs_close_reference_lock);
-            rinfs_content_lease_release(mount, ino, observed.i_generation,
-                                        lease_token, 0);
+            rinfs_keep_first_error(&content_unlock_error, rinfs_content_lease_release(mount, ino, observed.i_generation,
+                                        lease_token, 0));
             return rinfs_content_unlock_status((RINFS_ERR_CORRUPT), content_unlock_error);
         }
         node = rinfs_content_lease_find(mount, ino,
@@ -6277,26 +6304,26 @@ static int rinfs_content_pin_acquire(RinFS_Mount* mount, uint64_t ino,
             !mount->mounted || mount->content_lease_closing != 0u) {
             rinfs_keep_first_error(&content_unlock_error, rinfs_shared_content_unlock(mount));
             rinfs_spin_unlock(&g_rinfs_close_reference_lock);
-            rinfs_content_lease_release(mount, ino,
+            rinfs_keep_first_error(&content_unlock_error, rinfs_content_lease_release(mount, ino,
                                         observed.i_generation,
-                                        lease_token, 0);
+                                        lease_token, 0));
             return rinfs_content_unlock_status((RINFS_ERR_STALE), content_unlock_error);
         }
         if (node->delete_pending != 0u ||
             node->delete_on_close_count != 0u) {
             rinfs_keep_first_error(&content_unlock_error, rinfs_shared_content_unlock(mount));
             rinfs_spin_unlock(&g_rinfs_close_reference_lock);
-            rinfs_content_lease_release(mount, ino,
+            rinfs_keep_first_error(&content_unlock_error, rinfs_content_lease_release(mount, ino,
                                         observed.i_generation,
-                                        lease_token, 0);
+                                        lease_token, 0));
             return rinfs_content_unlock_status((RINFS_ERR_BUSY), content_unlock_error);
         }
         if (node->open_references == UINT32_MAX) {
             rinfs_keep_first_error(&content_unlock_error, rinfs_shared_content_unlock(mount));
             rinfs_spin_unlock(&g_rinfs_close_reference_lock);
-            rinfs_content_lease_release(mount, ino,
+            rinfs_keep_first_error(&content_unlock_error, rinfs_content_lease_release(mount, ino,
                                         observed.i_generation,
-                                        lease_token, 0);
+                                        lease_token, 0));
             return rinfs_content_unlock_status((RINFS_ERR_OVERFLOW), content_unlock_error);
         }
         {
@@ -6310,9 +6337,9 @@ static int rinfs_content_pin_acquire(RinFS_Mount* mount, uint64_t ino,
                 if (err != RINFS_OK) {
                     rinfs_keep_first_error(&content_unlock_error, rinfs_shared_content_unlock(mount));
                     rinfs_spin_unlock(&g_rinfs_close_reference_lock);
-                    rinfs_content_lease_release(mount, ino,
+                    rinfs_keep_first_error(&content_unlock_error, rinfs_content_lease_release(mount, ino,
                                                 observed.i_generation,
-                                                lease_token, 0);
+                                                lease_token, 0));
                     return rinfs_content_unlock_status((err), content_unlock_error);
                 }
             }
@@ -6323,8 +6350,8 @@ static int rinfs_content_pin_acquire(RinFS_Mount* mount, uint64_t ino,
         *shared_owner_row_out = shared_owner_row;
         rinfs_keep_first_error(&content_unlock_error, rinfs_shared_content_unlock(mount));
         rinfs_spin_unlock(&g_rinfs_close_reference_lock);
-        rinfs_content_lease_release(mount, ino, observed.i_generation,
-                                    lease_token, 0);
+        rinfs_keep_first_error(&content_unlock_error, rinfs_content_lease_release(mount, ino, observed.i_generation,
+                                    lease_token, 0));
         return rinfs_content_unlock_status((RINFS_OK), content_unlock_error);
     }
 }
@@ -7072,19 +7099,46 @@ static int rinfs_content_delete_mark(RinFS_Mount* mount, uint64_t ino,
     return rinfs_content_unlock_status((defer), content_unlock_error);
 }
 
-static void rinfs_content_delete_clear(RinFS_Mount* mount, uint64_t ino,
-                                       uint32_t inode_generation,
-                                       uint64_t token) {
+static int rinfs_content_delete_clear(RinFS_Mount* mount, uint64_t ino,
+                                      uint32_t inode_generation,
+                                      uint64_t token) {
     RinFS_ContentLeaseNode* node;
+    int err;
+    if (!mount) return RINFS_ERR_INVAL;
     {
         int content_lock_error = rinfs_shared_content_lock(mount);
-        if (content_lock_error != RINFS_OK)
-            return;
+        if (content_lock_error != RINFS_OK) {
+            mount->readonly = 1;
+            return content_lock_error;
+        }
     }
     node = rinfs_content_lease_find(mount, ino, inode_generation);
-    if (node != NULL && node->token_generation == token)
-        node->delete_pending = 0u;
-    (void)rinfs_shared_content_unlock_best_effort(mount);
+    if (node == NULL || node->token_generation != token) {
+        err = rinfs_content_unlock_status(
+            RINFS_ERR_STALE, rinfs_shared_content_unlock(mount));
+        mount->readonly = 1;
+        return (int)err;
+    }
+    node->delete_pending = 0u;
+    err = rinfs_shared_content_unlock(mount);
+    if (err != RINFS_OK) mount->readonly = 1;
+    return err;
+}
+
+static void rinfs_content_lease_release_best_effort(
+    RinFS_Mount* mount, uint64_t ino, uint32_t inode_generation,
+    uint64_t token, int writer) {
+    int err = rinfs_content_lease_release(
+        mount, ino, inode_generation, token, writer);
+    if (mount && err != RINFS_OK) mount->readonly = 1;
+}
+
+static void rinfs_content_delete_clear_best_effort(
+    RinFS_Mount* mount, uint64_t ino, uint32_t inode_generation,
+    uint64_t token) {
+    int err = rinfs_content_delete_clear(
+        mount, ino, inode_generation, token);
+    if (mount && err != RINFS_OK) mount->readonly = 1;
 }
 
 static int device_ops_valid(const RinFS_DeviceOps* ops) {
@@ -8496,20 +8550,21 @@ typedef struct {
 static int rinfs_content_mutation_begin(RinFS_Mount* mount, uint64_t ino,
                                         uint8_t expected_type,
                                         RinFS_ContentMutation* mutation) {
+    int content_unlock_error = RINFS_OK;
     RinFS_Inode observed;
     int err;
     if (!mount || !mutation || !mount->mounted || ino == 0u ||
-        ino > mount->sb.s_inode_count) return RINFS_ERR_INVAL;
+        ino > mount->sb.s_inode_count) return rinfs_content_unlock_status((RINFS_ERR_INVAL), content_unlock_error);
     rinfs_memset(mutation, 0, sizeof(*mutation));
     for (;;) {
         err = rinfs_inode_read(mount, ino, &observed);
-        if (err != RINFS_OK) return err;
+        if (err != RINFS_OK) return rinfs_content_unlock_status((err), content_unlock_error);
         if ((observed.i_mode >> 12u) != expected_type)
-            return RINFS_ERR_INVAL;
+            return rinfs_content_unlock_status((RINFS_ERR_INVAL), content_unlock_error);
         err = rinfs_content_lease_acquire(
             mount, ino, observed.i_generation, 1, &mutation->lease,
             &mutation->lease_generation);
-        if (err != RINFS_OK) return err;
+        if (err != RINFS_OK) return rinfs_content_unlock_status((err), content_unlock_error);
         err = rinfs_inode_read(mount, ino, &mutation->inode);
         if (err == RINFS_OK &&
             mutation->inode.i_generation == observed.i_generation &&
@@ -8521,13 +8576,13 @@ static int rinfs_content_mutation_begin(RinFS_Mount* mount, uint64_t ino,
                 (mutation->inode.i_flags &
                  RINFS_IFLG_CONTENT_UNCERTAIN) != 0u;
             mutation->active = 1;
-            return RINFS_OK;
+            return rinfs_content_unlock_status((RINFS_OK), content_unlock_error);
         }
-        rinfs_content_lease_release(mount, ino,
+        rinfs_keep_first_error(&content_unlock_error, rinfs_content_lease_release(mount, ino,
                                     observed.i_generation,
-                                    mutation->lease_generation, 1);
+                                    mutation->lease_generation, 1));
         mutation->lease = NULL;
-        if (err != RINFS_OK) return err;
+        if (err != RINFS_OK) return rinfs_content_unlock_status((err), content_unlock_error);
     }
 }
 
@@ -8671,7 +8726,7 @@ static int rinfs_content_mutation_finalize(
 
 static void rinfs_content_mutation_end(RinFS_ContentMutation* mutation) {
     if (!mutation || !mutation->active) return;
-    rinfs_content_lease_release(mutation->mount, mutation->inode_num,
+    rinfs_content_lease_release_best_effort(mutation->mount, mutation->inode_num,
                                 mutation->inode_generation,
                                 mutation->lease_generation, 1);
     mutation->active = 0;
@@ -9471,25 +9526,26 @@ static int rinfs_inode_free_under_lease(RinFS_Mount* mount, uint64_t ino,
 }
 
 int rinfs_inode_free(RinFS_Mount* mount, uint64_t ino) {
+    int content_unlock_error = RINFS_OK;
     RinFS_Inode previous_inode;
     RinFS_ContentLeaseNode* lease = NULL;
     uint64_t lease_generation = 0u;
     int err;
-    if (!mount || !mount->mounted) return RINFS_ERR_INVAL;
-    if (mount->readonly) return RINFS_ERR_ROFS;
+    if (!mount || !mount->mounted) return rinfs_content_unlock_status((RINFS_ERR_INVAL), content_unlock_error);
+    if (mount->readonly) return rinfs_content_unlock_status((RINFS_ERR_ROFS), content_unlock_error);
     if (ino < RINFS_INODE_FIRST || ino > mount->sb.s_inode_count)
-        return RINFS_ERR_INVAL;
+        return rinfs_content_unlock_status((RINFS_ERR_INVAL), content_unlock_error);
     err = rinfs_inode_read(mount, ino, &previous_inode);
-    if (err != RINFS_OK) return err;
+    if (err != RINFS_OK) return rinfs_content_unlock_status((err), content_unlock_error);
     err = rinfs_content_lease_acquire(mount, ino,
                                       previous_inode.i_generation, 1,
                                       &lease, &lease_generation);
-    if (err != RINFS_OK) return err;
+    if (err != RINFS_OK) return rinfs_content_unlock_status((err), content_unlock_error);
     err = rinfs_inode_free_under_lease(mount, ino,
                                        previous_inode.i_generation);
-    rinfs_content_lease_release(mount, ino, previous_inode.i_generation,
-                                lease_generation, 1);
-    return err;
+    rinfs_keep_first_error(&content_unlock_error, rinfs_content_lease_release(mount, ino, previous_inode.i_generation,
+                                lease_generation, 1));
+    return rinfs_content_unlock_status((err), content_unlock_error);
 }
 
 /* ═══════════════════════════════════════════════════════════════
@@ -16583,22 +16639,23 @@ static int rinfs_content_inode_equal(const RinFS_Mount* mount,
 
 int rinfs_content_snapshot_begin(RinFS_Mount* mount, uint64_t ino,
                                  RinFS_ContentSnapshot* snapshot) {
+    int content_unlock_error = RINFS_OK;
     RinFS_Inode observed;
     RinFS_ContentLeaseNode* lease;
     uint64_t lease_generation;
     int err;
     if (!mount || !snapshot || !mount->mounted || ino == 0u ||
-        ino > mount->sb.s_inode_count) return RINFS_ERR_INVAL;
+        ino > mount->sb.s_inode_count) return rinfs_content_unlock_status((RINFS_ERR_INVAL), content_unlock_error);
     rinfs_memset(snapshot, 0, sizeof(*snapshot));
     for (;;) {
         err = rinfs_inode_read(mount, ino, &observed);
-        if (err != RINFS_OK) return err;
+        if (err != RINFS_OK) return rinfs_content_unlock_status((err), content_unlock_error);
         if ((observed.i_mode >> 12u) != RINFS_FT_REG)
-            return RINFS_ERR_INVAL;
+            return rinfs_content_unlock_status((RINFS_ERR_INVAL), content_unlock_error);
         err = rinfs_content_lease_acquire(
             mount, ino, observed.i_generation, 0, &lease,
             &lease_generation);
-        if (err != RINFS_OK) return err;
+        if (err != RINFS_OK) return rinfs_content_unlock_status((err), content_unlock_error);
         err = rinfs_inode_read(mount, ino, &snapshot->inode);
         if (err == RINFS_OK &&
             snapshot->inode.i_generation == observed.i_generation &&
@@ -16609,11 +16666,11 @@ int rinfs_content_snapshot_begin(RinFS_Mount* mount, uint64_t ino,
             snapshot->inode_generation = observed.i_generation;
             snapshot->lease_generation = lease_generation;
             snapshot->active = 1;
-            return RINFS_OK;
+            return rinfs_content_unlock_status((RINFS_OK), content_unlock_error);
         }
-        rinfs_content_lease_release(mount, ino, observed.i_generation,
-                                    lease_generation, 0);
-        if (err != RINFS_OK) return err;
+        rinfs_keep_first_error(&content_unlock_error, rinfs_content_lease_release(mount, ino, observed.i_generation,
+                                    lease_generation, 0));
+        if (err != RINFS_OK) return rinfs_content_unlock_status((err), content_unlock_error);
     }
 }
 
@@ -16721,13 +16778,14 @@ void rinfs_content_snapshot_end(RinFS_ContentSnapshot* snapshot) {
     inode_generation = snapshot->inode_generation;
     generation = snapshot->lease_generation;
     rinfs_memset(snapshot, 0, sizeof(*snapshot));
-    rinfs_content_lease_release(mount, ino, inode_generation, generation, 0);
+    rinfs_content_lease_release_best_effort(mount, ino, inode_generation, generation, 0);
 }
 
 static int rinfs_mmap_source_create_core(
     const RinFS_File* file, RinFS_MmapSource** source_out,
     uint64_t* inode_out, uint64_t* size_out,
     uint64_t* reference_generation_out, uint64_t* reference_cookie_out) {
+    int content_unlock_error = RINFS_OK;
     RinFS_MmapSource* source;
     RinFS_ContentLeaseNode* lease = NULL;
     RinFS_Inode inode;
@@ -16740,15 +16798,15 @@ static int rinfs_mmap_source_create_core(
     if (reference_generation_out) *reference_generation_out = 0u;
     if (reference_cookie_out) *reference_cookie_out = 0u;
     if (!source_out || !inode_out || !size_out) {
-        return RINFS_ERR_INVAL;
+        return rinfs_content_unlock_status((RINFS_ERR_INVAL), content_unlock_error);
     }
     if (!file || !file->in_use || !file->mount ||
         !file->content_pin_active || file->content_pin_token == 0u ||
         file->content_pin_generation == 0u)
-        return RINFS_ERR_INVAL;
+        return rinfs_content_unlock_status((RINFS_ERR_INVAL), content_unlock_error);
 
     source = (RinFS_MmapSource*)rinfs_malloc(sizeof(*source));
-    if (!source) return RINFS_ERR_NOMEM;
+    if (!source) return rinfs_content_unlock_status((RINFS_ERR_NOMEM), content_unlock_error);
     rinfs_memset(source, 0, sizeof(*source));
 
     /* The FD pin keeps an unlinked inode alive.  Take the inode reader lease
@@ -16767,13 +16825,13 @@ static int rinfs_mmap_source_create_core(
         err = RINFS_ERR_STALE;
     }
     if (lease != NULL) {
-        rinfs_content_lease_release(
+        rinfs_keep_first_error(&content_unlock_error, rinfs_content_lease_release(
             file->mount, file->inode_num, file->content_pin_generation,
-            lease_token, 0);
+            lease_token, 0));
     }
     if (err != RINFS_OK) {
         rinfs_free(source);
-        return err;
+        return rinfs_content_unlock_status((err), content_unlock_error);
     }
 
     source->mount = file->mount;
@@ -16784,12 +16842,12 @@ static int rinfs_mmap_source_create_core(
         source, reference_generation_out, reference_cookie_out);
     if (err != RINFS_OK) {
         rinfs_free(source);
-        return err;
+        return rinfs_content_unlock_status((err), content_unlock_error);
     }
     *inode_out = source->inode_num;
     *size_out = inode.i_size;
     *source_out = source;
-    return RINFS_OK;
+    return rinfs_content_unlock_status((RINFS_OK), content_unlock_error);
 }
 
 int rinfs_mmap_source_create(const RinFS_File* file,
@@ -16896,6 +16954,7 @@ static int rinfs_mmap_source_acquire_inode(
     uint64_t page_index, RinFS_Inode* inode_out,
     RinFS_MmapSourceIdentity* identity_out,
     RinFS_ContentLeaseNode** lease_out, uint64_t* lease_token_out) {
+    int content_unlock_error = RINFS_OK;
     RinFS_Inode inode;
     RinFS_ContentLeaseNode* lease = NULL;
     RinFS_MmapSourceIdentity identity;
@@ -16906,49 +16965,49 @@ static int rinfs_mmap_source_acquire_inode(
     if (lease_token_out) *lease_token_out = 0u;
     if (!source || !inode_out || !identity_out || !lease_out ||
         !lease_token_out || expected_inode == 0u)
-        return RINFS_ERR_STALE;
+        return rinfs_content_unlock_status((RINFS_ERR_STALE), content_unlock_error);
     err = rinfs_mmap_source_copy_identity(
         source, reference_generation, reference_cookie, &identity);
     if (err != RINFS_OK || identity.inode_num != expected_inode)
-        return err == RINFS_OK ? RINFS_ERR_STALE : err;
+        return rinfs_content_unlock_status((err == RINFS_OK ? RINFS_ERR_STALE : err), content_unlock_error);
     err = rinfs_content_lease_acquire(
         identity.mount, identity.inode_num, identity.inode_generation, 0,
         &lease, &lease_token);
-    if (err != RINFS_OK) return err;
+    if (err != RINFS_OK) return rinfs_content_unlock_status((err), content_unlock_error);
     if (lease_token != identity.pin_token) {
-        rinfs_content_lease_release(
+        rinfs_keep_first_error(&content_unlock_error, rinfs_content_lease_release(
             identity.mount, identity.inode_num, identity.inode_generation,
-            lease_token, 0);
-        return RINFS_ERR_STALE;
+            lease_token, 0));
+        return rinfs_content_unlock_status((RINFS_ERR_STALE), content_unlock_error);
     }
     err = rinfs_inode_read(identity.mount, identity.inode_num, &inode);
     if (err != RINFS_OK) {
-        rinfs_content_lease_release(
+        rinfs_keep_first_error(&content_unlock_error, rinfs_content_lease_release(
             identity.mount, identity.inode_num, identity.inode_generation,
-            lease_token, 0);
-        return err;
+            lease_token, 0));
+        return rinfs_content_unlock_status((err), content_unlock_error);
     }
     if (inode.i_generation != identity.inode_generation ||
         (inode.i_mode >> 12u) != RINFS_FT_REG) {
-        rinfs_content_lease_release(
+        rinfs_keep_first_error(&content_unlock_error, rinfs_content_lease_release(
             identity.mount, identity.inode_num, identity.inode_generation,
-            lease_token, 0);
-        return RINFS_ERR_STALE;
+            lease_token, 0));
+        return rinfs_content_unlock_status((RINFS_ERR_STALE), content_unlock_error);
     }
     page_count = inode.i_size == 0u
                      ? 0u
                      : (inode.i_size - 1u) / RINFS_PAGE_CACHE_PAGE_SIZE + 1u;
     if (page_index >= page_count) {
-        rinfs_content_lease_release(
+        rinfs_keep_first_error(&content_unlock_error, rinfs_content_lease_release(
             identity.mount, identity.inode_num, identity.inode_generation,
-            lease_token, 0);
-        return RINFS_ERR_INVAL;
+            lease_token, 0));
+        return rinfs_content_unlock_status((RINFS_ERR_INVAL), content_unlock_error);
     }
     *inode_out = inode;
     *identity_out = identity;
     *lease_out = lease;
     *lease_token_out = lease_token;
-    return RINFS_OK;
+    return rinfs_content_unlock_status((RINFS_OK), content_unlock_error);
 }
 
 int rinfs_mmap_source_get_page(RinFS_MmapSource* source,
@@ -16957,6 +17016,7 @@ int rinfs_mmap_source_get_page(RinFS_MmapSource* source,
                                uint64_t reference_cookie,
                                uint64_t page_index,
                                uint64_t* physical_out) {
+    int content_unlock_error = RINFS_OK;
     RinFS_Inode inode;
     RinFS_MmapSourceIdentity identity;
     RinFS_PageCacheEntry* entry = NULL;
@@ -16964,11 +17024,11 @@ int rinfs_mmap_source_get_page(RinFS_MmapSource* source,
     uint64_t lease_token = 0u;
     int err;
     if (physical_out) *physical_out = 0u;
-    if (!physical_out) return RINFS_ERR_INVAL;
+    if (!physical_out) return rinfs_content_unlock_status((RINFS_ERR_INVAL), content_unlock_error);
     err = rinfs_mmap_source_acquire_inode(
         source, expected_inode, reference_generation, reference_cookie,
         page_index, &inode, &identity, &lease, &lease_token);
-    if (err != RINFS_OK) return err;
+    if (err != RINFS_OK) return rinfs_content_unlock_status((err), content_unlock_error);
     if (identity.mount->sb.s_block_size == RINFS_PAGE_CACHE_PAGE_SIZE) {
         err = rinfs_page_cache_acquire(
             identity.mount, identity.inode_num, &inode, page_index,
@@ -16984,10 +17044,10 @@ int rinfs_mmap_source_get_page(RinFS_MmapSource* source,
                 *physical_out = entry->physical_address;
                 /* The acquired reference is the user mapping's cache
                  * reference. */
-                rinfs_content_lease_release(
+                rinfs_keep_first_error(&content_unlock_error, rinfs_content_lease_release(
                     identity.mount, identity.inode_num,
-                    identity.inode_generation, lease_token, 0);
-                return RINFS_OK;
+                    identity.inode_generation, lease_token, 0));
+                return rinfs_content_unlock_status((RINFS_OK), content_unlock_error);
             }
         }
         if (entry) {
@@ -16999,10 +17059,10 @@ int rinfs_mmap_source_get_page(RinFS_MmapSource* source,
     } else {
         err = RINFS_ERR_NOT_SUPPORTED;
     }
-    rinfs_content_lease_release(
+    rinfs_keep_first_error(&content_unlock_error, rinfs_content_lease_release(
         identity.mount, identity.inode_num, identity.inode_generation,
-        lease_token, 0);
-    return err;
+        lease_token, 0));
+    return rinfs_content_unlock_status((err), content_unlock_error);
 }
 
 int rinfs_mmap_source_get_page_view(RinFS_MmapSource* source,
@@ -17011,6 +17071,7 @@ int rinfs_mmap_source_get_page_view(RinFS_MmapSource* source,
                                     uint64_t reference_cookie,
                                     uint64_t page_index,
                                     RinFS_PageCacheView* view_out) {
+    int content_unlock_error = RINFS_OK;
     RinFS_Inode inode;
     RinFS_MmapSourceIdentity identity;
     RinFS_PageCacheEntry* entry = NULL;
@@ -17022,11 +17083,11 @@ int rinfs_mmap_source_get_page_view(RinFS_MmapSource* source,
         view_out->physical_address = 0u;
         view_out->cache_token = 0u;
     }
-    if (!view_out) return RINFS_ERR_INVAL;
+    if (!view_out) return rinfs_content_unlock_status((RINFS_ERR_INVAL), content_unlock_error);
     err = rinfs_mmap_source_acquire_inode(
         source, expected_inode, reference_generation, reference_cookie,
         page_index, &inode, &identity, &lease, &lease_token);
-    if (err != RINFS_OK) return err;
+    if (err != RINFS_OK) return rinfs_content_unlock_status((err), content_unlock_error);
     if (identity.mount->sb.s_block_size == RINFS_PAGE_CACHE_PAGE_SIZE) {
         err = rinfs_page_cache_acquire(
             identity.mount, identity.inode_num, &inode, page_index,
@@ -17036,10 +17097,10 @@ int rinfs_mmap_source_get_page_view(RinFS_MmapSource* source,
             view_out->data = entry->data;
             view_out->physical_address = entry->physical_address;
             view_out->cache_token = (uintptr_t)entry;
-            rinfs_content_lease_release(
+            rinfs_keep_first_error(&content_unlock_error, rinfs_content_lease_release(
                 identity.mount, identity.inode_num,
-                identity.inode_generation, lease_token, 0);
-            return RINFS_OK;
+                identity.inode_generation, lease_token, 0));
+            return rinfs_content_unlock_status((RINFS_OK), content_unlock_error);
         }
         if (entry) {
             int release_error =
@@ -17050,10 +17111,10 @@ int rinfs_mmap_source_get_page_view(RinFS_MmapSource* source,
     } else {
         err = RINFS_ERR_NOT_SUPPORTED;
     }
-    rinfs_content_lease_release(
+    rinfs_keep_first_error(&content_unlock_error, rinfs_content_lease_release(
         identity.mount, identity.inode_num, identity.inode_generation,
-        lease_token, 0);
-    return err;
+        lease_token, 0));
+    return rinfs_content_unlock_status((err), content_unlock_error);
 }
 
 int rinfs_mmap_source_retain_page(RinFS_MmapSource* source,
@@ -17062,17 +17123,18 @@ int rinfs_mmap_source_retain_page(RinFS_MmapSource* source,
                                   uint64_t reference_cookie,
                                   uint64_t page_index,
                                   uint64_t physical_address) {
+    int content_unlock_error = RINFS_OK;
     RinFS_Inode inode;
     RinFS_MmapSourceIdentity identity;
     RinFS_PageCacheEntry* entry = NULL;
     RinFS_ContentLeaseNode* lease = NULL;
     uint64_t lease_token = 0u;
     int err;
-    if (physical_address == 0u) return RINFS_ERR_NOENT;
+    if (physical_address == 0u) return rinfs_content_unlock_status((RINFS_ERR_NOENT), content_unlock_error);
     err = rinfs_mmap_source_acquire_inode(
         source, expected_inode, reference_generation, reference_cookie,
         page_index, &inode, &identity, &lease, &lease_token);
-    if (err != RINFS_OK) return err;
+    if (err != RINFS_OK) return rinfs_content_unlock_status((err), content_unlock_error);
     err = rinfs_page_cache_acquire(identity.mount, identity.inode_num, &inode,
                                    page_index, 0u, 0, 0, 0, &entry);
     if (err == RINFS_OK && (!entry || entry->physical_address != physical_address)) {
@@ -17088,10 +17150,10 @@ int rinfs_mmap_source_retain_page(RinFS_MmapSource* source,
             if (release_error != RINFS_OK) err = release_error;
         }
     }
-    rinfs_content_lease_release(
+    rinfs_keep_first_error(&content_unlock_error, rinfs_content_lease_release(
         identity.mount, identity.inode_num, identity.inode_generation,
-        lease_token, 0);
-    return err;
+        lease_token, 0));
+    return rinfs_content_unlock_status((err), content_unlock_error);
 }
 
 /* mmap-source reads use a synthetic RinFS_File protected by the mmap source's
@@ -17105,6 +17167,7 @@ int64_t rinfs_mmap_source_read(RinFS_MmapSource* source,
                                uint64_t reference_cookie,
                                uint64_t offset, void* output,
                                uint32_t size) {
+    int content_unlock_error = RINFS_OK;
     RinFS_MmapSourceIdentity identity;
     RinFS_ContentLeaseNode* lease = NULL;
     RinFS_File file;
@@ -17113,23 +17176,23 @@ int64_t rinfs_mmap_source_read(RinFS_MmapSource* source,
     int err;
 
     if (!source || (size != 0u && !output)) {
-        return RINFS_ERR_STALE;
+        return rinfs_content_unlock_status((RINFS_ERR_STALE), content_unlock_error);
     }
     err = rinfs_mmap_source_copy_identity(
         source, reference_generation, reference_cookie, &identity);
     if (err != RINFS_OK || identity.inode_num != expected_inode)
-        return err == RINFS_OK ? RINFS_ERR_STALE : err;
-    if (size == 0u) return 0;
+        return rinfs_content_unlock_status((err == RINFS_OK ? RINFS_ERR_STALE : err), content_unlock_error);
+    if (size == 0u) return rinfs_content_unlock_status((0), content_unlock_error);
 
     err = rinfs_content_lease_acquire(
         identity.mount, identity.inode_num, identity.inode_generation, 0,
         &lease, &lease_token);
-    if (err != RINFS_OK) return err;
+    if (err != RINFS_OK) return rinfs_content_unlock_status((err), content_unlock_error);
     if (lease_token != identity.pin_token) {
-        rinfs_content_lease_release(
+        rinfs_keep_first_error(&content_unlock_error, rinfs_content_lease_release(
             identity.mount, identity.inode_num, identity.inode_generation,
-            lease_token, 0);
-        return RINFS_ERR_STALE;
+            lease_token, 0));
+        return rinfs_content_unlock_status((RINFS_ERR_STALE), content_unlock_error);
     }
 
     rinfs_memset(&file, 0, sizeof(file));
@@ -17137,10 +17200,10 @@ int64_t rinfs_mmap_source_read(RinFS_MmapSource* source,
     if (err != RINFS_OK ||
         file.inode.i_generation != identity.inode_generation ||
         (file.inode.i_mode >> 12u) != RINFS_FT_REG) {
-        rinfs_content_lease_release(
+        rinfs_keep_first_error(&content_unlock_error, rinfs_content_lease_release(
             identity.mount, identity.inode_num, identity.inode_generation,
-            lease_token, 0);
-        return err == RINFS_OK ? RINFS_ERR_STALE : err;
+            lease_token, 0));
+        return rinfs_content_unlock_status((err == RINFS_OK ? RINFS_ERR_STALE : err), content_unlock_error);
     }
     file.in_use = 1;
     file.inode_num = identity.inode_num;
@@ -17148,10 +17211,10 @@ int64_t rinfs_mmap_source_read(RinFS_MmapSource* source,
     file.flags = 0;
     file.mount = identity.mount;
     result = rinfs_read_unleased(&file, output, size);
-    rinfs_content_lease_release(
+    rinfs_keep_first_error(&content_unlock_error, rinfs_content_lease_release(
         identity.mount, identity.inode_num, identity.inode_generation,
-        lease_token, 0);
-    return result;
+        lease_token, 0));
+    return rinfs_content_unlock_status((result), content_unlock_error);
 }
 
 int rinfs_mmap_source_sync_range(RinFS_MmapSource* source,
@@ -17160,6 +17223,7 @@ int rinfs_mmap_source_sync_range(RinFS_MmapSource* source,
                                 uint64_t reference_cookie,
                                 uint64_t first_page,
                                 uint64_t page_count) {
+    int content_unlock_error = RINFS_OK;
     RinFS_MmapSourceIdentity identity;
     RinFS_ContentLeaseNode* lease = NULL;
     RinFS_Inode inode;
@@ -17169,13 +17233,13 @@ int rinfs_mmap_source_sync_range(RinFS_MmapSource* source,
 
     if (!source || expected_inode == 0u || page_count == 0u ||
         first_page > UINT64_MAX - page_count)
-        return RINFS_ERR_INVAL;
+        return rinfs_content_unlock_status((RINFS_ERR_INVAL), content_unlock_error);
     page_end = first_page + page_count;
     err = rinfs_mmap_source_copy_identity(
         source, reference_generation, reference_cookie, &identity);
     if (err != RINFS_OK || identity.inode_num != expected_inode)
-        return err == RINFS_OK ? RINFS_ERR_STALE : err;
-    if (identity.mount->readonly) return RINFS_ERR_ROFS;
+        return rinfs_content_unlock_status((err == RINFS_OK ? RINFS_ERR_STALE : err), content_unlock_error);
+    if (identity.mount->readonly) return rinfs_content_unlock_status((RINFS_ERR_ROFS), content_unlock_error);
 
     /* The read lease keeps the content-version key and block map stable from
      * selection through device flush. A concurrent descriptor write or
@@ -17183,7 +17247,7 @@ int rinfs_mmap_source_sync_range(RinFS_MmapSource* source,
     err = rinfs_content_lease_acquire(
         identity.mount, identity.inode_num, identity.inode_generation, 0,
         &lease, &lease_token);
-    if (err != RINFS_OK) return err;
+    if (err != RINFS_OK) return rinfs_content_unlock_status((err), content_unlock_error);
     if (lease_token != identity.pin_token) {
         err = RINFS_ERR_STALE;
         goto sync_range_finish;
@@ -17201,16 +17265,17 @@ int rinfs_mmap_source_sync_range(RinFS_MmapSource* source,
     if (err == RINFS_OK) err = disk_flush(identity.mount);
 
 sync_range_finish:
-    rinfs_content_lease_release(
+    rinfs_keep_first_error(&content_unlock_error, rinfs_content_lease_release(
         identity.mount, identity.inode_num, identity.inode_generation,
-        lease_token, 0);
-    return err;
+        lease_token, 0));
+    return rinfs_content_unlock_status((err), content_unlock_error);
 }
 
 int rinfs_mmap_source_invalidate_range(
     RinFS_MmapSource* source, uint64_t expected_inode,
     uint64_t reference_generation, uint64_t reference_cookie,
     uint64_t first_page, uint64_t page_count) {
+    int content_unlock_error = RINFS_OK;
     RinFS_MmapSourceIdentity identity;
     RinFS_ContentLeaseNode* lease = NULL;
     RinFS_Inode inode;
@@ -17223,16 +17288,16 @@ int rinfs_mmap_source_invalidate_range(
 
     if (!source || expected_inode == 0u || page_count == 0u ||
         first_page > UINT64_MAX - page_count)
-        return RINFS_ERR_INVAL;
+        return rinfs_content_unlock_status((RINFS_ERR_INVAL), content_unlock_error);
     page_end = first_page + page_count;
     err = rinfs_mmap_source_copy_identity(
         source, reference_generation, reference_cookie, &identity);
     if (err != RINFS_OK || identity.inode_num != expected_inode)
-        return err == RINFS_OK ? RINFS_ERR_STALE : err;
+        return rinfs_content_unlock_status((err == RINFS_OK ? RINFS_ERR_STALE : err), content_unlock_error);
     err = rinfs_content_lease_acquire(
         identity.mount, identity.inode_num, identity.inode_generation, 0,
         &lease, &lease_token);
-    if (err != RINFS_OK) return err;
+    if (err != RINFS_OK) return rinfs_content_unlock_status((err), content_unlock_error);
     if (lease_token != identity.pin_token) {
         err = RINFS_ERR_STALE;
         goto invalidate_range_finish;
@@ -17300,10 +17365,10 @@ int rinfs_mmap_source_invalidate_range(
     }
 
 invalidate_range_finish:
-    rinfs_content_lease_release(
+    rinfs_keep_first_error(&content_unlock_error, rinfs_content_lease_release(
         identity.mount, identity.inode_num, identity.inode_generation,
-        lease_token, 0);
-    return err;
+        lease_token, 0));
+    return rinfs_content_unlock_status((err), content_unlock_error);
 }
 
 int rinfs_mmap_source_release(RinFS_MmapSource* source,
@@ -17798,6 +17863,7 @@ static int64_t rinfs_read_unleased(RinFS_File* file, void* buf, uint64_t size) {
 }
 
 static int64_t rinfs_read_core(RinFS_File* file, void* buf, uint64_t size) {
+    int content_unlock_error = RINFS_OK;
     RinFS_Mount* mount;
     RinFS_Inode observed;
     RinFS_ContentLeaseNode* lease = NULL;
@@ -17805,32 +17871,32 @@ static int64_t rinfs_read_core(RinFS_File* file, void* buf, uint64_t size) {
     int err;
     int64_t result;
 
-    if (!file || !buf) return RINFS_ERR_INVAL;
+    if (!file || !buf) return rinfs_content_unlock_status((RINFS_ERR_INVAL), content_unlock_error);
     mount = file->mount;
 
     /* Never traverse a handle's stale block map.  The generation-bound
      * reader lease keeps truncate, unlink/reclaim and inode reuse from
      * detaching or reusing blocks until the traversal has completed. */
     err = rinfs_inode_read(mount, file->inode_num, &observed);
-    if (err != RINFS_OK) return err;
+    if (err != RINFS_OK) return rinfs_content_unlock_status((err), content_unlock_error);
     if (file->content_pin_active &&
         observed.i_generation != file->content_pin_generation) {
-        return RINFS_ERR_STALE;
+        return rinfs_content_unlock_status((RINFS_ERR_STALE), content_unlock_error);
     }
     err = rinfs_content_lease_acquire(
         mount, file->inode_num, observed.i_generation, 0,
         &lease, &lease_token);
-    if (err != RINFS_OK) return err;
+    if (err != RINFS_OK) return rinfs_content_unlock_status((err), content_unlock_error);
     err = rinfs_inode_read(mount, file->inode_num, &file->inode);
     if (err != RINFS_OK || file->inode.i_generation != observed.i_generation) {
-        rinfs_content_lease_release(mount, file->inode_num,
-                                    observed.i_generation, lease_token, 0);
-        return err != RINFS_OK ? err : RINFS_ERR_STALE;
+        rinfs_keep_first_error(&content_unlock_error, rinfs_content_lease_release(mount, file->inode_num,
+                                    observed.i_generation, lease_token, 0));
+        return rinfs_content_unlock_status((err != RINFS_OK ? err : RINFS_ERR_STALE), content_unlock_error);
     }
     result = rinfs_read_unleased(file, buf, size);
-    rinfs_content_lease_release(mount, file->inode_num,
-                                observed.i_generation, lease_token, 0);
-    return result;
+    rinfs_keep_first_error(&content_unlock_error, rinfs_content_lease_release(mount, file->inode_num,
+                                observed.i_generation, lease_token, 0));
+    return rinfs_content_unlock_status((result), content_unlock_error);
 }
 
 int64_t rinfs_read(RinFS_File* file, void* buf, uint64_t size) {
@@ -18399,14 +18465,15 @@ static int rinfs_inode_release_from(RinFS_Mount* mount, uint64_t ino,
 
 static int rinfs_reclaim_deferred_inode(RinFS_Mount* mount, uint64_t ino,
                                         uint32_t inode_generation) {
+    int content_unlock_error = RINFS_OK;
     RinFS_ContentLeaseNode* lease = NULL;
     uint64_t lease_token = 0u;
     RinFS_Inode inode;
     int err;
-    if (!mount || !mount->mounted) return RINFS_ERR_INVAL;
+    if (!mount || !mount->mounted) return rinfs_content_unlock_status((RINFS_ERR_INVAL), content_unlock_error);
     err = rinfs_content_lease_acquire(mount, ino, inode_generation, 1,
                                       &lease, &lease_token);
-    if (err != RINFS_OK) return err;
+    if (err != RINFS_OK) return rinfs_content_unlock_status((err), content_unlock_error);
     err = rinfs_inode_read(mount, ino, &inode);
     if (err == RINFS_OK && inode.i_generation != inode_generation)
         err = RINFS_ERR_STALE;
@@ -18419,10 +18486,10 @@ static int rinfs_reclaim_deferred_inode(RinFS_Mount* mount, uint64_t ino,
     if (err == RINFS_OK)
         err = rinfs_inode_free_under_lease(mount, ino, inode_generation);
     if (err == RINFS_OK)
-        rinfs_content_delete_clear(mount, ino, inode_generation,
-                                   lease_token);
-    rinfs_content_lease_release(mount, ino, inode_generation, lease_token, 1);
-    return err;
+        rinfs_keep_first_error(&content_unlock_error, rinfs_content_delete_clear(mount, ino, inode_generation,
+                                   lease_token));
+    rinfs_keep_first_error(&content_unlock_error, rinfs_content_lease_release(mount, ino, inode_generation, lease_token, 1));
+    return rinfs_content_unlock_status((err), content_unlock_error);
 }
 
 /* ORPHAN_INTENT is a v1.6 recovery record stored in an otherwise unused
@@ -19544,31 +19611,32 @@ static int rinfs_readdir_unleased(RinFS_Dir* dir, RinFS_DirEntry* entry) {
 }
 
 static int rinfs_readdir_core(RinFS_Dir* dir, RinFS_DirEntry* entry) {
+    int content_unlock_error = RINFS_OK;
     RinFS_Inode observed;
     RinFS_ContentLeaseNode* lease = NULL;
     uint64_t token = 0u;
     int err;
     int result;
-    if (!entry) return RINFS_ERR_INVAL;
+    if (!entry) return rinfs_content_unlock_status((RINFS_ERR_INVAL), content_unlock_error);
     err = rinfs_inode_read(dir->mount, dir->inode_num, &observed);
-    if (err != RINFS_OK) return err;
+    if (err != RINFS_OK) return rinfs_content_unlock_status((err), content_unlock_error);
     if (dir->content_pin_active &&
         observed.i_generation != dir->content_pin_generation)
-        return RINFS_ERR_STALE;
+        return rinfs_content_unlock_status((RINFS_ERR_STALE), content_unlock_error);
     err = rinfs_content_lease_acquire(
         dir->mount, dir->inode_num, observed.i_generation, 0,
         &lease, &token);
-    if (err != RINFS_OK) return err;
+    if (err != RINFS_OK) return rinfs_content_unlock_status((err), content_unlock_error);
     err = rinfs_inode_read(dir->mount, dir->inode_num, &dir->inode);
     if (err != RINFS_OK || dir->inode.i_generation != observed.i_generation) {
-        rinfs_content_lease_release(dir->mount, dir->inode_num,
-                                    observed.i_generation, token, 0);
-        return err != RINFS_OK ? err : RINFS_ERR_STALE;
+        rinfs_keep_first_error(&content_unlock_error, rinfs_content_lease_release(dir->mount, dir->inode_num,
+                                    observed.i_generation, token, 0));
+        return rinfs_content_unlock_status((err != RINFS_OK ? err : RINFS_ERR_STALE), content_unlock_error);
     }
     result = rinfs_readdir_unleased(dir, entry);
-    rinfs_content_lease_release(dir->mount, dir->inode_num,
-                                observed.i_generation, token, 0);
-    return result;
+    rinfs_keep_first_error(&content_unlock_error, rinfs_content_lease_release(dir->mount, dir->inode_num,
+                                observed.i_generation, token, 0));
+    return rinfs_content_unlock_status((result), content_unlock_error);
 }
 
 int rinfs_readdir(RinFS_Dir* dir, RinFS_DirEntry* entry) {
@@ -19669,30 +19737,31 @@ static int rinfs_seekdir_unleased(RinFS_Dir* dir, uint64_t position) {
 }
 
 static int rinfs_seekdir_core(RinFS_Dir* dir, uint64_t position) {
+    int content_unlock_error = RINFS_OK;
     RinFS_Inode observed;
     RinFS_ContentLeaseNode* lease = NULL;
     uint64_t token = 0u;
     int err;
     int result;
     err = rinfs_inode_read(dir->mount, dir->inode_num, &observed);
-    if (err != RINFS_OK) return err;
+    if (err != RINFS_OK) return rinfs_content_unlock_status((err), content_unlock_error);
     if (dir->content_pin_active &&
         observed.i_generation != dir->content_pin_generation)
-        return RINFS_ERR_STALE;
+        return rinfs_content_unlock_status((RINFS_ERR_STALE), content_unlock_error);
     err = rinfs_content_lease_acquire(
         dir->mount, dir->inode_num, observed.i_generation, 0,
         &lease, &token);
-    if (err != RINFS_OK) return err;
+    if (err != RINFS_OK) return rinfs_content_unlock_status((err), content_unlock_error);
     err = rinfs_inode_read(dir->mount, dir->inode_num, &dir->inode);
     if (err != RINFS_OK || dir->inode.i_generation != observed.i_generation) {
-        rinfs_content_lease_release(dir->mount, dir->inode_num,
-                                    observed.i_generation, token, 0);
-        return err != RINFS_OK ? err : RINFS_ERR_STALE;
+        rinfs_keep_first_error(&content_unlock_error, rinfs_content_lease_release(dir->mount, dir->inode_num,
+                                    observed.i_generation, token, 0));
+        return rinfs_content_unlock_status((err != RINFS_OK ? err : RINFS_ERR_STALE), content_unlock_error);
     }
     result = rinfs_seekdir_unleased(dir, position);
-    rinfs_content_lease_release(dir->mount, dir->inode_num,
-                                observed.i_generation, token, 0);
-    return result;
+    rinfs_keep_first_error(&content_unlock_error, rinfs_content_lease_release(dir->mount, dir->inode_num,
+                                observed.i_generation, token, 0));
+    return rinfs_content_unlock_status((result), content_unlock_error);
 }
 
 int rinfs_seekdir(RinFS_Dir* dir, uint64_t position) {
@@ -20327,8 +20396,8 @@ int rinfs_delete_on_close_register(RinFS_Mount* mount,
     if (result != RINFS_OK) mount->readonly = 1;
 
 done:
-    rinfs_content_lease_release(mount, target_ino, target_generation,
-                                lease_token, 1);
+    rinfs_keep_first_error(&content_unlock_error, rinfs_content_lease_release(mount, target_ino, target_generation,
+                                lease_token, 1));
     if (pending) rinfs_mount_runtime_free(mount, pending);
     return rinfs_content_unlock_status((rinfs_journal_transaction_unlock_status(mount, result)), content_unlock_error);
 }
@@ -20689,8 +20758,8 @@ static int rinfs_delete_on_close_recover_entry(
     {
         int content_lock_error = rinfs_shared_content_lock(mount);
         if (content_lock_error != RINFS_OK) {
-            rinfs_content_lease_release(
-                mount, target_ino, target_inode->i_generation, lease_token, 1);
+            rinfs_keep_first_error(&content_unlock_error, rinfs_content_lease_release(
+                mount, target_ino, target_inode->i_generation, lease_token, 1));
             rinfs_mount_runtime_free(mount, pending);
             return rinfs_content_unlock_status((content_lock_error), content_unlock_error);
         }
@@ -20723,9 +20792,9 @@ static int rinfs_delete_on_close_recover_entry(
         }
     }
     rinfs_keep_first_error(&content_unlock_error, rinfs_shared_content_unlock(mount));
-    rinfs_content_lease_release(mount, target_ino,
+    rinfs_keep_first_error(&content_unlock_error, rinfs_content_lease_release(mount, target_ino,
                                 target_inode->i_generation,
-                                lease_token, 1);
+                                lease_token, 1));
     if (!inserted) rinfs_mount_runtime_free(mount, pending);
     return rinfs_content_unlock_status((result), content_unlock_error);
 }
@@ -20985,6 +21054,7 @@ static int rinfs_dir_update_dotdot(RinFS_Mount* mount, uint64_t dir_ino, uint64_
 /* Directory link counts are derived metadata. Recompute them after a rename
  * so journal replay is idempotent regardless of the exact interrupted stage. */
 static int rinfs_dir_recount_links(RinFS_Mount* mount, uint64_t dir_ino) {
+    int content_unlock_error = RINFS_OK;
     RinFS_Inode inode;
     RinFS_Inode live_inode;
     RinFS_ContentLeaseNode* lease = NULL;
@@ -20993,26 +21063,26 @@ static int rinfs_dir_recount_links(RinFS_Mount* mount, uint64_t dir_ino) {
     uint8_t* block = NULL;
     uint32_t links = 2u;
     int err = rinfs_inode_read(mount, dir_ino, &inode);
-    if (err != RINFS_OK) return err;
-    if ((inode.i_mode >> 12) != RINFS_FT_DIR) return RINFS_ERR_NOTDIR;
+    if (err != RINFS_OK) return rinfs_content_unlock_status((err), content_unlock_error);
+    if ((inode.i_mode >> 12) != RINFS_FT_DIR) return rinfs_content_unlock_status((RINFS_ERR_NOTDIR), content_unlock_error);
     inode_generation = inode.i_generation;
     err = rinfs_content_lease_acquire(mount, dir_ino, inode_generation, 1,
                                       &lease, &lease_token);
-    if (err != RINFS_OK) return err;
+    if (err != RINFS_OK) return rinfs_content_unlock_status((err), content_unlock_error);
     err = rinfs_inode_read(mount, dir_ino, &live_inode);
     if (err != RINFS_OK ||
         live_inode.i_generation != inode_generation ||
         (live_inode.i_mode >> 12) != RINFS_FT_DIR) {
-        rinfs_content_lease_release(mount, dir_ino, inode_generation,
-                                    lease_token, 1);
-        return err == RINFS_OK ? RINFS_ERR_STALE : err;
+        rinfs_keep_first_error(&content_unlock_error, rinfs_content_lease_release(mount, dir_ino, inode_generation,
+                                    lease_token, 1));
+        return rinfs_content_unlock_status((err == RINFS_OK ? RINFS_ERR_STALE : err), content_unlock_error);
     }
     inode = live_inode;
     block = (uint8_t*)rinfs_malloc(mount->sb.s_block_size);
     if (!block) {
-        rinfs_content_lease_release(mount, dir_ino, inode_generation,
-                                    lease_token, 1);
-        return RINFS_ERR_NOMEM;
+        rinfs_keep_first_error(&content_unlock_error, rinfs_content_lease_release(mount, dir_ino, inode_generation,
+                                    lease_token, 1));
+        return rinfs_content_unlock_status((RINFS_ERR_NOMEM), content_unlock_error);
     }
     for (uint64_t file_block = 0;
          file_block * mount->sb.s_block_size < inode.i_size; file_block++) {
@@ -21054,9 +21124,9 @@ static int rinfs_dir_recount_links(RinFS_Mount* mount, uint64_t dir_ino) {
     }
 done:
     rinfs_free(block);
-    rinfs_content_lease_release(mount, dir_ino, inode_generation,
-                                lease_token, 1);
-    return err;
+    rinfs_keep_first_error(&content_unlock_error, rinfs_content_lease_release(mount, dir_ino, inode_generation,
+                                lease_token, 1));
+    return rinfs_content_unlock_status((err), content_unlock_error);
 }
 
 /* Count the directory entries which currently name an inode. Recovery uses
@@ -21356,57 +21426,58 @@ static int rinfs_rename_journal_recover(RinFS_Mount* mount) {
 
 static int rinfs_release_replaced_inode(RinFS_Mount* mount, uint64_t ino,
                                         uint8_t expected_type) {
+    int content_unlock_error = RINFS_OK;
     RinFS_ContentLeaseNode* lease = NULL;
     uint64_t lease_token = 0u;
     RinFS_Inode inode;
     uint32_t generation;
     int defer;
     int err = rinfs_inode_read(mount, ino, &inode);
-    if (err != RINFS_OK) return err;
+    if (err != RINFS_OK) return rinfs_content_unlock_status((err), content_unlock_error);
     generation = inode.i_generation;
     err = rinfs_content_lease_acquire(mount, ino, generation, 1,
                                       &lease, &lease_token);
-    if (err != RINFS_OK) return err;
+    if (err != RINFS_OK) return rinfs_content_unlock_status((err), content_unlock_error);
     err = rinfs_inode_read(mount, ino, &inode);
     if (err != RINFS_OK || inode.i_generation != generation ||
         (inode.i_mode >> 12u) != expected_type) {
-        rinfs_content_lease_release(mount, ino, generation, lease_token, 1);
-        return err == RINFS_OK ? RINFS_ERR_STALE : err;
+        rinfs_keep_first_error(&content_unlock_error, rinfs_content_lease_release(mount, ino, generation, lease_token, 1));
+        return rinfs_content_unlock_status((err == RINFS_OK ? RINFS_ERR_STALE : err), content_unlock_error);
     }
     err = rinfs_inode_orphan_commit(mount, ino, &inode, 1);
     if (err != RINFS_OK) {
-        rinfs_content_lease_release(mount, ino, generation, lease_token, 1);
-        return err;
+        rinfs_keep_first_error(&content_unlock_error, rinfs_content_lease_release(mount, ino, generation, lease_token, 1));
+        return rinfs_content_unlock_status((err), content_unlock_error);
     }
     if (expected_type == RINFS_FT_DIR) {
         inode.i_links = 0u;
     } else {
         if (inode.i_links == 0u) {
-            rinfs_content_lease_release(mount, ino, generation,
-                                        lease_token, 1);
-            return RINFS_ERR_CORRUPT;
+            rinfs_keep_first_error(&content_unlock_error, rinfs_content_lease_release(mount, ino, generation,
+                                        lease_token, 1));
+            return rinfs_content_unlock_status((RINFS_ERR_CORRUPT), content_unlock_error);
         }
         inode.i_links--;
     }
     if (inode.i_links != 0u) {
         err = rinfs_inode_orphan_commit(mount, ino, &inode, 0);
-        rinfs_content_lease_release(mount, ino, generation, lease_token, 1);
-        return err;
+        rinfs_keep_first_error(&content_unlock_error, rinfs_content_lease_release(mount, ino, generation, lease_token, 1));
+        return rinfs_content_unlock_status((err), content_unlock_error);
     }
     defer = rinfs_content_delete_mark(mount, ino, generation);
     if (defer) {
         err = rinfs_inode_orphan_commit(mount, ino, &inode, 1);
-        rinfs_content_lease_release(mount, ino, generation, lease_token, 1);
-        return err;
+        rinfs_keep_first_error(&content_unlock_error, rinfs_content_lease_release(mount, ino, generation, lease_token, 1));
+        return rinfs_content_unlock_status((err), content_unlock_error);
     }
     inode.i_size = 0u;
     err = rinfs_inode_release_from(mount, ino, &inode, 0u, 1);
     if (err == RINFS_OK)
         err = rinfs_inode_free_under_lease(mount, ino, generation);
     if (err == RINFS_OK)
-        rinfs_content_delete_clear(mount, ino, generation, lease_token);
-    rinfs_content_lease_release(mount, ino, generation, lease_token, 1);
-    return err;
+        rinfs_keep_first_error(&content_unlock_error, rinfs_content_delete_clear(mount, ino, generation, lease_token));
+    rinfs_keep_first_error(&content_unlock_error, rinfs_content_lease_release(mount, ino, generation, lease_token, 1));
+    return rinfs_content_unlock_status((err), content_unlock_error);
 }
 
 static int rinfs_delete_on_close_path_registered(
@@ -21707,49 +21778,50 @@ int rinfs_rename_expected(
 static int rinfs_unlink_internal(RinFS_Mount* mount, uint64_t dir_ino,
                                  const char* name, uint64_t expected_inode,
                                  uint32_t expected_generation) {
+    int content_unlock_error = RINFS_OK;
     RinFS_ContentLeaseNode* lease = NULL;
     uint64_t lease_token = 0u;
     uint32_t inode_generation;
     int defer_reclaim;
-    if (!mount || !mount->mounted || !name) return RINFS_ERR_INVAL;
-    if (mount->readonly) return RINFS_ERR_ROFS;
+    if (!mount || !mount->mounted || !name) return rinfs_content_unlock_status((RINFS_ERR_INVAL), content_unlock_error);
+    if (mount->readonly) return rinfs_content_unlock_status((RINFS_ERR_ROFS), content_unlock_error);
     
     /* Look up the file */
     uint64_t file_ino;
     int err = rinfs_lookup(mount, dir_ino, name, &file_ino);
-    if (err != RINFS_OK) return err;
+    if (err != RINFS_OK) return rinfs_content_unlock_status((err), content_unlock_error);
     if (expected_inode != 0u && file_ino != expected_inode)
-        return RINFS_ERR_STALE;
+        return rinfs_content_unlock_status((RINFS_ERR_STALE), content_unlock_error);
     
     /* Read file inode */
     RinFS_Inode file_inode;
     err = rinfs_inode_read(mount, file_ino, &file_inode);
-    if (err != RINFS_OK) return err;
+    if (err != RINFS_OK) return rinfs_content_unlock_status((err), content_unlock_error);
     inode_generation = file_inode.i_generation;
     if (expected_generation != 0u &&
         inode_generation != expected_generation)
-        return RINFS_ERR_STALE;
+        return rinfs_content_unlock_status((RINFS_ERR_STALE), content_unlock_error);
     err = rinfs_content_lease_acquire(mount, file_ino,
                                       inode_generation, 1,
                                       &lease, &lease_token);
-    if (err != RINFS_OK) return err;
+    if (err != RINFS_OK) return rinfs_content_unlock_status((err), content_unlock_error);
     err = rinfs_inode_read(mount, file_ino, &file_inode);
     if (err != RINFS_OK || file_inode.i_generation != inode_generation) {
-        rinfs_content_lease_release(mount, file_ino, inode_generation,
-                                    lease_token, 1);
-        return err == RINFS_OK ? RINFS_ERR_STALE : err;
+        rinfs_keep_first_error(&content_unlock_error, rinfs_content_lease_release(mount, file_ino, inode_generation,
+                                    lease_token, 1));
+        return rinfs_content_unlock_status((err == RINFS_OK ? RINFS_ERR_STALE : err), content_unlock_error);
     }
     
     /* Check it's not a directory */
     if ((file_inode.i_mode >> 12) == RINFS_FT_DIR) {
-        rinfs_content_lease_release(mount, file_ino, inode_generation,
-                                    lease_token, 1);
-        return RINFS_ERR_ISDIR;  /* Use rmdir for directories */
+        rinfs_keep_first_error(&content_unlock_error, rinfs_content_lease_release(mount, file_ino, inode_generation,
+                                    lease_token, 1));
+        return rinfs_content_unlock_status((RINFS_ERR_ISDIR), content_unlock_error);  /* Use rmdir for directories */
     }
     if (file_inode.i_links == 0) {
-        rinfs_content_lease_release(mount, file_ino, inode_generation,
-                                    lease_token, 1);
-        return RINFS_ERR_CORRUPT;
+        rinfs_keep_first_error(&content_unlock_error, rinfs_content_lease_release(mount, file_ino, inode_generation,
+                                    lease_token, 1));
+        return rinfs_content_unlock_status((RINFS_ERR_CORRUPT), content_unlock_error);
     }
 
     /* Publish recovery intent before the parent entry can disappear. If the
@@ -21757,9 +21829,9 @@ static int rinfs_unlink_internal(RinFS_Mount* mount, uint64_t dir_ino,
      * reachable inode and simply clears this marker. */
     err = rinfs_inode_orphan_commit(mount, file_ino, &file_inode, 1);
     if (err != RINFS_OK) {
-        rinfs_content_lease_release(mount, file_ino, inode_generation,
-                                    lease_token, 1);
-        return err;
+        rinfs_keep_first_error(&content_unlock_error, rinfs_content_lease_release(mount, file_ino, inode_generation,
+                                    lease_token, 1));
+        return rinfs_content_unlock_status((err), content_unlock_error);
     }
     
     /* Remove directory entry */
@@ -21767,9 +21839,9 @@ static int rinfs_unlink_internal(RinFS_Mount* mount, uint64_t dir_ino,
                                        expected_inode);
     if (err != RINFS_OK) {
         (void)rinfs_inode_orphan_commit(mount, file_ino, &file_inode, 0);
-        rinfs_content_lease_release(mount, file_ino, inode_generation,
-                                    lease_token, 1);
-        return err;
+        rinfs_keep_first_error(&content_unlock_error, rinfs_content_lease_release(mount, file_ino, inode_generation,
+                                    lease_token, 1));
+        return rinfs_content_unlock_status((err), content_unlock_error);
     }
     
     /* Decrement link count */
@@ -21783,9 +21855,9 @@ static int rinfs_unlink_internal(RinFS_Mount* mount, uint64_t dir_ino,
              * final close reclaims this zero-link lifetime. */
             err = rinfs_inode_orphan_commit(
                 mount, file_ino, &file_inode, 1);
-            rinfs_content_lease_release(mount, file_ino,
-                                        inode_generation, lease_token, 1);
-            return err;
+            rinfs_keep_first_error(&content_unlock_error, rinfs_content_lease_release(mount, file_ino,
+                                        inode_generation, lease_token, 1));
+            return rinfs_content_unlock_status((err), content_unlock_error);
         }
         /* No more links - detach all direct/indirect blocks before making
          * their bitmap entries reusable. */
@@ -21795,19 +21867,19 @@ static int rinfs_unlink_internal(RinFS_Mount* mount, uint64_t dir_ino,
             err = rinfs_inode_free_under_lease(mount, file_ino,
                                                 inode_generation);
         if (err == RINFS_OK)
-            rinfs_content_delete_clear(mount, file_ino, inode_generation,
-                                       lease_token);
+            rinfs_keep_first_error(&content_unlock_error, rinfs_content_delete_clear(mount, file_ino, inode_generation,
+                                       lease_token));
     } else {
         /* Just update the inode */
         err = rinfs_inode_orphan_commit(
             mount, file_ino, &file_inode, 0);
     }
-    rinfs_content_lease_release(mount, file_ino, inode_generation,
-                                lease_token, 1);
+    rinfs_keep_first_error(&content_unlock_error, rinfs_content_lease_release(mount, file_ino, inode_generation,
+                                lease_token, 1));
     if (err != RINFS_OK) {
-        return err;
+        return rinfs_content_unlock_status((err), content_unlock_error);
     }
-    return RINFS_OK;
+    return rinfs_content_unlock_status((RINFS_OK), content_unlock_error);
 }
 
 int rinfs_unlink(RinFS_Mount* mount, uint64_t dir_ino, const char* name) {
@@ -21851,6 +21923,7 @@ int rinfs_unlink_entry_expected(RinFS_Mount* mount, uint64_t parent_ino,
 static int rinfs_rmdir_internal(RinFS_Mount* mount, uint64_t parent_ino,
                                 const char* name, uint64_t expected_inode,
                                 uint32_t expected_generation) {
+    int content_unlock_error = RINFS_OK;
     RinFS_ContentLeaseNode* lease = NULL;
     uint64_t lease_token = 0u;
     uint32_t inode_generation;
@@ -21858,38 +21931,38 @@ static int rinfs_rmdir_internal(RinFS_Mount* mount, uint64_t parent_ino,
     int defer_reclaim;
     if (!mount || !mount->mounted || !name ||
         ((expected_inode == 0u) != (expected_generation == 0u)))
-        return RINFS_ERR_INVAL;
-    if (mount->readonly) return RINFS_ERR_ROFS;
+        return rinfs_content_unlock_status((RINFS_ERR_INVAL), content_unlock_error);
+    if (mount->readonly) return rinfs_content_unlock_status((RINFS_ERR_ROFS), content_unlock_error);
     
     /* Cannot remove . or .. */
     if (rinfs_strcmp(name, ".") == 0 || rinfs_strcmp(name, "..") == 0) {
-        return RINFS_ERR_INVAL;
+        return rinfs_content_unlock_status((RINFS_ERR_INVAL), content_unlock_error);
     }
     
     /* Look up the directory */
     uint64_t dir_ino;
     int err = rinfs_lookup(mount, parent_ino, name, &dir_ino);
-    if (err != RINFS_OK) return err;
+    if (err != RINFS_OK) return rinfs_content_unlock_status((err), content_unlock_error);
     if (expected_inode != 0u && dir_ino != expected_inode)
-        return RINFS_ERR_STALE;
+        return rinfs_content_unlock_status((RINFS_ERR_STALE), content_unlock_error);
     
     /* Read directory inode */
     RinFS_Inode dir_inode;
     err = rinfs_inode_read(mount, dir_ino, &dir_inode);
-    if (err != RINFS_OK) return err;
+    if (err != RINFS_OK) return rinfs_content_unlock_status((err), content_unlock_error);
     
     /* Check it's a directory */
     if ((dir_inode.i_mode >> 12) != RINFS_FT_DIR) {
-        return RINFS_ERR_NOTDIR;
+        return rinfs_content_unlock_status((RINFS_ERR_NOTDIR), content_unlock_error);
     }
 
     inode_generation = dir_inode.i_generation;
     if (expected_generation != 0u &&
         inode_generation != expected_generation)
-        return RINFS_ERR_STALE;
+        return rinfs_content_unlock_status((RINFS_ERR_STALE), content_unlock_error);
     err = rinfs_content_lease_acquire(mount, dir_ino, inode_generation, 1,
                                       &lease, &lease_token);
-    if (err != RINFS_OK) return err;
+    if (err != RINFS_OK) return rinfs_content_unlock_status((err), content_unlock_error);
     {
         RinFS_Inode live_inode;
         err = rinfs_inode_read(mount, dir_ino, &live_inode);
@@ -21897,9 +21970,9 @@ static int rinfs_rmdir_internal(RinFS_Mount* mount, uint64_t parent_ino,
             !rinfs_content_inode_equal(mount, &dir_inode, &live_inode) ||
             (expected_generation != 0u &&
              live_inode.i_generation != expected_generation)) {
-            rinfs_content_lease_release(mount, dir_ino, inode_generation,
-                                        lease_token, 1);
-            return err == RINFS_OK ? RINFS_ERR_STALE : err;
+            rinfs_keep_first_error(&content_unlock_error, rinfs_content_lease_release(mount, dir_ino, inode_generation,
+                                        lease_token, 1));
+            return rinfs_content_unlock_status((err == RINFS_OK ? RINFS_ERR_STALE : err), content_unlock_error);
         }
         dir_inode = live_inode;
     }
@@ -21909,9 +21982,9 @@ static int rinfs_rmdir_internal(RinFS_Mount* mount, uint64_t parent_ino,
      * commit. */
     err = rinfs_dir_is_effectively_empty(mount, dir_ino, &dir_inode);
     if (err != RINFS_OK) {
-        rinfs_content_lease_release(mount, dir_ino, inode_generation,
-                                    lease_token, 1);
-        return err;
+        rinfs_keep_first_error(&content_unlock_error, rinfs_content_lease_release(mount, dir_ino, inode_generation,
+                                    lease_token, 1));
+        return rinfs_content_unlock_status((err), content_unlock_error);
     }
 
     /* Orphan intent is the recovery record for legacy volumes too. Upgrade
@@ -21920,9 +21993,9 @@ static int rinfs_rmdir_internal(RinFS_Mount* mount, uint64_t parent_ino,
     err = rinfs_enable_content_versions(mount);
     if (err != RINFS_OK) {
         mount->readonly = 1;
-        rinfs_content_lease_release(mount, dir_ino, inode_generation,
-                                    lease_token, 1);
-        return err;
+        rinfs_keep_first_error(&content_unlock_error, rinfs_content_lease_release(mount, dir_ino, inode_generation,
+                                    lease_token, 1));
+        return rinfs_content_unlock_status((err), content_unlock_error);
     }
     journal_enabled =
         (mount->sb.s_compat_features &
@@ -21931,36 +22004,36 @@ static int rinfs_rmdir_internal(RinFS_Mount* mount, uint64_t parent_ino,
         err = rinfs_journal_begin_rmdir(mount, parent_ino, name, dir_ino);
         if (err != RINFS_OK) {
             mount->readonly = 1;
-            rinfs_content_lease_release(mount, dir_ino, inode_generation,
-                                        lease_token, 1);
-            return err;
+            rinfs_keep_first_error(&content_unlock_error, rinfs_content_lease_release(mount, dir_ino, inode_generation,
+                                        lease_token, 1));
+            return rinfs_content_unlock_status((err), content_unlock_error);
         }
     }
 
     err = rinfs_inode_orphan_commit(mount, dir_ino, &dir_inode, 1);
     if (err != RINFS_OK) {
         mount->readonly = 1;
-        rinfs_content_lease_release(mount, dir_ino, inode_generation,
-                                    lease_token, 1);
-        return err;
+        rinfs_keep_first_error(&content_unlock_error, rinfs_content_lease_release(mount, dir_ino, inode_generation,
+                                    lease_token, 1));
+        return rinfs_content_unlock_status((err), content_unlock_error);
     }
     
     /* Remove directory entry from parent */
     err = rinfs_dirent_remove_identity(mount, parent_ino, name, dir_ino);
     if (err != RINFS_OK) {
         mount->readonly = 1;
-        rinfs_content_lease_release(mount, dir_ino, inode_generation,
-                                    lease_token, 1);
-        return err;
+        rinfs_keep_first_error(&content_unlock_error, rinfs_content_lease_release(mount, dir_ino, inode_generation,
+                                    lease_token, 1));
+        return rinfs_content_unlock_status((err), content_unlock_error);
     }
 
     dir_inode.i_links = 0u;
     err = rinfs_inode_orphan_commit(mount, dir_ino, &dir_inode, 1);
     if (err != RINFS_OK) {
         mount->readonly = 1;
-        rinfs_content_lease_release(mount, dir_ino, inode_generation,
-                                    lease_token, 1);
-        return err;
+        rinfs_keep_first_error(&content_unlock_error, rinfs_content_lease_release(mount, dir_ino, inode_generation,
+                                    lease_token, 1));
+        return rinfs_content_unlock_status((err), content_unlock_error);
     }
     defer_reclaim = rinfs_content_delete_mark(
         mount, dir_ino, inode_generation);
@@ -21971,24 +22044,24 @@ static int rinfs_rmdir_internal(RinFS_Mount* mount, uint64_t parent_ino,
     err = rinfs_dir_recount_links(mount, parent_ino);
     if (err != RINFS_OK) {
         mount->readonly = 1;
-        rinfs_content_lease_release(mount, dir_ino, inode_generation,
-                                    lease_token, 1);
-        return err;
+        rinfs_keep_first_error(&content_unlock_error, rinfs_content_lease_release(mount, dir_ino, inode_generation,
+                                    lease_token, 1));
+        return rinfs_content_unlock_status((err), content_unlock_error);
     }
     if (journal_enabled) {
         err = rinfs_journal_finish(mount);
         if (err != RINFS_OK) {
             mount->readonly = 1;
-            rinfs_content_lease_release(mount, dir_ino, inode_generation,
-                                        lease_token, 1);
-            return err;
+            rinfs_keep_first_error(&content_unlock_error, rinfs_content_lease_release(mount, dir_ino, inode_generation,
+                                        lease_token, 1));
+            return rinfs_content_unlock_status((err), content_unlock_error);
         }
     }
 
     if (defer_reclaim) {
-        rinfs_content_lease_release(mount, dir_ino, inode_generation,
-                                    lease_token, 1);
-        return RINFS_OK;
+        rinfs_keep_first_error(&content_unlock_error, rinfs_content_lease_release(mount, dir_ino, inode_generation,
+                                    lease_token, 1));
+        return rinfs_content_unlock_status((RINFS_OK), content_unlock_error);
     }
 
     /* The journal, when available, is clear and the orphan intent remains
@@ -21999,13 +22072,13 @@ static int rinfs_rmdir_internal(RinFS_Mount* mount, uint64_t parent_ino,
     if (err == RINFS_OK)
         err = rinfs_inode_free_under_lease(mount, dir_ino, inode_generation);
     if (err == RINFS_OK)
-        rinfs_content_delete_clear(mount, dir_ino, inode_generation,
-                                   lease_token);
+        rinfs_keep_first_error(&content_unlock_error, rinfs_content_delete_clear(mount, dir_ino, inode_generation,
+                                   lease_token));
     if (err != RINFS_OK) mount->readonly = 1;
-    rinfs_content_lease_release(mount, dir_ino, inode_generation,
-                                lease_token, 1);
+    rinfs_keep_first_error(&content_unlock_error, rinfs_content_lease_release(mount, dir_ino, inode_generation,
+                                lease_token, 1));
 
-    return err;
+    return rinfs_content_unlock_status((err), content_unlock_error);
 }
 
 /* Remove an empty directory. */
@@ -22110,6 +22183,7 @@ int rinfs_link(RinFS_Mount* mount, uint64_t dir_ino, const char* name, uint64_t 
  * inode. */
 static int rinfs_link_tmpfile_core(RinFS_File* file, uint64_t dir_ino,
                                    const char* name) {
+    int content_unlock_error = RINFS_OK;
     RinFS_Mount* mount;
     RinFS_ContentLeaseNode* lease = NULL;
     uint64_t lease_token = 0u;
@@ -22120,17 +22194,17 @@ static int rinfs_link_tmpfile_core(RinFS_File* file, uint64_t dir_ino,
     int result;
 
     if (!name || file->inode_num == 0u || file->content_pin_token == 0u)
-        return RINFS_ERR_INVAL;
+        return rinfs_content_unlock_status((RINFS_ERR_INVAL), content_unlock_error);
     mount = file->mount;
-    if (!mount->mounted || mount->readonly) return RINFS_ERR_ROFS;
+    if (!mount->mounted || mount->readonly) return rinfs_content_unlock_status((RINFS_ERR_ROFS), content_unlock_error);
     if (!rinfs_mount_has_content_versions(mount))
-        return RINFS_ERR_NOT_SUPPORTED;
+        return rinfs_content_unlock_status((RINFS_ERR_NOT_SUPPORTED), content_unlock_error);
     if (dir_ino == 0u || dir_ino > mount->sb.s_inode_count)
-        return RINFS_ERR_INVAL;
+        return rinfs_content_unlock_status((RINFS_ERR_INVAL), content_unlock_error);
     result = rinfs_content_lease_acquire(
         mount, file->inode_num, file->content_pin_generation, 1,
         &lease, &lease_token);
-    if (result != RINFS_OK) return result;
+    if (result != RINFS_OK) return rinfs_content_unlock_status((result), content_unlock_error);
     if (lease_token != file->content_pin_token) {
         result = RINFS_ERR_STALE;
         goto done;
@@ -22200,20 +22274,20 @@ static int rinfs_link_tmpfile_core(RinFS_File* file, uint64_t dir_ino,
         /* The durable name is visible. Keep the open lifetime from trying to
          * reclaim it; mount recovery will reconcile the retained marker. */
         file->inode = observed;
-        rinfs_content_delete_clear(mount, file->inode_num,
+        rinfs_keep_first_error(&content_unlock_error, rinfs_content_delete_clear(mount, file->inode_num,
                                    file->content_pin_generation,
-                                   lease_token);
+                                   lease_token));
         goto done;
     }
     file->inode = inode;
-    rinfs_content_delete_clear(mount, file->inode_num,
+    rinfs_keep_first_error(&content_unlock_error, rinfs_content_delete_clear(mount, file->inode_num,
                                file->content_pin_generation,
-                               lease_token);
+                               lease_token));
 
 done:
-    rinfs_content_lease_release(mount, file->inode_num,
-                                file->content_pin_generation, lease_token, 1);
-    return result;
+    rinfs_keep_first_error(&content_unlock_error, rinfs_content_lease_release(mount, file->inode_num,
+                                file->content_pin_generation, lease_token, 1));
+    return rinfs_content_unlock_status((result), content_unlock_error);
 }
 
 int rinfs_link_tmpfile(RinFS_File* file, uint64_t dir_ino,
