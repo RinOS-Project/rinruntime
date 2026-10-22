@@ -591,6 +591,9 @@ typedef struct RinFS_ContentLeaseNode {
     uint32_t writer;
     uint32_t open_references;
     uint32_t tracked_open_references;
+    uint32_t wincompat_share_handle_count;
+    uint32_t wincompat_share_access_counts[3];
+    uint32_t wincompat_share_denied_counts[3];
     uint32_t delete_pending;
     uint32_t delete_on_close_count;
     uint32_t delete_on_close_reaping;
@@ -1588,6 +1591,83 @@ static RinFS_CloseReferenceRecord* rinfs_close_ref_find_locked(
     return NULL;
 }
 
+/* Caller holds the inode content lease lock. Share-mode state lives beside
+ * the shared inode lease so independently forked processes enforce the same
+ * Windows admission rules. Access/share bits are READ, WRITE, and DELETE. */
+static int rinfs_wincompat_share_counts_consistent(
+    const RinFS_ContentLeaseNode* node) {
+    if (!node || node->wincompat_share_handle_count >
+                     node->tracked_open_references)
+        return 0;
+    for (uint32_t bit = 0u; bit < 3u; ++bit) {
+        if (node->wincompat_share_access_counts[bit] >
+                node->wincompat_share_handle_count ||
+            node->wincompat_share_denied_counts[bit] >
+                node->wincompat_share_handle_count)
+            return 0;
+    }
+    return 1;
+}
+
+/* Caller holds the inode content lease lock. check_compatibility is enabled
+ * for a newly opened WinCompat handle and disabled when fork duplicates an
+ * already-admitted handle. */
+static int rinfs_wincompat_share_counts_change_locked(
+    RinFS_ContentLeaseNode* node, uint32_t access, uint32_t share_mode,
+    int add, int check_compatibility) {
+    if (!rinfs_wincompat_share_counts_consistent(node) ||
+        (access & ~7u) != 0u || (share_mode & ~7u) != 0u)
+        return RINFS_ERR_CORRUPT;
+    if (add) {
+        if (node->wincompat_share_handle_count == UINT32_MAX)
+            return RINFS_ERR_OVERFLOW;
+        for (uint32_t bit = 0u; bit < 3u; ++bit) {
+            uint32_t mask = 1u << bit;
+            if ((access & mask) != 0u &&
+                node->wincompat_share_denied_counts[bit] != 0u &&
+                check_compatibility)
+                return RINFS_ERR_BUSY;
+            if ((share_mode & mask) == 0u &&
+                node->wincompat_share_access_counts[bit] != 0u &&
+                check_compatibility)
+                return RINFS_ERR_BUSY;
+            if (((access & mask) != 0u &&
+                 node->wincompat_share_access_counts[bit] == UINT32_MAX) ||
+                ((share_mode & mask) == 0u &&
+                 node->wincompat_share_denied_counts[bit] == UINT32_MAX))
+                return RINFS_ERR_OVERFLOW;
+        }
+        ++node->wincompat_share_handle_count;
+        for (uint32_t bit = 0u; bit < 3u; ++bit) {
+            uint32_t mask = 1u << bit;
+            if ((access & mask) != 0u)
+                ++node->wincompat_share_access_counts[bit];
+            if ((share_mode & mask) == 0u)
+                ++node->wincompat_share_denied_counts[bit];
+        }
+        return RINFS_OK;
+    }
+    if (node->wincompat_share_handle_count == 0u)
+        return RINFS_ERR_CORRUPT;
+    for (uint32_t bit = 0u; bit < 3u; ++bit) {
+        uint32_t mask = 1u << bit;
+        if (((access & mask) != 0u &&
+             node->wincompat_share_access_counts[bit] == 0u) ||
+            ((share_mode & mask) == 0u &&
+             node->wincompat_share_denied_counts[bit] == 0u))
+            return RINFS_ERR_CORRUPT;
+    }
+    --node->wincompat_share_handle_count;
+    for (uint32_t bit = 0u; bit < 3u; ++bit) {
+        uint32_t mask = 1u << bit;
+        if ((access & mask) != 0u)
+            --node->wincompat_share_access_counts[bit];
+        if ((share_mode & mask) == 0u)
+            --node->wincompat_share_denied_counts[bit];
+    }
+    return RINFS_OK;
+}
+
 int rinfs_wincompat_share_register(RinFS_Mount* mount, uint64_t inode_num,
                                    uint32_t inode_generation,
                                    uint64_t content_pin_token,
@@ -1596,6 +1676,8 @@ int rinfs_wincompat_share_register(RinFS_Mount* mount, uint64_t inode_num,
                                    uint64_t mount_epoch,
                                    uint32_t access, uint32_t share_mode) {
     RinFS_CloseReferenceRecord* owner;
+    RinFS_ContentLeaseNode* node;
+    int result;
     if (!mount || inode_num == 0u || inode_generation == 0u ||
         content_pin_token == 0u || close_generation == 0u ||
         close_cookie == 0u || mount_epoch == 0u ||
@@ -1622,29 +1704,24 @@ int rinfs_wincompat_share_register(RinFS_Mount* mount, uint64_t inode_num,
         rinfs_spin_unlock(&g_rinfs_close_reference_lock);
         return same ? RINFS_OK : RINFS_ERR_INVAL;
     }
-    for (uint32_t index = 0u; index < RINFS_MAX_CLOSE_REFERENCES; ++index) {
-        const RinFS_CloseReferenceRecord* existing =
-            &g_rinfs_close_references[index];
-        if (existing == owner || existing->in_use != 1u ||
-            (existing->state != RINFS_CLOSE_REF_ACTIVE &&
-             existing->state != RINFS_CLOSE_REF_CLOSING) ||
-            existing->wincompat_share_registered != 1u ||
-            existing->mount != mount || existing->mount_epoch != mount_epoch ||
-            existing->inode_num != inode_num ||
-            existing->inode_generation != inode_generation)
-            continue;
-        if ((access & ~existing->wincompat_share_mode) != 0u ||
-            (existing->wincompat_share_access & ~share_mode) != 0u) {
-            rinfs_spin_unlock(&g_rinfs_close_reference_lock);
-            return RINFS_ERR_BUSY;
-        }
+    rinfs_spin_lock(&mount->content_lease_lock);
+    node = rinfs_content_lease_find(mount, inode_num, inode_generation);
+    if (!node || node->token_generation != content_pin_token ||
+        node->tracked_open_references == 0u) {
+        result = RINFS_ERR_STALE;
+    } else {
+        result = rinfs_wincompat_share_counts_change_locked(
+            node, access, share_mode, 1, 1);
     }
-    owner->wincompat_share_access = access;
-    owner->wincompat_share_mode = share_mode;
-    owner->wincompat_share_registered = 1u;
-    rinfs_close_ref_integrity_update();
+    if (result == RINFS_OK) {
+        owner->wincompat_share_access = access;
+        owner->wincompat_share_mode = share_mode;
+        owner->wincompat_share_registered = 1u;
+        rinfs_close_ref_integrity_update();
+    }
+    rinfs_spin_unlock(&mount->content_lease_lock);
     rinfs_spin_unlock(&g_rinfs_close_reference_lock);
-    return RINFS_OK;
+    return result;
 }
 
 static int rinfs_close_ref_reserve(RinFS_Mount* mount, uint64_t inode_num,
@@ -3615,6 +3692,7 @@ static void rinfs_content_lease_release(RinFS_Mount* mount, uint64_t ino,
      * recreated for the same inode lifetime. */
     if (node == NULL || node->token_generation != token ||
         node->references == 0u ||
+        !rinfs_wincompat_share_counts_consistent(node) ||
         (writer ? node->writer == 0u : node->readers == 0u)) {
         rinfs_spin_unlock(&mount->content_lease_lock);
         return;
@@ -3626,6 +3704,7 @@ static void rinfs_content_lease_release(RinFS_Mount* mount, uint64_t ino,
         node->writer == 0u && node->readers == 0u &&
         node->open_references == 0u &&
         node->tracked_open_references == 0u &&
+        node->wincompat_share_handle_count == 0u &&
         node->delete_pending == 0u &&
         node->delete_on_close_count == 0u) {
         link = (RinFS_ContentLeaseNode**)&mount->content_leases;
@@ -3749,7 +3828,8 @@ static int rinfs_content_pin_release(RinFS_Mount* mount, uint64_t ino,
     rinfs_spin_lock(&mount->content_lease_lock);
     node = rinfs_content_lease_find(mount, ino, inode_generation);
     if (node == NULL || node->token_generation != token ||
-        node->open_references == 0u) {
+        node->open_references == 0u ||
+        !rinfs_wincompat_share_counts_consistent(node)) {
         rinfs_spin_unlock(&mount->content_lease_lock);
         if (exact_close)
             rinfs_spin_unlock(&g_rinfs_close_reference_lock);
@@ -3774,6 +3854,7 @@ static int rinfs_content_pin_release(RinFS_Mount* mount, uint64_t ino,
               node->delete_pending != 0u;
     if (!reclaim && node->open_references == 0u &&
             node->tracked_open_references == 0u &&
+            node->wincompat_share_handle_count == 0u &&
             node->references == 0u && node->waiting_writers == 0u &&
             node->writer == 0u && node->readers == 0u &&
             node->delete_pending == 0u &&
@@ -4048,6 +4129,7 @@ static int rinfs_close_ref_begin(RinFS_Mount* mount, uint64_t mount_epoch,
             mount, mount_epoch, inode_num, inode_generation,
             content_pin_token, &tracked_count, &active_count) ||
         !rinfs_close_ref_tracking_matches(mount, node, tracked_count) ||
+        !rinfs_wincompat_share_counts_consistent(node) ||
         node->tracked_open_references == 0u ||
         node->open_references < active_count ||
         (record->state == RINFS_CLOSE_REF_ACTIVE &&
@@ -4097,6 +4179,7 @@ static int rinfs_close_ref_keep_retryable(
                     content_pin_token, &tracked_count, &active_count) &&
                 rinfs_close_ref_tracking_matches(
                     mount, node, tracked_count) &&
+                rinfs_wincompat_share_counts_consistent(node) &&
                 node->tracked_open_references != 0u && active_count == 0u &&
                 node->delete_pending == 1u)
                 result = RINFS_OK;
@@ -4163,9 +4246,18 @@ static int rinfs_close_ref_finish(
             mount, mount_epoch, inode_num, inode_generation,
             content_pin_token, &tracked_count, &active_count) ||
         !rinfs_close_ref_tracking_matches(mount, node, tracked_count) ||
+        !rinfs_wincompat_share_counts_consistent(node) ||
         node->tracked_open_references == 0u ||
         g_rinfs_close_reference_count == 0u ||
         node->open_references < active_count) {
+        rinfs_spin_unlock(&mount->content_lease_lock);
+        rinfs_spin_unlock(&g_rinfs_close_reference_lock);
+        return RINFS_ERR_CORRUPT;
+    }
+    if (record->wincompat_share_registered != 0u &&
+        rinfs_wincompat_share_counts_change_locked(
+            node, record->wincompat_share_access,
+            record->wincompat_share_mode, 0, 0) != RINFS_OK) {
         rinfs_spin_unlock(&mount->content_lease_lock);
         rinfs_spin_unlock(&g_rinfs_close_reference_lock);
         return RINFS_ERR_CORRUPT;
@@ -4177,6 +4269,7 @@ static int rinfs_close_ref_finish(
         node->writer == 0u && node->readers == 0u &&
         node->open_references == 0u &&
         node->tracked_open_references == 0u &&
+        node->wincompat_share_handle_count == 0u &&
         node->delete_pending == 0u &&
         node->delete_on_close_count == 0u) {
         link = (RinFS_ContentLeaseNode**)&mount->content_leases;
@@ -11694,6 +11787,7 @@ static int rinfs_shared_mount_fork_validate_close_refs_locked(
         node = rinfs_shared_mount_fork_find_node_locked(
             mount, record->inode_num, record->inode_generation);
         if (!node || node->token_generation != record->content_pin_token ||
+            !rinfs_wincompat_share_counts_consistent(node) ||
             node->open_references < local_references ||
             node->tracked_open_references < local_references ||
             node->open_references > UINT32_MAX - local_references ||
@@ -11775,8 +11869,8 @@ static void rinfs_shared_mount_registry_remove(RinFS_Mount* mount) {
  * the fork syscall. Content admission stays closed in both resulting
  * processes until each has released its inherited local locks. Idle file and
  * directory close records are duplicated in the shared aggregate before the
- * syscall; mapping aliases, active operations, and process-local WinCompat
- * share state remain unsupported. */
+ * syscall. Mapping aliases, active operations, and registered WinCompat
+ * handles remain retryably busy until their owners join this interlock. */
 int rinfs_fork_prepare(void) {
     uint32_t prepared[RINFS_SHARED_MOUNT_REGISTRY_CAPACITY];
     uint32_t applied_per_mount[RINFS_SHARED_MOUNT_REGISTRY_CAPACITY] = {0u};
@@ -16710,6 +16804,7 @@ static int rinfs_delete_on_close_reap_inode(RinFS_Mount* mount,
                 lease->writer == 0u && lease->readers == 0u &&
                 lease->open_references == 0u &&
                 lease->tracked_open_references == 0u &&
+                lease->wincompat_share_handle_count == 0u &&
                 lease->delete_pending == 0u) {
                 while (*lease_link && *lease_link != lease)
                     lease_link = &(*lease_link)->next;
@@ -16821,6 +16916,7 @@ static int rinfs_delete_on_close_recover_entry(
     if (!lease || lease->token_generation != lease_token ||
         lease->open_references != 0u ||
         lease->tracked_open_references != 0u ||
+        lease->wincompat_share_handle_count != 0u ||
         lease->delete_on_close_reaping != 0u ||
         lease->delete_on_close_count == UINT32_MAX) {
         result = RINFS_ERR_CORRUPT;
@@ -17011,6 +17107,7 @@ static int rinfs_delete_on_close_discard_recovered(RinFS_Mount* mount) {
                     candidate->writer != 0u || candidate->readers != 0u ||
                     candidate->open_references != 0u ||
                     candidate->tracked_open_references != 0u ||
+                    candidate->wincompat_share_handle_count != 0u ||
                     candidate->delete_pending != 0u ||
                     candidate->delete_on_close_reaping != 0u) {
                     rinfs_spin_unlock(&mount->content_lease_lock);
