@@ -922,7 +922,7 @@ int rinfs_abandon_dirty_mount(RinFS_Mount* mount);
 int rinfs_mount_set_device_flags(RinFS_Mount* mount, uint32_t device_flags);
 /* VFS may replace the low-level boot-local epoch with its lifecycle epoch.
  * Zero retires the namespace and makes dentry sharing ineligible. */
-void rinfs_mount_set_epoch(RinFS_Mount* mount, uint64_t mount_epoch);
+int rinfs_mount_set_epoch(RinFS_Mount* mount, uint64_t mount_epoch);
 int rinfs_sync(RinFS_Mount* mount);
 
 int rinfs_restore_transaction_begin(RinFS_Mount* mount,

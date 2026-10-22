@@ -16035,11 +16035,13 @@ int rinfs_mount_set_device_flags(RinFS_Mount* mount, uint32_t device_flags) {
     return rinfs_page_cache_unlock_status(mount->page_cache, RINFS_OK);
 }
 
-void rinfs_mount_set_epoch(RinFS_Mount* mount, uint64_t mount_epoch) {
-    if (!mount) return;
-    /* This legacy void API cannot report an inode-cache release failure. */
-    (void)rinfs_inode_cache_invalidate(mount, 0u);
+int rinfs_mount_set_epoch(RinFS_Mount* mount, uint64_t mount_epoch) {
+    int err;
+    if (!mount) return RINFS_ERR_INVAL;
+    err = rinfs_inode_cache_invalidate(mount, 0u);
+    if (err != RINFS_OK) return err;
     mount->mount_epoch = mount_epoch;
+    return RINFS_OK;
 }
 
 #define RINFS_SUPERBLOCK_RECOVERY_IDLE 0u
