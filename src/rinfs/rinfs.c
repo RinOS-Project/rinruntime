@@ -550,6 +550,8 @@ typedef struct {
 
 #define RINFS_SHARED_LOCK_OWNER_TAG UINT32_C(0x80000000)
 #define RINFS_SHARED_LOCK_OWNER_ROW_MASK UINT32_C(0x0000003f)
+#define RINFS_SHARED_LOCK_OWNER_GENERATION_SHIFT 6u
+#define RINFS_SHARED_LOCK_OWNER_GENERATION_MASK UINT32_C(0x01ffffff)
 #define RINFS_CONTENT_LEASE_CLOSING_FORK 2u
 
 static int rinfs_shared_owner_query_row(RinFS_Mount* mount,
@@ -561,13 +563,24 @@ static int disk_flush(RinFS_Mount* mount);
 
 static uint32_t rinfs_shared_lock_token(RinFS_Mount* mount) {
     uint32_t row = 0u;
+    uint64_t cookie;
+    uint32_t generation_tag;
     if (!mount || !mount->shared_mapping_base ||
         mount->shared_mount_ready == 0u)
         return 1u; /* mount construction predates cross-process exposure */
     if (rinfs_shared_owner_query_row(mount, &row) != RINFS_OK || row == 0u ||
         row > RINFS_SHARED_OWNER_CAPACITY)
         __builtin_trap(); /* never publish an unowned shared lock */
-    return RINFS_SHARED_LOCK_OWNER_TAG | row;
+    cookie = mount->shared_owner_ledger->owners[row - 1u].owner_cookie;
+    if (cookie == 0u) __builtin_trap();
+    /* Keep a compact generation fingerprint beside the row. The full owner
+     * cookie stays in the ledger; this tag lets a lock waiter distinguish a
+     * reused row from the process generation that originally held the lock. */
+    generation_tag = (uint32_t)(cookie ^ (cookie >> 25u) ^ (cookie >> 50u)) &
+                     RINFS_SHARED_LOCK_OWNER_GENERATION_MASK;
+    return RINFS_SHARED_LOCK_OWNER_TAG |
+           (generation_tag << RINFS_SHARED_LOCK_OWNER_GENERATION_SHIFT) |
+           row;
 }
 
 static int rinfs_shared_lock_owner_dead(RinFS_Mount* mount,
@@ -583,7 +596,18 @@ static int rinfs_shared_lock_owner_dead(RinFS_Mount* mount,
     state = __atomic_load_n(
         &mount->shared_owner_ledger->owners[row - 1u].state,
         __ATOMIC_ACQUIRE);
-    return state != RINFS_SHARED_OWNER_ACTIVE;
+    if (state != RINFS_SHARED_OWNER_ACTIVE) return 1;
+    {
+        uint64_t cookie =
+            mount->shared_owner_ledger->owners[row - 1u].owner_cookie;
+        uint32_t lock_generation =
+            (lock_state >> RINFS_SHARED_LOCK_OWNER_GENERATION_SHIFT) &
+            RINFS_SHARED_LOCK_OWNER_GENERATION_MASK;
+        uint32_t live_generation = (uint32_t)(cookie ^ (cookie >> 25u) ^
+                                                (cookie >> 50u)) &
+                                   RINFS_SHARED_LOCK_OWNER_GENERATION_MASK;
+        return cookie == 0u || lock_generation != live_generation;
+    }
 }
 
 static void rinfs_shared_lock_acquire(RinFS_Mount* mount,
