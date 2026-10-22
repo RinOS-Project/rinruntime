@@ -788,6 +788,12 @@ transport identifiers are reserved by the contract, while the current
 conversion adapter publishes NVMe values only; other provider mappings remain
 unfinished.
 
+`rin_storage_health_snapshot_valid_v1` checks the full fixed-size snapshot
+before consumers inspect metrics: version, transport, generation, reserved and
+unused fields, duplicate IDs, transport-specific units/ranges, value widths,
+and saturation semantics. ATA/SCSI/SD currently accept only empty snapshots;
+this does not claim that those providers collect health data.
+
 `rin_storage_health_from_nvme_v1` validates and converts a caller-owned NVMe
 snapshot in memory. It performs no device I/O and grants no access. Consumers
 obtain diagnostics through the existing read-only Management
