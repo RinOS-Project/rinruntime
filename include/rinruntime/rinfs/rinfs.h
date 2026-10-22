@@ -1157,6 +1157,9 @@ int rinfs_symlink_owned(RinFS_Mount* mount, uint64_t dir_ino, const char* name,
                         const char* target, uint32_t uid, uint32_t gid);
 /* Copies at most size target bytes and never appends a terminator. */
 int rinfs_readlink(RinFS_Mount* mount, uint64_t ino, char* buf, uint32_t size);
+/* Truncate maps preflight page-cache/writeback contention to BUSY before
+ * changing the inode size. PENDING returned after mutation preparation keeps
+ * its unresolved-transaction meaning and must not be treated as retryable. */
 int rinfs_truncate_ino(RinFS_Mount* mount, uint64_t ino, uint64_t size);
 
 /* File I/O */
