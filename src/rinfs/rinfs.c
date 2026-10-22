@@ -583,6 +583,12 @@ static int rinfs_shared_owner_reap_locked(RinFS_Mount* mount);
 static int disk_flush(RinFS_Mount* mount);
 static int rinfs_inode_is_cleared(const RinFS_Inode* inode);
 
+static void rinfs_shared_lock_fence(RinFS_Mount* mount) {
+    if (!mount) return;
+    mount->readonly = 1;
+    mount->content_lease_closing = UINT32_MAX;
+}
+
 static uint32_t rinfs_shared_lock_token(RinFS_Mount* mount) {
     uint32_t row = 0u;
     uint32_t generation_tag;
@@ -590,13 +596,25 @@ static uint32_t rinfs_shared_lock_token(RinFS_Mount* mount) {
         mount->shared_mount_ready == 0u)
         return 1u; /* mount construction predates cross-process exposure */
     if (rinfs_shared_owner_query_row(mount, &row) != RINFS_OK || row == 0u ||
-        row > RINFS_SHARED_OWNER_CAPACITY)
-        __builtin_trap(); /* never publish an unowned shared lock */
+        row > RINFS_SHARED_OWNER_CAPACITY ||
+        !rinfs_shared_owner_ledger_valid(mount)) {
+        rinfs_shared_lock_fence(mount);
+        return 0u;
+    }
+    if (__atomic_load_n(
+            &mount->shared_owner_ledger->owners[row - 1u].state,
+            __ATOMIC_ACQUIRE) != RINFS_SHARED_OWNER_ACTIVE ||
+        mount->shared_owner_ledger->owners[row - 1u].owner_cookie == 0u) {
+        rinfs_shared_lock_fence(mount);
+        return 0u;
+    }
     generation_tag = mount->shared_owner_ledger->owners[row - 1u]
                          .lock_generation;
     if (generation_tag == 0u ||
-        generation_tag > RINFS_SHARED_LOCK_OWNER_GENERATION_MASK)
-        __builtin_trap();
+        generation_tag > RINFS_SHARED_LOCK_OWNER_GENERATION_MASK) {
+        rinfs_shared_lock_fence(mount);
+        return 0u;
+    }
     return RINFS_SHARED_LOCK_OWNER_TAG |
            (generation_tag << RINFS_SHARED_LOCK_OWNER_GENERATION_SHIFT) |
            row;
@@ -606,35 +624,53 @@ static int rinfs_shared_lock_owner_dead(RinFS_Mount* mount,
                                         uint32_t lock_state) {
     uint32_t row;
     uint32_t state;
-    if (!mount ||
-        (lock_state & RINFS_SHARED_LOCK_OWNER_TAG) == 0u ||
+    if (!mount || (lock_state & RINFS_SHARED_LOCK_OWNER_TAG) == 0u ||
         !rinfs_shared_owner_ledger_valid(mount))
-        return 0;
+        return -1;
     row = lock_state & RINFS_SHARED_LOCK_OWNER_ROW_MASK;
-    if (row == 0u || row > RINFS_SHARED_OWNER_CAPACITY) return 0;
-    state = __atomic_load_n(
-        &mount->shared_owner_ledger->owners[row - 1u].state,
-        __ATOMIC_ACQUIRE);
-    if (state != RINFS_SHARED_OWNER_ACTIVE) return 1;
+    if (row == 0u || row > RINFS_SHARED_OWNER_CAPACITY) return -1;
     {
         uint32_t lock_generation =
             (lock_state >> RINFS_SHARED_LOCK_OWNER_GENERATION_SHIFT) &
             RINFS_SHARED_LOCK_OWNER_GENERATION_MASK;
-        uint32_t live_generation =
-            mount->shared_owner_ledger->owners[row - 1u].lock_generation;
-        return lock_generation != live_generation;
+        if (lock_generation == 0u) return -1;
     }
+    state = __atomic_load_n(
+        &mount->shared_owner_ledger->owners[row - 1u].state,
+        __ATOMIC_ACQUIRE);
+    if (state == RINFS_SHARED_OWNER_DEAD ||
+        state == RINFS_SHARED_OWNER_REAPED)
+        return 1;
+    if (state != RINFS_SHARED_OWNER_ACTIVE) return -1;
+    uint32_t lock_generation =
+        (lock_state >> RINFS_SHARED_LOCK_OWNER_GENERATION_SHIFT) &
+        RINFS_SHARED_LOCK_OWNER_GENERATION_MASK;
+    uint32_t live_generation =
+        mount->shared_owner_ledger->owners[row - 1u].lock_generation;
+    if (live_generation == 0u ||
+        live_generation > RINFS_SHARED_LOCK_OWNER_GENERATION_MASK)
+        return -1;
+    return lock_generation != live_generation;
 }
 
-static void rinfs_shared_lock_acquire(RinFS_Mount* mount,
-                                      volatile uint32_t* lock,
-                                      int* recovered_out,
-                                      uint32_t* recovered_owner_token_out) {
+static int rinfs_shared_lock_acquire(RinFS_Mount* mount,
+                                     volatile uint32_t* lock,
+                                     int* recovered_out,
+                                     uint32_t* recovered_owner_token_out)
+    __attribute__((warn_unused_result));
+
+static int rinfs_shared_lock_acquire(RinFS_Mount* mount,
+                                     volatile uint32_t* lock,
+                                     int* recovered_out,
+                                     uint32_t* recovered_owner_token_out) {
     uint32_t spins = 0u;
-    uint32_t token = rinfs_shared_lock_token(mount);
+    uint32_t token;
     int recovered = 0;
     if (recovered_out) *recovered_out = 0;
     if (recovered_owner_token_out) *recovered_owner_token_out = 0u;
+    if (!lock) return RINFS_ERR_INVAL;
+    token = rinfs_shared_lock_token(mount);
+    if (token == 0u) return RINFS_ERR_CORRUPT;
     rinfs_spin_preempt_enter();
     for (;;) {
         uint32_t expected = 0u;
@@ -642,15 +678,23 @@ static void rinfs_shared_lock_acquire(RinFS_Mount* mount,
                                         __ATOMIC_ACQUIRE,
                                         __ATOMIC_RELAXED))
             break;
-        if (rinfs_shared_lock_owner_dead(mount, expected)) {
-            uint32_t stale = expected;
-            if (__atomic_compare_exchange_n(lock, &stale, token, 0,
-                                            __ATOMIC_ACQUIRE,
-                                            __ATOMIC_RELAXED)) {
-                recovered = 1;
-                if (recovered_owner_token_out)
-                    *recovered_owner_token_out = expected;
-                break;
+        {
+            int owner_dead = rinfs_shared_lock_owner_dead(mount, expected);
+            if (owner_dead < 0) {
+                rinfs_shared_lock_fence(mount);
+                rinfs_spin_preempt_leave();
+                return RINFS_ERR_CORRUPT;
+            }
+            if (owner_dead) {
+                uint32_t stale = expected;
+                if (__atomic_compare_exchange_n(lock, &stale, token, 0,
+                                                __ATOMIC_ACQUIRE,
+                                                __ATOMIC_RELAXED)) {
+                    recovered = 1;
+                    if (recovered_owner_token_out)
+                        *recovered_owner_token_out = expected;
+                    break;
+                }
             }
         }
         if (++spins == 4096u) {
@@ -662,6 +706,7 @@ static void rinfs_shared_lock_acquire(RinFS_Mount* mount,
         __asm__ volatile("pause");
     }
     if (recovered_out) *recovered_out = recovered;
+    return RINFS_OK;
 }
 
 static void rinfs_shared_lock_release(volatile uint32_t* lock) {
@@ -739,12 +784,18 @@ static int rinfs_shared_heap_recover_locked(RinFS_Mount* mount) {
     return 1;
 }
 
-static void rinfs_shared_heap_lock(RinFS_Mount* mount) {
+static int rinfs_shared_heap_lock(RinFS_Mount* mount) {
     int recovered = 0;
-    rinfs_shared_lock_acquire(mount, &mount->shared_arena_lock,
-                              &recovered, NULL);
-    if (recovered && !rinfs_shared_heap_recover_locked(mount))
+    int err = rinfs_shared_lock_acquire(
+        mount, &mount->shared_arena_lock, &recovered, NULL);
+    if (err != RINFS_OK) return err;
+    if (recovered && !rinfs_shared_heap_recover_locked(mount)) {
         mount->shared_arena_recovery_failed = 1u;
+        rinfs_shared_lock_fence(mount);
+        rinfs_shared_lock_release(&mount->shared_arena_lock);
+        return RINFS_ERR_CORRUPT;
+    }
+    return RINFS_OK;
 }
 
 static void rinfs_shared_heap_unlock(RinFS_Mount* mount) {
@@ -764,7 +815,7 @@ static void* rinfs_mount_runtime_alloc(RinFS_Mount* mount, size_t size) {
         payload_bytes > UINT32_MAX - header_bytes ||
         payload_bytes > (size_t)-1 - header_bytes)
         return NULL;
-    rinfs_shared_heap_lock(mount);
+    if (rinfs_shared_heap_lock(mount) != RINFS_OK) return NULL;
     if (mount->shared_arena_recovery_failed != 0u) {
         rinfs_shared_heap_unlock(mount);
         return NULL;
@@ -831,7 +882,7 @@ static void rinfs_mount_runtime_free(RinFS_Mount* mount, void* pointer) {
          (RINFS_SHARED_HEAP_ALIGNMENT - 1u)) != 0u)
         return;
     offset = (uint64_t)(value - base - header_bytes);
-    rinfs_shared_heap_lock(mount);
+    if (rinfs_shared_heap_lock(mount) != RINFS_OK) return;
     if (mount->shared_arena_recovery_failed != 0u) {
         rinfs_shared_heap_unlock(mount);
         return;
@@ -1338,14 +1389,19 @@ static int rinfs_block_allocation_lock(RinFS_Mount* mount) {
     }
     int recovered = 0;
     uint32_t recovered_owner_token = 0u;
-    rinfs_shared_lock_acquire(mount, &mount->block_allocation_lock,
-                              &recovered, &recovered_owner_token);
+    int lock_err = rinfs_shared_lock_acquire(
+        mount, &mount->block_allocation_lock, &recovered,
+        &recovered_owner_token);
+    if (lock_err != RINFS_OK) return lock_err;
     if (recovered) {
         int err = rinfs_shared_allocation_recover_log_locked(
             mount, 0, recovered_owner_token);
         if (err == RINFS_OK)
             err = rinfs_shared_allocation_recover_locked(mount, 0);
-        if (err != RINFS_OK) mount->readonly = 1;
+        if (err != RINFS_OK) {
+            mount->readonly = 1;
+            rinfs_shared_lock_release(&mount->block_allocation_lock);
+        }
         return err;
     }
     return RINFS_OK;
@@ -1368,14 +1424,19 @@ static int rinfs_inode_allocation_lock(RinFS_Mount* mount) {
     }
     int recovered = 0;
     uint32_t recovered_owner_token = 0u;
-    rinfs_shared_lock_acquire(mount, &mount->inode_allocation_lock,
-                              &recovered, &recovered_owner_token);
+    int lock_err = rinfs_shared_lock_acquire(
+        mount, &mount->inode_allocation_lock, &recovered,
+        &recovered_owner_token);
+    if (lock_err != RINFS_OK) return lock_err;
     if (recovered) {
         int err = rinfs_shared_allocation_recover_log_locked(
             mount, 1, recovered_owner_token);
         if (err == RINFS_OK)
             err = rinfs_shared_allocation_recover_locked(mount, 1);
-        if (err != RINFS_OK) mount->readonly = 1;
+        if (err != RINFS_OK) {
+            mount->readonly = 1;
+            rinfs_shared_lock_release(&mount->inode_allocation_lock);
+        }
         return err;
     }
     return RINFS_OK;
@@ -1494,8 +1555,14 @@ static int rinfs_inode_table_lock(RinFS_Mount* mount, uint64_t block) {
     }
     int recovered = 0;
     uint32_t owner_token = 0u;
-    rinfs_shared_lock_acquire(mount, lock, &recovered, &owner_token);
+    int lock_err = rinfs_shared_lock_acquire(
+        mount, lock, &recovered, &owner_token);
+    if (lock_err != RINFS_OK) return lock_err;
     if (!recovered) owner_token = rinfs_shared_lock_token(mount);
+    if (owner_token == 0u) {
+        rinfs_shared_lock_release(lock);
+        return RINFS_ERR_CORRUPT;
+    }
     int err = rinfs_inode_table_recover_log_locked(
         mount, lock_index, owner_token);
     if (err != RINFS_OK) rinfs_shared_lock_release(lock);
@@ -1632,8 +1699,9 @@ static int rinfs_shared_content_lock(RinFS_Mount* mount) {
         rinfs_spin_lock(&mount->content_lease_lock);
         return RINFS_OK;
     }
-    rinfs_shared_lock_acquire(mount, &mount->content_lease_lock,
-                              &recovered, NULL);
+    err = rinfs_shared_lock_acquire(
+        mount, &mount->content_lease_lock, &recovered, NULL);
+    if (err != RINFS_OK) return err;
     if ((recovered || rinfs_shared_owner_has_dead_row(mount)) &&
         (err = rinfs_shared_owner_reap_locked(mount)) != RINFS_OK) {
         /* Counter/list corruption cannot be repaired by guessing. Fence this
@@ -1661,17 +1729,28 @@ typedef enum {
     RINFS_SHARED_CACHE_INODE = 3
 } RinFS_SharedCacheKind;
 
-static void rinfs_shared_cache_lock(RinFS_Mount* mount,
-                                    volatile uint32_t* lock,
-                                    RinFS_SharedCacheKind kind) {
+static int rinfs_shared_cache_lock(RinFS_Mount* mount,
+                                   volatile uint32_t* lock,
+                                   RinFS_SharedCacheKind kind) {
     int recovered = 0;
+    if (!lock) return RINFS_ERR_INVAL;
+    if (kind != RINFS_SHARED_CACHE_DENTRY &&
+        kind != RINFS_SHARED_CACHE_DIRECTORY_INDEX &&
+        kind != RINFS_SHARED_CACHE_INODE) {
+        rinfs_shared_lock_fence(mount);
+        return RINFS_ERR_CORRUPT;
+    }
     if (!mount || !mount->shared_mapping_base ||
         mount->shared_mount_ready == 0u) {
         rinfs_spin_lock(lock);
-        return;
+        return RINFS_OK;
     }
-    rinfs_shared_lock_acquire(mount, lock, &recovered, NULL);
-    if (!recovered) return;
+    {
+        int lock_err = rinfs_shared_lock_acquire(mount, lock, &recovered,
+                                                 NULL);
+        if (lock_err != RINFS_OK) return lock_err;
+    }
+    if (!recovered) return RINFS_OK;
     /* These caches are advisory. Discard every entry after interrupted
      * publication instead of trusting a partially written cache record. */
     switch (kind) {
@@ -1698,8 +1777,11 @@ static void rinfs_shared_cache_lock(RinFS_Mount* mount,
         mount->inode_cache->evictions = 0u;
         break;
     default:
-        __builtin_trap();
+        rinfs_shared_lock_fence(mount);
+        rinfs_shared_lock_release(lock);
+        return RINFS_ERR_CORRUPT;
     }
+    return RINFS_OK;
 }
 
 static void rinfs_shared_cache_unlock(RinFS_Mount* mount,
@@ -1732,7 +1814,11 @@ static int rinfs_page_cache_lock(RinFS_PageCache* cache) {
         uint64_t started_at = RIN_TRACE_CYCLES_NOW();
         int contended = __atomic_load_n(&cache->lock, __ATOMIC_RELAXED) != 0u;
 #endif
-        rinfs_shared_lock_acquire(mount, &cache->lock, &recovered, NULL);
+        {
+            int lock_err = rinfs_shared_lock_acquire(
+                mount, &cache->lock, &recovered, NULL);
+            if (lock_err != RINFS_OK) return lock_err;
+        }
         if (cache->recovery_failed != 0u) {
             rinfs_shared_lock_release(&cache->lock);
             return RINFS_ERR_CORRUPT;
@@ -3342,8 +3428,9 @@ static int rinfs_directory_index_lookup(
     start = (uint32_t)(key % RINFS_DIRECTORY_INDEX_CAPACITY);
     for (index = 0u; index < RINFS_DIRECTORY_INDEX_CAPACITY; ++index) {
         RinFS_DirectoryIndex* cache = mount->directory_index;
-        rinfs_shared_cache_lock(mount, &cache->lock,
-                                RINFS_SHARED_CACHE_DIRECTORY_INDEX);
+        int lock_err = rinfs_shared_cache_lock(
+            mount, &cache->lock, RINFS_SHARED_CACHE_DIRECTORY_INDEX);
+        if (lock_err != RINFS_OK) return lock_err;
         candidate = cache->entries[(start + index) %
                                    RINFS_DIRECTORY_INDEX_CAPACITY];
         rinfs_shared_cache_unlock(mount, &cache->lock);
@@ -3415,8 +3502,11 @@ static int rinfs_directory_index_insert(
     entry.name_length = (uint16_t)name_length;
     entry.valid = 1u;
     rinfs_memset(entry.reserved, 0, sizeof(entry.reserved));
-    rinfs_shared_cache_lock(mount, &cache->lock,
-                            RINFS_SHARED_CACHE_DIRECTORY_INDEX);
+    {
+        int lock_err = rinfs_shared_cache_lock(
+            mount, &cache->lock, RINFS_SHARED_CACHE_DIRECTORY_INDEX);
+        if (lock_err != RINFS_OK) return lock_err;
+    }
     for (index = 0u; index < RINFS_DIRECTORY_INDEX_CAPACITY; ++index) {
         RinFS_DirectoryIndexEntry* slot = &cache->entries[
             (uint32_t)((key + index) % RINFS_DIRECTORY_INDEX_CAPACITY)];
@@ -3538,7 +3628,9 @@ static int rinfs_dentry_cache_lookup(RinFS_Mount* mount,
     if (rinfs_inode_content_tracking(mount, directory, &version, &state) !=
             RINFS_OK) return 0;
     cache = mount->dentry_cache;
-    rinfs_shared_cache_lock(mount, &cache->lock, RINFS_SHARED_CACHE_DENTRY);
+    if (rinfs_shared_cache_lock(mount, &cache->lock,
+                                RINFS_SHARED_CACHE_DENTRY) != RINFS_OK)
+        return 0;
     for (index = 0u; index < RINFS_DENTRY_CACHE_CAPACITY; ++index) {
         RinFS_DentryCacheEntry* entry = &cache->entries[index];
         if (!entry->valid || entry->mount_epoch != mount->mount_epoch ||
@@ -3577,7 +3669,9 @@ static void rinfs_dentry_cache_store(RinFS_Mount* mount,
         rinfs_inode_content_tracking(mount, directory, &version, &state) !=
             RINFS_OK) return;
     cache = mount->dentry_cache;
-    rinfs_shared_cache_lock(mount, &cache->lock, RINFS_SHARED_CACHE_DENTRY);
+    if (rinfs_shared_cache_lock(mount, &cache->lock,
+                                RINFS_SHARED_CACHE_DENTRY) != RINFS_OK)
+        return;
     for (index = 0u; index < RINFS_DENTRY_CACHE_CAPACITY; ++index) {
         RinFS_DentryCacheEntry* entry = &cache->entries[index];
         if (!entry->valid) {
@@ -3631,7 +3725,9 @@ static int rinfs_inode_cache_lookup(RinFS_Mount* mount, uint64_t ino,
     if (!mount || !inode_out || !mount->inode_cache ||
         mount->mount_epoch == 0u) return 0;
     cache = mount->inode_cache;
-    rinfs_shared_cache_lock(mount, &cache->lock, RINFS_SHARED_CACHE_INODE);
+    if (rinfs_shared_cache_lock(mount, &cache->lock,
+                                RINFS_SHARED_CACHE_INODE) != RINFS_OK)
+        return 0;
     for (index = 0u; index < RINFS_INODE_CACHE_CAPACITY; ++index) {
         RinFS_InodeCacheEntry* entry = &cache->entries[index];
         if (!entry->valid || entry->mount_epoch != mount->mount_epoch ||
@@ -3655,7 +3751,9 @@ static void rinfs_inode_cache_store(RinFS_Mount* mount, uint64_t ino,
     uint64_t oldest = UINT64_MAX;
     if (!rinfs_inode_cache_eligible(mount, inode) || ino == 0u) return;
     cache = mount->inode_cache;
-    rinfs_shared_cache_lock(mount, &cache->lock, RINFS_SHARED_CACHE_INODE);
+    if (rinfs_shared_cache_lock(mount, &cache->lock,
+                                RINFS_SHARED_CACHE_INODE) != RINFS_OK)
+        return;
     for (index = 0u; index < RINFS_INODE_CACHE_CAPACITY; ++index) {
         RinFS_InodeCacheEntry* entry = &cache->entries[index];
         if (!entry->valid) {
@@ -3693,7 +3791,9 @@ static void rinfs_inode_cache_invalidate(RinFS_Mount* mount, uint64_t ino) {
     uint32_t index;
     if (!mount || !mount->inode_cache) return;
     cache = mount->inode_cache;
-    rinfs_shared_cache_lock(mount, &cache->lock, RINFS_SHARED_CACHE_INODE);
+    if (rinfs_shared_cache_lock(mount, &cache->lock,
+                                RINFS_SHARED_CACHE_INODE) != RINFS_OK)
+        return;
     for (index = 0u; index < RINFS_INODE_CACHE_CAPACITY; ++index) {
         RinFS_InodeCacheEntry* entry = &cache->entries[index];
         if (entry->valid && entry->mount_epoch == mount->mount_epoch &&
@@ -3715,18 +3815,20 @@ void rinfs_read_stats(const RinFS_Mount* mount, RinFS_ReadStats* stats_out) {
     stats_out->coalesced_write_bytes = mount->coalesced_write_bytes;
     rinfs_spin_unlock(&g_rinfs_coalesced_stats_lock);
     if (mount->dentry_cache) {
-        rinfs_shared_cache_lock((RinFS_Mount*)mount,
-                                &mount->dentry_cache->lock,
-                                RINFS_SHARED_CACHE_DENTRY);
+        if (rinfs_shared_cache_lock((RinFS_Mount*)mount,
+                                    &mount->dentry_cache->lock,
+                                    RINFS_SHARED_CACHE_DENTRY) != RINFS_OK)
+            return;
         stats_out->dentry_hits = mount->dentry_cache->hits;
         stats_out->dentry_misses = mount->dentry_cache->misses;
         rinfs_shared_cache_unlock((RinFS_Mount*)mount,
                                   &mount->dentry_cache->lock);
     }
     if (mount->inode_cache) {
-        rinfs_shared_cache_lock((RinFS_Mount*)mount,
-                                &mount->inode_cache->lock,
-                                RINFS_SHARED_CACHE_INODE);
+        if (rinfs_shared_cache_lock((RinFS_Mount*)mount,
+                                    &mount->inode_cache->lock,
+                                    RINFS_SHARED_CACHE_INODE) != RINFS_OK)
+            return;
         stats_out->inode_cache_hits = mount->inode_cache->hits;
         stats_out->inode_cache_misses = mount->inode_cache->misses;
         stats_out->inode_cache_evictions = mount->inode_cache->evictions;
@@ -3770,18 +3872,20 @@ void rinfs_read_stats_reset(RinFS_Mount* mount) {
     mount->coalesced_write_bytes = 0u;
     rinfs_spin_unlock(&g_rinfs_coalesced_stats_lock);
     if (mount->dentry_cache) {
-        rinfs_shared_cache_lock((RinFS_Mount*)mount,
-                                &mount->dentry_cache->lock,
-                                RINFS_SHARED_CACHE_DENTRY);
+        if (rinfs_shared_cache_lock((RinFS_Mount*)mount,
+                                    &mount->dentry_cache->lock,
+                                    RINFS_SHARED_CACHE_DENTRY) != RINFS_OK)
+            return;
         mount->dentry_cache->hits = 0u;
         mount->dentry_cache->misses = 0u;
         rinfs_shared_cache_unlock((RinFS_Mount*)mount,
                                   &mount->dentry_cache->lock);
     }
     if (mount->inode_cache) {
-        rinfs_shared_cache_lock((RinFS_Mount*)mount,
-                                &mount->inode_cache->lock,
-                                RINFS_SHARED_CACHE_INODE);
+        if (rinfs_shared_cache_lock((RinFS_Mount*)mount,
+                                    &mount->inode_cache->lock,
+                                    RINFS_SHARED_CACHE_INODE) != RINFS_OK)
+            return;
         mount->inode_cache->hits = 0u;
         mount->inode_cache->misses = 0u;
         mount->inode_cache->evictions = 0u;
@@ -7219,7 +7323,6 @@ int rinfs_block_alloc(RinFS_Mount* mount, uint64_t* block) {
     if (!bitmap) return RINFS_ERR_NOMEM;
     int lock_err = rinfs_block_allocation_lock(mount);
     if (lock_err != RINFS_OK) {
-        rinfs_block_allocation_unlock(mount);
         rinfs_free(bitmap);
         return lock_err;
     }
@@ -7329,7 +7432,6 @@ int rinfs_block_free(RinFS_Mount* mount, uint64_t block) {
     if (!bitmap) return RINFS_ERR_NOMEM;
     int lock_err = rinfs_block_allocation_lock(mount);
     if (lock_err != RINFS_OK) {
-        rinfs_block_allocation_unlock(mount);
         rinfs_free(bitmap);
         return lock_err;
     }
@@ -7403,21 +7505,29 @@ static int rinfs_rmdir_internal(RinFS_Mount* mount, uint64_t parent_ino,
                                 const char* name, uint64_t expected_inode,
                                 uint32_t expected_generation);
 
-static void rinfs_journal_transaction_lock(RinFS_Mount* mount) {
-    if (!mount) return;
+static int rinfs_journal_transaction_lock(RinFS_Mount* mount)
+    __attribute__((warn_unused_result));
+
+static int rinfs_journal_transaction_lock(RinFS_Mount* mount) {
+    if (!mount) return RINFS_ERR_INVAL;
     if (!mount->shared_mapping_base || mount->shared_mount_ready == 0u) {
         rinfs_spin_lock(&mount->namespace_journal_lock);
-        return;
+        return RINFS_OK;
     }
     int recovered = 0;
-    rinfs_shared_lock_acquire(mount, &mount->namespace_journal_lock,
-                              &recovered, NULL);
+    int lock_err = rinfs_shared_lock_acquire(
+        mount, &mount->namespace_journal_lock, &recovered, NULL);
+    if (lock_err != RINFS_OK) return lock_err;
     (void)recovered;
-    if (!mount->readonly && rinfs_journal_recover(mount) != RINFS_OK) {
+    if (!mount->readonly &&
+        (lock_err = rinfs_journal_recover(mount)) != RINFS_OK) {
         /* Keep the namespace closed to mutation, but release the robust lock
          * normally. A later mount can retry the durable journal recovery. */
         mount->readonly = 1;
+        rinfs_shared_lock_release(&mount->namespace_journal_lock);
+        return lock_err;
     }
+    return RINFS_OK;
 }
 
 static void rinfs_journal_transaction_unlock(RinFS_Mount* mount) {
@@ -8896,7 +9006,6 @@ int rinfs_inode_alloc(RinFS_Mount* mount, uint64_t* ino) {
     if (!bitmap) return RINFS_ERR_NOMEM;
     int lock_err = rinfs_inode_allocation_lock(mount);
     if (lock_err != RINFS_OK) {
-        rinfs_inode_allocation_unlock(mount);
         rinfs_free(bitmap);
         return lock_err;
     }
@@ -9052,7 +9161,6 @@ static int rinfs_inode_free_under_lease(RinFS_Mount* mount, uint64_t ino,
 
     err = rinfs_inode_allocation_lock(mount);
     if (err != RINFS_OK) {
-        rinfs_inode_allocation_unlock(mount);
         rinfs_free(bitmap);
         return err;
     }
@@ -15809,9 +15917,14 @@ static int rinfs_superblock_lock(RinFS_Mount* mount) {
     }
     int recovered = 0;
     uint32_t owner_token = 0u;
-    rinfs_shared_lock_acquire(mount, &mount->superblock_lock, &recovered,
-                              &owner_token);
+    int lock_err = rinfs_shared_lock_acquire(
+        mount, &mount->superblock_lock, &recovered, &owner_token);
+    if (lock_err != RINFS_OK) return lock_err;
     if (!recovered) owner_token = rinfs_shared_lock_token(mount);
+    if (owner_token == 0u) {
+        rinfs_shared_lock_release(&mount->superblock_lock);
+        return RINFS_ERR_CORRUPT;
+    }
     int err = rinfs_superblock_recover_locked(mount, owner_token);
     if (err != RINFS_OK)
         rinfs_shared_lock_release(&mount->superblock_lock);
@@ -16083,7 +16196,8 @@ static int rinfs_delete_on_close_clear_feature_if_idle(RinFS_Mount* mount) {
     /* Registration holds this transaction lock from dentry validation
      * through marker publication. Serialize feature removal with that whole
      * sequence so a new marker can never outlive its incompat bit. */
-    rinfs_journal_transaction_lock(mount);
+    result = rinfs_journal_transaction_lock(mount);
+    if (result != RINFS_OK) return result;
     if (mount->readonly) {
         result = RINFS_ERR_ROFS;
         goto journal_done;
@@ -18733,7 +18847,8 @@ int rinfs_mkdirat_open_owned(RinFS_Mount* mount, uint64_t parent_ino,
     /* Namespace rename/removal uses the same transaction lock. Keep it held
      * from name creation through the inode-based directory pin so no name
      * lookup can redirect the returned descriptor to a replacement. */
-    rinfs_journal_transaction_lock(mount);
+    result = rinfs_journal_transaction_lock(mount);
+    if (result != RINFS_OK) return result;
     result = rinfs_mkdirat_owned(mount, parent_ino, name, mode, uid, gid,
                                  &created_ino);
     if (result == RINFS_OK) {
@@ -19834,7 +19949,11 @@ int rinfs_delete_on_close_register(RinFS_Mount* mount,
     /* Rename and rmdir serialize on the journal transaction lock. Take that
      * lock before the inode lease so the validated dentry cannot move between
      * identity checking and publishing the pending owner. */
-    rinfs_journal_transaction_lock(mount);
+    result = rinfs_journal_transaction_lock(mount);
+    if (result != RINFS_OK) {
+        rinfs_mount_runtime_free(mount, pending);
+        return result;
+    }
     if (mount->readonly) {
         rinfs_journal_transaction_unlock(mount);
         rinfs_mount_runtime_free(mount, pending);
@@ -21257,7 +21376,8 @@ int rinfs_rename(RinFS_Mount* mount, uint64_t old_dir, const char* old_name,
                  uint64_t new_dir, const char* new_name) {
     int result;
     if (!mount) return RINFS_ERR_INVAL;
-    rinfs_journal_transaction_lock(mount);
+    result = rinfs_journal_transaction_lock(mount);
+    if (result != RINFS_OK) return result;
     result = rinfs_rename_impl(mount, old_dir, old_name, new_dir, new_name,
                                0, 0u, 0u);
     rinfs_journal_transaction_unlock(mount);
@@ -21269,7 +21389,8 @@ int rinfs_rename_no_replace(RinFS_Mount* mount, uint64_t old_dir,
                             const char* new_name) {
     int result;
     if (!mount) return RINFS_ERR_INVAL;
-    rinfs_journal_transaction_lock(mount);
+    result = rinfs_journal_transaction_lock(mount);
+    if (result != RINFS_OK) return result;
     result = rinfs_rename_impl(mount, old_dir, old_name, new_dir, new_name,
                                1, 0u, 0u);
     rinfs_journal_transaction_unlock(mount);
@@ -21284,7 +21405,8 @@ int rinfs_rename_no_replace_expected(
     if (!mount || expected_source_inode == 0u ||
         expected_source_generation == 0u)
         return RINFS_ERR_INVAL;
-    rinfs_journal_transaction_lock(mount);
+    result = rinfs_journal_transaction_lock(mount);
+    if (result != RINFS_OK) return result;
     result = rinfs_rename_impl(mount, old_dir, old_name, new_dir, new_name,
                                1, expected_source_inode,
                                expected_source_generation);
@@ -21300,7 +21422,8 @@ int rinfs_rename_expected(
     if (!mount || expected_source_inode == 0u ||
         expected_source_generation == 0u)
         return RINFS_ERR_INVAL;
-    rinfs_journal_transaction_lock(mount);
+    result = rinfs_journal_transaction_lock(mount);
+    if (result != RINFS_OK) return result;
     result = rinfs_rename_impl(mount, old_dir, old_name, new_dir, new_name,
                                0, expected_source_inode,
                                expected_source_generation);
@@ -21437,7 +21560,8 @@ int rinfs_unlink_entry_expected(RinFS_Mount* mount, uint64_t parent_ino,
     if (!mount || !name || parent_ino == 0u || parent_generation == 0u ||
         expected_inode == 0u || expected_generation == 0u)
         return RINFS_ERR_INVAL;
-    rinfs_journal_transaction_lock(mount);
+    result = rinfs_journal_transaction_lock(mount);
+    if (result != RINFS_OK) return result;
     result = rinfs_inode_read(mount, parent_ino, &parent_inode);
     if (result == RINFS_OK &&
         (parent_inode.i_generation != parent_generation ||
@@ -21617,7 +21741,8 @@ static int rinfs_rmdir_internal(RinFS_Mount* mount, uint64_t parent_ino,
 int rinfs_rmdir(RinFS_Mount* mount, uint64_t parent_ino, const char* name) {
     int result;
     if (!mount) return RINFS_ERR_INVAL;
-    rinfs_journal_transaction_lock(mount);
+    result = rinfs_journal_transaction_lock(mount);
+    if (result != RINFS_OK) return result;
     result = rinfs_rmdir_internal(mount, parent_ino, name, 0u, 0u);
     rinfs_journal_transaction_unlock(mount);
     return result;
@@ -21629,7 +21754,8 @@ int rinfs_rmdir_expected(RinFS_Mount* mount, uint64_t parent_ino,
     if (expected_inode == 0u || expected_generation == 0u)
         return RINFS_ERR_INVAL;
     if (!mount) return RINFS_ERR_INVAL;
-    rinfs_journal_transaction_lock(mount);
+    int lock_err = rinfs_journal_transaction_lock(mount);
+    if (lock_err != RINFS_OK) return lock_err;
     {
         int result = rinfs_rmdir_internal(
             mount, parent_ino, name, expected_inode, expected_generation);
@@ -21647,7 +21773,8 @@ int rinfs_rmdir_entry_expected(RinFS_Mount* mount, uint64_t parent_ino,
     if (!mount || !name || parent_ino == 0u || parent_generation == 0u ||
         expected_inode == 0u || expected_generation == 0u)
         return RINFS_ERR_INVAL;
-    rinfs_journal_transaction_lock(mount);
+    result = rinfs_journal_transaction_lock(mount);
+    if (result != RINFS_OK) return result;
     result = rinfs_inode_read(mount, parent_ino, &parent_inode);
     if (result == RINFS_OK &&
         (parent_inode.i_generation != parent_generation ||
