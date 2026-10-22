@@ -1712,23 +1712,33 @@ static void rinfs_shared_cache_unlock(RinFS_Mount* mount,
  * builds.  The ordinary filesystem locks keep using the shared primitive;
  * this one preserves its yield cadence while recording only contended waits. */
 static int rinfs_page_cache_has_stale_owner(RinFS_PageCache* cache);
-static void rinfs_page_cache_recover_locked(RinFS_PageCache* cache);
+static int rinfs_page_cache_recover_locked(RinFS_PageCache* cache);
 static void rinfs_page_cache_discard_locked(RinFS_PageCache* cache,
                                             RinFS_PageCacheEntry* entry);
 
-static void rinfs_page_cache_lock(RinFS_PageCache* cache) {
-    RinFS_Mount* mount = cache ? cache->owner_mount : NULL;
+static int rinfs_page_cache_lock(RinFS_PageCache* cache) {
+    RinFS_Mount* mount;
+    if (!cache) return RINFS_ERR_INVAL;
+    mount = cache->owner_mount;
     if (mount && mount->shared_mapping_base &&
         mount->shared_mount_ready != 0u) {
         int recovered = 0;
+        int err = RINFS_OK;
 #if defined(RIN_PERFORMANCE_TRACE) && RIN_PERFORMANCE_TRACE
         uint64_t started_at = RIN_TRACE_CYCLES_NOW();
         int contended = __atomic_load_n(&cache->lock, __ATOMIC_RELAXED) != 0u;
 #endif
         rinfs_shared_lock_acquire(mount, &cache->lock, &recovered, NULL);
-        if (cache->recovery_failed != 0u) __builtin_trap();
+        if (cache->recovery_failed != 0u) {
+            rinfs_shared_lock_release(&cache->lock);
+            return RINFS_ERR_CORRUPT;
+        }
         if (recovered || rinfs_page_cache_has_stale_owner(cache))
-            rinfs_page_cache_recover_locked(cache);
+            err = rinfs_page_cache_recover_locked(cache);
+        if (err != RINFS_OK) {
+            rinfs_shared_lock_release(&cache->lock);
+            return err;
+        }
 #if defined(RIN_PERFORMANCE_TRACE) && RIN_PERFORMANCE_TRACE
         if (contended) {
             uint64_t waited_cycles = RIN_TRACE_CYCLES_NOW() - started_at;
@@ -1738,7 +1748,7 @@ static void rinfs_page_cache_lock(RinFS_PageCache* cache) {
                                    waited_cycles, 1u);
         }
 #endif
-        return;
+        return RINFS_OK;
     }
 #if defined(RIN_PERFORMANCE_TRACE) && RIN_PERFORMANCE_TRACE
     uint64_t started_at = RIN_TRACE_CYCLES_NOW();
@@ -1767,6 +1777,7 @@ static void rinfs_page_cache_lock(RinFS_PageCache* cache) {
 #else
     rinfs_spin_lock(&cache->lock);
 #endif
+    return RINFS_OK;
 }
 
 static void rinfs_page_cache_unlock(RinFS_PageCache* cache) {
@@ -1902,22 +1913,22 @@ static int rinfs_page_cache_has_stale_owner(RinFS_PageCache* cache) {
     return 0;
 }
 
-static void rinfs_page_cache_recovery_fail(RinFS_PageCache* cache) {
+static int rinfs_page_cache_recovery_fail(RinFS_PageCache* cache) {
     if (cache) {
         cache->recovery_failed = 1u;
         if (cache->owner_mount) cache->owner_mount->readonly = 1;
     }
-    __builtin_trap();
+    return RINFS_ERR_CORRUPT;
 }
 
-static void rinfs_page_cache_recover_locked(RinFS_PageCache* cache) {
+static int rinfs_page_cache_recover_locked(RinFS_PageCache* cache) {
     RinFS_Mount* mount;
     uint64_t dirty_pages = 0u;
     uint64_t dirty_bytes = 0u;
     if (!cache || !(mount = cache->owner_mount) ||
         !rinfs_shared_owner_ledger_valid(mount) ||
         mount->sb.s_block_size != RINFS_PAGE_CACHE_PAGE_SIZE)
-        rinfs_page_cache_recovery_fail(cache);
+        return rinfs_page_cache_recovery_fail(cache);
 
     /* Bind each matrix row to the kernel-issued process cookie. This also
      * handles owner-row reuse after a prior process died before it next
@@ -1928,7 +1939,7 @@ static void rinfs_page_cache_recover_locked(RinFS_PageCache* cache) {
         uint32_t state = __atomic_load_n(&row->state, __ATOMIC_ACQUIRE);
         uint64_t cookie = row->owner_cookie;
         if (state == RINFS_SHARED_OWNER_ACTIVE) {
-            if (cookie == 0u) rinfs_page_cache_recovery_fail(cache);
+            if (cookie == 0u) return rinfs_page_cache_recovery_fail(cache);
             if (cache->owner_cookies[owner] != 0u &&
                 cache->owner_cookies[owner] != cookie)
                 rinfs_page_cache_clear_owner_refs_locked(cache, owner);
@@ -1945,13 +1956,13 @@ static void rinfs_page_cache_recover_locked(RinFS_PageCache* cache) {
             rinfs_page_cache_mapping_reference_slot(cache, entry);
         uint64_t references = 0u;
         uint64_t mappings = 0u;
-        if (!mapped_references) rinfs_page_cache_recovery_fail(cache);
+        if (!mapped_references) return rinfs_page_cache_recovery_fail(cache);
         if (!entry->valid) {
             for (uint32_t owner = 0u;
                  owner < RINFS_SHARED_OWNER_CAPACITY; ++owner) {
                 if (cache->owner_references[owner][index] != 0u ||
                     cache->owner_mapping_references[owner][index] != 0u)
-                    rinfs_page_cache_recovery_fail(cache);
+                    return rinfs_page_cache_recovery_fail(cache);
             }
             if (entry->state != RINFS_PAGE_CACHE_FREE)
                 rinfs_page_cache_discard_locked(cache, entry);
@@ -1961,14 +1972,14 @@ static void rinfs_page_cache_recover_locked(RinFS_PageCache* cache) {
         }
         if (entry->state < RINFS_PAGE_CACHE_CLEAN ||
             entry->state > RINFS_PAGE_CACHE_WRITEBACK)
-            rinfs_page_cache_recovery_fail(cache);
+            return rinfs_page_cache_recovery_fail(cache);
         for (uint32_t owner = 0u;
              owner < RINFS_SHARED_OWNER_CAPACITY; ++owner) {
             references += cache->owner_references[owner][index];
             mappings += cache->owner_mapping_references[owner][index];
         }
         if (references > UINT32_MAX || mappings > references)
-            rinfs_page_cache_recovery_fail(cache);
+            return rinfs_page_cache_recovery_fail(cache);
         entry->references = (uint32_t)references;
         *mapped_references = (uint32_t)mappings;
 
@@ -2014,7 +2025,7 @@ static void rinfs_page_cache_recover_locked(RinFS_PageCache* cache) {
                    entry->state == RINFS_PAGE_CACHE_WRITEBACK) {
             if (entry->dirty_start > entry->dirty_end ||
                 entry->dirty_end > mount->sb.s_block_size)
-                rinfs_page_cache_recovery_fail(cache);
+                return rinfs_page_cache_recovery_fail(cache);
             ++dirty_pages;
             dirty_bytes += entry->dirty_end - entry->dirty_start;
         }
@@ -2025,6 +2036,7 @@ static void rinfs_page_cache_recover_locked(RinFS_PageCache* cache) {
     }
     cache->dirty_pages = dirty_pages;
     cache->dirty_bytes = dirty_bytes;
+    return RINFS_OK;
 }
 
 /* Owner references are kept per page so process death cannot leave a leaked
@@ -3694,7 +3706,7 @@ void rinfs_read_stats(const RinFS_Mount* mount, RinFS_ReadStats* stats_out) {
                                   &mount->inode_cache->lock);
     }
     if (mount->page_cache) {
-        rinfs_page_cache_lock(mount->page_cache);
+        if (rinfs_page_cache_lock(mount->page_cache) != RINFS_OK) return;
         stats_out->page_cache_hits = mount->page_cache->hits;
         stats_out->page_cache_misses = mount->page_cache->misses;
         stats_out->page_cache_dirty_pages = mount->page_cache->dirty_pages;
@@ -3749,7 +3761,7 @@ void rinfs_read_stats_reset(RinFS_Mount* mount) {
                                   &mount->inode_cache->lock);
     }
     if (mount->page_cache) {
-        rinfs_page_cache_lock(mount->page_cache);
+        if (rinfs_page_cache_lock(mount->page_cache) != RINFS_OK) return;
         mount->page_cache->hits = 0u;
         mount->page_cache->misses = 0u;
         mount->page_cache->evictions = 0u;
@@ -3936,7 +3948,10 @@ int rinfs_page_cache_release_view(RinFS_Mount* mount,
         ((address - first) % sizeof(RinFS_PageCacheEntry)) != 0u)
         return RINFS_ERR_STALE;
     entry = (RinFS_PageCacheEntry*)address;
-    rinfs_page_cache_lock(cache);
+    {
+        int lock_error = rinfs_page_cache_lock(cache);
+        if (lock_error != RINFS_OK) return lock_error;
+    }
     if (!entry->valid || entry->references <=
                              rinfs_page_cache_mapping_references(cache,
                                                                 entry)) {
@@ -3958,7 +3973,10 @@ int rinfs_page_cache_release_mapped_page(RinFS_Mount* mount,
     if (!mount || !mount->page_cache || physical_address == 0u)
         return RINFS_ERR_NOENT;
     cache = mount->page_cache;
-    rinfs_page_cache_lock(cache);
+    {
+        int lock_error = rinfs_page_cache_lock(cache);
+        if (lock_error != RINFS_OK) return lock_error;
+    }
     for (index = 0u; index < RINFS_PAGE_CACHE_CAPACITY; ++index) {
         RinFS_PageCacheEntry* entry = &cache->entries[index];
         if (!entry->valid || entry->physical_address != physical_address)
@@ -3989,7 +4007,10 @@ int rinfs_page_cache_mark_mapped_page_dirty(RinFS_Mount* mount,
     if (mount->sb.s_block_size != RINFS_PAGE_CACHE_PAGE_SIZE)
         return RINFS_ERR_NOT_SUPPORTED;
     cache = mount->page_cache;
-    rinfs_page_cache_lock(cache);
+    {
+        int lock_error = rinfs_page_cache_lock(cache);
+        if (lock_error != RINFS_OK) return lock_error;
+    }
     for (index = 0u; index < RINFS_PAGE_CACHE_CAPACITY; ++index) {
         RinFS_PageCacheEntry* entry = &cache->entries[index];
         uint32_t* mapped_references;
@@ -4056,7 +4077,8 @@ static int rinfs_page_cache_acquire(RinFS_Mount* mount, uint64_t inode_num,
         return RINFS_ERR_NOT_SUPPORTED;
     cache = mount->page_cache;
 
-    rinfs_page_cache_lock(cache);
+    err = rinfs_page_cache_lock(cache);
+    if (err != RINFS_OK) return err;
     for (index = 0u; index < RINFS_PAGE_CACHE_CAPACITY; ++index) {
         RinFS_PageCacheEntry* entry = &cache->entries[index];
         if (!rinfs_page_cache_key_matches(entry, mount, inode_num, inode,
@@ -4139,7 +4161,8 @@ static int rinfs_page_cache_acquire(RinFS_Mount* mount, uint64_t inode_num,
 
         err = rinfs_page_cache_ensure_storage(entry);
         if (err != RINFS_OK) {
-            rinfs_page_cache_lock(cache);
+            int lock_error = rinfs_page_cache_lock(cache);
+            if (lock_error != RINFS_OK) return lock_error;
             rinfs_page_cache_discard_locked(cache, entry);
             ++cache->misses;
             rinfs_page_cache_unlock(cache);
@@ -4159,7 +4182,8 @@ static int rinfs_page_cache_acquire(RinFS_Mount* mount, uint64_t inode_num,
             }
         }
 
-        rinfs_page_cache_lock(cache);
+        int lock_error = rinfs_page_cache_lock(cache);
+        if (lock_error != RINFS_OK) return lock_error;
         if (err != RINFS_OK) {
             rinfs_page_cache_discard_locked(cache, entry);
             ++cache->misses;
@@ -4181,13 +4205,22 @@ static int rinfs_page_cache_acquire(RinFS_Mount* mount, uint64_t inode_num,
     return RINFS_OK;
 }
 
-static void rinfs_page_cache_release(RinFS_Mount* mount,
-                                     RinFS_PageCacheEntry* entry) {
-    if (!mount || !mount->page_cache || !entry) return;
-    rinfs_page_cache_lock(mount->page_cache);
-    (void)rinfs_page_cache_reference_drop_locked(
-        mount->page_cache, entry, 0);
-    rinfs_page_cache_unlock(mount->page_cache);
+static int rinfs_page_cache_release(RinFS_Mount* mount,
+                                    RinFS_PageCacheEntry* entry) {
+    RinFS_PageCache* cache;
+    int err;
+    if (!mount || !mount->page_cache || !entry) return RINFS_ERR_INVAL;
+    cache = mount->page_cache;
+    err = rinfs_page_cache_lock(cache);
+    if (err != RINFS_OK) return err;
+    err = rinfs_page_cache_reference_drop_locked(cache, entry, 0);
+    if (err != RINFS_OK) {
+        err = rinfs_page_cache_recovery_fail(cache);
+        rinfs_page_cache_unlock(cache);
+        return err;
+    }
+    rinfs_page_cache_unlock(cache);
+    return RINFS_OK;
 }
 
 static int rinfs_page_cache_retain_mapping(RinFS_Mount* mount,
@@ -4195,7 +4228,10 @@ static int rinfs_page_cache_retain_mapping(RinFS_Mount* mount,
     RinFS_PageCache* cache;
     if (!mount || !mount->page_cache || !entry) return RINFS_ERR_INVAL;
     cache = mount->page_cache;
-    rinfs_page_cache_lock(cache);
+    {
+        int lock_error = rinfs_page_cache_lock(cache);
+        if (lock_error != RINFS_OK) return lock_error;
+    }
     uint32_t* mapped_references =
         rinfs_page_cache_mapping_reference_slot(cache, entry);
     if (!entry->valid || !mapped_references ||
@@ -4226,8 +4262,7 @@ static int rinfs_page_cache_read(RinFS_Mount* mount, uint64_t inode_num,
                                    0, 0, 0, &entry);
     if (err != RINFS_OK) return err;
     rinfs_memcpy(output, entry->data + offset, size);
-    rinfs_page_cache_release(mount, entry);
-    return RINFS_OK;
+    return rinfs_page_cache_release(mount, entry);
 }
 
 /* Track access direction on the open description itself.  A forward run is
@@ -4297,7 +4332,10 @@ static int rinfs_page_cache_reserve_fill(
         return RINFS_ERR_NOT_SUPPORTED;
     cache = mount->page_cache;
 
-    rinfs_page_cache_lock(cache);
+    {
+        int lock_error = rinfs_page_cache_lock(cache);
+        if (lock_error != RINFS_OK) return lock_error;
+    }
     for (index = 0u; index < RINFS_PAGE_CACHE_CAPACITY; ++index) {
         RinFS_PageCacheEntry* entry = &cache->entries[index];
         if (!rinfs_page_cache_key_matches(entry, mount, inode_num, inode,
@@ -4373,7 +4411,8 @@ static int rinfs_page_cache_reserve_fill(
     {
         int storage_result = rinfs_page_cache_ensure_storage(*entry_out);
         if (storage_result != RINFS_OK) {
-            rinfs_page_cache_lock(cache);
+            int lock_error = rinfs_page_cache_lock(cache);
+            if (lock_error != RINFS_OK) return lock_error;
             rinfs_page_cache_discard_locked(cache, *entry_out);
             rinfs_page_cache_unlock(cache);
             *entry_out = NULL;
@@ -4384,13 +4423,15 @@ static int rinfs_page_cache_reserve_fill(
     return RINFS_OK;
 }
 
-static void rinfs_page_cache_finish_fill(RinFS_Mount* mount,
-                                         RinFS_PageCacheEntry* entry,
-                                         int result) {
+static int rinfs_page_cache_finish_fill(RinFS_Mount* mount,
+                                        RinFS_PageCacheEntry* entry,
+                                        int result) {
     RinFS_PageCache* cache;
-    if (!mount || !mount->page_cache || !entry) return;
+    int err;
+    if (!mount || !mount->page_cache || !entry) return RINFS_ERR_INVAL;
     cache = mount->page_cache;
-    rinfs_page_cache_lock(cache);
+    err = rinfs_page_cache_lock(cache);
+    if (err != RINFS_OK) return err;
     if (result == RINFS_OK) {
         entry->state = RINFS_PAGE_CACHE_CLEAN;
         entry->readahead = 1u;
@@ -4398,29 +4439,37 @@ static void rinfs_page_cache_finish_fill(RinFS_Mount* mount,
     } else {
         rinfs_page_cache_discard_locked(cache, entry);
     }
-    if (rinfs_page_cache_reference_drop_locked(cache, entry, 0) != RINFS_OK)
-        rinfs_page_cache_recovery_fail(cache);
+    err = rinfs_page_cache_reference_drop_locked(cache, entry, 0);
+    if (err != RINFS_OK) {
+        err = rinfs_page_cache_recovery_fail(cache);
+        rinfs_page_cache_unlock(cache);
+        return err;
+    }
     rinfs_page_cache_unlock(cache);
+    return RINFS_OK;
 }
 
 /* Fill only pages that are not already present.  Consecutive physical pages
  * are read through the same bounded 128 KiB transport request.  A failed
  * speculative read is discarded and remains invisible to the foreground
  * result; the next real access retries it and reports its own I/O error. */
-static void rinfs_page_cache_readahead(RinFS_Mount* mount, uint64_t inode_num,
-                                       RinFS_Inode* inode,
-                                       uint64_t first_page,
-                                       uint32_t page_count) {
+static int rinfs_page_cache_readahead(RinFS_Mount* mount, uint64_t inode_num,
+                                      RinFS_Inode* inode,
+                                      uint64_t first_page,
+                                      uint32_t page_count) {
     uint32_t index = 0u;
     uint32_t limit;
     uint8_t run_buffer[RINFS_READ_COALESCE_MAX_BYTES];
     RinFS_PageCache* cache;
-    if (!mount || !inode || !mount->page_cache || page_count == 0u) return;
+    int err;
+    if (!mount || !inode || !mount->page_cache) return RINFS_ERR_INVAL;
+    if (page_count == 0u) return RINFS_OK;
     cache = mount->page_cache;
-    rinfs_page_cache_lock(cache);
+    err = rinfs_page_cache_lock(cache);
+    if (err != RINFS_OK) return err;
     limit = cache->readahead_limit_pages;
     rinfs_page_cache_unlock(cache);
-    if (limit == 0u) return;
+    if (limit == 0u) return RINFS_OK;
     if (page_count > limit) page_count = limit;
     if (page_count > RINFS_READAHEAD_MAX_PAGES)
         page_count = RINFS_READAHEAD_MAX_PAGES;
@@ -4473,7 +4522,8 @@ static void rinfs_page_cache_readahead(RinFS_Mount* mount, uint64_t inode_num,
                 break;
             }
             if (!fresh) {
-                rinfs_page_cache_release(mount, entry);
+                err = rinfs_page_cache_release(mount, entry);
+                if (err != RINFS_OK) return err;
                 break;
             }
             entries[reserved++] = entry;
@@ -4496,13 +4546,19 @@ static void rinfs_page_cache_readahead(RinFS_Mount* mount, uint64_t inode_num,
                                      RINFS_PAGE_CACHE_PAGE_SIZE);
                 }
             }
-            for (uint32_t fill = 0u; fill < reserved; ++fill)
-                rinfs_page_cache_finish_fill(mount, entries[fill], fill_error);
+            for (uint32_t fill = 0u; fill < reserved; ++fill) {
+                err = rinfs_page_cache_finish_fill(
+                    mount, entries[fill], fill_error);
+                if (err != RINFS_OK) return err;
+            }
         }
         index += reserved != 0u ? reserved : 1u;
-        if (reserve_error != RINFS_OK && reserve_error != RINFS_ERR_PENDING)
+        if (reserve_error != RINFS_OK && reserve_error != RINFS_ERR_PENDING) {
+            if (reserve_error == RINFS_ERR_CORRUPT) return reserve_error;
             break;
+        }
     }
+    return RINFS_OK;
 }
 
 static int rinfs_page_cache_write(RinFS_Mount* mount, uint64_t inode_num,
@@ -4541,24 +4597,28 @@ static int rinfs_page_cache_write(RinFS_Mount* mount, uint64_t inode_num,
     }
     if (err != RINFS_OK) return err;
     cache = mount->page_cache;
-    rinfs_page_cache_lock(cache);
+    err = rinfs_page_cache_lock(cache);
+    if (err != RINFS_OK) return err;
     if (entry->state != RINFS_PAGE_CACHE_CLEAN &&
         entry->state != RINFS_PAGE_CACHE_DIRTY) {
         rinfs_page_cache_unlock(cache);
-        rinfs_page_cache_release(mount, entry);
+        err = rinfs_page_cache_release(mount, entry);
+        if (err != RINFS_OK) return err;
         return RINFS_ERR_PENDING;
     }
     if (entry->state == RINFS_PAGE_CACHE_DIRTY &&
         (entry->dirty_start > entry->dirty_end ||
          entry->dirty_end > mount->sb.s_block_size)) {
         rinfs_page_cache_unlock(cache);
-        rinfs_page_cache_release(mount, entry);
+        err = rinfs_page_cache_release(mount, entry);
+        if (err != RINFS_OK) return err;
         return RINFS_ERR_CORRUPT;
     }
     if (rinfs_page_cache_current_owner_locked(
             cache, &intent_row, &intent_cookie) != RINFS_OK) {
         rinfs_page_cache_unlock(cache);
-        rinfs_page_cache_release(mount, entry);
+        err = rinfs_page_cache_release(mount, entry);
+        if (err != RINFS_OK) return err;
         return RINFS_ERR_STALE;
     }
     entry->dirty_intent_owner_row = intent_row;
@@ -4582,8 +4642,7 @@ static int rinfs_page_cache_write(RinFS_Mount* mount, uint64_t inode_num,
     entry->dirty_intent_owner_row = 0u;
     entry->dirty_intent_owner_cookie = 0u;
     rinfs_page_cache_unlock(cache);
-    rinfs_page_cache_release(mount, entry);
-    return RINFS_OK;
+    return rinfs_page_cache_release(mount, entry);
 }
 
 static int rinfs_page_cache_sync(RinFS_Mount* mount, uint64_t inode_num,
@@ -4644,7 +4703,13 @@ static int rinfs_page_cache_sync(RinFS_Mount* mount, uint64_t inode_num,
             batch_capacity > entry_budget - processed)
             batch_capacity = entry_budget - processed;
 
-        rinfs_page_cache_lock(cache);
+        {
+            int lock_error = rinfs_page_cache_lock(cache);
+            if (lock_error != RINFS_OK) {
+                if (run_buffer) rinfs_free(run_buffer);
+                return lock_error;
+            }
+        }
         for (index = 0u; index < RINFS_PAGE_CACHE_CAPACITY; ++index) {
             RinFS_PageCacheEntry* entry = &cache->entries[index];
             if (!entry->valid ||
@@ -4772,8 +4837,13 @@ static int rinfs_page_cache_sync(RinFS_Mount* mount, uint64_t inode_num,
                     entries[index]->writeback_owner_row = 0u;
                     entries[index]->writeback_owner_cookie = 0u;
                     if (rinfs_page_cache_reference_drop_locked(
-                            cache, entries[index], 0) != RINFS_OK)
-                        rinfs_page_cache_recovery_fail(cache);
+                            cache, entries[index], 0) != RINFS_OK) {
+                        int recovery_error =
+                            rinfs_page_cache_recovery_fail(cache);
+                        rinfs_page_cache_unlock(cache);
+                        if (run_buffer) rinfs_free(run_buffer);
+                        return recovery_error;
+                    }
                 }
             }
         }
@@ -4814,7 +4884,13 @@ static int rinfs_page_cache_sync(RinFS_Mount* mount, uint64_t inode_num,
         uint64_t writeback_cycles = RIN_TRACE_CYCLES_NOW() -
                                     writeback_started;
 
-        rinfs_page_cache_lock(cache);
+        {
+            int lock_error = rinfs_page_cache_lock(cache);
+            if (lock_error != RINFS_OK) {
+                if (run_buffer) rinfs_free(run_buffer);
+                return lock_error;
+            }
+        }
         for (index = 0u; index < selected_count; ++index) {
             RinFS_PageCacheEntry* entry = entries[index];
             if (err == RINFS_OK) {
@@ -4834,8 +4910,13 @@ static int rinfs_page_cache_sync(RinFS_Mount* mount, uint64_t inode_num,
                     if (entry_index < RINFS_PAGE_CACHE_CAPACITY)
                         processed_mapped[entry_index] = 1u;
                     if (rinfs_page_cache_reference_drop_locked(
-                            cache, entry, 0) != RINFS_OK)
-                        rinfs_page_cache_recovery_fail(cache);
+                            cache, entry, 0) != RINFS_OK) {
+                        int recovery_error =
+                            rinfs_page_cache_recovery_fail(cache);
+                        rinfs_page_cache_unlock(cache);
+                        if (run_buffer) rinfs_free(run_buffer);
+                        return recovery_error;
+                    }
                     continue;
                 }
                 uint32_t length = entry->dirty_end >= entry->dirty_start
@@ -4860,8 +4941,12 @@ static int rinfs_page_cache_sync(RinFS_Mount* mount, uint64_t inode_num,
                 ++cache->writeback_errors;
             }
             if (rinfs_page_cache_reference_drop_locked(
-                    cache, entry, 0) != RINFS_OK)
-                rinfs_page_cache_recovery_fail(cache);
+                    cache, entry, 0) != RINFS_OK) {
+                int recovery_error = rinfs_page_cache_recovery_fail(cache);
+                rinfs_page_cache_unlock(cache);
+                if (run_buffer) rinfs_free(run_buffer);
+                return recovery_error;
+            }
         }
         ++cache->writeback_ops;
         if (err == RINFS_OK) cache->writeback_pages += selected_count;
@@ -4893,7 +4978,10 @@ static int rinfs_page_cache_invalidate_inode(RinFS_Mount* mount,
     uint32_t index;
     if (!mount || !mount->page_cache) return RINFS_OK;
     cache = mount->page_cache;
-    rinfs_page_cache_lock(cache);
+    {
+        int lock_error = rinfs_page_cache_lock(cache);
+        if (lock_error != RINFS_OK) return lock_error;
+    }
     for (index = 0u; index < RINFS_PAGE_CACHE_CAPACITY; ++index) {
         RinFS_PageCacheEntry* entry = &cache->entries[index];
         if (!entry->valid || entry->inode_num != inode_num) continue;
@@ -4916,7 +5004,10 @@ static int rinfs_page_cache_invalidate_stale(
     uint32_t index;
     if (!mount || !mount->page_cache) return RINFS_OK;
     cache = mount->page_cache;
-    rinfs_page_cache_lock(cache);
+    {
+        int lock_error = rinfs_page_cache_lock(cache);
+        if (lock_error != RINFS_OK) return lock_error;
+    }
     for (index = 0u; index < RINFS_PAGE_CACHE_CAPACITY; ++index) {
         RinFS_PageCacheEntry* entry = &cache->entries[index];
         if (!entry->valid || entry->inode_num != inode_num ||
@@ -4948,7 +5039,10 @@ static int rinfs_page_cache_rekey_mapped_clean(
     if (inode_num == 0u || inode_generation == 0u || content_version == 0u)
         return RINFS_ERR_INVAL;
     cache = mount->page_cache;
-    rinfs_page_cache_lock(cache);
+    {
+        int lock_error = rinfs_page_cache_lock(cache);
+        if (lock_error != RINFS_OK) return lock_error;
+    }
 
     /* Validate the whole rekey before changing any key. A duplicate key would
      * make the cache identity ambiguous and must leave the mutation fail
@@ -5004,7 +5098,7 @@ static int rinfs_page_cache_has_inode_references(RinFS_Mount* mount,
     uint32_t index;
     if (!mount || !mount->page_cache) return 0;
     cache = mount->page_cache;
-    rinfs_page_cache_lock(cache);
+    if (rinfs_page_cache_lock(cache) != RINFS_OK) return 1;
     for (index = 0u; index < RINFS_PAGE_CACHE_CAPACITY; ++index) {
         const RinFS_PageCacheEntry* entry = &cache->entries[index];
         if (entry->valid && entry->inode_num == inode_num &&
@@ -5030,7 +5124,10 @@ int rinfs_page_cache_reclaim(RinFS_Mount* mount, uint32_t max_entries,
         RinFS_PageCacheEntry* victim = NULL;
         uint64_t oldest = UINT64_MAX;
         uint32_t index;
-        rinfs_page_cache_lock(cache);
+        {
+            int lock_error = rinfs_page_cache_lock(cache);
+            if (lock_error != RINFS_OK) return lock_error;
+        }
         for (index = 0u; index < RINFS_PAGE_CACHE_CAPACITY; ++index) {
             RinFS_PageCacheEntry* entry = &cache->entries[index];
             if (entry->valid && entry->state == RINFS_PAGE_CACHE_CLEAN &&
@@ -5064,7 +5161,8 @@ int rinfs_page_cache_writeback_step(RinFS_Mount* mount, uint32_t max_entries,
         return RINFS_ERR_INVAL;
     if (!mount->page_cache) return RINFS_ERR_NOT_SUPPORTED;
 
-    rinfs_page_cache_lock(mount->page_cache);
+    err = rinfs_page_cache_lock(mount->page_cache);
+    if (err != RINFS_OK) return err;
     for (index = 0u; index < RINFS_PAGE_CACHE_CAPACITY; ++index) {
         RinFS_PageCacheEntry* entry = &mount->page_cache->entries[index];
         if (entry->valid && entry->state == RINFS_PAGE_CACHE_DIRTY)
@@ -5082,7 +5180,10 @@ int rinfs_page_cache_writeback_step(RinFS_Mount* mount, uint32_t max_entries,
     err = rinfs_page_cache_sync(
         mount, 0u, 0u, 0u, 0u, 0u, effective_budget);
 
-    rinfs_page_cache_lock(mount->page_cache);
+    {
+        int lock_error = rinfs_page_cache_lock(mount->page_cache);
+        if (lock_error != RINFS_OK) return lock_error;
+    }
     for (index = 0u; index < RINFS_PAGE_CACHE_CAPACITY; ++index) {
         RinFS_PageCacheEntry* entry = &mount->page_cache->entries[index];
         if (entry->valid && entry->state == RINFS_PAGE_CACHE_DIRTY)
@@ -5121,7 +5222,10 @@ int rinfs_page_cache_set_pressure(RinFS_Mount* mount,
         writeback_budget = 8u;
     else if (pressure == RINFS_PAGE_CACHE_PRESSURE_OOM)
         writeback_budget = RINFS_PAGE_CACHE_CAPACITY;
-    rinfs_page_cache_lock(cache);
+    {
+        int lock_error = rinfs_page_cache_lock(cache);
+        if (lock_error != RINFS_OK) return lock_error;
+    }
     cache->pressure_level = (uint8_t)pressure;
     cache->readahead_limit_pages = limit;
     rinfs_page_cache_unlock(cache);
@@ -13639,7 +13743,10 @@ static int rinfs_mount_page_cache_quiescent(RinFS_Mount* mount,
     RinFS_PageCache* cache;
     if (!mount || !mount->page_cache) return RINFS_OK;
     cache = mount->page_cache;
-    rinfs_page_cache_lock(cache);
+    {
+        int lock_error = rinfs_page_cache_lock(cache);
+        if (lock_error != RINFS_OK) return lock_error;
+    }
     if (!allow_dirty_pages && cache->dirty_pages != 0u) {
         rinfs_page_cache_unlock(cache);
         return RINFS_ERR_PENDING;
@@ -14393,7 +14500,7 @@ static int rinfs_shared_mount_fork_cache_idle(RinFS_Mount* mount) {
     RinFS_PageCache* cache = mount->page_cache;
     int idle = 1;
     if (!cache) return 1;
-    rinfs_page_cache_lock(cache);
+    if (rinfs_page_cache_lock(cache) != RINFS_OK) return 0;
     for (uint32_t index = 0u; index < RINFS_PAGE_CACHE_CAPACITY; ++index) {
         const RinFS_PageCacheEntry* entry = &cache->entries[index];
         uint32_t* mapping_references =
@@ -15408,7 +15515,10 @@ int rinfs_mount_set_device_flags(RinFS_Mount* mount, uint32_t device_flags) {
     if (mount->has_device_ops) mount->device_ops.flags = device_flags;
     if (!mount->page_cache) return RINFS_OK;
 
-    rinfs_page_cache_lock(mount->page_cache);
+    {
+        int lock_error = rinfs_page_cache_lock(mount->page_cache);
+        if (lock_error != RINFS_OK) return lock_error;
+    }
     mount->page_cache->device_flags = (uint8_t)(device_flags & 0xffu);
     if ((device_flags & RINFS_DEVICE_FLAG_OFFLINE) != 0u) {
         /* Clean pages can be discarded immediately. Dirty pages are retained
@@ -16302,7 +16412,9 @@ int rinfs_mmap_source_get_page(RinFS_MmapSource* source,
         if (err == RINFS_OK && entry && entry->physical_address != 0u) {
             err = rinfs_page_cache_retain_mapping(identity.mount, entry);
             if (err != RINFS_OK) {
-                rinfs_page_cache_release(identity.mount, entry);
+                int release_error =
+                    rinfs_page_cache_release(identity.mount, entry);
+                if (release_error != RINFS_OK) err = release_error;
                 entry = NULL;
             } else {
                 *physical_out = entry->physical_address;
@@ -16314,7 +16426,11 @@ int rinfs_mmap_source_get_page(RinFS_MmapSource* source,
                 return RINFS_OK;
             }
         }
-        if (entry) rinfs_page_cache_release(identity.mount, entry);
+        if (entry) {
+            int release_error =
+                rinfs_page_cache_release(identity.mount, entry);
+            if (release_error != RINFS_OK) err = release_error;
+        }
         if (err == RINFS_OK) err = RINFS_ERR_NOT_SUPPORTED;
     } else {
         err = RINFS_ERR_NOT_SUPPORTED;
@@ -16361,7 +16477,11 @@ int rinfs_mmap_source_get_page_view(RinFS_MmapSource* source,
                 identity.inode_generation, lease_token, 0);
             return RINFS_OK;
         }
-        if (entry) rinfs_page_cache_release(identity.mount, entry);
+        if (entry) {
+            int release_error =
+                rinfs_page_cache_release(identity.mount, entry);
+            if (release_error != RINFS_OK) err = release_error;
+        }
         if (err == RINFS_OK) err = RINFS_ERR_NOT_SUPPORTED;
     } else {
         err = RINFS_ERR_NOT_SUPPORTED;
@@ -16392,12 +16512,17 @@ int rinfs_mmap_source_retain_page(RinFS_MmapSource* source,
     err = rinfs_page_cache_acquire(identity.mount, identity.inode_num, &inode,
                                    page_index, 0u, 0, 0, 0, &entry);
     if (err == RINFS_OK && (!entry || entry->physical_address != physical_address)) {
-        rinfs_page_cache_release(identity.mount, entry);
-        err = RINFS_ERR_NOENT;
+        int release_error =
+            rinfs_page_cache_release(identity.mount, entry);
+        if (release_error != RINFS_OK) err = release_error;
+        else err = RINFS_ERR_NOENT;
     } else if (err == RINFS_OK) {
         err = rinfs_page_cache_retain_mapping(identity.mount, entry);
-        if (err != RINFS_OK)
-            rinfs_page_cache_release(identity.mount, entry);
+        if (err != RINFS_OK) {
+            int release_error =
+                rinfs_page_cache_release(identity.mount, entry);
+            if (release_error != RINFS_OK) err = release_error;
+        }
     }
     rinfs_content_lease_release(
         identity.mount, identity.inode_num, identity.inode_generation,
@@ -16569,7 +16694,8 @@ int rinfs_mmap_source_invalidate_range(
     /* Hold the cache lock across validation and discard. A concurrent cache
      * acquisition either owns a reference already or sees the whole range
      * absent after this transaction; it cannot retain a freed physical page. */
-    rinfs_page_cache_lock(cache);
+    err = rinfs_page_cache_lock(cache);
+    if (err != RINFS_OK) goto invalidate_range_finish;
     for (index = 0u; index < RINFS_PAGE_CACHE_CAPACITY; ++index) {
         const RinFS_PageCacheEntry* entry = &cache->entries[index];
         uint32_t mapped_references;
@@ -16992,9 +17118,14 @@ static int64_t rinfs_read_unleased(RinFS_File* file, void* buf, uint64_t size) {
                 if (logical_pages > file_block + 1u) {
                     uint64_t available = logical_pages - (file_block + 1u);
                     if (available < window) window = (uint32_t)available;
-                    rinfs_page_cache_readahead(
+                    int readahead_error = rinfs_page_cache_readahead(
                         mount, file->inode_num, &file->inode,
                         file_block + 1u, window);
+                    /* Speculative I/O must not turn an already completed
+                     * foreground read into an error, but a cache recovery
+                     * failure fences further work on this mount. */
+                    if (readahead_error == RINFS_ERR_CORRUPT)
+                        return (int64_t)bytes_read;
                 }
             }
             continue;
