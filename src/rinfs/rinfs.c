@@ -1080,7 +1080,9 @@ static int rinfs_shared_content_lock(RinFS_Mount* mount)
     __attribute__((warn_unused_result));
 static int rinfs_shared_content_unlock(RinFS_Mount* mount)
     __attribute__((warn_unused_result));
+#if defined(RINFS_USERLAND_MOUNT_LEASES) && !defined(RIN_KERNEL)
 static void rinfs_shared_content_unlock_best_effort(RinFS_Mount* mount);
+#endif
 static void rinfs_keep_first_error(int* first_error, int next_error);
 static int rinfs_content_lease_release(RinFS_Mount* mount, uint64_t ino,
                                        uint32_t inode_generation,
@@ -1783,15 +1785,17 @@ static int rinfs_shared_content_unlock(RinFS_Mount* mount) {
     return rinfs_shared_lock_release(mount, &mount->content_lease_lock);
 }
 
+#if defined(RINFS_USERLAND_MOUNT_LEASES) && !defined(RIN_KERNEL)
 static void rinfs_shared_content_unlock_best_effort(RinFS_Mount* mount) {
     int err = rinfs_shared_content_unlock(mount);
     if (mount && err != RINFS_OK) mount->readonly = 1;
 }
+#endif
 
 static int64_t rinfs_content_unlock_status(int64_t operation_error,
                                            int unlock_error) {
     if (unlock_error != RINFS_OK &&
-        (unlock_error != RINFS_ERR_ROFS || operation_error == RINFS_OK))
+        (unlock_error != RINFS_ERR_ROFS || operation_error >= RINFS_OK))
         return unlock_error;
     return operation_error;
 }
@@ -6170,9 +6174,13 @@ static int rinfs_content_lease_release(RinFS_Mount* mount, uint64_t ino,
         node->references == 0u ||
         (writer ? node->writer == 0u : node->readers == 0u)) {
         int unlock_error = rinfs_shared_content_unlock(mount);
-        mount->readonly = 1;
-        return (int)rinfs_content_unlock_status(RINFS_ERR_STALE,
-                                                unlock_error);
+        if (unlock_error != RINFS_OK) {
+            mount->readonly = 1;
+            return unlock_error;
+        }
+        /* A copied, already released handle is rejected without poisoning
+         * the mount; no lease state was changed. */
+        return RINFS_ERR_STALE;
     }
     if (!rinfs_wincompat_share_counts_consistent(node) ||
         (shared_owner_row != 0u &&
@@ -7114,10 +7122,9 @@ static int rinfs_content_delete_clear(RinFS_Mount* mount, uint64_t ino,
     }
     node = rinfs_content_lease_find(mount, ino, inode_generation);
     if (node == NULL || node->token_generation != token) {
-        err = rinfs_content_unlock_status(
-            RINFS_ERR_STALE, rinfs_shared_content_unlock(mount));
-        mount->readonly = 1;
-        return (int)err;
+        err = rinfs_shared_content_unlock(mount);
+        if (err != RINFS_OK) mount->readonly = 1;
+        return err != RINFS_OK ? err : RINFS_ERR_STALE;
     }
     node->delete_pending = 0u;
     err = rinfs_shared_content_unlock(mount);
@@ -7130,15 +7137,8 @@ static void rinfs_content_lease_release_best_effort(
     uint64_t token, int writer) {
     int err = rinfs_content_lease_release(
         mount, ino, inode_generation, token, writer);
-    if (mount && err != RINFS_OK) mount->readonly = 1;
-}
-
-static void rinfs_content_delete_clear_best_effort(
-    RinFS_Mount* mount, uint64_t ino, uint32_t inode_generation,
-    uint64_t token) {
-    int err = rinfs_content_delete_clear(
-        mount, ino, inode_generation, token);
-    if (mount && err != RINFS_OK) mount->readonly = 1;
+    if (mount && err != RINFS_OK && err != RINFS_ERR_STALE)
+        mount->readonly = 1;
 }
 
 static int device_ops_valid(const RinFS_DeviceOps* ops) {
@@ -8724,13 +8724,17 @@ static int rinfs_content_mutation_finalize(
     return RINFS_OK;
 }
 
-static void rinfs_content_mutation_end(RinFS_ContentMutation* mutation) {
-    if (!mutation || !mutation->active) return;
-    rinfs_content_lease_release_best_effort(mutation->mount, mutation->inode_num,
-                                mutation->inode_generation,
-                                mutation->lease_generation, 1);
+static int rinfs_content_mutation_end(RinFS_ContentMutation* mutation) {
+    int err = RINFS_OK;
+    if (!mutation || !mutation->active) return RINFS_OK;
+    if (mutation->lease) {
+        err = rinfs_content_lease_release(
+            mutation->mount, mutation->inode_num,
+            mutation->inode_generation, mutation->lease_generation, 1);
+    }
     mutation->active = 0;
     mutation->lease = NULL;
+    return err;
 }
 
 static int64_t rinfs_inode_time_decode_seconds(uint64_t encoded) {
@@ -16767,18 +16771,19 @@ int rinfs_content_snapshot_revalidate(RinFS_ContentSnapshot* snapshot) {
                ? RINFS_OK : RINFS_ERR_STALE;
 }
 
-void rinfs_content_snapshot_end(RinFS_ContentSnapshot* snapshot) {
+int rinfs_content_snapshot_end(RinFS_ContentSnapshot* snapshot) {
     RinFS_Mount* mount;
     uint64_t ino;
     uint32_t inode_generation;
     uint64_t generation;
-    if (!snapshot || !snapshot->active) return;
+    if (!snapshot || !snapshot->active) return RINFS_OK;
     mount = snapshot->mount;
     ino = snapshot->inode_num;
     inode_generation = snapshot->inode_generation;
     generation = snapshot->lease_generation;
     rinfs_memset(snapshot, 0, sizeof(*snapshot));
-    rinfs_content_lease_release_best_effort(mount, ino, inode_generation, generation, 0);
+    return rinfs_content_lease_release(mount, ino, inode_generation,
+                                       generation, 0);
 }
 
 static int rinfs_mmap_source_create_core(
@@ -18559,34 +18564,35 @@ static int rinfs_commit_directory_block_mutation(
 static int dir_add_entry_internal(RinFS_Mount* mount, uint64_t dir_ino,
                                   const char* name, uint64_t child_ino,
                                   uint8_t file_type, int enforce_unique) {
+    int content_unlock_error = RINFS_OK;
     RinFS_ContentMutation mutation;
     RinFS_Inode dir_inode;
     int err = rinfs_content_mutation_begin(
         mount, dir_ino, RINFS_FT_DIR, &mutation);
-    if (err != RINFS_OK) return err;
+    if (err != RINFS_OK) return rinfs_content_unlock_status((err), content_unlock_error);
     dir_inode = mutation.inode;
     
     uint32_t block_size = mount->sb.s_block_size;
     uint32_t name_len = rinfs_strlen(name);
     if (name_len == 0) {
-        rinfs_content_mutation_end(&mutation);
-        return RINFS_ERR_INVAL;
+        rinfs_keep_first_error(&content_unlock_error, rinfs_content_mutation_end(&mutation));
+        return rinfs_content_unlock_status((RINFS_ERR_INVAL), content_unlock_error);
     }
     if (name_len > RINFS_NAME_MAX) {
-        rinfs_content_mutation_end(&mutation);
-        return RINFS_ERR_NAMETOOLONG;
+        rinfs_keep_first_error(&content_unlock_error, rinfs_content_mutation_end(&mutation));
+        return rinfs_content_unlock_status((RINFS_ERR_NAMETOOLONG), content_unlock_error);
     }
     if (rinfs_strcmp(name, ".") == 0 || rinfs_strcmp(name, "..") == 0) {
-        rinfs_content_mutation_end(&mutation);
-        return RINFS_ERR_INVAL;
+        rinfs_keep_first_error(&content_unlock_error, rinfs_content_mutation_end(&mutation));
+        return rinfs_content_unlock_status((RINFS_ERR_INVAL), content_unlock_error);
     }
     if (child_ino == 0 || child_ino > mount->sb.s_inode_count) {
-        rinfs_content_mutation_end(&mutation);
-        return RINFS_ERR_INVAL;
+        rinfs_keep_first_error(&content_unlock_error, rinfs_content_mutation_end(&mutation));
+        return rinfs_content_unlock_status((RINFS_ERR_INVAL), content_unlock_error);
     }
     if (!rinfs_dirent_file_type_valid(file_type)) {
-        rinfs_content_mutation_end(&mutation);
-        return RINFS_ERR_INVAL;
+        rinfs_keep_first_error(&content_unlock_error, rinfs_content_mutation_end(&mutation));
+        return rinfs_content_unlock_status((RINFS_ERR_INVAL), content_unlock_error);
     }
     
     /* Calculate required size for new entry */
@@ -18594,8 +18600,8 @@ static int dir_add_entry_internal(RinFS_Mount* mount, uint64_t dir_ino,
     
     uint8_t* block = (uint8_t*)rinfs_malloc(block_size);
     if (!block) {
-        rinfs_content_mutation_end(&mutation);
-        return RINFS_ERR_NOMEM;
+        rinfs_keep_first_error(&content_unlock_error, rinfs_content_mutation_end(&mutation));
+        return rinfs_content_unlock_status((RINFS_ERR_NOMEM), content_unlock_error);
     }
     
     /* Search existing blocks for space */
@@ -18608,8 +18614,8 @@ static int dir_add_entry_internal(RinFS_Mount* mount, uint64_t dir_ino,
             if (err == RINFS_OK) offset += block_size;
             else {
                 rinfs_free(block);
-                rinfs_content_mutation_end(&mutation);
-                return err;
+                rinfs_keep_first_error(&content_unlock_error, rinfs_content_mutation_end(&mutation));
+                return rinfs_content_unlock_status((err), content_unlock_error);
             }
             continue;
         }
@@ -18617,8 +18623,8 @@ static int dir_add_entry_internal(RinFS_Mount* mount, uint64_t dir_ino,
         err = rinfs_block_read(mount, phys_block, block);
         if (err != RINFS_OK) {
             rinfs_free(block);
-            rinfs_content_mutation_end(&mutation);
-            return err;
+            rinfs_keep_first_error(&content_unlock_error, rinfs_content_mutation_end(&mutation));
+            return rinfs_content_unlock_status((err), content_unlock_error);
         }
         
         uint32_t block_off = 0;
@@ -18640,15 +18646,15 @@ static int dir_add_entry_internal(RinFS_Mount* mount, uint64_t dir_ino,
                     err = rinfs_commit_directory_block_mutation(
                         &mutation, &dir_inode, phys_block, block);
                     rinfs_free(block);
-                    rinfs_content_mutation_end(&mutation);
-                    return err;
+                    rinfs_keep_first_error(&content_unlock_error, rinfs_content_mutation_end(&mutation));
+                    return rinfs_content_unlock_status((err), content_unlock_error);
                 }
                 break;
             }
             if (!rinfs_dirent_valid(mount, de, block_off, dir_ino)) {
                 rinfs_free(block);
-                rinfs_content_mutation_end(&mutation);
-                return RINFS_ERR_CORRUPT;
+                rinfs_keep_first_error(&content_unlock_error, rinfs_content_mutation_end(&mutation));
+                return rinfs_content_unlock_status((RINFS_ERR_CORRUPT), content_unlock_error);
             }
 
             /* Enforce unique names at the mutation boundary as well as in
@@ -18658,8 +18664,8 @@ static int dir_add_entry_internal(RinFS_Mount* mount, uint64_t dir_ino,
                 de->d_name_len == name_len &&
                 rinfs_memcmp(de->d_name, name, name_len) == 0) {
                 rinfs_free(block);
-                rinfs_content_mutation_end(&mutation);
-                return RINFS_ERR_EXIST;
+                rinfs_keep_first_error(&content_unlock_error, rinfs_content_mutation_end(&mutation));
+                return rinfs_content_unlock_status((RINFS_ERR_EXIST), content_unlock_error);
             }
 
             if (de->d_inode == 0 && de->d_rec_len >= req_size) {
@@ -18675,8 +18681,8 @@ static int dir_add_entry_internal(RinFS_Mount* mount, uint64_t dir_ino,
                 err = rinfs_commit_directory_block_mutation(
                     &mutation, &dir_inode, phys_block, block);
                 rinfs_free(block);
-                rinfs_content_mutation_end(&mutation);
-                return err;
+                rinfs_keep_first_error(&content_unlock_error, rinfs_content_mutation_end(&mutation));
+                return rinfs_content_unlock_status((err), content_unlock_error);
             }
             
             /* Calculate actual size needed by this entry */
@@ -18700,8 +18706,8 @@ static int dir_add_entry_internal(RinFS_Mount* mount, uint64_t dir_ino,
                 err = rinfs_commit_directory_block_mutation(
                     &mutation, &dir_inode, phys_block, block);
                 rinfs_free(block);
-                rinfs_content_mutation_end(&mutation);
-                return err;
+                rinfs_keep_first_error(&content_unlock_error, rinfs_content_mutation_end(&mutation));
+                return rinfs_content_unlock_status((err), content_unlock_error);
             }
             
             block_off += de->d_rec_len;
@@ -18716,8 +18722,8 @@ static int dir_add_entry_internal(RinFS_Mount* mount, uint64_t dir_ino,
     err = rinfs_content_mutation_prepare(&mutation);
     if (err != RINFS_OK) {
         rinfs_free(block);
-        rinfs_content_mutation_end(&mutation);
-        return err;
+        rinfs_keep_first_error(&content_unlock_error, rinfs_content_mutation_end(&mutation));
+        return rinfs_content_unlock_status((err), content_unlock_error);
     }
     dir_inode = mutation.inode;
     rinfs_content_mutation_started(&mutation);
@@ -18725,8 +18731,8 @@ static int dir_add_entry_internal(RinFS_Mount* mount, uint64_t dir_ino,
     if (err != RINFS_OK) {
         rinfs_content_mutation_poison(&mutation);
         rinfs_free(block);
-        rinfs_content_mutation_end(&mutation);
-        return err;
+        rinfs_keep_first_error(&content_unlock_error, rinfs_content_mutation_end(&mutation));
+        return rinfs_content_unlock_status((err), content_unlock_error);
     }
     
     /* Create entry in new block */
@@ -18743,8 +18749,8 @@ static int dir_add_entry_internal(RinFS_Mount* mount, uint64_t dir_ino,
     rinfs_free(block);
     if (err != RINFS_OK) {
         rinfs_content_mutation_poison(&mutation);
-        rinfs_content_mutation_end(&mutation);
-        return err;
+        rinfs_keep_first_error(&content_unlock_error, rinfs_content_mutation_end(&mutation));
+        return rinfs_content_unlock_status((err), content_unlock_error);
     }
     
     /* Update directory inode */
@@ -18755,8 +18761,8 @@ static int dir_add_entry_internal(RinFS_Mount* mount, uint64_t dir_ino,
         err = rinfs_content_mutation_finalize(&mutation, &dir_inode);
     else
         rinfs_content_mutation_poison(&mutation);
-    rinfs_content_mutation_end(&mutation);
-    return err;
+    rinfs_keep_first_error(&content_unlock_error, rinfs_content_mutation_end(&mutation));
+    return rinfs_content_unlock_status((err), content_unlock_error);
 }
 
 static int dir_add_entry(RinFS_Mount* mount, uint64_t dir_ino,
@@ -19264,10 +19270,11 @@ int rinfs_mkdir(RinFS_Mount* mount, const char* path, uint16_t mode) {
 /* Write to file */
 static int64_t rinfs_write_core(RinFS_File* file, const void* buf,
                                 uint64_t size) {
-    if (!buf) return RINFS_ERR_INVAL;
-    if (file->mount->readonly) return RINFS_ERR_ROFS;
-    if (size == 0u) return 0;
-    if (file->position > UINT64_MAX - size) return RINFS_ERR_OVERFLOW;
+    int content_unlock_error = RINFS_OK;
+    if (!buf) return rinfs_content_unlock_status((RINFS_ERR_INVAL), content_unlock_error);
+    if (file->mount->readonly) return rinfs_content_unlock_status((RINFS_ERR_ROFS), content_unlock_error);
+    if (size == 0u) return rinfs_content_unlock_status((0), content_unlock_error);
+    if (file->position > UINT64_MAX - size) return rinfs_content_unlock_status((RINFS_ERR_OVERFLOW), content_unlock_error);
     
     RinFS_Mount* mount = file->mount;
     uint32_t block_size = mount->sb.s_block_size;
@@ -19280,17 +19287,17 @@ static int64_t rinfs_write_core(RinFS_File* file, const void* buf,
     if ((file->flags & RINFS_O_DIRECT) != 0 &&
         (block_size == 0u || (uintptr_t)buf % block_size != 0u ||
          file->position % block_size != 0u || size % block_size != 0u))
-        return RINFS_ERR_INVAL;
+        return rinfs_content_unlock_status((RINFS_ERR_INVAL), content_unlock_error);
 
     /* Publish any older-generation dirty data before advancing the content
      * identity.  Otherwise a later writeback could overwrite the new block
      * map with bytes from the previous generation. */
     int preflush_err = rinfs_page_cache_sync(
         mount, file->inode_num, 0u, 0u, 0u, 0u, 0u);
-    if (preflush_err != RINFS_OK) return preflush_err;
+    if (preflush_err != RINFS_OK) return rinfs_content_unlock_status((preflush_err), content_unlock_error);
     
     uint8_t* block_buf = (uint8_t*)rinfs_malloc(block_size);
-    if (!block_buf) return RINFS_ERR_NOMEM;
+    if (!block_buf) return rinfs_content_unlock_status((RINFS_ERR_NOMEM), content_unlock_error);
 
     /* Never mutate from the descriptor's cached inode image. The inode writer
      * lease serializes byte-changing operations, then the live inode becomes
@@ -19299,7 +19306,7 @@ static int64_t rinfs_write_core(RinFS_File* file, const void* buf,
         mount, file->inode_num, RINFS_FT_REG, &mutation);
     if (mutation_err != RINFS_OK) {
         rinfs_free(block_buf);
-        return mutation_err;
+        return rinfs_content_unlock_status((mutation_err), content_unlock_error);
     }
     file->inode = mutation.inode;
     /* Direct I/O bypasses the cache and cannot update a page that remains
@@ -19311,18 +19318,18 @@ static int64_t rinfs_write_core(RinFS_File* file, const void* buf,
         int cache_query_error = rinfs_page_cache_has_inode_references(
             mount, file->inode_num, &has_cache_references);
         if (cache_query_error != RINFS_OK || has_cache_references) {
-            rinfs_content_mutation_end(&mutation);
+            rinfs_keep_first_error(&content_unlock_error, rinfs_content_mutation_end(&mutation));
             rinfs_free(block_buf);
-            return cache_query_error != RINFS_OK
-                ? cache_query_error : RINFS_ERR_PENDING;
+            return rinfs_content_unlock_status((cache_query_error != RINFS_OK
+                ? cache_query_error : RINFS_ERR_PENDING), content_unlock_error);
         }
     }
     mutation_err = rinfs_content_mutation_prepare(&mutation);
     if (mutation_err != RINFS_OK) {
         (void)rinfs_inode_read(mount, file->inode_num, &file->inode);
-        rinfs_content_mutation_end(&mutation);
+        rinfs_keep_first_error(&content_unlock_error, rinfs_content_mutation_end(&mutation));
         rinfs_free(block_buf);
-        return mutation_err;
+        return rinfs_content_unlock_status((mutation_err), content_unlock_error);
     }
     file->inode = mutation.inode;
     if ((file->flags & RINFS_O_DIRECT) == 0) {
@@ -19332,9 +19339,9 @@ static int64_t rinfs_write_core(RinFS_File* file, const void* buf,
         if (mutation_err != RINFS_OK) {
             rinfs_content_mutation_started(&mutation);
             rinfs_content_mutation_poison(&mutation);
-            rinfs_content_mutation_end(&mutation);
+            rinfs_keep_first_error(&content_unlock_error, rinfs_content_mutation_end(&mutation));
             rinfs_free(block_buf);
-            return mutation_err;
+            return rinfs_content_unlock_status((mutation_err), content_unlock_error);
         }
     }
     if (rinfs_page_cache_invalidate_stale(
@@ -19342,9 +19349,9 @@ static int64_t rinfs_write_core(RinFS_File* file, const void* buf,
             rinfs_inode_content_version_raw(&file->inode)) != RINFS_OK) {
         rinfs_content_mutation_started(&mutation);
         rinfs_content_mutation_poison(&mutation);
-        rinfs_content_mutation_end(&mutation);
+        rinfs_keep_first_error(&content_unlock_error, rinfs_content_mutation_end(&mutation));
         rinfs_free(block_buf);
-        return RINFS_ERR_PENDING;
+        return rinfs_content_unlock_status((RINFS_ERR_PENDING), content_unlock_error);
     }
     rinfs_content_mutation_started(&mutation);
     use_page_cache = (file->flags & RINFS_O_DIRECT) == 0 &&
@@ -19458,9 +19465,9 @@ static int64_t rinfs_write_core(RinFS_File* file, const void* buf,
     if (bytes_written == 0 && write_error != RINFS_OK) {
         rinfs_content_mutation_poison(&mutation);
         (void)rinfs_inode_read(mount, file->inode_num, &file->inode);
-        rinfs_content_mutation_end(&mutation);
+        rinfs_keep_first_error(&content_unlock_error, rinfs_content_mutation_end(&mutation));
         rinfs_free(block_buf);
-        return write_error;
+        return rinfs_content_unlock_status((write_error), content_unlock_error);
     }
 
     if (use_page_cache && bytes_written != 0u) {
@@ -19489,18 +19496,18 @@ static int64_t rinfs_write_core(RinFS_File* file, const void* buf,
         inode_err = rinfs_sync(mount);
     }
 
-    rinfs_content_mutation_end(&mutation);
+    rinfs_keep_first_error(&content_unlock_error, rinfs_content_mutation_end(&mutation));
     rinfs_free(block_buf);
     if (inode_err != RINFS_OK) {
         (void)rinfs_inode_read(mount, file->inode_num, &file->inode);
-        return inode_err;
+        return rinfs_content_unlock_status((inode_err), content_unlock_error);
     }
     /* A short write may have completed before a later block operation
      * failed.  Its new block map and size must be committed before reporting
      * the positive byte count; otherwise callers observe false success and
      * the allocator can retain unreachable blocks after a remount. */
-    if (write_error != RINFS_OK) return (int64_t)bytes_written;
-    return (int64_t)bytes_written;
+    if (write_error != RINFS_OK) return rinfs_content_unlock_status(((int64_t)bytes_written), content_unlock_error);
+    return rinfs_content_unlock_status(((int64_t)bytes_written), content_unlock_error);
 }
 
 int64_t rinfs_write(RinFS_File* file, const void* buf, uint64_t size) {
@@ -20000,6 +20007,7 @@ static int rinfs_dirent_mark_delete_on_close(RinFS_Mount* mount,
                                               uint64_t dir_ino,
                                               const char* name,
                                               uint64_t expected_inode) {
+    int content_unlock_error = RINFS_OK;
     RinFS_ContentMutation mutation;
     RinFS_Inode dir_inode;
     uint8_t* block;
@@ -20009,32 +20017,32 @@ static int rinfs_dirent_mark_delete_on_close(RinFS_Mount* mount,
     int err;
 
     if (!mount || !name || expected_inode == 0u)
-        return RINFS_ERR_INVAL;
+        return rinfs_content_unlock_status((RINFS_ERR_INVAL), content_unlock_error);
     err = rinfs_enable_content_versions(mount);
     if (err != RINFS_OK) {
         mount->readonly = 1;
-        return err;
+        return rinfs_content_unlock_status((err), content_unlock_error);
     }
     err = rinfs_enable_incompat_feature(
         mount, RINFS_FEATURE_INCOMPAT_DELETE_ON_CLOSE);
     if (err != RINFS_OK) {
         mount->readonly = 1;
-        return err;
+        return rinfs_content_unlock_status((err), content_unlock_error);
     }
     err = rinfs_content_mutation_begin(
         mount, dir_ino, RINFS_FT_DIR, &mutation);
-    if (err != RINFS_OK) return err;
+    if (err != RINFS_OK) return rinfs_content_unlock_status((err), content_unlock_error);
     dir_inode = mutation.inode;
     block_size = mount->sb.s_block_size;
     name_len = rinfs_strlen(name);
     if (name_len == 0u || name_len > RINFS_NAME_MAX) {
-        rinfs_content_mutation_end(&mutation);
-        return name_len == 0u ? RINFS_ERR_INVAL : RINFS_ERR_NAMETOOLONG;
+        rinfs_keep_first_error(&content_unlock_error, rinfs_content_mutation_end(&mutation));
+        return rinfs_content_unlock_status((name_len == 0u ? RINFS_ERR_INVAL : RINFS_ERR_NAMETOOLONG), content_unlock_error);
     }
     block = (uint8_t*)rinfs_malloc(block_size);
     if (!block) {
-        rinfs_content_mutation_end(&mutation);
-        return RINFS_ERR_NOMEM;
+        rinfs_keep_first_error(&content_unlock_error, rinfs_content_mutation_end(&mutation));
+        return rinfs_content_unlock_status((RINFS_ERR_NOMEM), content_unlock_error);
     }
 
     while (position < dir_inode.i_size) {
@@ -20077,42 +20085,43 @@ static int rinfs_dirent_mark_delete_on_close(RinFS_Mount* mount,
                 if (err != RINFS_OK) mount->readonly = 1;
             }
             rinfs_free(block);
-            rinfs_content_mutation_end(&mutation);
-            return err;
+            rinfs_keep_first_error(&content_unlock_error, rinfs_content_mutation_end(&mutation));
+            return rinfs_content_unlock_status((err), content_unlock_error);
         }
         position += entry->d_rec_len;
     }
 
     rinfs_free(block);
-    rinfs_content_mutation_end(&mutation);
-    return position >= dir_inode.i_size ? RINFS_ERR_NOENT : err;
+    rinfs_keep_first_error(&content_unlock_error, rinfs_content_mutation_end(&mutation));
+    return rinfs_content_unlock_status((position >= dir_inode.i_size ? RINFS_ERR_NOENT : err), content_unlock_error);
 }
 
 /* Remove a directory entry from parent directory */
 static int rinfs_dirent_remove_identity(RinFS_Mount* mount,
                                         uint64_t dir_ino, const char* name,
                                         uint64_t expected_inode) {
-    if (!mount || !name) return RINFS_ERR_INVAL;
+    int content_unlock_error = RINFS_OK;
+    if (!mount || !name) return rinfs_content_unlock_status((RINFS_ERR_INVAL), content_unlock_error);
 
     RinFS_ContentMutation mutation;
     RinFS_Inode dir_inode;
     int err = rinfs_content_mutation_begin(
         mount, dir_ino, RINFS_FT_DIR, &mutation);
-    if (err != RINFS_OK) return err;
+    if (err != RINFS_OK) return rinfs_content_unlock_status((err), content_unlock_error);
     dir_inode = mutation.inode;
     
     uint32_t block_size = mount->sb.s_block_size;
     uint8_t* block = (uint8_t*)rinfs_malloc(block_size);
     if (!block) {
-        rinfs_content_mutation_end(&mutation);
-        return RINFS_ERR_NOMEM;
+        rinfs_keep_first_error(&content_unlock_error, rinfs_content_mutation_end(&mutation));
+        return rinfs_content_unlock_status((RINFS_ERR_NOMEM), content_unlock_error);
     }
     
     uint32_t name_len = rinfs_strlen(name);
     if (name_len == 0 || name_len > RINFS_NAME_MAX) {
         rinfs_free(block);
-        rinfs_content_mutation_end(&mutation);
-        return name_len == 0 ? RINFS_ERR_INVAL : RINFS_ERR_NAMETOOLONG;
+        rinfs_keep_first_error(&content_unlock_error, rinfs_content_mutation_end(&mutation));
+        return rinfs_content_unlock_status((name_len == 0 ? RINFS_ERR_INVAL : RINFS_ERR_NAMETOOLONG), content_unlock_error);
     }
     uint64_t position = 0;
     
@@ -20124,15 +20133,15 @@ static int rinfs_dirent_remove_identity(RinFS_Mount* mount,
         err = get_file_block(mount, &dir_inode, file_block, &phys_block);
         if (err != RINFS_OK || phys_block == 0) {
             rinfs_free(block);
-            rinfs_content_mutation_end(&mutation);
-            return err != RINFS_OK ? err : RINFS_ERR_NOENT;
+            rinfs_keep_first_error(&content_unlock_error, rinfs_content_mutation_end(&mutation));
+            return rinfs_content_unlock_status((err != RINFS_OK ? err : RINFS_ERR_NOENT), content_unlock_error);
         }
         
         err = rinfs_block_read(mount, phys_block, block);
         if (err != RINFS_OK) {
             rinfs_free(block);
-            rinfs_content_mutation_end(&mutation);
-            return err;
+            rinfs_keep_first_error(&content_unlock_error, rinfs_content_mutation_end(&mutation));
+            return rinfs_content_unlock_status((err), content_unlock_error);
         }
         
         if (block_size - block_off < RINFS_DIRENT_HEADER_SIZE) {
@@ -20146,8 +20155,8 @@ static int rinfs_dirent_remove_identity(RinFS_Mount* mount,
         }
         if (!rinfs_dirent_valid(mount, de, block_off, dir_ino)) {
             rinfs_free(block);
-            rinfs_content_mutation_end(&mutation);
-            return RINFS_ERR_CORRUPT;
+            rinfs_keep_first_error(&content_unlock_error, rinfs_content_mutation_end(&mutation));
+            return rinfs_content_unlock_status((RINFS_ERR_CORRUPT), content_unlock_error);
         }
         
         /* Check if this is the entry we're looking for */
@@ -20157,8 +20166,8 @@ static int rinfs_dirent_remove_identity(RinFS_Mount* mount,
 
             if (expected_inode != 0u && de->d_inode != expected_inode) {
                 rinfs_free(block);
-                rinfs_content_mutation_end(&mutation);
-                return RINFS_ERR_STALE;
+                rinfs_keep_first_error(&content_unlock_error, rinfs_content_mutation_end(&mutation));
+                return rinfs_content_unlock_status((RINFS_ERR_STALE), content_unlock_error);
             }
             /* Found it! Mark as deleted by setting inode to 0 */
             de->d_inode = 0;
@@ -20168,16 +20177,16 @@ static int rinfs_dirent_remove_identity(RinFS_Mount* mount,
             err = rinfs_commit_directory_block_mutation(
                 &mutation, &dir_inode, phys_block, block);
             rinfs_free(block);
-            rinfs_content_mutation_end(&mutation);
-            return err;
+            rinfs_keep_first_error(&content_unlock_error, rinfs_content_mutation_end(&mutation));
+            return rinfs_content_unlock_status((err), content_unlock_error);
         }
         
         position += de->d_rec_len;
     }
     
     rinfs_free(block);
-    rinfs_content_mutation_end(&mutation);
-    return RINFS_ERR_NOENT;
+    rinfs_keep_first_error(&content_unlock_error, rinfs_content_mutation_end(&mutation));
+    return rinfs_content_unlock_status((RINFS_ERR_NOENT), content_unlock_error);
 }
 
 static int rinfs_dirent_remove(RinFS_Mount* mount, uint64_t dir_ino,
@@ -20994,18 +21003,19 @@ static int rinfs_delete_on_close_discard_recovered(RinFS_Mount* mount) {
 
 /* Update moved directory's ".." entry */
 static int rinfs_dir_update_dotdot(RinFS_Mount* mount, uint64_t dir_ino, uint64_t new_parent_ino) {
+    int content_unlock_error = RINFS_OK;
     RinFS_ContentMutation mutation;
     RinFS_Inode dir_inode;
     int err = rinfs_content_mutation_begin(
         mount, dir_ino, RINFS_FT_DIR, &mutation);
-    if (err != RINFS_OK) return err;
+    if (err != RINFS_OK) return rinfs_content_unlock_status((err), content_unlock_error);
     dir_inode = mutation.inode;
 
     uint32_t block_size = mount->sb.s_block_size;
     uint8_t* block = (uint8_t*)rinfs_malloc(block_size);
     if (!block) {
-        rinfs_content_mutation_end(&mutation);
-        return RINFS_ERR_NOMEM;
+        rinfs_keep_first_error(&content_unlock_error, rinfs_content_mutation_end(&mutation));
+        return rinfs_content_unlock_status((RINFS_ERR_NOMEM), content_unlock_error);
     }
 
     for (uint64_t file_block = 0; file_block * block_size < dir_inode.i_size; file_block++) {
@@ -21013,15 +21023,15 @@ static int rinfs_dir_update_dotdot(RinFS_Mount* mount, uint64_t dir_ino, uint64_
         err = get_file_block(mount, &dir_inode, file_block, &phys_block);
         if (err != RINFS_OK || phys_block == 0) {
             rinfs_free(block);
-            rinfs_content_mutation_end(&mutation);
-            return (err == RINFS_OK) ? RINFS_ERR_CORRUPT : err;
+            rinfs_keep_first_error(&content_unlock_error, rinfs_content_mutation_end(&mutation));
+            return rinfs_content_unlock_status(((err == RINFS_OK) ? RINFS_ERR_CORRUPT : err), content_unlock_error);
         }
 
         err = rinfs_block_read(mount, phys_block, block);
         if (err != RINFS_OK) {
             rinfs_free(block);
-            rinfs_content_mutation_end(&mutation);
-            return err;
+            rinfs_keep_first_error(&content_unlock_error, rinfs_content_mutation_end(&mutation));
+            return rinfs_content_unlock_status((err), content_unlock_error);
         }
 
         uint32_t off = 0;
@@ -21031,24 +21041,24 @@ static int rinfs_dir_update_dotdot(RinFS_Mount* mount, uint64_t dir_ino, uint64_
             if (de->d_rec_len == 0) break;
             if (!rinfs_dirent_valid(mount, de, off, dir_ino)) {
                 rinfs_free(block);
-                rinfs_content_mutation_end(&mutation);
-                return RINFS_ERR_CORRUPT;
+                rinfs_keep_first_error(&content_unlock_error, rinfs_content_mutation_end(&mutation));
+                return rinfs_content_unlock_status((RINFS_ERR_CORRUPT), content_unlock_error);
             }
             if (de->d_inode != 0 && rinfs_dirent_is_dotdot(de)) {
                 de->d_inode = new_parent_ino;
                 err = rinfs_commit_directory_block_mutation(
                     &mutation, &dir_inode, phys_block, block);
                 rinfs_free(block);
-                rinfs_content_mutation_end(&mutation);
-                return err;
+                rinfs_keep_first_error(&content_unlock_error, rinfs_content_mutation_end(&mutation));
+                return rinfs_content_unlock_status((err), content_unlock_error);
             }
             off += de->d_rec_len;
         }
     }
 
     rinfs_free(block);
-    rinfs_content_mutation_end(&mutation);
-    return RINFS_ERR_CORRUPT;
+    rinfs_keep_first_error(&content_unlock_error, rinfs_content_mutation_end(&mutation));
+    return rinfs_content_unlock_status((RINFS_ERR_CORRUPT), content_unlock_error);
 }
 
 /* Directory link counts are derived metadata. Recompute them after a rename
@@ -22450,21 +22460,22 @@ int rinfs_readlink(RinFS_Mount* mount, uint64_t ino, char* buf, uint32_t size) {
 
 /* Truncate file to specified size (by inode number) */
 int rinfs_truncate_ino(RinFS_Mount* mount, uint64_t ino, uint64_t size) {
+    int content_unlock_error = RINFS_OK;
     RinFS_ContentMutation mutation;
     RinFS_Inode* inode;
     uint32_t block_size;
     uint64_t old_size;
     int err;
-    if (!mount || !mount->mounted) return RINFS_ERR_INVAL;
-    if (mount->readonly) return RINFS_ERR_ROFS;
+    if (!mount || !mount->mounted) return rinfs_content_unlock_status((RINFS_ERR_INVAL), content_unlock_error);
+    if (mount->readonly) return rinfs_content_unlock_status((RINFS_ERR_ROFS), content_unlock_error);
     block_size = mount->sb.s_block_size;
 
     err = rinfs_page_cache_sync(mount, ino, 0u, 0u, 0u, 0u, 0u);
     if (err != RINFS_OK)
-        return err == RINFS_ERR_PENDING ? RINFS_ERR_BUSY : err;
+        return rinfs_content_unlock_status((err == RINFS_ERR_PENDING ? RINFS_ERR_BUSY : err), content_unlock_error);
     err = rinfs_page_cache_invalidate_inode(mount, ino);
     if (err != RINFS_OK)
-        return err == RINFS_ERR_PENDING ? RINFS_ERR_BUSY : err;
+        return rinfs_content_unlock_status((err == RINFS_ERR_PENDING ? RINFS_ERR_BUSY : err), content_unlock_error);
 
     /* Refuse sizes that cannot be represented by the direct/indirect map. */
     if (size != 0) {
@@ -22472,23 +22483,23 @@ int rinfs_truncate_ino(RinFS_Mount* mount, uint64_t ino, uint64_t size) {
         uint32_t depth;
         int path_err = rinfs_file_block_path(mount, (size - 1) / block_size,
                                              &depth, indices);
-        if (path_err != RINFS_OK) return path_err;
+        if (path_err != RINFS_OK) return rinfs_content_unlock_status((path_err), content_unlock_error);
     }
 
     err = rinfs_content_mutation_begin(mount, ino, RINFS_FT_REG,
                                        &mutation);
-    if (err != RINFS_OK) return err;
+    if (err != RINFS_OK) return rinfs_content_unlock_status((err), content_unlock_error);
     inode = &mutation.inode;
     old_size = inode->i_size;
 
     if (size == old_size) {
-        rinfs_content_mutation_end(&mutation);
-        return RINFS_OK; /* Nothing to do */
+        rinfs_keep_first_error(&content_unlock_error, rinfs_content_mutation_end(&mutation));
+        return rinfs_content_unlock_status((RINFS_OK), content_unlock_error); /* Nothing to do */
     }
     err = rinfs_content_mutation_prepare(&mutation);
     if (err != RINFS_OK) {
-        rinfs_content_mutation_end(&mutation);
-        return err;
+        rinfs_keep_first_error(&content_unlock_error, rinfs_content_mutation_end(&mutation));
+        return rinfs_content_unlock_status((err), content_unlock_error);
     }
     inode = &mutation.inode;
     if (rinfs_page_cache_invalidate_stale(
@@ -22496,8 +22507,8 @@ int rinfs_truncate_ino(RinFS_Mount* mount, uint64_t ino, uint64_t size) {
             rinfs_inode_content_version_raw(inode)) != RINFS_OK) {
         rinfs_content_mutation_started(&mutation);
         rinfs_content_mutation_poison(&mutation);
-        rinfs_content_mutation_end(&mutation);
-        return RINFS_ERR_PENDING;
+        rinfs_keep_first_error(&content_unlock_error, rinfs_content_mutation_end(&mutation));
+        return rinfs_content_unlock_status((RINFS_ERR_PENDING), content_unlock_error);
     }
     rinfs_content_mutation_started(&mutation);
 
@@ -22564,13 +22575,13 @@ int rinfs_truncate_ino(RinFS_Mount* mount, uint64_t ino, uint64_t size) {
     }
 
     err = rinfs_content_mutation_finalize(&mutation, inode);
-    rinfs_content_mutation_end(&mutation);
-    return err;
+    rinfs_keep_first_error(&content_unlock_error, rinfs_content_mutation_end(&mutation));
+    return rinfs_content_unlock_status((err), content_unlock_error);
 
 failed:
     rinfs_content_mutation_poison(&mutation);
-    rinfs_content_mutation_end(&mutation);
-    return err;
+    rinfs_keep_first_error(&content_unlock_error, rinfs_content_mutation_end(&mutation));
+    return rinfs_content_unlock_status((err), content_unlock_error);
 }
 
 /* The restore record lives in the checksummed superblock padding. The

@@ -1021,7 +1021,7 @@ int rinfs_content_snapshot_begin(RinFS_Mount* mount, uint64_t ino,
 int rinfs_content_snapshot_read_exact(RinFS_ContentSnapshot* snapshot,
                                       void* output, uint64_t size);
 int rinfs_content_snapshot_revalidate(RinFS_ContentSnapshot* snapshot);
-void rinfs_content_snapshot_end(RinFS_ContentSnapshot* snapshot);
+int rinfs_content_snapshot_end(RinFS_ContentSnapshot* snapshot);
 int rinfs_mmap_source_create(const RinFS_File* file,
                              RinFS_MmapSource** source_out,
                              uint64_t* inode_out,
