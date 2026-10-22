@@ -43,6 +43,21 @@ static inline void rinfs_trace_emit_current(uint32_t event, uint64_t arg0,
 extern void platform_thread_yield(void);
 #endif
 
+#if defined(RIN_KERNEL) && defined(RIN_FREESTANDING)
+#define RINFS_SPIN_PREEMPT_TAG UINT32_C(0x5246534c) /* "RFSL" */
+extern void sched_preempt_enter(uint32_t src_tag);
+extern void sched_preempt_leave(uint32_t src_tag);
+static inline void rinfs_spin_preempt_enter(void) {
+    sched_preempt_enter(RINFS_SPIN_PREEMPT_TAG);
+}
+static inline void rinfs_spin_preempt_leave(void) {
+    sched_preempt_leave(RINFS_SPIN_PREEMPT_TAG);
+}
+#else
+static inline void rinfs_spin_preempt_enter(void) {}
+static inline void rinfs_spin_preempt_leave(void) {}
+#endif
+
 #if defined(RIN_KERNEL) && defined(RIN_FREESTANDING) && defined(__x86_64__)
 #include "kernel/arch/x86_64/va_layout.h"
 extern uint64_t platform_pmm_alloc_file_cache_page(void);
@@ -518,17 +533,23 @@ static uint64_t rinfs_directory_name_hash(const char* name,
 /* The registry lock is held only while changing lease counters/list links.
  * Payload I/O is deliberately outside this lock: unrelated inodes therefore
  * proceed independently, while waiting_writers makes each inode lease
- * writer-preferring. */
+ * writer-preferring. Kernel builds also suppress process preemption while a
+ * lock is owned; portable freestanding builds may yield to their cooperative
+ * compatibility threads while waiting. */
 static void rinfs_spin_lock(volatile uint32_t* lock) {
     uint32_t spins = 0u;
+    /* RinFS is called from preemptively scheduled kernel processes. Keep the
+     * lock owner on-CPU until unlock; the cooperative compatibility scheduler
+     * is a distinct threading domain and cannot make progress on its behalf. */
+    rinfs_spin_preempt_enter();
     while (__atomic_exchange_n(lock, 1u, __ATOMIC_ACQUIRE) != 0u) {
         while (__atomic_load_n(lock, __ATOMIC_RELAXED) != 0u) {
             if (++spins == 4096u) {
-                /* Directory/inode/page-cache locks cover metadata only.  A
-                 * contended waiter must give the owner a scheduling point;
-                 * payload block I/O is never performed while this lock is
-                 * held. */
-#if defined(RIN_FREESTANDING)
+                /* Payload block I/O is never performed while this lock is
+                 * held. In the portable cooperative runtime, let its owner
+                 * make progress; kernel builds instead spin with process
+                 * preemption disabled above. */
+#if defined(RIN_FREESTANDING) && !defined(RIN_KERNEL)
                 platform_thread_yield();
 #endif
                 spins = 0u;
@@ -540,6 +561,7 @@ static void rinfs_spin_lock(volatile uint32_t* lock) {
 
 static void rinfs_spin_unlock(volatile uint32_t* lock) {
     __atomic_store_n(lock, 0u, __ATOMIC_RELEASE);
+    rinfs_spin_preempt_leave();
 }
 
 /* Page-cache contention telemetry is enabled only in performance-trace
@@ -550,11 +572,12 @@ static void rinfs_page_cache_lock(RinFS_PageCache* cache) {
     uint64_t started_at = RIN_TRACE_CYCLES_NOW();
     uint64_t spin_iterations = 0u;
     uint32_t yield_spins = 0u;
+    rinfs_spin_preempt_enter();
     while (__atomic_exchange_n(&cache->lock, 1u, __ATOMIC_ACQUIRE) != 0u) {
         while (__atomic_load_n(&cache->lock, __ATOMIC_RELAXED) != 0u) {
             ++spin_iterations;
             if (++yield_spins == 4096u) {
-#if defined(RIN_FREESTANDING)
+#if defined(RIN_FREESTANDING) && !defined(RIN_KERNEL)
                 platform_thread_yield();
 #endif
                 yield_spins = 0u;
@@ -2774,8 +2797,24 @@ static int rinfs_page_cache_write(RinFS_Mount* mount, uint64_t inode_num,
     if (!input || offset >= RINFS_PAGE_CACHE_PAGE_SIZE ||
         size > RINFS_PAGE_CACHE_PAGE_SIZE - offset)
         return RINFS_ERR_INVAL;
-    err = rinfs_page_cache_acquire(mount, inode_num, inode, page_index,
-                                   physical_block, 1, new_block, 1, &entry);
+    /* A streaming writer can dirty every cache entry before the periodic
+     * worker gets a turn. Reclaim bounded batches through the real writeback
+     * path and retry only when that step made durable progress; otherwise
+     * preserve the pending/error result instead of spinning indefinitely. */
+    for (uint32_t attempt = 0u; attempt < 8u; ++attempt) {
+        uint32_t written = 0u;
+        err = rinfs_page_cache_acquire(
+            mount, inode_num, inode, page_index, physical_block, 1,
+            new_block, 1, &entry);
+        if (err != RINFS_ERR_PENDING)
+            break;
+        err = rinfs_page_cache_writeback_step(mount, 8u, &written);
+        if (err != RINFS_OK)
+            return err;
+        if (written == 0u)
+            return RINFS_ERR_PENDING;
+        err = RINFS_ERR_PENDING;
+    }
     if (err != RINFS_OK) return err;
     cache = mount->page_cache;
     rinfs_page_cache_lock(cache);
