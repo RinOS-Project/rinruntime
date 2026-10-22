@@ -1523,7 +1523,7 @@ static int rinfs_inode_table_unlock_status(RinFS_Mount* mount,
                                             uint64_t block,
                                             int operation_error) {
     int unlock_error = rinfs_inode_table_unlock(mount, block);
-    return operation_error == RINFS_OK ? unlock_error : operation_error;
+    return unlock_error == RINFS_OK ? operation_error : unlock_error;
 }
 
 static int rinfs_inode_table_write_block_locked(
@@ -7850,7 +7850,7 @@ static int rinfs_inode_write_internal(RinFS_Mount* mount, uint64_t ino,
                 rinfs_inode_cache_invalidate(mount, ino);
             }
             int unlock_error = rinfs_inode_table_unlock(mount, block);
-            if (err == RINFS_OK) err = unlock_error;
+            if (unlock_error != RINFS_OK) err = unlock_error;
             if (err != RINFS_OK) rinfs_inode_cache_invalidate(mount, ino);
             rinfs_free(buf);
             return err;
@@ -7908,7 +7908,7 @@ static int rinfs_inode_write_internal(RinFS_Mount* mount, uint64_t ino,
         rinfs_inode_cache_invalidate(mount, ino);
     }
     int unlock_error = rinfs_inode_table_unlock(mount, block);
-    if (err == RINFS_OK) err = unlock_error;
+    if (unlock_error != RINFS_OK) err = unlock_error;
     if (err != RINFS_OK) rinfs_inode_cache_invalidate(mount, ino);
     rinfs_free(buf);
     return err;
