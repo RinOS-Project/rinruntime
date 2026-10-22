@@ -561,7 +561,7 @@ typedef struct {
     uint32_t owner_row;
     uint64_t target;
     uint32_t target_generation;
-    uint32_t reserved;
+    uint32_t owner_lock_generation;
     uint64_t owner_cookie;
     uint32_t checksum;
 } RinFS_AllocatorRecoveryLog;
@@ -626,11 +626,13 @@ static int rinfs_shared_lock_owner_dead(RinFS_Mount* mount,
 
 static void rinfs_shared_lock_acquire(RinFS_Mount* mount,
                                       volatile uint32_t* lock,
-                                      int* recovered_out) {
+                                      int* recovered_out,
+                                      uint32_t* recovered_owner_token_out) {
     uint32_t spins = 0u;
     uint32_t token = rinfs_shared_lock_token(mount);
     int recovered = 0;
     if (recovered_out) *recovered_out = 0;
+    if (recovered_owner_token_out) *recovered_owner_token_out = 0u;
     rinfs_spin_preempt_enter();
     for (;;) {
         uint32_t expected = 0u;
@@ -644,6 +646,8 @@ static void rinfs_shared_lock_acquire(RinFS_Mount* mount,
                                             __ATOMIC_ACQUIRE,
                                             __ATOMIC_RELAXED)) {
                 recovered = 1;
+                if (recovered_owner_token_out)
+                    *recovered_owner_token_out = expected;
                 break;
             }
         }
@@ -736,7 +740,7 @@ static int rinfs_shared_heap_recover_locked(RinFS_Mount* mount) {
 static void rinfs_shared_heap_lock(RinFS_Mount* mount) {
     int recovered = 0;
     rinfs_shared_lock_acquire(mount, &mount->shared_arena_lock,
-                              &recovered);
+                              &recovered, NULL);
     if (recovered && !rinfs_shared_heap_recover_locked(mount))
         mount->shared_arena_recovery_failed = 1u;
 }
@@ -1138,10 +1142,14 @@ static int rinfs_allocator_recovery_prepare_locked(
     log->owner_row = row;
     log->target = target;
     log->target_generation = target_generation;
-    log->reserved = 0u;
     log->owner_cookie =
         mount->shared_owner_ledger->owners[row - 1u].owner_cookie;
     if (log->owner_cookie == 0u) return RINFS_ERR_STALE;
+    log->owner_lock_generation =
+        mount->shared_owner_ledger->owners[row - 1u].lock_generation;
+    if (log->owner_lock_generation == 0u ||
+        log->owner_lock_generation > RINFS_SHARED_LOCK_OWNER_GENERATION_MASK)
+        return RINFS_ERR_STALE;
     log->checksum = rinfs_allocator_recovery_checksum(log);
     __atomic_store_n(&log->state, RINFS_ALLOCATOR_RECOVERY_READY,
                      __ATOMIC_RELEASE);
@@ -1156,6 +1164,24 @@ static int rinfs_allocator_recovery_commit_locked(
         mount->shared_mount_ready == 0u)
         return RINFS_OK;
     log = rinfs_allocator_recovery_log(mount, inode_bitmap);
+    if (!log)
+        return rinfs_allocator_recovery_fail(mount, RINFS_ERR_CORRUPT);
+    {
+        uint32_t owner_row = 0u;
+        uint32_t owner_token = rinfs_shared_lock_token(mount);
+        uint32_t owner_lock_generation =
+            (owner_token >> RINFS_SHARED_LOCK_OWNER_GENERATION_SHIFT) &
+            RINFS_SHARED_LOCK_OWNER_GENERATION_MASK;
+        if ((owner_token & RINFS_SHARED_LOCK_OWNER_TAG) == 0u ||
+            rinfs_shared_owner_query_row(mount, &owner_row) != RINFS_OK ||
+            owner_row == 0u || owner_row > RINFS_SHARED_OWNER_CAPACITY ||
+            log->owner_row != owner_row ||
+            log->owner_lock_generation != owner_lock_generation ||
+            log->owner_cookie != mount->shared_owner_ledger
+                ->owners[owner_row - 1u].owner_cookie)
+            return rinfs_allocator_recovery_fail(mount,
+                                                  RINFS_ERR_CORRUPT);
+    }
     if (!log || __atomic_load_n(&log->state, __ATOMIC_ACQUIRE) !=
                     RINFS_ALLOCATOR_RECOVERY_READY ||
         log->operation != operation || log->target != target ||
@@ -1221,7 +1247,7 @@ static int rinfs_allocator_recovery_set_bit_locked(
 }
 
 static int rinfs_shared_allocation_recover_log_locked(
-    RinFS_Mount* mount, int inode_bitmap) {
+    RinFS_Mount* mount, int inode_bitmap, uint32_t owner_token) {
     RinFS_AllocatorRecoveryLog* log =
         rinfs_allocator_recovery_log(mount, inode_bitmap);
     uint32_t state;
@@ -1236,8 +1262,15 @@ static int rinfs_shared_allocation_recover_log_locked(
     if (state == RINFS_ALLOCATOR_RECOVERY_IDLE) return RINFS_OK;
     if (state != RINFS_ALLOCATOR_RECOVERY_READY || log->owner_row == 0u ||
         log->owner_row > RINFS_SHARED_OWNER_CAPACITY ||
-        log->owner_cookie == 0u || log->reserved != 0u || log->checksum !=
-            rinfs_allocator_recovery_checksum(log))
+        log->owner_cookie == 0u || log->owner_lock_generation == 0u ||
+        log->owner_lock_generation >
+            RINFS_SHARED_LOCK_OWNER_GENERATION_MASK ||
+        (owner_token & RINFS_SHARED_LOCK_OWNER_TAG) == 0u ||
+        (owner_token & RINFS_SHARED_LOCK_OWNER_ROW_MASK) != log->owner_row ||
+        ((owner_token >> RINFS_SHARED_LOCK_OWNER_GENERATION_SHIFT) &
+         RINFS_SHARED_LOCK_OWNER_GENERATION_MASK) !=
+            log->owner_lock_generation ||
+        log->checksum != rinfs_allocator_recovery_checksum(log))
         return rinfs_allocator_recovery_fail(mount, RINFS_ERR_CORRUPT);
     operation = log->operation;
     target = log->target;
@@ -1301,10 +1334,12 @@ static int rinfs_block_allocation_lock(RinFS_Mount* mount) {
         return RINFS_OK;
     }
     int recovered = 0;
+    uint32_t recovered_owner_token = 0u;
     rinfs_shared_lock_acquire(mount, &mount->block_allocation_lock,
-                              &recovered);
+                              &recovered, &recovered_owner_token);
     if (recovered) {
-        int err = rinfs_shared_allocation_recover_log_locked(mount, 0);
+        int err = rinfs_shared_allocation_recover_log_locked(
+            mount, 0, recovered_owner_token);
         if (err == RINFS_OK)
             err = rinfs_shared_allocation_recover_locked(mount, 0);
         if (err != RINFS_OK) mount->readonly = 1;
@@ -1329,10 +1364,12 @@ static int rinfs_inode_allocation_lock(RinFS_Mount* mount) {
         return RINFS_OK;
     }
     int recovered = 0;
+    uint32_t recovered_owner_token = 0u;
     rinfs_shared_lock_acquire(mount, &mount->inode_allocation_lock,
-                              &recovered);
+                              &recovered, &recovered_owner_token);
     if (recovered) {
-        int err = rinfs_shared_allocation_recover_log_locked(mount, 1);
+        int err = rinfs_shared_allocation_recover_log_locked(
+            mount, 1, recovered_owner_token);
         if (err == RINFS_OK)
             err = rinfs_shared_allocation_recover_locked(mount, 1);
         if (err != RINFS_OK) mount->readonly = 1;
@@ -1418,7 +1455,7 @@ static void rinfs_inode_table_lock(RinFS_Mount* mount, uint64_t block) {
         return;
     }
     int recovered = 0;
-    rinfs_shared_lock_acquire(mount, lock, &recovered);
+    rinfs_shared_lock_acquire(mount, lock, &recovered, NULL);
     (void)recovered;
     rinfs_inode_table_recover_log_locked(mount, lock_index);
 }
@@ -1505,7 +1542,7 @@ static void rinfs_shared_content_lock(RinFS_Mount* mount) {
         return;
     }
     rinfs_shared_lock_acquire(mount, &mount->content_lease_lock,
-                              &recovered);
+                              &recovered, NULL);
     if ((recovered || rinfs_shared_owner_has_dead_row(mount)) &&
         rinfs_shared_owner_reap_locked(mount) != RINFS_OK) {
         /* Counter/list corruption cannot be repaired by guessing. Fence this
@@ -1540,7 +1577,7 @@ static void rinfs_shared_cache_lock(RinFS_Mount* mount,
         rinfs_spin_lock(lock);
         return;
     }
-    rinfs_shared_lock_acquire(mount, lock, &recovered);
+    rinfs_shared_lock_acquire(mount, lock, &recovered, NULL);
     if (!recovered) return;
     /* These caches are advisory. Discard every entry after interrupted
      * publication instead of trusting a partially written cache record. */
@@ -1599,7 +1636,7 @@ static void rinfs_page_cache_lock(RinFS_PageCache* cache) {
         uint64_t started_at = RIN_TRACE_CYCLES_NOW();
         int contended = __atomic_load_n(&cache->lock, __ATOMIC_RELAXED) != 0u;
 #endif
-        rinfs_shared_lock_acquire(mount, &cache->lock, &recovered);
+        rinfs_shared_lock_acquire(mount, &cache->lock, &recovered, NULL);
         if (cache->recovery_failed != 0u) __builtin_trap();
         if (recovered || rinfs_page_cache_has_stale_owner(cache))
             rinfs_page_cache_recover_locked(cache);
@@ -6948,7 +6985,8 @@ int rinfs_block_alloc(RinFS_Mount* mount, uint64_t* block) {
                         if (err != RINFS_OK) {
                             int recovery_err =
                                 rinfs_shared_allocation_recover_log_locked(
-                                    mount, 0);
+                                    mount, 0,
+                                    rinfs_shared_lock_token(mount));
                             mount->readonly = 1;
                             rinfs_block_allocation_unlock(mount);
                             rinfs_free(bitmap);
@@ -7044,7 +7082,8 @@ int rinfs_block_free(RinFS_Mount* mount, uint64_t block) {
             mount, 0, RINFS_ALLOCATOR_RECOVERY_BLOCK_FREE_ROLLBACK, block);
     } else {
         int recovery_err =
-            rinfs_shared_allocation_recover_log_locked(mount, 0);
+            rinfs_shared_allocation_recover_log_locked(
+                mount, 0, rinfs_shared_lock_token(mount));
         mount->readonly = 1;
         if (recovery_err != RINFS_OK) err = recovery_err;
     }
@@ -7079,7 +7118,7 @@ static void rinfs_journal_transaction_lock(RinFS_Mount* mount) {
     }
     int recovered = 0;
     rinfs_shared_lock_acquire(mount, &mount->namespace_journal_lock,
-                              &recovered);
+                              &recovered, NULL);
     (void)recovered;
     if (!mount->readonly && rinfs_journal_recover(mount) != RINFS_OK) {
         /* Keep the namespace closed to mutation, but release the robust lock
@@ -8643,7 +8682,8 @@ int rinfs_inode_alloc(RinFS_Mount* mount, uint64_t* ino) {
                         if (err != RINFS_OK) {
                             int recovery_err =
                                 rinfs_shared_allocation_recover_log_locked(
-                                    mount, 1);
+                                    mount, 1,
+                                    rinfs_shared_lock_token(mount));
                             /* The allocation bit may have reached media even
                              * when writeback/readback failed. Fence later
                              * allocations until mount recovery reconciles it. */
@@ -8738,7 +8778,8 @@ static int rinfs_inode_free_under_lease(RinFS_Mount* mount, uint64_t ino,
     if (err != RINFS_OK ||
         rinfs_memcmp(&cleared_inode, &verify, sizeof(verify)) != 0) {
         int recovery_err =
-            rinfs_shared_allocation_recover_log_locked(mount, 1);
+            rinfs_shared_allocation_recover_log_locked(
+                mount, 1, rinfs_shared_lock_token(mount));
         mount->readonly = 1;
         rinfs_inode_allocation_unlock(mount);
         rinfs_free(bitmap);
@@ -8766,7 +8807,8 @@ static int rinfs_inode_free_under_lease(RinFS_Mount* mount, uint64_t ino,
             mount, 1, RINFS_ALLOCATOR_RECOVERY_INODE_FREE, ino);
     } else {
         int recovery_err =
-            rinfs_shared_allocation_recover_log_locked(mount, 1);
+            rinfs_shared_allocation_recover_log_locked(
+                mount, 1, rinfs_shared_lock_token(mount));
         mount->readonly = 1;
         if (recovery_err != RINFS_OK) err = recovery_err;
     }
@@ -15338,7 +15380,8 @@ static void rinfs_superblock_lock(RinFS_Mount* mount) {
         return;
     }
     int recovered = 0;
-    rinfs_shared_lock_acquire(mount, &mount->superblock_lock, &recovered);
+    rinfs_shared_lock_acquire(mount, &mount->superblock_lock, &recovered,
+                              NULL);
     (void)recovered;
     rinfs_superblock_recover_locked(mount);
 }
