@@ -531,7 +531,8 @@ typedef struct {
  * exact process generation dead without interpreting userland pointers. The
  * runtime reconciles these per-handle deltas under content_lease_lock. */
 #define RINFS_SHARED_OWNER_LEDGER_MAGIC UINT32_C(0x524F574E)
-#define RINFS_SHARED_OWNER_LEDGER_VERSION 1u
+#define RINFS_SHARED_OWNER_LEDGER_VERSION 2u
+#define RINFS_SHARED_OWNER_LOCK_GENERATION_MAX UINT32_C(0x01ffffff)
 #define RINFS_SHARED_OWNER_REFERENCE_CAPACITY 512u
 #define RINFS_SHARED_OWNER_FREE 0u
 #define RINFS_SHARED_OWNER_ACTIVE 1u
@@ -561,6 +562,7 @@ typedef struct {
     volatile uint32_t state;
     uint32_t owner_slot;
     uint64_t owner_cookie;
+    uint32_t lock_generation;
     RinFS_SharedOwnerReferenceV1
         references[RINFS_SHARED_OWNER_REFERENCE_CAPACITY];
 } RinFS_SharedOwnerV1;
@@ -606,6 +608,8 @@ struct RinFS_Mount {
     volatile uint32_t inode_table_locks[RINFS_INODE_TABLE_LOCK_COUNT];
     /* Shared-memory redo records for interrupted inode-table block writes. */
     void* shared_inode_table_recovery_logs;
+    /* Shared-memory intents for interrupted bitmap allocation transactions. */
+    void* shared_allocation_recovery_logs;
     volatile uint32_t block_allocation_lock;
     volatile uint32_t inode_allocation_lock;
     volatile uint32_t superblock_lock;
