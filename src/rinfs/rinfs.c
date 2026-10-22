@@ -11,7 +11,7 @@
 #include <rin/ipc/shm_abi.h>
 #include "../platform.h"
 int rinfs_fork_prepare(void);
-void rinfs_fork_complete(void);
+void rinfs_fork_complete(int fork_succeeded);
 #endif
 #if !defined(RIN_KERNEL)
 /* The portable filesystem keeps kernel performance tracing private. */
@@ -3847,8 +3847,11 @@ static int rinfs_close_ref_begin_operation(
     if (!rinfs_close_ref_audit_locked()) {
         result = RINFS_ERR_CORRUPT;
     } else {
+        rinfs_spin_lock(&mount->content_lease_lock);
         record = rinfs_close_ref_find_locked(generation);
-        if (rinfs_close_ref_fields_match(
+        if (mount->content_lease_closing != 0u) {
+            result = RINFS_ERR_PENDING;
+        } else if (rinfs_close_ref_fields_match(
                 record, mount, mount_epoch, inode_num, inode_generation,
                 content_pin_token, kind, generation, cookie) &&
             record->state == RINFS_CLOSE_REF_ACTIVE) {
@@ -3869,6 +3872,7 @@ static int rinfs_close_ref_begin_operation(
                 result = RINFS_OK;
             }
         }
+        rinfs_spin_unlock(&mount->content_lease_lock);
     }
     rinfs_spin_unlock(&g_rinfs_close_reference_lock);
     return result;
@@ -4191,7 +4195,9 @@ static int rinfs_content_pin_retain(RinFS_Mount* mount, uint64_t ino,
     if (!mount || token == 0u) return RINFS_ERR_INVAL;
     rinfs_spin_lock(&mount->content_lease_lock);
     node = rinfs_content_lease_find(mount, ino, inode_generation);
-    if (node != NULL && node->token_generation == token &&
+    if (mount->content_lease_closing != 0u) {
+        result = RINFS_ERR_PENDING;
+    } else if (node != NULL && node->token_generation == token &&
         node->open_references != 0u &&
         node->open_references != UINT32_MAX) {
         node->open_references++;
@@ -11564,10 +11570,14 @@ int rinfs_mount_sized_io(int dev_id, uint64_t offset, uint64_t sector_count,
 #if defined(RINFS_USERLAND_MOUNT_LEASES) && !defined(RIN_KERNEL)
 #define RINFS_SHARED_MOUNT_MAPPING_BYTES (4u * 1024u * 1024u)
 #define RINFS_SHARED_MOUNT_REGISTRY_CAPACITY 64u
+#define RINFS_CONTENT_LEASE_CLOSING_FORK 2u
 
 static volatile uint32_t g_rinfs_shared_mount_name_sequence = 1u;
 static volatile uint32_t g_rinfs_shared_mount_registry_lock;
 static volatile uint32_t g_rinfs_shared_mount_fork_prepared;
+static uint32_t g_rinfs_shared_mount_fork_open_refs_applied;
+static volatile uint32_t g_rinfs_fork_close_reference_lock_held;
+static volatile uint32_t g_rinfs_fork_mmap_source_lock_held;
 static RinFS_Mount* g_rinfs_shared_mount_registry[
     RINFS_SHARED_MOUNT_REGISTRY_CAPACITY];
 
@@ -11580,6 +11590,146 @@ static void rinfs_shared_mount_registry_lock(void) {
 static void rinfs_shared_mount_registry_unlock(void) {
     __atomic_store_n(&g_rinfs_shared_mount_registry_lock, 0u,
                      __ATOMIC_RELEASE);
+}
+
+/* These process-local ledgers are copied by fork.  Their locks must remain
+ * held across the syscall so no thread can change an inherited record between
+ * the aggregate-reference audit and the child becoming runnable.  Use raw
+ * atomics here: the ordinary spinlock's kernel preemption depth is not part of
+ * the child process image. */
+static void rinfs_fork_local_lock(volatile uint32_t* lock) {
+    while (__atomic_exchange_n(lock, 1u, __ATOMIC_ACQUIRE) != 0u)
+        __asm__ volatile("pause");
+}
+
+static void rinfs_fork_local_unlock(volatile uint32_t* lock) {
+    __atomic_store_n(lock, 0u, __ATOMIC_RELEASE);
+}
+
+static int rinfs_shared_mount_registry_contains_locked(
+    const RinFS_Mount* mount) {
+    for (uint32_t index = 0u;
+         index < RINFS_SHARED_MOUNT_REGISTRY_CAPACITY; ++index) {
+        if (g_rinfs_shared_mount_registry[index] == mount) return 1;
+    }
+    return 0;
+}
+
+static int rinfs_shared_mount_fork_node_in_range(
+    const RinFS_Mount* mount, const RinFS_ContentLeaseNode* node) {
+    uintptr_t base;
+    uintptr_t address;
+    if (!mount || !node || mount->shared_mapping_base != (void*)mount ||
+        mount->shared_mapping_size < sizeof(*node))
+        return 0;
+    base = (uintptr_t)mount->shared_mapping_base;
+    address = (uintptr_t)node;
+    return address >= base &&
+           (uint64_t)(address - base) <=
+               mount->shared_mapping_size - sizeof(*node) &&
+           address % __alignof__(RinFS_ContentLeaseNode) == 0u;
+}
+
+/* The shared list is userland-writable. Bound traversal by the arena size so
+ * a damaged link cannot make fork preparation loop forever or follow an
+ * arbitrary pointer. */
+static RinFS_ContentLeaseNode* rinfs_shared_mount_fork_find_node_locked(
+    RinFS_Mount* mount, uint64_t inode_num, uint32_t inode_generation) {
+    RinFS_ContentLeaseNode* node =
+        (RinFS_ContentLeaseNode*)mount->content_leases;
+    uint64_t remaining = mount->shared_mapping_size /
+                         sizeof(RinFS_ContentLeaseNode);
+    while (node && remaining-- != 0u) {
+        if (!rinfs_shared_mount_fork_node_in_range(mount, node)) return NULL;
+        if (node->inode_num == inode_num &&
+            node->inode_generation == inode_generation)
+            return node;
+        node = node->next;
+    }
+    return NULL;
+}
+
+/* Caller holds g_rinfs_close_reference_lock and the mount content lock. */
+static int rinfs_shared_mount_fork_validate_close_refs_locked(
+    RinFS_Mount* mount) {
+    for (uint32_t index = 0u; index < RINFS_MAX_CLOSE_REFERENCES; ++index) {
+        const RinFS_CloseReferenceRecord* record =
+            &g_rinfs_close_references[index];
+        RinFS_ContentLeaseNode* node;
+        uint32_t local_references = 0u;
+        if (record->in_use != 1u || record->mount != mount) continue;
+        if (record->mount_epoch != mount->mount_epoch ||
+            record->state != RINFS_CLOSE_REF_ACTIVE ||
+            record->active_operations != 0u ||
+            record->wincompat_share_registered != 0u ||
+            record->content_pin_token == 0u ||
+            (record->kind != RINFS_CLOSE_REF_FILE &&
+             record->kind != RINFS_CLOSE_REF_DIRECTORY))
+            return 0;
+        for (uint32_t other_index = 0u;
+             other_index < RINFS_MAX_CLOSE_REFERENCES; ++other_index) {
+            const RinFS_CloseReferenceRecord* other =
+                &g_rinfs_close_references[other_index];
+            if (other->in_use == 1u && other->mount == mount &&
+                other->mount_epoch == record->mount_epoch &&
+                other->inode_num == record->inode_num &&
+                other->inode_generation == record->inode_generation &&
+                other->content_pin_token == record->content_pin_token) {
+                if (other->state != RINFS_CLOSE_REF_ACTIVE ||
+                    other->active_operations != 0u ||
+                    local_references == UINT32_MAX)
+                    return 0;
+                ++local_references;
+            }
+        }
+        node = rinfs_shared_mount_fork_find_node_locked(
+            mount, record->inode_num, record->inode_generation);
+        if (!node || node->token_generation != record->content_pin_token ||
+            node->open_references < local_references ||
+            node->tracked_open_references < local_references ||
+            node->open_references > UINT32_MAX - local_references ||
+            node->tracked_open_references > UINT32_MAX - local_references)
+            return 0;
+    }
+    return 1;
+}
+
+/* Caller holds the mount content lock and the cache lock is taken here. */
+static int rinfs_shared_mount_fork_cache_idle(RinFS_Mount* mount) {
+    RinFS_PageCache* cache = mount->page_cache;
+    int idle = 1;
+    if (!cache) return 1;
+    rinfs_page_cache_lock(cache);
+    for (uint32_t index = 0u; index < RINFS_PAGE_CACHE_CAPACITY; ++index) {
+        const RinFS_PageCacheEntry* entry = &cache->entries[index];
+        uint32_t* mapping_references =
+            rinfs_page_cache_mapping_reference_slot(cache, entry);
+        if (!mapping_references || entry->references != 0u ||
+            *mapping_references != 0u) {
+            idle = 0;
+            break;
+        }
+    }
+    rinfs_page_cache_unlock(cache);
+    return idle;
+}
+
+/* Caller holds the mount content lock.  Admission is already closed, so an
+ * idle check here remains true until the fork syscall has cloned the process. */
+static int rinfs_shared_mount_fork_idle_locked(RinFS_Mount* mount) {
+    RinFS_ContentLeaseNode* node =
+        (RinFS_ContentLeaseNode*)mount->content_leases;
+    uint64_t remaining = mount->shared_mapping_size /
+                         sizeof(RinFS_ContentLeaseNode);
+    for (; node; node = node->next) {
+        if (remaining-- == 0u ||
+            !rinfs_shared_mount_fork_node_in_range(mount, node))
+            return 0;
+        if (node->references != 0u || node->readers != 0u ||
+            node->waiting_writers != 0u || node->writer != 0u)
+            return 0;
+    }
+    return rinfs_shared_mount_fork_cache_idle(mount);
 }
 
 static int rinfs_shared_mount_registry_add(RinFS_Mount* mount) {
@@ -11612,25 +11762,37 @@ static void rinfs_shared_mount_registry_remove(RinFS_Mount* mount) {
     rinfs_shared_mount_registry_unlock();
 }
 
-/* libc holds this registry lock across the fork syscall. Mount content
- * admission stays closed in both resulting processes until each has released
- * its inherited local lock and reopened the shared mount. A live content
- * lease means userland file/mapping handles would also be copied, but their
- * process-local close ledger is not kernel-owned; reject that fork for now. */
+/* libc holds the mount registry and both process-local owner ledgers across
+ * the fork syscall. Content admission stays closed in both resulting
+ * processes until each has released its inherited local locks. Idle file and
+ * directory close records are duplicated in the shared aggregate before the
+ * syscall; mapping aliases, active operations, and process-local WinCompat
+ * share state remain unsupported. */
 int rinfs_fork_prepare(void) {
     uint32_t prepared[RINFS_SHARED_MOUNT_REGISTRY_CAPACITY];
+    uint32_t applied_per_mount[RINFS_SHARED_MOUNT_REGISTRY_CAPACITY] = {0u};
     uint32_t prepared_count = 0u;
+    int rollback_valid = 1;
     int result = RINFS_ERR_PENDING;
     if (__atomic_load_n(&g_rinfs_shared_mount_fork_prepared,
                         __ATOMIC_ACQUIRE) != 0u)
         return RINFS_ERR_PENDING;
     rinfs_shared_mount_registry_lock();
+    rinfs_fork_local_lock(&g_rinfs_close_reference_lock);
+    __atomic_store_n(&g_rinfs_fork_close_reference_lock_held, 1u,
+                     __ATOMIC_RELEASE);
+    rinfs_fork_local_lock(&g_rinfs_mmap_source_lock);
+    __atomic_store_n(&g_rinfs_fork_mmap_source_lock_held, 1u,
+                     __ATOMIC_RELEASE);
+    if (!rinfs_close_ref_audit_locked() || !rinfs_mmap_source_audit_locked())
+        goto rollback;
     for (uint32_t index = 0u;
          index < RINFS_SHARED_MOUNT_REGISTRY_CAPACITY; ++index) {
         RinFS_Mount* mount = g_rinfs_shared_mount_registry[index];
         if (!mount) continue;
         if (mount->shared_mapping_base != (void*)mount ||
             mount->shared_mount_ready == 0u ||
+            mount->mounted == 0 ||
             mount->shared_lease_released != 0u ||
             mount->shared_close_started != 0u)
             goto rollback;
@@ -11640,44 +11802,181 @@ int rinfs_fork_prepare(void) {
             rinfs_spin_unlock(&mount->content_lease_lock);
             goto rollback;
         }
-        mount->content_lease_closing = 1u;
+        mount->content_lease_closing = RINFS_CONTENT_LEASE_CLOSING_FORK;
         rinfs_spin_unlock(&mount->content_lease_lock);
         prepared[prepared_count++] = index;
     }
+
+    /* A retained source or independent mapped cache view needs its own fork
+     * reference protocol. Keep that case retryably busy until the VM and
+     * cache-side owner ledgers can be cloned together. */
+    for (uint32_t index = 0u;
+         index < RINFS_MAX_MMAP_SOURCE_REFERENCES; ++index) {
+        const RinFS_MmapSourceReference* record =
+            &g_rinfs_mmap_source_references[index];
+        if (record->source != NULL &&
+            rinfs_shared_mount_registry_contains_locked(record->mount))
+            goto rollback;
+    }
+
+    /* Close admission on every mount before validating any one mount. This
+     * prevents another process from adding references between the audit and
+     * the later aggregate increments. Existing operations drain via these
+     * shared counters; an active cache or mapping alias remains fail-closed. */
+    for (uint32_t prepared_index = 0u;
+         prepared_index < prepared_count; ++prepared_index) {
+        RinFS_Mount* mount =
+            g_rinfs_shared_mount_registry[prepared[prepared_index]];
+        int valid;
+        rinfs_spin_lock(&mount->content_lease_lock);
+        valid = rinfs_shared_mount_fork_idle_locked(mount) &&
+                rinfs_shared_mount_fork_validate_close_refs_locked(mount);
+        rinfs_spin_unlock(&mount->content_lease_lock);
+        if (!valid) goto rollback;
+    }
+
+    /* The validation pass proved every node and counter has capacity. Once
+     * admission is closed, sibling processes may only retire their own
+     * references, so these per-record increments cannot overflow or lose the
+     * node pinned by this process's active close record. */
+    for (uint32_t prepared_index = 0u;
+         prepared_index < prepared_count; ++prepared_index) {
+        RinFS_Mount* mount =
+            g_rinfs_shared_mount_registry[prepared[prepared_index]];
+        rinfs_spin_lock(&mount->content_lease_lock);
+        for (uint32_t index = 0u; index < RINFS_MAX_CLOSE_REFERENCES; ++index) {
+            const RinFS_CloseReferenceRecord* record =
+                &g_rinfs_close_references[index];
+            RinFS_ContentLeaseNode* node;
+            if (record->in_use != 1u || record->mount != mount) continue;
+            node = rinfs_shared_mount_fork_find_node_locked(
+                mount, record->inode_num, record->inode_generation);
+            if (!node || node->token_generation != record->content_pin_token ||
+                node->open_references == UINT32_MAX ||
+                node->tracked_open_references == UINT32_MAX) {
+                rinfs_spin_unlock(&mount->content_lease_lock);
+                goto rollback;
+            }
+            ++node->open_references;
+            ++node->tracked_open_references;
+            ++applied_per_mount[prepared_index];
+        }
+        rinfs_spin_unlock(&mount->content_lease_lock);
+    }
+    g_rinfs_shared_mount_fork_open_refs_applied = 1u;
     __atomic_store_n(&g_rinfs_shared_mount_fork_prepared, 1u,
                      __ATOMIC_RELEASE);
     return RINFS_OK;
 
 rollback:
-    while (prepared_count != 0u) {
+    for (uint32_t prepared_index = 0u;
+         prepared_index < prepared_count; ++prepared_index) {
         RinFS_Mount* mount =
-            g_rinfs_shared_mount_registry[prepared[--prepared_count]];
+            g_rinfs_shared_mount_registry[prepared[prepared_index]];
+        uint32_t remaining = applied_per_mount[prepared_index];
+        if (!mount || remaining == 0u) continue;
+        rinfs_spin_lock(&mount->content_lease_lock);
+        for (uint32_t index = 0u;
+             index < RINFS_MAX_CLOSE_REFERENCES && remaining != 0u;
+             ++index) {
+            const RinFS_CloseReferenceRecord* record =
+                &g_rinfs_close_references[index];
+            RinFS_ContentLeaseNode* node;
+            if (record->in_use != 1u || record->mount != mount) continue;
+            node = rinfs_shared_mount_fork_find_node_locked(
+                mount, record->inode_num, record->inode_generation);
+            if (!node || node->token_generation != record->content_pin_token ||
+                node->open_references == 0u ||
+                node->tracked_open_references == 0u) {
+                rollback_valid = 0;
+                break;
+            }
+            --node->open_references;
+            --node->tracked_open_references;
+            --remaining;
+        }
+        if (remaining != 0u) rollback_valid = 0;
+        rinfs_spin_unlock(&mount->content_lease_lock);
+    }
+    while (prepared_count != 0u) {
+        uint32_t prepared_index = --prepared_count;
+        RinFS_Mount* mount =
+            g_rinfs_shared_mount_registry[prepared[prepared_index]];
         if (!mount) continue;
         rinfs_spin_lock(&mount->content_lease_lock);
-        if (mount->shared_close_started == 0u)
+        if (rollback_valid && mount->shared_close_started == 0u &&
+            mount->content_lease_closing ==
+                RINFS_CONTENT_LEASE_CLOSING_FORK)
             mount->content_lease_closing = 0u;
         rinfs_spin_unlock(&mount->content_lease_lock);
     }
+    if (__atomic_exchange_n(&g_rinfs_fork_mmap_source_lock_held, 0u,
+                            __ATOMIC_ACQ_REL) != 0u)
+        rinfs_fork_local_unlock(&g_rinfs_mmap_source_lock);
+    if (__atomic_exchange_n(&g_rinfs_fork_close_reference_lock_held, 0u,
+                            __ATOMIC_ACQ_REL) != 0u)
+        rinfs_fork_local_unlock(&g_rinfs_close_reference_lock);
     rinfs_shared_mount_registry_unlock();
     return result;
 }
 
-void rinfs_fork_complete(void) {
+void rinfs_fork_complete(int fork_succeeded) {
+    int rollback_valid = 1;
     if (__atomic_load_n(&g_rinfs_shared_mount_fork_prepared,
                         __ATOMIC_ACQUIRE) == 0u)
         return;
+    if (fork_succeeded == 0 &&
+        g_rinfs_shared_mount_fork_open_refs_applied != 0u) {
+        for (uint32_t mount_index = 0u;
+             mount_index < RINFS_SHARED_MOUNT_REGISTRY_CAPACITY;
+             ++mount_index) {
+            RinFS_Mount* mount =
+                g_rinfs_shared_mount_registry[mount_index];
+            if (!mount) continue;
+            rinfs_spin_lock(&mount->content_lease_lock);
+            for (uint32_t index = 0u;
+                 index < RINFS_MAX_CLOSE_REFERENCES; ++index) {
+                const RinFS_CloseReferenceRecord* record =
+                    &g_rinfs_close_references[index];
+                RinFS_ContentLeaseNode* node;
+                if (record->in_use != 1u || record->mount != mount) continue;
+                node = rinfs_shared_mount_fork_find_node_locked(
+                    mount, record->inode_num, record->inode_generation);
+                if (!node || node->token_generation !=
+                                 record->content_pin_token ||
+                    node->open_references == 0u ||
+                    node->tracked_open_references == 0u) {
+                    rollback_valid = 0;
+                    break;
+                }
+                --node->open_references;
+                --node->tracked_open_references;
+            }
+            rinfs_spin_unlock(&mount->content_lease_lock);
+        }
+    }
     for (uint32_t index = 0u;
          index < RINFS_SHARED_MOUNT_REGISTRY_CAPACITY; ++index) {
         RinFS_Mount* mount = g_rinfs_shared_mount_registry[index];
         if (!mount) continue;
         rinfs_spin_lock(&mount->content_lease_lock);
-        if (mount->shared_close_started == 0u &&
-            mount->shared_lease_released == 0u)
+        if ((fork_succeeded != 0 || rollback_valid != 0) &&
+            mount->shared_close_started == 0u &&
+            mount->shared_lease_released == 0u &&
+            mount->content_lease_closing ==
+                RINFS_CONTENT_LEASE_CLOSING_FORK)
             mount->content_lease_closing = 0u;
         rinfs_spin_unlock(&mount->content_lease_lock);
     }
+    g_rinfs_shared_mount_fork_open_refs_applied = 0u;
     __atomic_store_n(&g_rinfs_shared_mount_fork_prepared, 0u,
                      __ATOMIC_RELEASE);
+    if (__atomic_exchange_n(&g_rinfs_fork_mmap_source_lock_held, 0u,
+                            __ATOMIC_ACQ_REL) != 0u)
+        rinfs_fork_local_unlock(&g_rinfs_mmap_source_lock);
+    if (__atomic_exchange_n(&g_rinfs_fork_close_reference_lock_held, 0u,
+                            __ATOMIC_ACQ_REL) != 0u)
+        rinfs_fork_local_unlock(&g_rinfs_close_reference_lock);
     rinfs_shared_mount_registry_unlock();
 }
 
