@@ -1081,7 +1081,7 @@ static int rinfs_shared_content_lock(RinFS_Mount* mount)
 static int rinfs_shared_content_unlock(RinFS_Mount* mount)
     __attribute__((warn_unused_result));
 #if defined(RINFS_USERLAND_MOUNT_LEASES) && !defined(RIN_KERNEL)
-static void rinfs_shared_content_unlock_best_effort(RinFS_Mount* mount);
+static int rinfs_shared_content_unlock_best_effort(RinFS_Mount* mount);
 #endif
 static void rinfs_keep_first_error(int* first_error, int next_error);
 static int rinfs_content_lease_release(RinFS_Mount* mount, uint64_t ino,
@@ -1786,9 +1786,10 @@ static int rinfs_shared_content_unlock(RinFS_Mount* mount) {
 }
 
 #if defined(RINFS_USERLAND_MOUNT_LEASES) && !defined(RIN_KERNEL)
-static void rinfs_shared_content_unlock_best_effort(RinFS_Mount* mount) {
+static int rinfs_shared_content_unlock_best_effort(RinFS_Mount* mount) {
     int err = rinfs_shared_content_unlock(mount);
     if (mount && err != RINFS_OK) mount->readonly = 1;
+    return err;
 }
 #endif
 
@@ -15387,8 +15388,10 @@ void rinfs_fork_complete(int fork_succeeded) {
                 g_rinfs_shared_mount_registry[mount_index];
             uint32_t owner_row = 0u;
             if (!mount) continue;
-            if (rinfs_shared_owner_query_row(mount, &owner_row) != RINFS_OK)
-                owner_row = 0u;
+            if (rinfs_shared_owner_query_row(mount, &owner_row) != RINFS_OK) {
+                mount->readonly = 1;
+                goto fork_complete_failed;
+            }
             for (uint32_t index = 0u;
                  index < RINFS_MAX_CLOSE_REFERENCES; ++index) {
                 RinFS_CloseReferenceRecord* record =
@@ -15439,7 +15442,8 @@ void rinfs_fork_complete(int fork_succeeded) {
                 --node->open_references;
                 --node->tracked_open_references;
             }
-            (void)rinfs_shared_content_unlock_best_effort(mount);
+            if (rinfs_shared_content_unlock_best_effort(mount) != RINFS_OK)
+                goto fork_complete_failed;
         }
     }
     for (uint32_t index = 0u;
@@ -15458,7 +15462,8 @@ void rinfs_fork_complete(int fork_succeeded) {
             mount->content_lease_closing = 0u;
             mount->content_lease_fork_owner_row = 0u;
         }
-        (void)rinfs_shared_content_unlock_best_effort(mount);
+        if (rinfs_shared_content_unlock_best_effort(mount) != RINFS_OK)
+            goto fork_complete_failed;
     }
     g_rinfs_shared_mount_fork_open_refs_applied = 0u;
     __atomic_store_n(&g_rinfs_shared_mount_fork_prepared, 0u,
