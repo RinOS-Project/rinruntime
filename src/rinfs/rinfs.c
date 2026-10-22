@@ -1061,7 +1061,7 @@ typedef struct {
 } RinFS_MmapSourceReference;
 
 static int rinfs_check_inode_type(uint16_t mode);
-static void rinfs_inode_cache_invalidate(RinFS_Mount* mount, uint64_t ino);
+static int rinfs_inode_cache_invalidate(RinFS_Mount* mount, uint64_t ino);
 static RinFS_ContentLeaseNode* rinfs_content_lease_find(
     RinFS_Mount* mount, uint64_t ino, uint32_t inode_generation);
 static int rinfs_shared_owner_reap_locked(RinFS_Mount* mount);
@@ -1561,7 +1561,9 @@ static int rinfs_inode_table_recover_log_locked(
         return rinfs_inode_table_recovery_fail(mount, err);
     if (rinfs_memcmp(verify, log->data, log->bytes) != 0)
         return rinfs_inode_table_recovery_fail(mount, RINFS_ERR_IO);
-    rinfs_inode_cache_invalidate(mount, 0u);
+    err = rinfs_inode_cache_invalidate(mount, 0u);
+    if (err != RINFS_OK)
+        return rinfs_inode_table_recovery_fail(mount, err);
     __atomic_store_n(&log->state, RINFS_INODE_TABLE_RECOVERY_IDLE,
                      __ATOMIC_RELEASE);
     return RINFS_OK;
@@ -3835,14 +3837,16 @@ static int rinfs_inode_cache_store(RinFS_Mount* mount, uint64_t ino,
     return rinfs_shared_cache_unlock(mount, &cache->lock);
 }
 
-static void rinfs_inode_cache_invalidate(RinFS_Mount* mount, uint64_t ino) {
+static int rinfs_inode_cache_invalidate(RinFS_Mount* mount, uint64_t ino) {
     RinFS_InodeCache* cache;
     uint32_t index;
-    if (!mount || !mount->inode_cache) return;
+    if (!mount || !mount->inode_cache) return RINFS_OK;
     cache = mount->inode_cache;
-    if (rinfs_shared_cache_lock(mount, &cache->lock,
-                                RINFS_SHARED_CACHE_INODE) != RINFS_OK)
-        return;
+    {
+        int err = rinfs_shared_cache_lock(mount, &cache->lock,
+                                          RINFS_SHARED_CACHE_INODE);
+        if (err != RINFS_OK) return err;
+    }
     for (index = 0u; index < RINFS_INODE_CACHE_CAPACITY; ++index) {
         RinFS_InodeCacheEntry* entry = &cache->entries[index];
         if (entry->valid && entry->mount_epoch == mount->mount_epoch &&
@@ -3850,7 +3854,12 @@ static void rinfs_inode_cache_invalidate(RinFS_Mount* mount, uint64_t ino) {
             entry->valid = 0u;
         }
     }
-    rinfs_shared_cache_unlock(mount, &cache->lock);
+    return rinfs_shared_cache_unlock(mount, &cache->lock);
+}
+
+static void rinfs_keep_first_error(int* first_error, int next_error) {
+    if (first_error && *first_error == RINFS_OK && next_error != RINFS_OK)
+        *first_error = next_error;
 }
 
 int rinfs_read_stats(const RinFS_Mount* mount, RinFS_ReadStats* stats_out) {
@@ -8265,14 +8274,19 @@ static int rinfs_inode_write_internal(RinFS_Mount* mount, uint64_t ino,
                 rinfs_memcpy(&committed, buf + offset, sizeof(committed));
                 if (mount->shared_mapping_base &&
                     mount->shared_mount_ready != 0u)
-                    rinfs_inode_cache_invalidate(mount, 0u);
+                    rinfs_keep_first_error(
+                        &cache_error, rinfs_inode_cache_invalidate(mount, 0u));
                 if (rinfs_inode_cache_eligible(mount, &committed))
-                    cache_error = rinfs_inode_cache_store(
-                        mount, ino, &committed);
+                    rinfs_keep_first_error(
+                        &cache_error,
+                        rinfs_inode_cache_store(mount, ino, &committed));
                 else
-                    rinfs_inode_cache_invalidate(mount, ino);
+                    rinfs_keep_first_error(
+                        &cache_error,
+                        rinfs_inode_cache_invalidate(mount, ino));
             } else {
-                rinfs_inode_cache_invalidate(mount, ino);
+                rinfs_keep_first_error(
+                    &cache_error, rinfs_inode_cache_invalidate(mount, ino));
             }
             int unlock_error = rinfs_inode_table_unlock(mount, block);
             if (unlock_error != RINFS_OK &&
@@ -8280,7 +8294,8 @@ static int rinfs_inode_write_internal(RinFS_Mount* mount, uint64_t ino,
                 err = unlock_error;
             if (err == RINFS_OK && cache_error != RINFS_OK)
                 err = cache_error;
-            if (err != RINFS_OK) rinfs_inode_cache_invalidate(mount, ino);
+            if (err != RINFS_OK)
+                (void)rinfs_inode_cache_invalidate(mount, ino);
             rinfs_free(buf);
             return err;
         }
@@ -8324,26 +8339,32 @@ static int rinfs_inode_write_internal(RinFS_Mount* mount, uint64_t ino,
          * retained in the verified inode cache.  Leaving the previous entry
          * live makes the post-free read observe a reclaimed inode. */
         if (mount->shared_mapping_base && mount->shared_mount_ready != 0u)
-            rinfs_inode_cache_invalidate(mount, 0u);
+            rinfs_keep_first_error(
+                &cache_error, rinfs_inode_cache_invalidate(mount, 0u));
         if (rinfs_inode_cache_eligible(mount, &committed))
-            cache_error = rinfs_inode_cache_store(mount, ino, &committed);
+            rinfs_keep_first_error(
+                &cache_error,
+                rinfs_inode_cache_store(mount, ino, &committed));
         else
-            rinfs_inode_cache_invalidate(mount, ino);
+            rinfs_keep_first_error(
+                &cache_error, rinfs_inode_cache_invalidate(mount, ino));
         err = rinfs_inode_table_commit_log_locked(mount, block);
         if (err == RINFS_OK && cache_error != RINFS_OK)
             err = cache_error;
-        if (err != RINFS_OK) rinfs_inode_cache_invalidate(mount, ino);
+        if (err != RINFS_OK)
+            (void)rinfs_inode_cache_invalidate(mount, ino);
     } else {
         /* A failed metadata write cannot leave a previous copy looking
          * authoritative to a later caller.  The next read must go back to
          * the device and report the device's actual result. */
-        rinfs_inode_cache_invalidate(mount, ino);
+        (void)rinfs_inode_cache_invalidate(mount, ino);
     }
     int unlock_error = rinfs_inode_table_unlock(mount, block);
     if (unlock_error != RINFS_OK &&
         (unlock_error != RINFS_ERR_ROFS || err == RINFS_OK))
         err = unlock_error;
-    if (err != RINFS_OK) rinfs_inode_cache_invalidate(mount, ino);
+    if (err != RINFS_OK)
+        (void)rinfs_inode_cache_invalidate(mount, ino);
     rinfs_free(buf);
     return err;
 }
@@ -15969,7 +15990,8 @@ int rinfs_mount_set_device_flags(RinFS_Mount* mount, uint32_t device_flags) {
 
 void rinfs_mount_set_epoch(RinFS_Mount* mount, uint64_t mount_epoch) {
     if (!mount) return;
-    rinfs_inode_cache_invalidate(mount, 0u);
+    /* This legacy void API cannot report an inode-cache release failure. */
+    (void)rinfs_inode_cache_invalidate(mount, 0u);
     mount->mount_epoch = mount_epoch;
 }
 
