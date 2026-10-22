@@ -1811,14 +1811,15 @@ static int rinfs_shared_cache_lock(RinFS_Mount* mount,
     return RINFS_OK;
 }
 
-static void rinfs_shared_cache_unlock(RinFS_Mount* mount,
-                                      volatile uint32_t* lock) {
+static int rinfs_shared_cache_unlock(RinFS_Mount* mount,
+                                     volatile uint32_t* lock) {
+    if (!lock) return RINFS_ERR_INVAL;
     if (!mount || !mount->shared_mapping_base ||
         mount->shared_mount_ready == 0u) {
         rinfs_spin_unlock(lock);
-        return;
+        return RINFS_OK;
     }
-    (void)rinfs_shared_lock_release(mount, lock);
+    return rinfs_shared_lock_release(mount, lock);
 }
 
 /* Page-cache contention telemetry is enabled only in performance-trace
@@ -3839,10 +3840,11 @@ static void rinfs_inode_cache_invalidate(RinFS_Mount* mount, uint64_t ino) {
     rinfs_shared_cache_unlock(mount, &cache->lock);
 }
 
-void rinfs_read_stats(const RinFS_Mount* mount, RinFS_ReadStats* stats_out) {
-    if (!stats_out) return;
+int rinfs_read_stats(const RinFS_Mount* mount, RinFS_ReadStats* stats_out) {
+    int err;
+    if (!stats_out) return RINFS_ERR_INVAL;
     rinfs_memset(stats_out, 0, sizeof(*stats_out));
-    if (!mount) return;
+    if (!mount) return RINFS_ERR_INVAL;
     rinfs_spin_lock(&g_rinfs_coalesced_stats_lock);
     stats_out->coalesced_read_ops = mount->coalesced_read_ops;
     stats_out->coalesced_read_bytes = mount->coalesced_read_bytes;
@@ -3850,28 +3852,31 @@ void rinfs_read_stats(const RinFS_Mount* mount, RinFS_ReadStats* stats_out) {
     stats_out->coalesced_write_bytes = mount->coalesced_write_bytes;
     rinfs_spin_unlock(&g_rinfs_coalesced_stats_lock);
     if (mount->dentry_cache) {
-        if (rinfs_shared_cache_lock((RinFS_Mount*)mount,
-                                    &mount->dentry_cache->lock,
-                                    RINFS_SHARED_CACHE_DENTRY) != RINFS_OK)
-            return;
+        err = rinfs_shared_cache_lock((RinFS_Mount*)mount,
+                                      &mount->dentry_cache->lock,
+                                      RINFS_SHARED_CACHE_DENTRY);
+        if (err != RINFS_OK) goto failed;
         stats_out->dentry_hits = mount->dentry_cache->hits;
         stats_out->dentry_misses = mount->dentry_cache->misses;
-        rinfs_shared_cache_unlock((RinFS_Mount*)mount,
-                                  &mount->dentry_cache->lock);
+        err = rinfs_shared_cache_unlock((RinFS_Mount*)mount,
+                                        &mount->dentry_cache->lock);
+        if (err != RINFS_OK) goto failed;
     }
     if (mount->inode_cache) {
-        if (rinfs_shared_cache_lock((RinFS_Mount*)mount,
-                                    &mount->inode_cache->lock,
-                                    RINFS_SHARED_CACHE_INODE) != RINFS_OK)
-            return;
+        err = rinfs_shared_cache_lock((RinFS_Mount*)mount,
+                                      &mount->inode_cache->lock,
+                                      RINFS_SHARED_CACHE_INODE);
+        if (err != RINFS_OK) goto failed;
         stats_out->inode_cache_hits = mount->inode_cache->hits;
         stats_out->inode_cache_misses = mount->inode_cache->misses;
         stats_out->inode_cache_evictions = mount->inode_cache->evictions;
-        rinfs_shared_cache_unlock((RinFS_Mount*)mount,
-                                  &mount->inode_cache->lock);
+        err = rinfs_shared_cache_unlock((RinFS_Mount*)mount,
+                                        &mount->inode_cache->lock);
+        if (err != RINFS_OK) goto failed;
     }
     if (mount->page_cache) {
-        if (rinfs_page_cache_lock(mount->page_cache) != RINFS_OK) return;
+        err = rinfs_page_cache_lock(mount->page_cache);
+        if (err != RINFS_OK) goto failed;
         stats_out->page_cache_hits = mount->page_cache->hits;
         stats_out->page_cache_misses = mount->page_cache->misses;
         stats_out->page_cache_dirty_pages = mount->page_cache->dirty_pages;
@@ -3894,12 +3899,19 @@ void rinfs_read_stats(const RinFS_Mount* mount, RinFS_ReadStats* stats_out) {
             mount->page_cache->lock_wait_count;
         stats_out->page_cache_lock_wait_cycles =
             mount->page_cache->lock_wait_cycles;
-        (void)rinfs_page_cache_unlock(mount->page_cache);
+        err = rinfs_page_cache_unlock(mount->page_cache);
+        if (err != RINFS_OK) goto failed;
     }
+    return RINFS_OK;
+
+failed:
+    rinfs_memset(stats_out, 0, sizeof(*stats_out));
+    return err;
 }
 
-void rinfs_read_stats_reset(RinFS_Mount* mount) {
-    if (!mount) return;
+int rinfs_read_stats_reset(RinFS_Mount* mount) {
+    int err;
+    if (!mount) return RINFS_ERR_INVAL;
     rinfs_spin_lock(&g_rinfs_coalesced_stats_lock);
     mount->coalesced_read_ops = 0u;
     mount->coalesced_read_bytes = 0u;
@@ -3907,28 +3919,27 @@ void rinfs_read_stats_reset(RinFS_Mount* mount) {
     mount->coalesced_write_bytes = 0u;
     rinfs_spin_unlock(&g_rinfs_coalesced_stats_lock);
     if (mount->dentry_cache) {
-        if (rinfs_shared_cache_lock((RinFS_Mount*)mount,
-                                    &mount->dentry_cache->lock,
-                                    RINFS_SHARED_CACHE_DENTRY) != RINFS_OK)
-            return;
+        err = rinfs_shared_cache_lock(mount, &mount->dentry_cache->lock,
+                                      RINFS_SHARED_CACHE_DENTRY);
+        if (err != RINFS_OK) return err;
         mount->dentry_cache->hits = 0u;
         mount->dentry_cache->misses = 0u;
-        rinfs_shared_cache_unlock((RinFS_Mount*)mount,
-                                  &mount->dentry_cache->lock);
+        err = rinfs_shared_cache_unlock(mount, &mount->dentry_cache->lock);
+        if (err != RINFS_OK) return err;
     }
     if (mount->inode_cache) {
-        if (rinfs_shared_cache_lock((RinFS_Mount*)mount,
-                                    &mount->inode_cache->lock,
-                                    RINFS_SHARED_CACHE_INODE) != RINFS_OK)
-            return;
+        err = rinfs_shared_cache_lock(mount, &mount->inode_cache->lock,
+                                      RINFS_SHARED_CACHE_INODE);
+        if (err != RINFS_OK) return err;
         mount->inode_cache->hits = 0u;
         mount->inode_cache->misses = 0u;
         mount->inode_cache->evictions = 0u;
-        rinfs_shared_cache_unlock((RinFS_Mount*)mount,
-                                  &mount->inode_cache->lock);
+        err = rinfs_shared_cache_unlock(mount, &mount->inode_cache->lock);
+        if (err != RINFS_OK) return err;
     }
     if (mount->page_cache) {
-        if (rinfs_page_cache_lock(mount->page_cache) != RINFS_OK) return;
+        err = rinfs_page_cache_lock(mount->page_cache);
+        if (err != RINFS_OK) return err;
         mount->page_cache->hits = 0u;
         mount->page_cache->misses = 0u;
         mount->page_cache->evictions = 0u;
@@ -3943,8 +3954,10 @@ void rinfs_read_stats_reset(RinFS_Mount* mount) {
         mount->page_cache->lock_wait_cycles = 0u;
         for (uint32_t index = 0u; index < RINFS_PAGE_CACHE_CAPACITY; ++index)
             mount->page_cache->entries[index].readahead = 0u;
-        (void)rinfs_page_cache_unlock(mount->page_cache);
+        err = rinfs_page_cache_unlock(mount->page_cache);
+        if (err != RINFS_OK) return err;
     }
+    return RINFS_OK;
 }
 
 /* -------------------------------------------------------------------------

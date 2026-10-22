@@ -1129,10 +1129,13 @@ typedef struct {
 } RinFS_ReadStats;
 
 /* Diagnostics are monotonic per mount and intentionally do not affect I/O
- * correctness.  They let boot probes prove that the cache/coalescing fast
- * paths were actually exercised rather than inferring it from wall time. */
-void rinfs_read_stats(const RinFS_Mount* mount, RinFS_ReadStats* stats_out);
-void rinfs_read_stats_reset(RinFS_Mount* mount);
+ * correctness. They let boot probes prove that the cache/coalescing fast
+ * paths were actually exercised rather than inferring it from wall time.
+ * read_stats clears stats_out and returns an error if a cache lock operation
+ * fails. reset may have reset earlier counter groups before a later lock
+ * failure is returned. */
+int rinfs_read_stats(const RinFS_Mount* mount, RinFS_ReadStats* stats_out);
+int rinfs_read_stats_reset(RinFS_Mount* mount);
 /* Reclaim up to max_entries clean, unreferenced file pages. Dirty and
  * in-flight entries are never discarded. */
 int rinfs_page_cache_reclaim(RinFS_Mount* mount, uint32_t max_entries,
