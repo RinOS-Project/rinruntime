@@ -12,13 +12,13 @@ extern "C" {
 #endif
 
 /* Reads the exact bounded cleanup snapshot after fresh local physical
- * confirmation. The returned count includes all unattributed files, while
- * candidates contain only safe canonical files with missing or invalid PDM1
- * metadata. Valid PDM1 sidecars are never returned as purge candidates. */
+ * confirmation. Candidates contain either safe canonical dump files with
+ * missing/invalid PDM1 metadata or only the matching PDM1 sidecar for an
+ * unsafe dump. Unsafe dump objects are never returned for deletion. */
 RinRuntimeCrashServiceResult
 rinruntime_crash_service_get_pending_dump_cleanup_with_consent(
     uint32_t expected_service_slot,
-    RinCrashServicePendingDumpCleanupStatusV1* status_out);
+    RinCrashServicePendingDumpCleanupStatusV2* status_out);
 
 /* Removes only the exact snapshot presented to the administrator. A changed
  * set returns STALE_HISTORY_STATUS so Settings must request and display a new
@@ -26,7 +26,7 @@ rinruntime_crash_service_get_pending_dump_cleanup_with_consent(
 RinRuntimeCrashServiceResult
 rinruntime_crash_service_purge_pending_dumps_with_consent(
     uint32_t expected_service_slot,
-    const RinCrashServicePendingDumpCleanupStatusV1* confirmed_status,
+    const RinCrashServicePendingDumpCleanupStatusV2* confirmed_status,
     uint32_t* removed_count_out);
 
 #ifdef __cplusplus

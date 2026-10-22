@@ -1194,7 +1194,7 @@ static RinRuntimeCrashServiceResult crash_service_pending_exchange(
     union {
         RinCrashServicePendingDumpExportV1 pending_export;
         RinCrashServicePendingDumpDeleteV1 pending_delete;
-        RinCrashServicePendingDumpCleanupRequestV1 cleanup;
+        RinCrashServicePendingDumpCleanupRequestV2 cleanup;
     } payload = {};
     struct sockaddr_un address = {};
     const size_t path_size = sizeof(RINRUNTIME_CRASH_SERVICE_PATH) - 1u;
@@ -1493,18 +1493,20 @@ rinruntime_crash_service_export_pending_minidump_with_consent(
 }
 
 static int crash_service_cleanup_candidate_less(
-    const RinCrashServicePendingDumpCleanupCandidateV1* left,
-    const RinCrashServicePendingDumpCleanupCandidateV1* right)
+    const RinCrashServicePendingDumpCleanupCandidateV2* left,
+    const RinCrashServicePendingDumpCleanupCandidateV2* right)
 {
     if (left->boot_id_high != right->boot_id_high)
         return left->boot_id_high < right->boot_id_high;
     if (left->boot_id_low != right->boot_id_low)
         return left->boot_id_low < right->boot_id_low;
-    return left->queue_sequence < right->queue_sequence;
+    if (left->queue_sequence != right->queue_sequence)
+        return left->queue_sequence < right->queue_sequence;
+    return left->kind < right->kind;
 }
 
 static int crash_service_cleanup_status_valid(
-    const RinCrashServicePendingDumpCleanupStatusV1* status)
+    const RinCrashServicePendingDumpCleanupStatusV2* status)
 {
     uint16_t index;
     if (status == NULL || status->struct_size != sizeof(*status) ||
@@ -1515,7 +1517,9 @@ static int crash_service_cleanup_status_valid(
         status->unattributed_count < status->total_candidate_count ||
         (status->flags &
          ~RIN_CRASH_SERVICE_PENDING_DUMP_CLEANUP_FLAG_MASK) != 0u ||
-        status->reserved0 != 0u || status->reserved[0] != 0u ||
+        status->metadata_sidecar_candidate_count >
+            status->total_candidate_count ||
+        status->reserved[0] != 0u ||
         status->reserved[1] != 0u)
         return 0;
     if (status->total_candidate_count >
@@ -1529,17 +1533,32 @@ static int crash_service_cleanup_status_valid(
                status->flags != 0u) {
         return 0;
     }
+    uint16_t sidecar_candidate_count = 0u;
     for (index = 0u; index < status->candidate_count; ++index) {
-        const RinCrashServicePendingDumpCleanupCandidateV1* candidate =
+        const RinCrashServicePendingDumpCleanupCandidateV2* candidate =
             &status->candidates[index];
         if ((candidate->boot_id_high == 0u &&
              candidate->boot_id_low == 0u) ||
             candidate->queue_sequence == 0u || candidate->file_inode == 0u ||
-            candidate->reserved0 != 0u || candidate->reserved1 != 0u ||
-            candidate->reserved2 != 0u || candidate->reserved3 != 0u ||
+            candidate->kind >
+                RIN_CRASH_SERVICE_PENDING_DUMP_CLEANUP_KIND_METADATA_SIDECAR ||
+            candidate->reserved1 != 0u || candidate->reserved2 != 0u ||
+            candidate->reserved3 != 0u ||
+            (candidate->kind ==
+                 RIN_CRASH_SERVICE_PENDING_DUMP_CLEANUP_KIND_DUMP &&
+             (candidate->dump_device != 0u || candidate->dump_inode != 0u ||
+              candidate->dump_size != 0u ||
+              candidate->dump_mtime_seconds != 0u ||
+              candidate->dump_ctime_seconds != 0u)) ||
+            (candidate->kind ==
+                 RIN_CRASH_SERVICE_PENDING_DUMP_CLEANUP_KIND_METADATA_SIDECAR &&
+             candidate->dump_inode == 0u) ||
             (index != 0u && !crash_service_cleanup_candidate_less(
                 &status->candidates[index - 1u], candidate)))
             return 0;
+        if (candidate->kind ==
+            RIN_CRASH_SERVICE_PENDING_DUMP_CLEANUP_KIND_METADATA_SIDECAR)
+            ++sidecar_candidate_count;
     }
     for (; index < RIN_CRASH_SERVICE_PENDING_DUMP_CLEANUP_MAX_CANDIDATES;
          ++index) {
@@ -1548,13 +1567,17 @@ static int crash_service_cleanup_status_valid(
              byte < sizeof(status->candidates[index]); ++byte)
             if (bytes[byte] != 0u) return 0;
     }
-    return 1;
+    return sidecar_candidate_count <=
+               status->metadata_sidecar_candidate_count &&
+           (uint32_t)(status->candidate_count - sidecar_candidate_count) <=
+               status->total_candidate_count -
+                   status->metadata_sidecar_candidate_count;
 }
 
 RinRuntimeCrashServiceResult
 rinruntime_crash_service_get_pending_dump_cleanup_with_consent(
     uint32_t expected_service_slot,
-    RinCrashServicePendingDumpCleanupStatusV1* status_out)
+    RinCrashServicePendingDumpCleanupStatusV2* status_out)
 {
     uint32_t response_size = 0u;
     RinRuntimeCrashServiceResult result;
@@ -1578,13 +1601,13 @@ rinruntime_crash_service_get_pending_dump_cleanup_with_consent(
 RinRuntimeCrashServiceResult
 rinruntime_crash_service_purge_pending_dumps_with_consent(
     uint32_t expected_service_slot,
-    const RinCrashServicePendingDumpCleanupStatusV1* confirmed_status,
+    const RinCrashServicePendingDumpCleanupStatusV2* confirmed_status,
     uint32_t* removed_count_out)
 {
-    RinCrashServicePendingDumpCleanupRequestV1 request = {};
-    RinCrashServicePendingDumpCleanupResultV1 reply = {};
+    RinCrashServicePendingDumpCleanupRequestV2 request = {};
+    RinCrashServicePendingDumpCleanupResultV2 reply = {};
     const size_t tail_offset = offsetof(
-        RinCrashServicePendingDumpCleanupRequestV1, version);
+        RinCrashServicePendingDumpCleanupRequestV2, version);
     uint32_t response_size = 0u;
     RinRuntimeCrashServiceResult result;
     if (removed_count_out != NULL) *removed_count_out = 0u;
