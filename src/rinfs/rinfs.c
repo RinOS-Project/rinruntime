@@ -15622,6 +15622,7 @@ static int rinfs_superblock_recovery_commit_locked(
 static int superblock_writeback(RinFS_Mount* mount) {
     RinFS_Superblock candidate;
     uint8_t sb_buf[RINFS_SECTOR_SIZE * 2];
+    uint8_t verify[RINFS_SECTOR_SIZE * 2];
     int result;
 
     if (!mount || !mount->mounted) return RINFS_ERR_INVAL;
@@ -15635,6 +15636,11 @@ static int superblock_writeback(RinFS_Mount* mount) {
     rinfs_memcpy(sb_buf, &candidate, sizeof(candidate));
     result = rinfs_superblock_recovery_prepare_locked(mount, &candidate);
     if (result == RINFS_OK) result = disk_write(mount, 0, 2, sb_buf);
+    if (result == RINFS_OK) result = disk_flush(mount);
+    if (result == RINFS_OK) result = disk_read(mount, 0, 2, verify);
+    if (result == RINFS_OK &&
+        rinfs_memcmp(verify, &candidate, sizeof(candidate)) != 0)
+        result = RINFS_ERR_IO;
     if (result == RINFS_OK) {
         mount->sb.s_checksum = candidate.s_checksum;
         result = rinfs_superblock_recovery_commit_locked(mount, &candidate);
