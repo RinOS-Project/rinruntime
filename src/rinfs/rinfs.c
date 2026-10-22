@@ -544,7 +544,9 @@ typedef struct {
     uint64_t block;
     uint32_t checksum;
     uint32_t owner_row;
+    uint32_t owner_lock_generation;
     uint64_t owner_cookie;
+    uint32_t header_checksum;
     uint8_t data[RINFS_PAGE_CACHE_PAGE_SIZE];
 } RinFS_InodeTableRecoveryLog;
 
@@ -1387,9 +1389,9 @@ static void rinfs_inode_allocation_unlock(RinFS_Mount* mount) {
     rinfs_shared_lock_release(&mount->inode_allocation_lock);
 }
 
-static void rinfs_inode_table_recovery_fail(RinFS_Mount* mount) {
+static int rinfs_inode_table_recovery_fail(RinFS_Mount* mount, int error) {
     if (mount) mount->readonly = 1;
-    __builtin_trap();
+    return error == RINFS_OK ? RINFS_ERR_CORRUPT : error;
 }
 
 static RinFS_InodeTableRecoveryLog* rinfs_inode_table_log(
@@ -1403,8 +1405,16 @@ static RinFS_InodeTableRecoveryLog* rinfs_inode_table_log(
     return &logs[lock_index];
 }
 
-static void rinfs_inode_table_recover_log_locked(
-    RinFS_Mount* mount, uint32_t lock_index) {
+static uint32_t rinfs_inode_table_log_header_checksum(
+    const RinFS_InodeTableRecoveryLog* log) {
+    return rinfs_checksum(
+        &log->bytes,
+        (uint32_t)(offsetof(RinFS_InodeTableRecoveryLog, header_checksum) -
+                   offsetof(RinFS_InodeTableRecoveryLog, bytes)));
+}
+
+static int rinfs_inode_table_recover_log_locked(
+    RinFS_Mount* mount, uint32_t lock_index, uint32_t owner_token) {
     RinFS_InodeTableRecoveryLog* log =
         rinfs_inode_table_log(mount, lock_index);
     uint32_t state;
@@ -1413,67 +1423,107 @@ static void rinfs_inode_table_recover_log_locked(
     uint8_t verify[RINFS_PAGE_CACHE_PAGE_SIZE];
     int err;
     if (!log || !mount || !mount->mounted)
-        rinfs_inode_table_recovery_fail(mount);
+        return rinfs_inode_table_recovery_fail(
+            mount, mount ? RINFS_ERR_CORRUPT : RINFS_ERR_INVAL);
     state = __atomic_load_n(&log->state, __ATOMIC_ACQUIRE);
-    if (state == RINFS_INODE_TABLE_RECOVERY_IDLE) return;
-    if (mount->readonly || state != RINFS_INODE_TABLE_RECOVERY_READY ||
+    if (state == RINFS_INODE_TABLE_RECOVERY_IDLE) return RINFS_OK;
+    if (mount->readonly)
+        return rinfs_inode_table_recovery_fail(mount, RINFS_ERR_ROFS);
+    if (state != RINFS_INODE_TABLE_RECOVERY_READY ||
         log->bytes != mount->sb.s_block_size ||
         log->bytes > sizeof(log->data) ||
+        log->header_checksum !=
+            rinfs_inode_table_log_header_checksum(log) ||
         log->checksum != rinfs_checksum(log->data, log->bytes) ||
         mount->sb.s_inode_size == 0u ||
         mount->sb.s_block_size % mount->sb.s_inode_size != 0u)
-        rinfs_inode_table_recovery_fail(mount);
+        return rinfs_inode_table_recovery_fail(mount,
+                                               RINFS_ERR_CORRUPT);
+    if (log->owner_row == 0u ||
+        log->owner_row > RINFS_SHARED_OWNER_CAPACITY ||
+        log->owner_lock_generation == 0u ||
+        log->owner_lock_generation >
+            RINFS_SHARED_LOCK_OWNER_GENERATION_MASK ||
+        log->owner_cookie == 0u ||
+        (owner_token & RINFS_SHARED_LOCK_OWNER_TAG) == 0u ||
+        (owner_token & RINFS_SHARED_LOCK_OWNER_ROW_MASK) != log->owner_row ||
+        ((owner_token >> RINFS_SHARED_LOCK_OWNER_GENERATION_SHIFT) &
+         RINFS_SHARED_LOCK_OWNER_GENERATION_MASK) !=
+            log->owner_lock_generation ||
+        !rinfs_shared_owner_ledger_valid(mount) ||
+        log->owner_cookie != mount->shared_owner_ledger
+            ->owners[log->owner_row - 1u].owner_cookie)
+        return rinfs_inode_table_recovery_fail(mount,
+                                               RINFS_ERR_CORRUPT);
     inodes_per_block = mount->sb.s_block_size / mount->sb.s_inode_size;
-    if (inodes_per_block == 0u) rinfs_inode_table_recovery_fail(mount);
-    table_blocks = (mount->sb.s_inode_count + inodes_per_block - 1u) /
-                   inodes_per_block;
+    if (inodes_per_block == 0u)
+        return rinfs_inode_table_recovery_fail(mount,
+                                               RINFS_ERR_CORRUPT);
+    table_blocks = mount->sb.s_inode_count / inodes_per_block;
+    if (mount->sb.s_inode_count % inodes_per_block != 0u) table_blocks++;
     if (log->block < mount->sb.s_inode_table ||
         log->block - mount->sb.s_inode_table >= table_blocks ||
         (log->block & (RINFS_INODE_TABLE_LOCK_COUNT - 1u)) != lock_index)
-        rinfs_inode_table_recovery_fail(mount);
+        return rinfs_inode_table_recovery_fail(mount,
+                                               RINFS_ERR_CORRUPT);
 
     err = rinfs_block_write(mount, log->block, log->data);
     if (err == RINFS_OK) err = disk_flush(mount);
     if (err == RINFS_OK)
         err = rinfs_block_read(mount, log->block, verify);
-    if (err != RINFS_OK ||
-        rinfs_memcmp(verify, log->data, log->bytes) != 0)
-        rinfs_inode_table_recovery_fail(mount);
+    if (err != RINFS_OK)
+        return rinfs_inode_table_recovery_fail(mount, err);
+    if (rinfs_memcmp(verify, log->data, log->bytes) != 0)
+        return rinfs_inode_table_recovery_fail(mount, RINFS_ERR_IO);
     rinfs_inode_cache_invalidate(mount, 0u);
     __atomic_store_n(&log->state, RINFS_INODE_TABLE_RECOVERY_IDLE,
                      __ATOMIC_RELEASE);
+    return RINFS_OK;
 }
 
-static void rinfs_inode_table_lock(RinFS_Mount* mount, uint64_t block) {
+static int rinfs_inode_table_lock(RinFS_Mount* mount, uint64_t block) {
     uint32_t lock_index = (uint32_t)(block &
         (RINFS_INODE_TABLE_LOCK_COUNT - 1u));
     volatile uint32_t* lock;
-    if (!mount) return;
+    if (!mount) return RINFS_ERR_INVAL;
     lock = &mount->inode_table_locks[lock_index];
     if (!mount->shared_mapping_base || mount->shared_mount_ready == 0u) {
         rinfs_spin_lock(lock);
-        return;
+        return RINFS_OK;
     }
     int recovered = 0;
-    rinfs_shared_lock_acquire(mount, lock, &recovered, NULL);
-    (void)recovered;
-    rinfs_inode_table_recover_log_locked(mount, lock_index);
+    uint32_t owner_token = 0u;
+    rinfs_shared_lock_acquire(mount, lock, &recovered, &owner_token);
+    if (!recovered) owner_token = rinfs_shared_lock_token(mount);
+    int err = rinfs_inode_table_recover_log_locked(
+        mount, lock_index, owner_token);
+    if (err != RINFS_OK) rinfs_shared_lock_release(lock);
+    return err;
 }
 
-static void rinfs_inode_table_unlock(RinFS_Mount* mount, uint64_t block) {
+static int rinfs_inode_table_unlock(RinFS_Mount* mount, uint64_t block) {
     uint32_t lock_index = (uint32_t)(block &
         (RINFS_INODE_TABLE_LOCK_COUNT - 1u));
     volatile uint32_t* lock;
-    if (!mount) return;
+    if (!mount) return RINFS_ERR_INVAL;
     lock = &mount->inode_table_locks[lock_index];
     if (!mount->shared_mapping_base || mount->shared_mount_ready == 0u) {
         rinfs_spin_unlock(lock);
-        return;
+        return RINFS_OK;
     }
     /* A failed device write leaves a redo record. Retry it before exposing the
      * lock to another inode-table reader or writer. */
-    rinfs_inode_table_recover_log_locked(mount, lock_index);
+    int err = rinfs_inode_table_recover_log_locked(
+        mount, lock_index, rinfs_shared_lock_token(mount));
     rinfs_shared_lock_release(lock);
+    return err;
+}
+
+static int rinfs_inode_table_unlock_status(RinFS_Mount* mount,
+                                            uint64_t block,
+                                            int operation_error) {
+    int unlock_error = rinfs_inode_table_unlock(mount, block);
+    return operation_error == RINFS_OK ? unlock_error : operation_error;
 }
 
 static int rinfs_inode_table_write_block_locked(
@@ -1482,6 +1532,8 @@ static int rinfs_inode_table_write_block_locked(
         (RINFS_INODE_TABLE_LOCK_COUNT - 1u));
     RinFS_InodeTableRecoveryLog* log;
     uint32_t row = 0u;
+    uint32_t owner_token;
+    uint32_t owner_lock_generation;
     int err;
     if (!mount || !data) return RINFS_ERR_INVAL;
     if (!mount->shared_mapping_base || mount->shared_mount_ready == 0u)
@@ -1492,36 +1544,70 @@ static int rinfs_inode_table_write_block_locked(
             RINFS_INODE_TABLE_RECOVERY_IDLE ||
         rinfs_shared_owner_query_row(mount, &row) != RINFS_OK || row == 0u ||
         row > RINFS_SHARED_OWNER_CAPACITY)
-        rinfs_inode_table_recovery_fail(mount);
+        return rinfs_inode_table_recovery_fail(mount, RINFS_ERR_CORRUPT);
+    owner_token = rinfs_shared_lock_token(mount);
+    owner_lock_generation =
+        (owner_token >> RINFS_SHARED_LOCK_OWNER_GENERATION_SHIFT) &
+        RINFS_SHARED_LOCK_OWNER_GENERATION_MASK;
+    if ((owner_token & RINFS_SHARED_LOCK_OWNER_TAG) == 0u ||
+        (owner_token & RINFS_SHARED_LOCK_OWNER_ROW_MASK) != row ||
+        owner_lock_generation == 0u)
+        return rinfs_inode_table_recovery_fail(mount, RINFS_ERR_STALE);
     log->block = block;
     log->bytes = mount->sb.s_block_size;
     log->owner_row = row;
+    log->owner_lock_generation = owner_lock_generation;
     log->owner_cookie =
         mount->shared_owner_ledger->owners[row - 1u].owner_cookie;
-    if (log->owner_cookie == 0u) rinfs_inode_table_recovery_fail(mount);
+    if (log->owner_cookie == 0u)
+        return rinfs_inode_table_recovery_fail(mount, RINFS_ERR_STALE);
     rinfs_memcpy(log->data, data, log->bytes);
     log->checksum = rinfs_checksum(log->data, log->bytes);
+    log->header_checksum = rinfs_inode_table_log_header_checksum(log);
     __atomic_store_n(&log->state, RINFS_INODE_TABLE_RECOVERY_READY,
                      __ATOMIC_RELEASE);
     err = rinfs_block_write(mount, block, data);
     return err;
 }
 
-static void rinfs_inode_table_commit_log_locked(RinFS_Mount* mount,
-                                                 uint64_t block) {
+static int rinfs_inode_table_commit_log_locked(RinFS_Mount* mount,
+                                                uint64_t block) {
     uint32_t lock_index = (uint32_t)(block &
         (RINFS_INODE_TABLE_LOCK_COUNT - 1u));
+    uint32_t owner_token;
+    uint32_t owner_row;
+    uint32_t owner_lock_generation;
     RinFS_InodeTableRecoveryLog* log;
     if (!mount || !mount->shared_mapping_base ||
         mount->shared_mount_ready == 0u)
-        return;
+        return RINFS_OK;
+    owner_token = rinfs_shared_lock_token(mount);
+    owner_row = owner_token & RINFS_SHARED_LOCK_OWNER_ROW_MASK;
+    owner_lock_generation =
+        (owner_token >> RINFS_SHARED_LOCK_OWNER_GENERATION_SHIFT) &
+        RINFS_SHARED_LOCK_OWNER_GENERATION_MASK;
     log = rinfs_inode_table_log(mount, lock_index);
     if (!log || __atomic_load_n(&log->state, __ATOMIC_ACQUIRE) !=
                     RINFS_INODE_TABLE_RECOVERY_READY ||
-        log->block != block)
-        rinfs_inode_table_recovery_fail(mount);
+        log->block != block ||
+        log->bytes != mount->sb.s_block_size ||
+        log->bytes > sizeof(log->data) ||
+        log->header_checksum !=
+            rinfs_inode_table_log_header_checksum(log) ||
+        log->checksum != rinfs_checksum(log->data, log->bytes) ||
+        (owner_token & RINFS_SHARED_LOCK_OWNER_TAG) == 0u ||
+        owner_row == 0u || owner_row > RINFS_SHARED_OWNER_CAPACITY ||
+        owner_lock_generation == 0u ||
+        log->owner_row != owner_row ||
+        log->owner_lock_generation != owner_lock_generation ||
+        !rinfs_shared_owner_ledger_valid(mount) ||
+        log->owner_cookie != mount->shared_owner_ledger
+            ->owners[owner_row - 1u].owner_cookie)
+        return rinfs_inode_table_recovery_fail(mount,
+                                               RINFS_ERR_CORRUPT);
     __atomic_store_n(&log->state, RINFS_INODE_TABLE_RECOVERY_IDLE,
                      __ATOMIC_RELEASE);
+    return RINFS_OK;
 }
 
 static int rinfs_shared_owner_has_dead_row(RinFS_Mount* mount) {
@@ -7612,6 +7698,7 @@ int rinfs_inode_copy_persistent_flags(RinFS_Mount* source_mount,
 
 int rinfs_inode_read(RinFS_Mount* mount, uint64_t ino, RinFS_Inode* inode) {
     int shared_guard = 0;
+    int unlock_error;
     int err;
     uint32_t inode_size;
     uint32_t block_size;
@@ -7640,25 +7727,31 @@ int rinfs_inode_read(RinFS_Mount* mount, uint64_t ino, RinFS_Inode* inode) {
     buf = (uint8_t*)rinfs_malloc(block_size);
     if (!buf) return RINFS_ERR_NOMEM;
 
-    rinfs_inode_table_lock(mount, block);
-    shared_guard = mount->shared_mapping_base &&
-                   mount->shared_mount_ready != 0u;
-    if (shared_guard && rinfs_inode_cache_lookup(mount, ino, inode)) {
-        rinfs_inode_table_unlock(mount, block);
-        rinfs_free(buf);
-        return RINFS_OK;
-    }
-    err = rinfs_block_read(mount, block, buf);
+    err = rinfs_inode_table_lock(mount, block);
     if (err != RINFS_OK) {
-        rinfs_inode_table_unlock(mount, block);
         rinfs_free(buf);
         return err;
     }
-    
+    shared_guard = mount->shared_mapping_base &&
+                   mount->shared_mount_ready != 0u;
+    if (shared_guard) {
+        RinFS_Inode cached;
+        if (rinfs_inode_cache_lookup(mount, ino, &cached)) {
+            unlock_error = rinfs_inode_table_unlock(mount, block);
+            if (unlock_error == RINFS_OK) *inode = cached;
+            rinfs_free(buf);
+            return unlock_error;
+        }
+    }
+    err = rinfs_block_read(mount, block, buf);
+    unlock_error = rinfs_inode_table_unlock_status(mount, block, err);
+    if (unlock_error != RINFS_OK) {
+        rinfs_free(buf);
+        return unlock_error;
+    }
     rinfs_memcpy(inode, buf + offset, sizeof(RinFS_Inode));
-    rinfs_inode_table_unlock(mount, block);
     rinfs_free(buf);
-    if (err == RINFS_OK) rinfs_inode_cache_store(mount, ino, inode);
+    rinfs_inode_cache_store(mount, ino, inode);
     return RINFS_OK;
 }
 
@@ -7686,10 +7779,14 @@ static int rinfs_inode_write_internal(RinFS_Mount* mount, uint64_t ino,
     uint8_t* buf = (uint8_t*)rinfs_malloc(block_size);
     if (!buf) return RINFS_ERR_NOMEM;
     
-    rinfs_inode_table_lock(mount, block);
-    int err = rinfs_block_read(mount, block, buf);
+    int err = rinfs_inode_table_lock(mount, block);
     if (err != RINFS_OK) {
-        rinfs_inode_table_unlock(mount, block);
+        rinfs_free(buf);
+        return err;
+    }
+    err = rinfs_block_read(mount, block, buf);
+    if (err != RINFS_OK) {
+        err = rinfs_inode_table_unlock_status(mount, block, err);
         rinfs_free(buf);
         return err;
     }
@@ -7699,9 +7796,10 @@ static int rinfs_inode_write_internal(RinFS_Mount* mount, uint64_t ino,
         RinFS_Inode current;
         rinfs_memcpy(&current, buf + offset, sizeof(current));
         if (current.i_generation != candidate.i_generation) {
-            rinfs_inode_table_unlock(mount, block);
+            err = rinfs_inode_table_unlock_status(
+                mount, block, RINFS_ERR_STALE);
             rinfs_free(buf);
-            return RINFS_ERR_STALE;
+            return err;
         }
         current.i_atime = candidate.i_atime;
         if (rinfs_mount_has_nanotimes(mount)) {
@@ -7726,14 +7824,18 @@ static int rinfs_inode_write_internal(RinFS_Mount* mount, uint64_t ino,
             if (current.i_generation != candidate.i_generation ||
                 rinfs_inode_content_version_raw(&current) !=
                     rinfs_inode_content_version_raw(&candidate)) {
-                rinfs_inode_table_unlock(mount, block);
+                err = rinfs_inode_table_unlock_status(
+                    mount, block, RINFS_ERR_STALE);
                 rinfs_free(buf);
-                return RINFS_ERR_STALE;
+                return err;
             }
             current.i_flags &=
                 (uint16_t)~RINFS_IFLG_CONTENT_UNCERTAIN;
             rinfs_memcpy(buf + offset, &current, sizeof(current));
             err = rinfs_inode_table_write_block_locked(mount, block, buf);
+            if (err == RINFS_OK) {
+                err = rinfs_inode_table_commit_log_locked(mount, block);
+            }
             if (err == RINFS_OK) {
                 RinFS_Inode committed;
                 rinfs_memcpy(&committed, buf + offset, sizeof(committed));
@@ -7744,19 +7846,21 @@ static int rinfs_inode_write_internal(RinFS_Mount* mount, uint64_t ino,
                     rinfs_inode_cache_store(mount, ino, &committed);
                 else
                     rinfs_inode_cache_invalidate(mount, ino);
-                rinfs_inode_table_commit_log_locked(mount, block);
             } else {
                 rinfs_inode_cache_invalidate(mount, ino);
             }
-            rinfs_inode_table_unlock(mount, block);
+            int unlock_error = rinfs_inode_table_unlock(mount, block);
+            if (err == RINFS_OK) err = unlock_error;
+            if (err != RINFS_OK) rinfs_inode_cache_invalidate(mount, ino);
             rinfs_free(buf);
             return err;
         }
         if (tracking_mode == 4) {
             if (current.i_generation != candidate.i_generation) {
-                rinfs_inode_table_unlock(mount, block);
+                err = rinfs_inode_table_unlock_status(
+                    mount, block, RINFS_ERR_STALE);
                 rinfs_free(buf);
-                return RINFS_ERR_STALE;
+                return err;
             }
             current_version = rinfs_inode_content_version_raw(&current);
             candidate_version = rinfs_inode_content_version_raw(&candidate);
@@ -7795,14 +7899,17 @@ static int rinfs_inode_write_internal(RinFS_Mount* mount, uint64_t ino,
             rinfs_inode_cache_store(mount, ino, &committed);
         else
             rinfs_inode_cache_invalidate(mount, ino);
-        rinfs_inode_table_commit_log_locked(mount, block);
+        err = rinfs_inode_table_commit_log_locked(mount, block);
+        if (err != RINFS_OK) rinfs_inode_cache_invalidate(mount, ino);
     } else {
         /* A failed metadata write cannot leave a previous copy looking
          * authoritative to a later caller.  The next read must go back to
          * the device and report the device's actual result. */
         rinfs_inode_cache_invalidate(mount, ino);
     }
-    rinfs_inode_table_unlock(mount, block);
+    int unlock_error = rinfs_inode_table_unlock(mount, block);
+    if (err == RINFS_OK) err = unlock_error;
+    if (err != RINFS_OK) rinfs_inode_cache_invalidate(mount, ino);
     rinfs_free(buf);
     return err;
 }
