@@ -60,6 +60,91 @@ typedef struct RinStorageHealthSnapshotV1 {
     RinStorageHealthMetricV1 metrics[RIN_STORAGE_HEALTH_MAX_METRIC_COUNT];
 } RinStorageHealthSnapshotV1;
 
+/* Validate the transport-scoped snapshot before interpreting any metric.
+ * Empty snapshots are valid for a known device generation and mean that no
+ * metrics were collected. ATA/SCSI/SD currently have no published metric
+ * schema, so they may publish an empty snapshot but cannot claim NVMe IDs or
+ * guessed cross-transport equivalents. */
+static inline int rin_storage_health_snapshot_valid_v1(
+    const RinStorageHealthSnapshotV1* snapshot)
+{
+    uint32_t index;
+    if (snapshot == 0 ||
+        snapshot->struct_size != sizeof(*snapshot) ||
+        snapshot->version != RIN_STORAGE_HEALTH_SNAPSHOT_V1_VERSION ||
+        snapshot->transport < RIN_STORAGE_HEALTH_TRANSPORT_NVME ||
+        snapshot->transport > RIN_STORAGE_HEALTH_TRANSPORT_SD ||
+        snapshot->metric_count > RIN_STORAGE_HEALTH_MAX_METRIC_COUNT ||
+        snapshot->device_generation == 0u || snapshot->reserved[0] != 0u ||
+        snapshot->reserved[1] != 0u)
+        return 0;
+
+    for (index = 0u; index < RIN_STORAGE_HEALTH_MAX_METRIC_COUNT; ++index) {
+        const RinStorageHealthMetricV1* metric = &snapshot->metrics[index];
+        uint32_t previous;
+        uint16_t expected_unit;
+        uint64_t maximum_value = UINT64_MAX;
+        int allows_high_word = 0;
+        int allows_saturation = 0;
+        if (index >= snapshot->metric_count) {
+            if (metric->metric_id != 0u || metric->unit != 0u ||
+                metric->flags != 0u || metric->value_low != 0u ||
+                metric->value_high != 0u)
+                return 0;
+            continue;
+        }
+        if (metric->metric_id == 0u ||
+            (metric->flags != RIN_STORAGE_HEALTH_METRIC_FLAG_VALID &&
+             metric->flags != (RIN_STORAGE_HEALTH_METRIC_FLAG_VALID |
+                               RIN_STORAGE_HEALTH_METRIC_FLAG_SATURATED)))
+            return 0;
+        for (previous = 0u; previous < index; ++previous)
+            if (snapshot->metrics[previous].metric_id == metric->metric_id)
+                return 0;
+
+        if (snapshot->transport != RIN_STORAGE_HEALTH_TRANSPORT_NVME)
+            return 0;
+        switch (metric->metric_id) {
+            case RIN_STORAGE_HEALTH_NVME_CRITICAL_WARNING:
+                expected_unit = RIN_STORAGE_HEALTH_UNIT_BITMASK;
+                maximum_value = UINT32_C(0x1f);
+                break;
+            case RIN_STORAGE_HEALTH_NVME_COMPOSITE_TEMPERATURE:
+                expected_unit = RIN_STORAGE_HEALTH_UNIT_KELVIN;
+                maximum_value = 1000u;
+                if (metric->value_low == 0u) return 0;
+                break;
+            case RIN_STORAGE_HEALTH_NVME_AVAILABLE_SPARE:
+            case RIN_STORAGE_HEALTH_NVME_AVAILABLE_SPARE_THRESHOLD:
+                expected_unit = RIN_STORAGE_HEALTH_UNIT_PERCENT;
+                maximum_value = 100u;
+                break;
+            case RIN_STORAGE_HEALTH_NVME_PERCENTAGE_USED:
+                expected_unit = RIN_STORAGE_HEALTH_UNIT_PERCENT;
+                maximum_value = UINT8_MAX;
+                allows_saturation = 1;
+                if (((metric->flags &
+                      RIN_STORAGE_HEALTH_METRIC_FLAG_SATURATED) != 0u) !=
+                    (metric->value_low == UINT8_MAX))
+                    return 0;
+                break;
+            case RIN_STORAGE_HEALTH_NVME_MEDIA_DATA_INTEGRITY_ERRORS:
+                expected_unit = RIN_STORAGE_HEALTH_UNIT_COUNT;
+                allows_high_word = 1;
+                break;
+            default:
+                return 0;
+        }
+        if (metric->unit != expected_unit ||
+            metric->value_low > maximum_value ||
+            (!allows_high_word && metric->value_high != 0u) ||
+            ((metric->flags & RIN_STORAGE_HEALTH_METRIC_FLAG_SATURATED) !=
+                 0u && !allows_saturation))
+            return 0;
+    }
+    return 1;
+}
+
 /* Convert one native NVMe SMART/Health snapshot. The output is fully zeroed
  * on failure. This adapter validates native validity flags and publishes only
  * present metrics; it performs no I/O and grants no access to the source. */
@@ -133,7 +218,12 @@ static inline int rin_storage_health_from_nvme_v1(
     output->version = RIN_STORAGE_HEALTH_SNAPSHOT_V1_VERSION;
     output->transport = RIN_STORAGE_HEALTH_TRANSPORT_NVME;
     output->device_generation = health.device_generation;
-    if (!logValid) return 1;
+    if (!logValid) {
+        if (rin_storage_health_snapshot_valid_v1(output)) return 1;
+        for (index = 0u; index < sizeof(*output); ++index)
+            outputBytes[index] = 0u;
+        return 0;
+    }
 
     output->metrics[output->metric_count].metric_id =
         RIN_STORAGE_HEALTH_NVME_CRITICAL_WARNING;
@@ -196,6 +286,11 @@ static inline int rin_storage_health_from_nvme_v1(
     output->metrics[output->metric_count].value_high =
         health.media_data_integrity_errors_high;
     ++output->metric_count;
+    if (!rin_storage_health_snapshot_valid_v1(output)) {
+        for (index = 0u; index < sizeof(*output); ++index)
+            outputBytes[index] = 0u;
+        return 0;
+    }
     return 1;
 }
 
