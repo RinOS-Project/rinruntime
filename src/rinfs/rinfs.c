@@ -1430,13 +1430,27 @@ static int rinfs_block_allocation_lock(RinFS_Mount* mount) {
     return RINFS_OK;
 }
 
-static void rinfs_block_allocation_unlock(RinFS_Mount* mount) {
-    if (!mount) return;
+static int rinfs_block_allocation_unlock(RinFS_Mount* mount) {
+    if (!mount) return RINFS_ERR_INVAL;
     if (!mount->shared_mapping_base || mount->shared_mount_ready == 0u) {
         rinfs_spin_unlock(&mount->block_allocation_lock);
-        return;
+        return RINFS_OK;
     }
-    (void)rinfs_shared_lock_release(mount, &mount->block_allocation_lock);
+    return rinfs_shared_lock_release(mount, &mount->block_allocation_lock);
+}
+
+static int rinfs_allocation_unlock_status(int operation_error,
+                                           int unlock_error) {
+    if (unlock_error != RINFS_OK &&
+        (unlock_error != RINFS_ERR_ROFS || operation_error == RINFS_OK))
+        return unlock_error;
+    return operation_error;
+}
+
+static int rinfs_block_allocation_unlock_status(RinFS_Mount* mount,
+                                                 int operation_error) {
+    return rinfs_allocation_unlock_status(
+        operation_error, rinfs_block_allocation_unlock(mount));
 }
 
 static int rinfs_inode_allocation_lock(RinFS_Mount* mount) {
@@ -1466,13 +1480,19 @@ static int rinfs_inode_allocation_lock(RinFS_Mount* mount) {
     return RINFS_OK;
 }
 
-static void rinfs_inode_allocation_unlock(RinFS_Mount* mount) {
-    if (!mount) return;
+static int rinfs_inode_allocation_unlock(RinFS_Mount* mount) {
+    if (!mount) return RINFS_ERR_INVAL;
     if (!mount->shared_mapping_base || mount->shared_mount_ready == 0u) {
         rinfs_spin_unlock(&mount->inode_allocation_lock);
-        return;
+        return RINFS_OK;
     }
-    (void)rinfs_shared_lock_release(mount, &mount->inode_allocation_lock);
+    return rinfs_shared_lock_release(mount, &mount->inode_allocation_lock);
+}
+
+static int rinfs_inode_allocation_unlock_status(RinFS_Mount* mount,
+                                                 int operation_error) {
+    return rinfs_allocation_unlock_status(
+        operation_error, rinfs_inode_allocation_unlock(mount));
 }
 
 static int rinfs_inode_table_recovery_fail(RinFS_Mount* mount, int error) {
@@ -7430,14 +7450,16 @@ int rinfs_block_alloc(RinFS_Mount* mount, uint64_t* block) {
         return lock_err;
     }
     if (mount->readonly) {
-        rinfs_block_allocation_unlock(mount);
+        int release_err = rinfs_block_allocation_unlock_status(
+            mount, RINFS_ERR_ROFS);
         rinfs_free(bitmap);
-        return RINFS_ERR_ROFS;
+        return release_err;
     }
     if (mount->sb.s_free_blocks == 0u) {
-        rinfs_block_allocation_unlock(mount);
+        int release_err = rinfs_block_allocation_unlock_status(
+            mount, RINFS_ERR_NOSPC);
         rinfs_free(bitmap);
-        return RINFS_ERR_NOSPC;
+        return release_err;
     }
     
     /* Scan bitmap blocks */
@@ -7447,7 +7469,7 @@ int rinfs_block_alloc(RinFS_Mount* mount, uint64_t* block) {
     for (uint64_t bm_block = 0; bm_block < bitmap_blocks; bm_block++) {
         int err = rinfs_block_read(mount, mount->sb.s_block_bitmap + bm_block, bitmap);
         if (err != RINFS_OK) {
-            rinfs_block_allocation_unlock(mount);
+            err = rinfs_block_allocation_unlock_status(mount, err);
             rinfs_free(bitmap);
             return err;
         }
@@ -7463,9 +7485,10 @@ int rinfs_block_alloc(RinFS_Mount* mount, uint64_t* block) {
                         uint64_t reserved_end =
                             rinfs_reserved_data_end(mount);
                         if (blk < reserved_end) {
-                            rinfs_block_allocation_unlock(mount);
+                            err = rinfs_block_allocation_unlock_status(
+                                mount, RINFS_ERR_CORRUPT);
                             rinfs_free(bitmap);
-                            return RINFS_ERR_CORRUPT;
+                            return err;
                         }
 
                         err = rinfs_allocator_recovery_prepare_locked(
@@ -7473,7 +7496,8 @@ int rinfs_block_alloc(RinFS_Mount* mount, uint64_t* block) {
                             RINFS_ALLOCATOR_RECOVERY_BLOCK_ALLOC_ROLLBACK,
                             blk, 0u);
                         if (err != RINFS_OK) {
-                            rinfs_block_allocation_unlock(mount);
+                            err = rinfs_block_allocation_unlock_status(
+                                mount, err);
                             rinfs_free(bitmap);
                             return err;
                         }
@@ -7487,34 +7511,39 @@ int rinfs_block_alloc(RinFS_Mount* mount, uint64_t* block) {
                                     mount, 0,
                                     rinfs_shared_lock_token(mount));
                             mount->readonly = 1;
-                            rinfs_block_allocation_unlock(mount);
+                            err = recovery_err != RINFS_OK ? recovery_err
+                                                           : err;
+                            err = rinfs_block_allocation_unlock_status(
+                                mount, err);
                             rinfs_free(bitmap);
-                            return recovery_err != RINFS_OK ? recovery_err
-                                                            : err;
+                            return err;
                         }
                         err = rinfs_allocator_recovery_commit_locked(
                             mount, 0,
                             RINFS_ALLOCATOR_RECOVERY_BLOCK_ALLOC_ROLLBACK,
                             blk);
                         if (err != RINFS_OK) {
-                            rinfs_block_allocation_unlock(mount);
+                            err = rinfs_block_allocation_unlock_status(
+                                mount, err);
                             rinfs_free(bitmap);
                             return err;
                         }
                         mount->sb.s_free_blocks--;
                         *block = blk;
-                        rinfs_block_allocation_unlock(mount);
+                        err = rinfs_block_allocation_unlock_status(
+                            mount, RINFS_OK);
                         rinfs_free(bitmap);
-                        return RINFS_OK;
+                        return err;
                     }
                 }
             }
         }
     }
     
-    rinfs_block_allocation_unlock(mount);
+    int result = rinfs_block_allocation_unlock_status(
+        mount, RINFS_ERR_NOSPC);
     rinfs_free(bitmap);
-    return RINFS_ERR_NOSPC;
+    return result;
 }
 
 /* Free a block */
@@ -7539,29 +7568,31 @@ int rinfs_block_free(RinFS_Mount* mount, uint64_t block) {
         return lock_err;
     }
     if (mount->readonly) {
-        rinfs_block_allocation_unlock(mount);
+        int release_err = rinfs_block_allocation_unlock_status(
+            mount, RINFS_ERR_ROFS);
         rinfs_free(bitmap);
-        return RINFS_ERR_ROFS;
+        return release_err;
     }
     
     int err = rinfs_block_read(mount, mount->sb.s_block_bitmap + bm_block, bitmap);
     if (err != RINFS_OK) {
-        rinfs_block_allocation_unlock(mount);
+        err = rinfs_block_allocation_unlock_status(mount, err);
         rinfs_free(bitmap);
         return err;
     }
     
     if (!(bitmap[byte_off] & (1 << bit))) {
         /* Already free - double free error */
-        rinfs_block_allocation_unlock(mount);
+        err = rinfs_block_allocation_unlock_status(
+            mount, RINFS_ERR_INVAL);
         rinfs_free(bitmap);
-        return RINFS_ERR_INVAL;
+        return err;
     }
 
     err = rinfs_allocator_recovery_prepare_locked(
         mount, 0, RINFS_ALLOCATOR_RECOVERY_BLOCK_FREE_ROLLBACK, block, 0u);
     if (err != RINFS_OK) {
-        rinfs_block_allocation_unlock(mount);
+        err = rinfs_block_allocation_unlock_status(mount, err);
         rinfs_free(bitmap);
         return err;
     }
@@ -7585,7 +7616,7 @@ int rinfs_block_free(RinFS_Mount* mount, uint64_t block) {
         mount->readonly = 1;
         if (recovery_err != RINFS_OK) err = recovery_err;
     }
-    rinfs_block_allocation_unlock(mount);
+    err = rinfs_block_allocation_unlock_status(mount, err);
     rinfs_free(bitmap);
     return err;
 }
@@ -9144,14 +9175,16 @@ int rinfs_inode_alloc(RinFS_Mount* mount, uint64_t* ino) {
         return lock_err;
     }
     if (mount->readonly) {
-        rinfs_inode_allocation_unlock(mount);
+        int release_err = rinfs_inode_allocation_unlock_status(
+            mount, RINFS_ERR_ROFS);
         rinfs_free(bitmap);
-        return RINFS_ERR_ROFS;
+        return release_err;
     }
     if (mount->sb.s_free_inodes == 0u) {
-        rinfs_inode_allocation_unlock(mount);
+        int release_err = rinfs_inode_allocation_unlock_status(
+            mount, RINFS_ERR_NOSPC);
         rinfs_free(bitmap);
-        return RINFS_ERR_NOSPC;
+        return release_err;
     }
     
     uint64_t bits_per_block = block_size * 8;
@@ -9160,7 +9193,7 @@ int rinfs_inode_alloc(RinFS_Mount* mount, uint64_t* ino) {
     for (uint64_t bm_block = 0; bm_block < bitmap_blocks; bm_block++) {
         int err = rinfs_block_read(mount, mount->sb.s_inode_bitmap + bm_block, bitmap);
         if (err != RINFS_OK) {
-            rinfs_inode_allocation_unlock(mount);
+            err = rinfs_inode_allocation_unlock_status(mount, err);
             rinfs_free(bitmap);
             return err;
         }
@@ -9172,9 +9205,10 @@ int rinfs_inode_alloc(RinFS_Mount* mount, uint64_t* ino) {
                         uint64_t inode_num = bm_block * bits_per_block + byte * 8 + bit + 1;
                         if (inode_num > mount->sb.s_inode_count) continue;
                         if (inode_num < RINFS_INODE_FIRST) {
-                            rinfs_inode_allocation_unlock(mount);
+                            err = rinfs_inode_allocation_unlock_status(
+                                mount, RINFS_ERR_CORRUPT);
                             rinfs_free(bitmap);
-                            return RINFS_ERR_CORRUPT;
+                            return err;
                         }
 
                         /* Burn the old lifetime and publish C=1 before the
@@ -9187,7 +9221,8 @@ int rinfs_inode_alloc(RinFS_Mount* mount, uint64_t* ino) {
                         err = rinfs_inode_read(mount, inode_num, &previous);
                         if (err != RINFS_OK) {
                             mount->readonly = 1;
-                            rinfs_inode_allocation_unlock(mount);
+                            err = rinfs_inode_allocation_unlock_status(
+                                mount, err);
                             rinfs_free(bitmap);
                             return err;
                         }
@@ -9210,9 +9245,11 @@ int rinfs_inode_alloc(RinFS_Mount* mount, uint64_t* ino) {
                             rinfs_memcmp(&prepared, &verify,
                                          sizeof(prepared)) != 0) {
                             mount->readonly = 1;
-                            rinfs_inode_allocation_unlock(mount);
+                            err = err == RINFS_OK ? RINFS_ERR_IO : err;
+                            err = rinfs_inode_allocation_unlock_status(
+                                mount, err);
                             rinfs_free(bitmap);
-                            return err == RINFS_OK ? RINFS_ERR_IO : err;
+                            return err;
                         }
 
                         err = rinfs_allocator_recovery_prepare_locked(
@@ -9220,7 +9257,8 @@ int rinfs_inode_alloc(RinFS_Mount* mount, uint64_t* ino) {
                             RINFS_ALLOCATOR_RECOVERY_INODE_ALLOC_ROLLBACK,
                             inode_num, 0u);
                         if (err != RINFS_OK) {
-                            rinfs_inode_allocation_unlock(mount);
+                            err = rinfs_inode_allocation_unlock_status(
+                                mount, err);
                             rinfs_free(bitmap);
                             return err;
                         }
@@ -9249,34 +9287,38 @@ int rinfs_inode_alloc(RinFS_Mount* mount, uint64_t* ino) {
                              * when writeback/readback failed. Fence later
                              * allocations until mount recovery reconciles it. */
                             mount->readonly = 1;
-                            rinfs_inode_allocation_unlock(mount);
+                            err = recovery_err != RINFS_OK ? recovery_err
+                                                           : err;
+                            err = rinfs_inode_allocation_unlock_status(
+                                mount, err);
                             rinfs_free(bitmap);
-                            return recovery_err != RINFS_OK ? recovery_err
-                                                            : err;
+                            return err;
                         }
                         err = rinfs_allocator_recovery_commit_locked(
                             mount, 1,
                             RINFS_ALLOCATOR_RECOVERY_INODE_ALLOC_ROLLBACK,
                             inode_num);
                         if (err != RINFS_OK) {
-                            rinfs_inode_allocation_unlock(mount);
+                            err = rinfs_inode_allocation_unlock_status(
+                                mount, err);
                             rinfs_free(bitmap);
                             return err;
                         }
                         mount->sb.s_free_inodes--;
                         *ino = inode_num;
-                        rinfs_inode_allocation_unlock(mount);
+                        err = rinfs_inode_allocation_unlock_status(
+                            mount, RINFS_OK);
                         rinfs_free(bitmap);
-                        return RINFS_OK;
+                        return err;
                     }
                 }
             }
         }
     }
     
-    rinfs_inode_allocation_unlock(mount);
+    int result = rinfs_inode_allocation_unlock_status(mount, final_err);
     rinfs_free(bitmap);
-    return final_err;
+    return result;
 }
 
 static int rinfs_inode_free_under_lease(RinFS_Mount* mount, uint64_t ino,
@@ -9299,26 +9341,29 @@ static int rinfs_inode_free_under_lease(RinFS_Mount* mount, uint64_t ino,
         return err;
     }
     if (mount->readonly) {
-        rinfs_inode_allocation_unlock(mount);
+        err = rinfs_inode_allocation_unlock_status(
+            mount, RINFS_ERR_ROFS);
         rinfs_free(bitmap);
-        return RINFS_ERR_ROFS;
+        return err;
     }
     err = rinfs_block_read(mount, mount->sb.s_inode_bitmap + bm_block, bitmap);
     if (err != RINFS_OK) {
-        rinfs_inode_allocation_unlock(mount);
+        err = rinfs_inode_allocation_unlock_status(mount, err);
         rinfs_free(bitmap);
         return err;
     }
     if ((bitmap[byte_off] & (1 << bit)) == 0) {
-        rinfs_inode_allocation_unlock(mount);
+        err = rinfs_inode_allocation_unlock_status(
+            mount, RINFS_ERR_INVAL);
         rinfs_free(bitmap);
-        return RINFS_ERR_INVAL;
+        return err;
     }
     err = rinfs_inode_read(mount, ino, &previous_inode);
     if (err != RINFS_OK || previous_inode.i_generation != inode_generation) {
-        rinfs_inode_allocation_unlock(mount);
+        err = rinfs_inode_allocation_unlock_status(
+            mount, err == RINFS_OK ? RINFS_ERR_STALE : err);
         rinfs_free(bitmap);
-        return err == RINFS_OK ? RINFS_ERR_STALE : err;
+        return err;
     }
     rinfs_memset(&cleared_inode, 0, sizeof(cleared_inode));
     cleared_inode.i_generation = previous_inode.i_generation;
@@ -9328,7 +9373,7 @@ static int rinfs_inode_free_under_lease(RinFS_Mount* mount, uint64_t ino,
         mount, 1, RINFS_ALLOCATOR_RECOVERY_INODE_FREE, ino,
         inode_generation);
     if (err != RINFS_OK) {
-        rinfs_inode_allocation_unlock(mount);
+        err = rinfs_inode_allocation_unlock_status(mount, err);
         rinfs_free(bitmap);
         return err;
     }
@@ -9341,10 +9386,12 @@ static int rinfs_inode_free_under_lease(RinFS_Mount* mount, uint64_t ino,
             rinfs_shared_allocation_recover_log_locked(
                 mount, 1, rinfs_shared_lock_token(mount));
         mount->readonly = 1;
-        rinfs_inode_allocation_unlock(mount);
+        err = recovery_err != RINFS_OK ? recovery_err
+                                       : (err == RINFS_OK
+                                              ? RINFS_ERR_IO : err);
+        err = rinfs_inode_allocation_unlock_status(mount, err);
         rinfs_free(bitmap);
-        if (recovery_err != RINFS_OK) return recovery_err;
-        return err == RINFS_OK ? RINFS_ERR_IO : err;
+        return err;
     }
 
     bitmap[byte_off] &= ~(1 << bit);
@@ -9372,7 +9419,7 @@ static int rinfs_inode_free_under_lease(RinFS_Mount* mount, uint64_t ino,
         mount->readonly = 1;
         if (recovery_err != RINFS_OK) err = recovery_err;
     }
-    rinfs_inode_allocation_unlock(mount);
+    err = rinfs_inode_allocation_unlock_status(mount, err);
     rinfs_free(bitmap);
     return err;
 }
