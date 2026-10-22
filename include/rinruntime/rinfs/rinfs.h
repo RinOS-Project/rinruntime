@@ -616,7 +616,7 @@ struct RinFS_Mount {
     volatile uint32_t shared_superblock_recovery_state;
     uint32_t shared_superblock_recovery_checksum;
     uint32_t shared_superblock_recovery_owner_row;
-    uint32_t shared_superblock_recovery_reserved;
+    uint32_t shared_superblock_recovery_owner_lock_generation;
     uint64_t shared_superblock_recovery_owner_cookie;
     RinFS_Superblock shared_superblock_recovery_candidate;
     volatile uint32_t content_lease_lock;
