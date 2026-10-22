@@ -11,7 +11,7 @@
 #include <rin/ipc/shm_abi.h>
 #include "../platform.h"
 int rinfs_fork_prepare(void);
-void rinfs_fork_complete(int fork_succeeded);
+int rinfs_fork_complete(int fork_succeeded);
 #endif
 
 #define RINFS_FORK_HOOK_CAPACITY 8u
@@ -67,6 +67,7 @@ int rinfs_fork_hook_register(RinFS_ForkPrepareCallback prepare,
 /* The registry lock remains held until every successfully prepared owner has
  * completed, so callbacks and their contexts stay stable across fork. */
 int rinfs_fork_hooks_prepare(void) {
+    int rollback_error = RINFS_OK;
     if (__atomic_load_n(&g_rinfs_fork_hook_dispatch_prepared,
                         __ATOMIC_ACQUIRE) != 0u)
         return RINFS_ERR_PENDING;
@@ -86,10 +87,15 @@ int rinfs_fork_hooks_prepare(void) {
                     --g_rinfs_fork_hook_dispatch_count];
                 RinFS_ForkHookRecord* prepared =
                     &g_rinfs_fork_hooks[prepared_index];
-                prepared->complete(prepared->context, 0);
+                int complete_result =
+                    prepared->complete(prepared->context, 0);
+                if (complete_result != RINFS_OK &&
+                    rollback_error == RINFS_OK)
+                    rollback_error = complete_result;
             }
             rinfs_fork_hook_registry_unlock();
-            return RINFS_ERR_PENDING;
+            return rollback_error != RINFS_OK ? rollback_error
+                                               : RINFS_ERR_PENDING;
         }
         g_rinfs_fork_hook_dispatch_indices[
             g_rinfs_fork_hook_dispatch_count++] = index;
@@ -99,20 +105,27 @@ int rinfs_fork_hooks_prepare(void) {
     return RINFS_OK;
 }
 
-void rinfs_fork_hooks_complete(int fork_succeeded) {
+int rinfs_fork_hooks_complete(int fork_succeeded) {
+    int result = RINFS_OK;
     if (__atomic_load_n(&g_rinfs_fork_hook_dispatch_prepared,
                         __ATOMIC_ACQUIRE) == 0u)
-        return;
+        return RINFS_OK;
     while (g_rinfs_fork_hook_dispatch_count != 0u) {
         uint32_t prepared_index = g_rinfs_fork_hook_dispatch_indices[
             --g_rinfs_fork_hook_dispatch_count];
         RinFS_ForkHookRecord* prepared =
             &g_rinfs_fork_hooks[prepared_index];
-        prepared->complete(prepared->context, fork_succeeded);
+        {
+            int complete_result =
+                prepared->complete(prepared->context, fork_succeeded);
+            if (complete_result != RINFS_OK && result == RINFS_OK)
+                result = complete_result;
+        }
     }
     __atomic_store_n(&g_rinfs_fork_hook_dispatch_prepared, 0u,
                      __ATOMIC_RELEASE);
     rinfs_fork_hook_registry_unlock();
+    return result;
 }
 
 #if !defined(RIN_KERNEL)
@@ -15375,11 +15388,12 @@ rollback_finish:
     return rinfs_content_unlock_status((result), content_unlock_error);
 }
 
-void rinfs_fork_complete(int fork_succeeded) {
+int rinfs_fork_complete(int fork_succeeded) {
     int rollback_valid = 1;
+    int result = RINFS_OK;
     if (__atomic_load_n(&g_rinfs_shared_mount_fork_prepared,
                         __ATOMIC_ACQUIRE) == 0u)
-        return;
+        return RINFS_OK;
     if (fork_succeeded != 0) {
         for (uint32_t mount_index = 0u;
              mount_index < RINFS_SHARED_MOUNT_REGISTRY_CAPACITY;
@@ -15388,7 +15402,8 @@ void rinfs_fork_complete(int fork_succeeded) {
                 g_rinfs_shared_mount_registry[mount_index];
             uint32_t owner_row = 0u;
             if (!mount) continue;
-            if (rinfs_shared_owner_query_row(mount, &owner_row) != RINFS_OK) {
+            result = rinfs_shared_owner_query_row(mount, &owner_row);
+            if (result != RINFS_OK) {
                 mount->readonly = 1;
                 goto fork_complete_failed;
             }
@@ -15413,8 +15428,11 @@ void rinfs_fork_complete(int fork_succeeded) {
             if (!mount) continue;
             {
                 int content_lock_error = rinfs_shared_content_lock(mount);
-                if (content_lock_error != RINFS_OK)
+                if (content_lock_error != RINFS_OK) {
+                    mount->readonly = 1;
+                    result = content_lock_error;
                     goto fork_complete_failed;
+                }
             }
             for (uint32_t index = 0u; index < RINFS_MAX_CLOSE_REFERENCES;
                  ++index) {
@@ -15430,20 +15448,33 @@ void rinfs_fork_complete(int fork_succeeded) {
                     node->open_references == 0u ||
                     node->tracked_open_references == 0u) {
                     rollback_valid = 0;
+                    mount->readonly = 1;
+                    if (result == RINFS_OK) result = RINFS_ERR_CORRUPT;
                     break;
                 }
-                if (record->wincompat_share_registered != 0u &&
-                    rinfs_wincompat_share_counts_change_locked(
+                if (record->wincompat_share_registered != 0u) {
+                    int share_result = rinfs_wincompat_share_counts_change_locked(
                         node, record->wincompat_share_access,
-                        record->wincompat_share_mode, 0, 0) != RINFS_OK) {
-                    rollback_valid = 0;
-                    break;
+                        record->wincompat_share_mode, 0, 0);
+                    if (share_result != RINFS_OK) {
+                        rollback_valid = 0;
+                        mount->readonly = 1;
+                        if (result == RINFS_OK) result = share_result;
+                        break;
+                    }
                 }
                 --node->open_references;
                 --node->tracked_open_references;
             }
-            if (rinfs_shared_content_unlock_best_effort(mount) != RINFS_OK)
-                goto fork_complete_failed;
+            {
+                int unlock_result =
+                    rinfs_shared_content_unlock_best_effort(mount);
+                if (unlock_result != RINFS_OK) {
+                    mount->readonly = 1;
+                    if (result == RINFS_OK) result = unlock_result;
+                    goto fork_complete_failed;
+                }
+            }
         }
     }
     for (uint32_t index = 0u;
@@ -15452,8 +15483,11 @@ void rinfs_fork_complete(int fork_succeeded) {
         if (!mount) continue;
         {
             int content_lock_error = rinfs_shared_content_lock(mount);
-            if (content_lock_error != RINFS_OK)
+            if (content_lock_error != RINFS_OK) {
+                mount->readonly = 1;
+                result = content_lock_error;
                 goto fork_complete_failed;
+            }
         }
         if ((fork_succeeded != 0 || rollback_valid != 0) &&
             mount->shared_close_started == 0u &&
@@ -15462,8 +15496,19 @@ void rinfs_fork_complete(int fork_succeeded) {
             mount->content_lease_closing = 0u;
             mount->content_lease_fork_owner_row = 0u;
         }
-        if (rinfs_shared_content_unlock_best_effort(mount) != RINFS_OK)
-            goto fork_complete_failed;
+        {
+            int unlock_result =
+                rinfs_shared_content_unlock_best_effort(mount);
+            if (unlock_result != RINFS_OK) {
+                mount->readonly = 1;
+                if (result == RINFS_OK) result = unlock_result;
+                goto fork_complete_failed;
+            }
+        }
+    }
+    if (result != RINFS_OK || rollback_valid == 0) {
+        if (result == RINFS_OK) result = RINFS_ERR_CORRUPT;
+        goto fork_complete_failed;
     }
     g_rinfs_shared_mount_fork_open_refs_applied = 0u;
     __atomic_store_n(&g_rinfs_shared_mount_fork_prepared, 0u,
@@ -15475,7 +15520,7 @@ void rinfs_fork_complete(int fork_succeeded) {
                             __ATOMIC_ACQ_REL) != 0u)
         rinfs_fork_local_unlock(&g_rinfs_close_reference_lock);
     rinfs_shared_mount_registry_unlock();
-    return;
+    return RINFS_OK;
 
 fork_complete_failed:
     /* A failed recovery fences its mount and leaves fork admission closed.
@@ -15488,6 +15533,7 @@ fork_complete_failed:
                             __ATOMIC_ACQ_REL) != 0u)
         rinfs_fork_local_unlock(&g_rinfs_close_reference_lock);
     rinfs_shared_mount_registry_unlock();
+    return result != RINFS_OK ? result : RINFS_ERR_IO;
 }
 
 static void rinfs_shared_mount_name(char name[RIN_SHM_NAME_MAX]) {
