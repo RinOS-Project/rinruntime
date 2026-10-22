@@ -590,6 +590,9 @@ typedef struct {
     /* Serializes the single on-disk rename/rmdir journal transaction. */
     volatile uint32_t namespace_journal_lock;
     uint32_t          content_lease_closing;
+    /* One-based shared-owner row for a fork interlock. Process-death
+     * reconciliation clears a stranded FORK gate owned by a dead row. */
+    uint32_t          content_lease_fork_owner_row;
     void*             content_leases;
     uint64_t          content_lease_generation;
     uint32_t          content_tracking_runtime_disabled;
@@ -619,6 +622,7 @@ typedef struct {
     uint32_t           shared_mount_ready;
     uint32_t           shared_close_started;
     uint32_t           shared_lease_released;
+    uint32_t           shared_arena_recovery_failed;
     RinFS_SharedOwnerLedgerV1* shared_owner_ledger;
 } RinFS_Mount;
 
