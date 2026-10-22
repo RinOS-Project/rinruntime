@@ -12032,8 +12032,10 @@ int rinfs_fork_prepare(void) {
             mount->shared_close_started != 0u)
             goto rollback;
         rinfs_spin_lock(&mount->content_lease_lock);
-        if (mount->content_lease_closing != 0u ||
-            mount->content_leases != NULL) {
+        /* Idle open handles keep their inode nodes alive through
+         * open_references. The later fork audit distinguishes those from
+         * active readers/writers and validates their exact close records. */
+        if (mount->content_lease_closing != 0u) {
             rinfs_spin_unlock(&mount->content_lease_lock);
             goto rollback;
         }
