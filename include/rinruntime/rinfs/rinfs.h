@@ -797,6 +797,20 @@ int rinfs_mount_sized_io(int dev_id, uint64_t offset, uint64_t sector_count,
                          uint32_t flags,
                          const RinFS_DeviceOps* device_ops,
                          RinFS_Mount* mount);
+/* Process-local fork interlocks for runtime owners whose state is copied by
+ * fork but whose accounting is shared across processes. Registration is
+ * idempotent for the same callbacks/context. Prepare callbacks run in
+ * registration order and must release their own partial state on failure;
+ * successful callbacks are completed in reverse order after the fork
+ * syscall. The registry stays locked from prepare through completion. */
+typedef int (*RinFS_ForkPrepareCallback)(void* context);
+typedef void (*RinFS_ForkCompleteCallback)(void* context,
+                                           int fork_succeeded);
+int rinfs_fork_hook_register(RinFS_ForkPrepareCallback prepare,
+                             RinFS_ForkCompleteCallback complete,
+                             void* context);
+int rinfs_fork_hooks_prepare(void);
+void rinfs_fork_hooks_complete(int fork_succeeded);
 /* Create a kernel SHM-backed mount whose mount object, synchronization state,
  * and persistent caches are shared across fork. A device provider is required
  * and its callbacks must be reentrant, process-independent, and use NULL

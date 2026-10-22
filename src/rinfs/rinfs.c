@@ -13,6 +13,108 @@
 int rinfs_fork_prepare(void);
 void rinfs_fork_complete(int fork_succeeded);
 #endif
+
+#define RINFS_FORK_HOOK_CAPACITY 8u
+typedef struct {
+    RinFS_ForkPrepareCallback prepare;
+    RinFS_ForkCompleteCallback complete;
+    void* context;
+} RinFS_ForkHookRecord;
+
+static volatile uint32_t g_rinfs_fork_hook_registry_lock;
+static volatile uint32_t g_rinfs_fork_hook_dispatch_prepared;
+static uint32_t g_rinfs_fork_hook_dispatch_count;
+static uint32_t g_rinfs_fork_hook_dispatch_indices[
+    RINFS_FORK_HOOK_CAPACITY];
+static RinFS_ForkHookRecord g_rinfs_fork_hooks[RINFS_FORK_HOOK_CAPACITY];
+
+static void rinfs_fork_hook_registry_lock(void) {
+    while (__atomic_exchange_n(&g_rinfs_fork_hook_registry_lock, 1u,
+                               __ATOMIC_ACQUIRE) != 0u)
+        __asm__ volatile("pause");
+}
+
+static void rinfs_fork_hook_registry_unlock(void) {
+    __atomic_store_n(&g_rinfs_fork_hook_registry_lock, 0u,
+                     __ATOMIC_RELEASE);
+}
+
+int rinfs_fork_hook_register(RinFS_ForkPrepareCallback prepare,
+                             RinFS_ForkCompleteCallback complete,
+                             void* context) {
+    int free_index = -1;
+    if (!prepare || !complete) return RINFS_ERR_INVAL;
+    rinfs_fork_hook_registry_lock();
+    for (uint32_t index = 0u; index < RINFS_FORK_HOOK_CAPACITY; ++index) {
+        RinFS_ForkHookRecord* record = &g_rinfs_fork_hooks[index];
+        if (record->prepare == prepare && record->complete == complete &&
+            record->context == context) {
+            rinfs_fork_hook_registry_unlock();
+            return RINFS_OK;
+        }
+        if (!record->prepare && free_index < 0) free_index = (int)index;
+    }
+    if (free_index >= 0) {
+        RinFS_ForkHookRecord* record = &g_rinfs_fork_hooks[free_index];
+        record->context = context;
+        record->complete = complete;
+        record->prepare = prepare;
+    }
+    rinfs_fork_hook_registry_unlock();
+    return free_index >= 0 ? RINFS_OK : RINFS_ERR_NOMEM;
+}
+
+/* The registry lock remains held until every successfully prepared owner has
+ * completed, so callbacks and their contexts stay stable across fork. */
+int rinfs_fork_hooks_prepare(void) {
+    if (__atomic_load_n(&g_rinfs_fork_hook_dispatch_prepared,
+                        __ATOMIC_ACQUIRE) != 0u)
+        return RINFS_ERR_PENDING;
+    rinfs_fork_hook_registry_lock();
+    if (__atomic_load_n(&g_rinfs_fork_hook_dispatch_prepared,
+                        __ATOMIC_RELAXED) != 0u) {
+        rinfs_fork_hook_registry_unlock();
+        return RINFS_ERR_PENDING;
+    }
+    g_rinfs_fork_hook_dispatch_count = 0u;
+    for (uint32_t index = 0u; index < RINFS_FORK_HOOK_CAPACITY; ++index) {
+        RinFS_ForkHookRecord* record = &g_rinfs_fork_hooks[index];
+        if (!record->prepare) continue;
+        if (record->prepare(record->context) != RINFS_OK) {
+            while (g_rinfs_fork_hook_dispatch_count != 0u) {
+                uint32_t prepared_index = g_rinfs_fork_hook_dispatch_indices[
+                    --g_rinfs_fork_hook_dispatch_count];
+                RinFS_ForkHookRecord* prepared =
+                    &g_rinfs_fork_hooks[prepared_index];
+                prepared->complete(prepared->context, 0);
+            }
+            rinfs_fork_hook_registry_unlock();
+            return RINFS_ERR_PENDING;
+        }
+        g_rinfs_fork_hook_dispatch_indices[
+            g_rinfs_fork_hook_dispatch_count++] = index;
+    }
+    __atomic_store_n(&g_rinfs_fork_hook_dispatch_prepared, 1u,
+                     __ATOMIC_RELEASE);
+    return RINFS_OK;
+}
+
+void rinfs_fork_hooks_complete(int fork_succeeded) {
+    if (__atomic_load_n(&g_rinfs_fork_hook_dispatch_prepared,
+                        __ATOMIC_ACQUIRE) == 0u)
+        return;
+    while (g_rinfs_fork_hook_dispatch_count != 0u) {
+        uint32_t prepared_index = g_rinfs_fork_hook_dispatch_indices[
+            --g_rinfs_fork_hook_dispatch_count];
+        RinFS_ForkHookRecord* prepared =
+            &g_rinfs_fork_hooks[prepared_index];
+        prepared->complete(prepared->context, fork_succeeded);
+    }
+    __atomic_store_n(&g_rinfs_fork_hook_dispatch_prepared, 0u,
+                     __ATOMIC_RELEASE);
+    rinfs_fork_hook_registry_unlock();
+}
+
 #if !defined(RIN_KERNEL)
 /* The portable filesystem keeps kernel performance tracing private. */
 #define RIN_TRACE_ID_UNKNOWN UINT32_MAX
@@ -11759,11 +11861,13 @@ static int rinfs_shared_mount_fork_validate_close_refs_locked(
             &g_rinfs_close_references[index];
         RinFS_ContentLeaseNode* node;
         uint32_t local_references = 0u;
+        uint32_t local_share_handles = 0u;
+        uint32_t local_share_access[3] = {0u, 0u, 0u};
+        uint32_t local_share_denied[3] = {0u, 0u, 0u};
         if (record->in_use != 1u || record->mount != mount) continue;
         if (record->mount_epoch != mount->mount_epoch ||
             record->state != RINFS_CLOSE_REF_ACTIVE ||
             record->active_operations != 0u ||
-            record->wincompat_share_registered != 0u ||
             record->content_pin_token == 0u ||
             (record->kind != RINFS_CLOSE_REF_FILE &&
              record->kind != RINFS_CLOSE_REF_DIRECTORY))
@@ -11782,6 +11886,25 @@ static int rinfs_shared_mount_fork_validate_close_refs_locked(
                     local_references == UINT32_MAX)
                     return 0;
                 ++local_references;
+                if (other->wincompat_share_registered != 0u) {
+                    if (other->kind != RINFS_CLOSE_REF_FILE ||
+                        local_share_handles == UINT32_MAX)
+                        return 0;
+                    ++local_share_handles;
+                    for (uint32_t bit = 0u; bit < 3u; ++bit) {
+                        uint32_t mask = 1u << bit;
+                        if ((other->wincompat_share_access & mask) != 0u) {
+                            if (local_share_access[bit] == UINT32_MAX)
+                                return 0;
+                            ++local_share_access[bit];
+                        }
+                        if ((other->wincompat_share_mode & mask) == 0u) {
+                            if (local_share_denied[bit] == UINT32_MAX)
+                                return 0;
+                            ++local_share_denied[bit];
+                        }
+                    }
+                }
             }
         }
         node = rinfs_shared_mount_fork_find_node_locked(
@@ -11791,8 +11914,17 @@ static int rinfs_shared_mount_fork_validate_close_refs_locked(
             node->open_references < local_references ||
             node->tracked_open_references < local_references ||
             node->open_references > UINT32_MAX - local_references ||
-            node->tracked_open_references > UINT32_MAX - local_references)
+            node->tracked_open_references > UINT32_MAX - local_references ||
+            node->wincompat_share_handle_count >
+                UINT32_MAX - local_share_handles)
             return 0;
+        for (uint32_t bit = 0u; bit < 3u; ++bit) {
+            if (node->wincompat_share_access_counts[bit] >
+                    UINT32_MAX - local_share_access[bit] ||
+                node->wincompat_share_denied_counts[bit] >
+                    UINT32_MAX - local_share_denied[bit])
+                return 0;
+        }
     }
     return 1;
 }
@@ -11865,12 +11997,12 @@ static void rinfs_shared_mount_registry_remove(RinFS_Mount* mount) {
     rinfs_shared_mount_registry_unlock();
 }
 
-/* libc holds the mount registry and both process-local owner ledgers across
+/* libc holds runtime owner interlocks, the mount registry, and both
+ * process-local owner ledgers across
  * the fork syscall. Content admission stays closed in both resulting
  * processes until each has released its inherited local locks. Idle file and
  * directory close records are duplicated in the shared aggregate before the
- * syscall. Mapping aliases, active operations, and registered WinCompat
- * handles remain retryably busy until their owners join this interlock. */
+ * syscall. Mapping aliases and active operations remain retryably busy. */
 int rinfs_fork_prepare(void) {
     uint32_t prepared[RINFS_SHARED_MOUNT_REGISTRY_CAPACITY];
     uint32_t applied_per_mount[RINFS_SHARED_MOUNT_REGISTRY_CAPACITY] = {0u};
@@ -11960,6 +12092,13 @@ int rinfs_fork_prepare(void) {
                 rinfs_spin_unlock(&mount->content_lease_lock);
                 goto rollback;
             }
+            if (record->wincompat_share_registered != 0u &&
+                rinfs_wincompat_share_counts_change_locked(
+                    node, record->wincompat_share_access,
+                    record->wincompat_share_mode, 1, 0) != RINFS_OK) {
+                rinfs_spin_unlock(&mount->content_lease_lock);
+                goto rollback;
+            }
             ++node->open_references;
             ++node->tracked_open_references;
             ++applied_per_mount[prepared_index];
@@ -11991,6 +12130,13 @@ rollback:
             if (!node || node->token_generation != record->content_pin_token ||
                 node->open_references == 0u ||
                 node->tracked_open_references == 0u) {
+                rollback_valid = 0;
+                break;
+            }
+            if (record->wincompat_share_registered != 0u &&
+                rinfs_wincompat_share_counts_change_locked(
+                    node, record->wincompat_share_access,
+                    record->wincompat_share_mode, 0, 0) != RINFS_OK) {
                 rollback_valid = 0;
                 break;
             }
@@ -12049,6 +12195,13 @@ void rinfs_fork_complete(int fork_succeeded) {
                                  record->content_pin_token ||
                     node->open_references == 0u ||
                     node->tracked_open_references == 0u) {
+                    rollback_valid = 0;
+                    break;
+                }
+                if (record->wincompat_share_registered != 0u &&
+                    rinfs_wincompat_share_counts_change_locked(
+                        node, record->wincompat_share_access,
+                        record->wincompat_share_mode, 0, 0) != RINFS_OK) {
                     rollback_valid = 0;
                     break;
                 }
