@@ -7132,15 +7132,6 @@ static int rinfs_content_delete_clear(RinFS_Mount* mount, uint64_t ino,
     return err;
 }
 
-static void rinfs_content_lease_release_best_effort(
-    RinFS_Mount* mount, uint64_t ino, uint32_t inode_generation,
-    uint64_t token, int writer) {
-    int err = rinfs_content_lease_release(
-        mount, ino, inode_generation, token, writer);
-    if (mount && err != RINFS_OK && err != RINFS_ERR_STALE)
-        mount->readonly = 1;
-}
-
 static int device_ops_valid(const RinFS_DeviceOps* ops) {
     const uint32_t supported = RINFS_DEVICE_FLAG_REMOVABLE |
                                RINFS_DEVICE_FLAG_SLOW |
