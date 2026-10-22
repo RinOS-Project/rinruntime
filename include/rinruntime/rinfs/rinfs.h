@@ -560,6 +560,18 @@ typedef struct {
     uint64_t           coalesced_read_bytes;
     uint64_t           coalesced_write_ops;
     uint64_t           coalesced_write_bytes;
+    /* Optional userland shared-mount arena. Pointers into this mapping are
+     * stable across fork because RinOS inherits SHM at the same VA. The
+     * fields are zero for ordinary and kernel mounts. */
+    void*              shared_mapping_base;
+    uint64_t           shared_mapping_size;
+    uint64_t           shared_arena_offset;
+    uint64_t           shared_arena_size;
+    int32_t            shared_shm_handle;
+    volatile uint32_t  shared_arena_lock;
+    uint32_t           shared_mount_ready;
+    uint32_t           shared_close_started;
+    uint32_t           shared_lease_released;
 } RinFS_Mount;
 
 /* Open file */
@@ -785,6 +797,15 @@ int rinfs_mount_sized_io(int dev_id, uint64_t offset, uint64_t sector_count,
                          uint32_t flags,
                          const RinFS_DeviceOps* device_ops,
                          RinFS_Mount* mount);
+/* Create a kernel SHM-backed mount whose mount object, synchronization state,
+ * and persistent caches are shared across fork. A device provider is required
+ * and its callbacks must be reentrant, process-independent, and use NULL
+ * opaque state. Every process owner must unmount its view; only the final
+ * live owner performs the durability barrier. */
+int rinfs_mount_sized_shared(int dev_id, uint64_t offset,
+                             uint64_t sector_count, uint32_t flags,
+                             const RinFS_DeviceOps* device_ops,
+                             RinFS_Mount** mount_out);
 int rinfs_unmount(RinFS_Mount* mount);
 /* Discard a failed writable mount without publishing CLEAN. The caller must
  * still own the mount and all open file, directory, and mmap handles must be

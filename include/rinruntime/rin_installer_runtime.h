@@ -56,6 +56,21 @@ RinResultCode rin_app_install_target_rinfs_mount_end(
 RinResultCode rin_app_rinfs_cache_lease_begin(
     uint32_t block_id, uint64_t first_lba, uint64_t sector_count,
     uint64_t* mount_lease_token_out);
+/* Binds fork eligibility to the caller's exact writable full SHM mapping.
+ * The kernel resolves the mapping to its own segment ID and generation. */
+RinResultCode rin_app_rinfs_cache_lease_begin_shared(
+    uint32_t block_id, uint64_t first_lba, uint64_t sector_count,
+    const void* mapping_base, uint64_t mapping_size,
+    uint64_t* mount_lease_token_out);
+enum {
+    RINFS_SHARED_LEASE_READY = 1u,
+    RINFS_SHARED_LEASE_RELEASE_UNMOUNTED = 2u,
+    RINFS_SHARED_LEASE_BEGIN_UNMOUNT = 3u,
+    RINFS_SHARED_LEASE_FINISH = 4u
+};
+RinResultCode rin_app_rinfs_cache_lease_shared_transition(
+    const void* mapping_base, uint64_t mapping_size, uint32_t action,
+    uint64_t mount_lease_token, uint32_t* final_owner_out);
 RinResultCode rin_app_rinfs_cache_lease_end(uint64_t mount_lease_token);
 RinResultCode rin_app_install_target_validate(uint64_t handle);
 RinResultCode rin_app_install_target_close(uint64_t handle);

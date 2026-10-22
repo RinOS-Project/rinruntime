@@ -303,6 +303,67 @@ RinResultCode rin_app_rinfs_cache_lease_begin(
 #endif
 }
 
+RinResultCode rin_app_rinfs_cache_lease_begin_shared(
+    uint32_t block_id, uint64_t first_lba, uint64_t sector_count,
+    const void* mapping_base, uint64_t mapping_size,
+    uint64_t* mount_lease_token_out)
+{
+#if !defined(_WIN32)
+    intptr_t result;
+#endif
+    if (mount_lease_token_out) *mount_lease_token_out = 0u;
+    if (block_id == 0u || !mapping_base || mapping_size == 0u ||
+        !mount_lease_token_out ||
+        (sector_count != 0u && first_lba > UINT64_MAX - sector_count) ||
+        mapping_size > (uint64_t)UINTPTR_MAX ||
+        (uintptr_t)mapping_base > UINTPTR_MAX - (uintptr_t)mapping_size)
+        return RIN_RESULT_INVALID_ARGUMENT;
+#if defined(_WIN32)
+    return RIN_RESULT_NOT_SUPPORTED;
+#else
+    result = _syscall5(
+        (uintptr_t)RIN_SYS_RINFS_CACHE_LEASE_BEGIN_SHARED,
+        (uintptr_t)block_id, (uintptr_t)first_lba,
+        (uintptr_t)sector_count, (uintptr_t)mapping_base,
+        (uintptr_t)mapping_size);
+    if (result < 0) return installer_runtime_result(result);
+    if (result == 0) return RIN_RESULT_IO;
+    *mount_lease_token_out = (uint64_t)result;
+    return RIN_RESULT_OK;
+#endif
+}
+
+RinResultCode rin_app_rinfs_cache_lease_shared_transition(
+    const void* mapping_base, uint64_t mapping_size, uint32_t action,
+    uint64_t mount_lease_token, uint32_t* final_owner_out)
+{
+#if !defined(_WIN32)
+    intptr_t result;
+#endif
+    if (final_owner_out) *final_owner_out = 0u;
+    if (!mapping_base || mapping_size == 0u || mount_lease_token == 0u ||
+        mount_lease_token > (uint64_t)UINTPTR_MAX || !final_owner_out ||
+        mapping_size > (uint64_t)UINTPTR_MAX ||
+        (uintptr_t)mapping_base > UINTPTR_MAX - (uintptr_t)mapping_size ||
+        action < RINFS_SHARED_LEASE_READY ||
+        action > RINFS_SHARED_LEASE_FINISH)
+        return RIN_RESULT_INVALID_ARGUMENT;
+#if defined(_WIN32)
+    return RIN_RESULT_NOT_SUPPORTED;
+#else
+    result = _syscall4(
+        (uintptr_t)RIN_SYS_RINFS_CACHE_LEASE_SHARED_TRANSITION,
+        (uintptr_t)mapping_base, (uintptr_t)mapping_size,
+        (uintptr_t)action, (uintptr_t)mount_lease_token);
+    if (result < 0) return installer_runtime_result(result);
+    if (result > 1 || (result == 1 &&
+                       action != RINFS_SHARED_LEASE_BEGIN_UNMOUNT))
+        return RIN_RESULT_IO;
+    *final_owner_out = (uint32_t)result;
+    return RIN_RESULT_OK;
+#endif
+}
+
 RinResultCode rin_app_rinfs_cache_lease_end(uint64_t mount_lease_token)
 {
     if (mount_lease_token == 0u ||
