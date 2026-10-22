@@ -954,6 +954,15 @@ int rinfs_mmap_source_sync_range(RinFS_MmapSource* source,
                                 uint64_t reference_cookie,
                                 uint64_t first_page,
                                 uint64_t page_count);
+/* Evict the exact current-version cache pages in a file-page range. The
+ * operation succeeds only when every matching page is clean and has no
+ * active reader or mmap reference; otherwise no page in the range is evicted. */
+int rinfs_mmap_source_invalidate_range(RinFS_MmapSource* source,
+                                      uint64_t expected_inode,
+                                      uint64_t reference_generation,
+                                      uint64_t reference_cookie,
+                                      uint64_t first_page,
+                                      uint64_t page_count);
 int rinfs_mmap_source_release(RinFS_MmapSource* source,
                               uint64_t reference_generation,
                               uint64_t reference_cookie);

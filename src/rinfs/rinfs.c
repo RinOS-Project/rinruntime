@@ -12481,6 +12481,101 @@ sync_range_finish:
     return err;
 }
 
+int rinfs_mmap_source_invalidate_range(
+    RinFS_MmapSource* source, uint64_t expected_inode,
+    uint64_t reference_generation, uint64_t reference_cookie,
+    uint64_t first_page, uint64_t page_count) {
+    RinFS_MmapSourceIdentity identity;
+    RinFS_ContentLeaseNode* lease = NULL;
+    RinFS_Inode inode;
+    RinFS_PageCache* cache;
+    uint64_t lease_token = 0u;
+    uint64_t page_end;
+    uint64_t content_version;
+    uint32_t index;
+    int err;
+
+    if (!source || expected_inode == 0u || page_count == 0u ||
+        first_page > UINT64_MAX - page_count)
+        return RINFS_ERR_INVAL;
+    page_end = first_page + page_count;
+    err = rinfs_mmap_source_copy_identity(
+        source, reference_generation, reference_cookie, &identity);
+    if (err != RINFS_OK || identity.inode_num != expected_inode)
+        return err == RINFS_OK ? RINFS_ERR_STALE : err;
+    err = rinfs_content_lease_acquire(
+        identity.mount, identity.inode_num, identity.inode_generation, 0,
+        &lease, &lease_token);
+    if (err != RINFS_OK) return err;
+    if (lease_token != identity.pin_token) {
+        err = RINFS_ERR_STALE;
+        goto invalidate_range_finish;
+    }
+    err = rinfs_inode_read(identity.mount, identity.inode_num, &inode);
+    if (err != RINFS_OK) goto invalidate_range_finish;
+    if (inode.i_generation != identity.inode_generation ||
+        (inode.i_mode >> 12u) != RINFS_FT_REG) {
+        err = RINFS_ERR_STALE;
+        goto invalidate_range_finish;
+    }
+    content_version = rinfs_inode_content_version_raw(&inode);
+    if (content_version == 0u) {
+        err = RINFS_ERR_CORRUPT;
+        goto invalidate_range_finish;
+    }
+    cache = identity.mount->page_cache;
+    if (!cache) {
+        err = RINFS_ERR_NOT_SUPPORTED;
+        goto invalidate_range_finish;
+    }
+
+    /* Hold the cache lock across validation and discard. A concurrent cache
+     * acquisition either owns a reference already or sees the whole range
+     * absent after this transaction; it cannot retain a freed physical page. */
+    rinfs_page_cache_lock(cache);
+    for (index = 0u; index < RINFS_PAGE_CACHE_CAPACITY; ++index) {
+        const RinFS_PageCacheEntry* entry = &cache->entries[index];
+        uint32_t mapped_references;
+        if (!entry->valid || entry->mount_epoch != identity.mount->mount_epoch ||
+            entry->inode_num != identity.inode_num ||
+            entry->inode_generation != identity.inode_generation ||
+            entry->content_version != content_version ||
+            entry->page_index < first_page || entry->page_index >= page_end)
+            continue;
+        mapped_references = rinfs_page_cache_mapping_references(cache, entry);
+        if (mapped_references == UINT32_MAX) {
+            err = RINFS_ERR_CORRUPT;
+            break;
+        }
+        if (entry->references != 0u || mapped_references != 0u ||
+            entry->state != RINFS_PAGE_CACHE_CLEAN) {
+            err = RINFS_ERR_BUSY;
+            break;
+        }
+    }
+    if (err == RINFS_OK) {
+        for (index = 0u; index < RINFS_PAGE_CACHE_CAPACITY; ++index) {
+            RinFS_PageCacheEntry* entry = &cache->entries[index];
+            if (!entry->valid ||
+                entry->mount_epoch != identity.mount->mount_epoch ||
+                entry->inode_num != identity.inode_num ||
+                entry->inode_generation != identity.inode_generation ||
+                entry->content_version != content_version ||
+                entry->page_index < first_page || entry->page_index >= page_end)
+                continue;
+            rinfs_page_cache_discard_locked(cache, entry);
+            ++cache->evictions;
+        }
+    }
+    rinfs_page_cache_unlock(cache);
+
+invalidate_range_finish:
+    rinfs_content_lease_release(
+        identity.mount, identity.inode_num, identity.inode_generation,
+        lease_token, 0);
+    return err;
+}
+
 int rinfs_mmap_source_release(RinFS_MmapSource* source,
                               uint64_t reference_generation,
                               uint64_t reference_cookie) {
