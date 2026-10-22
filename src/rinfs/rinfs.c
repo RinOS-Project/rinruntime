@@ -14015,6 +14015,10 @@ static volatile uint32_t g_rinfs_fork_close_reference_lock_held;
 static volatile uint32_t g_rinfs_fork_mmap_source_lock_held;
 static RinFS_Mount* g_rinfs_shared_mount_registry[
     RINFS_SHARED_MOUNT_REGISTRY_CAPACITY];
+static uint32_t g_rinfs_shared_mount_registry_references[
+    RINFS_SHARED_MOUNT_REGISTRY_CAPACITY];
+static uint32_t g_rinfs_shared_mount_registry_closing[
+    RINFS_SHARED_MOUNT_REGISTRY_CAPACITY];
 
 static void rinfs_shared_mount_registry_lock(void) {
     while (__atomic_exchange_n(&g_rinfs_shared_mount_registry_lock, 1u,
@@ -14211,19 +14215,93 @@ static int rinfs_shared_mount_registry_add(RinFS_Mount* mount) {
         if (!g_rinfs_shared_mount_registry[index] && free_index < 0)
             free_index = (int)index;
     }
-    if (free_index >= 0)
+    if (free_index >= 0) {
         g_rinfs_shared_mount_registry[free_index] = mount;
+        g_rinfs_shared_mount_registry_references[free_index] = 1u;
+        g_rinfs_shared_mount_registry_closing[free_index] = 0u;
+    }
     rinfs_shared_mount_registry_unlock();
     return free_index >= 0 ? RINFS_OK : RINFS_ERR_NOMEM;
 }
 
-static void rinfs_shared_mount_registry_remove(RinFS_Mount* mount) {
+/* Multiple local handles for one exact mount share its cache and kernel
+ * mapping. The reference count is process-local and is cloned with the
+ * registry during fork; the kernel still tracks one mapping owner per process. */
+static int rinfs_shared_mount_registry_acquire_exact(
+    int dev_id, uint64_t offset, uint64_t sector_count, uint32_t flags,
+    const RinFS_DeviceOps* device_ops, RinFS_Mount** mount_out) {
+    if (mount_out) *mount_out = NULL;
+    if (!device_ops || !mount_out) return RINFS_ERR_INVAL;
+    rinfs_shared_mount_registry_lock();
+    for (uint32_t index = 0u;
+         index < RINFS_SHARED_MOUNT_REGISTRY_CAPACITY; ++index) {
+        RinFS_Mount* mount = g_rinfs_shared_mount_registry[index];
+        if (!mount || mount->dev_id != dev_id ||
+            mount->dev_offset != offset ||
+            mount->dev_sector_count != sector_count ||
+            mount->mount_flags != flags || mount->has_device_ops == 0 ||
+            mount->device_ops.read != device_ops->read ||
+            mount->device_ops.write != device_ops->write ||
+            mount->device_ops.flush != device_ops->flush ||
+            mount->device_ops.opaque != device_ops->opaque ||
+            mount->device_ops.flags != device_ops->flags)
+            continue;
+        if (mount->shared_mapping_base != (void*)mount ||
+            mount->shared_mount_ready == 0u || mount->mounted == 0 ||
+            mount->shared_lease_released != 0u ||
+            g_rinfs_shared_mount_registry_closing[index] != 0u ||
+            g_rinfs_shared_mount_registry_references[index] == 0u ||
+            g_rinfs_shared_mount_registry_references[index] == UINT32_MAX) {
+            rinfs_shared_mount_registry_unlock();
+            return RINFS_ERR_BUSY;
+        }
+        ++g_rinfs_shared_mount_registry_references[index];
+        *mount_out = mount;
+        rinfs_shared_mount_registry_unlock();
+        return 1;
+    }
+    rinfs_shared_mount_registry_unlock();
+    return 0;
+}
+
+/* Claim the final local unmount so duplicate/concurrent calls cannot tear
+ * down the same mapping. Return 1 for a released alias, 2 for a final claim,
+ * 0 for a mount outside this registry, and -1 for a busy claim. */
+static int rinfs_shared_mount_registry_claim_unmount(RinFS_Mount* mount) {
+    if (!mount) return 0;
+    rinfs_shared_mount_registry_lock();
+    for (uint32_t index = 0u;
+         index < RINFS_SHARED_MOUNT_REGISTRY_CAPACITY; ++index) {
+        if (g_rinfs_shared_mount_registry[index] != mount) continue;
+        if (g_rinfs_shared_mount_registry_closing[index] != 0u) {
+            rinfs_shared_mount_registry_unlock();
+            return -1;
+        }
+        if (g_rinfs_shared_mount_registry_references[index] == 0u) {
+            rinfs_shared_mount_registry_unlock();
+            return -1;
+        }
+        if (g_rinfs_shared_mount_registry_references[index] > 1u) {
+            --g_rinfs_shared_mount_registry_references[index];
+            rinfs_shared_mount_registry_unlock();
+            return 1;
+        }
+        g_rinfs_shared_mount_registry_closing[index] = 1u;
+        rinfs_shared_mount_registry_unlock();
+        return 2;
+    }
+    rinfs_shared_mount_registry_unlock();
+    return 0;
+}
+
+static void rinfs_shared_mount_registry_unclaim_unmount(
+    RinFS_Mount* mount) {
     if (!mount) return;
     rinfs_shared_mount_registry_lock();
     for (uint32_t index = 0u;
          index < RINFS_SHARED_MOUNT_REGISTRY_CAPACITY; ++index) {
         if (g_rinfs_shared_mount_registry[index] == mount)
-            g_rinfs_shared_mount_registry[index] = NULL;
+            g_rinfs_shared_mount_registry_closing[index] = 0u;
     }
     rinfs_shared_mount_registry_unlock();
 }
@@ -14257,7 +14335,8 @@ int rinfs_fork_prepare(void) {
         RinFS_Mount* mount = g_rinfs_shared_mount_registry[index];
         uint32_t fork_owner_row = 0u;
         if (!mount) continue;
-        if (mount->shared_mapping_base != (void*)mount ||
+        if (g_rinfs_shared_mount_registry_closing[index] != 0u ||
+            mount->shared_mapping_base != (void*)mount ||
             mount->shared_mount_ready == 0u ||
             mount->mounted == 0 ||
             mount->shared_lease_released != 0u ||
@@ -14569,6 +14648,17 @@ int rinfs_mount_sized_shared(int dev_id, uint64_t offset,
         offset > UINT32_MAX || offset > UINT64_MAX - sector_count)
         return RINFS_ERR_INVAL;
 
+    {
+        RinFS_Mount* existing = NULL;
+        int alias = rinfs_shared_mount_registry_acquire_exact(
+            dev_id, offset, sector_count, flags, device_ops, &existing);
+        if (alias < 0) return alias;
+        if (alias > 0) {
+            *mount_out = existing;
+            return RINFS_OK;
+        }
+    }
+
     rinfs_shared_mount_name(name);
     handle = rin_shm_get(
         name, RINFS_SHARED_MOUNT_MAPPING_BYTES,
@@ -14695,15 +14785,28 @@ static int rinfs_shared_mount_release_local_mapping(RinFS_Mount* mount) {
     int handle;
     void* mapping;
     int result;
+    int registry_index = -1;
     if (!mount || !mount->shared_mapping_base) return RINFS_OK;
     handle = mount->shared_shm_handle;
     mapping = mount->shared_mapping_base;
-    rinfs_shared_mount_registry_remove(mount);
-    result = handle < 0 ? -1 : rin_shm_dt(handle, mapping);
-    if (result != 0) {
-        (void)rinfs_shared_mount_registry_add(mount);
-        return RINFS_ERR_PENDING;
+    /* Keep the identity published until detach succeeds. Otherwise a second
+     * mount can acquire a fresh cache while this mapping is still live. */
+    rinfs_shared_mount_registry_lock();
+    for (uint32_t index = 0u;
+         index < RINFS_SHARED_MOUNT_REGISTRY_CAPACITY; ++index) {
+        if (g_rinfs_shared_mount_registry[index] == mount) {
+            registry_index = (int)index;
+            break;
+        }
     }
+    result = handle < 0 ? -1 : rin_shm_dt(handle, mapping);
+    if (result == 0 && registry_index >= 0) {
+        g_rinfs_shared_mount_registry[registry_index] = NULL;
+        g_rinfs_shared_mount_registry_references[registry_index] = 0u;
+        g_rinfs_shared_mount_registry_closing[registry_index] = 0u;
+    }
+    rinfs_shared_mount_registry_unlock();
+    if (result != 0) return RINFS_ERR_PENDING;
     return RINFS_OK;
 }
 
@@ -15010,25 +15113,51 @@ static int rinfs_unmount_core(RinFS_Mount* mount) {
 int rinfs_unmount(RinFS_Mount* mount) {
     uint64_t mount_epoch;
     int result;
+#if defined(RINFS_USERLAND_MOUNT_LEASES) && !defined(RIN_KERNEL)
+    int registry_unmount_claimed = 0;
+#endif
     if (!mount) return RINFS_ERR_INVAL;
 #if defined(RINFS_USERLAND_MOUNT_LEASES) && !defined(RIN_KERNEL)
+    if (mount->shared_mapping_base) {
+        int claim = rinfs_shared_mount_registry_claim_unmount(mount);
+        if (claim == 1) return RINFS_OK;
+        if (claim < 0) return RINFS_ERR_BUSY;
+        registry_unmount_claimed = claim == 2;
+    }
     if (mount->shared_mapping_base && !mount->mounted &&
-        mount->shared_lease_released != 0u)
-        return rinfs_shared_mount_release_local_mapping(mount);
+        mount->shared_lease_released != 0u) {
+        result = rinfs_shared_mount_release_local_mapping(mount);
+        if (result != RINFS_OK && registry_unmount_claimed)
+            rinfs_shared_mount_registry_unclaim_unmount(mount);
+        return result;
+    }
 #endif
     mount_epoch = mount->mount_epoch;
     result = rinfs_restore_mount_teardown_begin(mount, mount_epoch);
-    if (result != RINFS_OK) return result;
+    if (result != RINFS_OK) {
+#if defined(RINFS_USERLAND_MOUNT_LEASES) && !defined(RIN_KERNEL)
+        if (registry_unmount_claimed)
+            rinfs_shared_mount_registry_unclaim_unmount(mount);
+#endif
+        return result;
+    }
 #if defined(RINFS_USERLAND_MOUNT_LEASES) && !defined(RIN_KERNEL)
     if (mount->shared_mapping_base) {
         int close_owner = rinfs_shared_mount_begin_unmount(mount);
         if (close_owner <= 0) {
             if (close_owner < 0) {
                 rinfs_restore_mount_teardown_end(mount, mount_epoch, 0);
+#if defined(RINFS_USERLAND_MOUNT_LEASES) && !defined(RIN_KERNEL)
+                if (registry_unmount_claimed)
+                    rinfs_shared_mount_registry_unclaim_unmount(mount);
+#endif
                 return close_owner;
             }
             rinfs_restore_mount_teardown_end(mount, mount_epoch, 1);
-            return rinfs_shared_mount_release_local_mapping(mount);
+            result = rinfs_shared_mount_release_local_mapping(mount);
+            if (result != RINFS_OK && registry_unmount_claimed)
+                rinfs_shared_mount_registry_unclaim_unmount(mount);
+            return result;
         }
     }
 #endif
@@ -15038,6 +15167,8 @@ int rinfs_unmount(RinFS_Mount* mount) {
 #if defined(RINFS_USERLAND_MOUNT_LEASES) && !defined(RIN_KERNEL)
     if (result == RINFS_OK && mount->shared_mapping_base)
         result = rinfs_shared_mount_release_local_mapping(mount);
+    if (result != RINFS_OK && registry_unmount_claimed)
+        rinfs_shared_mount_registry_unclaim_unmount(mount);
 #endif
     return result;
 }

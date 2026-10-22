@@ -902,9 +902,11 @@ int rinfs_fork_hook_register(RinFS_ForkPrepareCallback prepare,
 int rinfs_fork_hooks_prepare(void);
 void rinfs_fork_hooks_complete(int fork_succeeded);
 /* Create a kernel SHM-backed mount whose mount object, synchronization state,
- * and persistent caches are shared across fork. A device provider is required
- * and its callbacks must be reentrant, process-independent, and use NULL
- * opaque state. Every process owner must unmount its view; only the final
+ * and persistent caches are shared across fork. Repeating an exact mount in
+ * one process returns the same mount pointer and increments a local reference;
+ * pair each successful call with rinfs_unmount(). A device provider is
+ * required and its callbacks must be reentrant, process-independent, and use
+ * NULL opaque state. Every process owner must unmount its view; only the final
  * live owner performs the durability barrier. */
 int rinfs_mount_sized_shared(int dev_id, uint64_t offset,
                              uint64_t sector_count, uint32_t flags,
