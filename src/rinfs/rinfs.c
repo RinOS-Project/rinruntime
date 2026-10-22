@@ -3761,15 +3761,19 @@ static int rinfs_inode_cache_eligible(const RinFS_Mount* mount,
 }
 
 static int rinfs_inode_cache_lookup(RinFS_Mount* mount, uint64_t ino,
-                                    RinFS_Inode* inode_out) {
+                                    RinFS_Inode* inode_out,
+                                    int* cache_hit_out) {
     RinFS_InodeCache* cache;
     uint32_t index;
-    if (!mount || !inode_out || !mount->inode_cache ||
-        mount->mount_epoch == 0u) return 0;
+    int unlock_err;
+    if (!cache_hit_out) return RINFS_ERR_INVAL;
+    *cache_hit_out = 0;
+    if (!mount || !inode_out) return RINFS_ERR_INVAL;
+    if (!mount->inode_cache || mount->mount_epoch == 0u) return RINFS_OK;
     cache = mount->inode_cache;
-    if (rinfs_shared_cache_lock(mount, &cache->lock,
-                                RINFS_SHARED_CACHE_INODE) != RINFS_OK)
-        return 0;
+    unlock_err = rinfs_shared_cache_lock(mount, &cache->lock,
+                                         RINFS_SHARED_CACHE_INODE);
+    if (unlock_err != RINFS_OK) return unlock_err;
     for (index = 0u; index < RINFS_INODE_CACHE_CAPACITY; ++index) {
         RinFS_InodeCacheEntry* entry = &cache->entries[index];
         if (!entry->valid || entry->mount_epoch != mount->mount_epoch ||
@@ -3777,25 +3781,28 @@ static int rinfs_inode_cache_lookup(RinFS_Mount* mount, uint64_t ino,
         entry->last_used = ++cache->clock;
         cache->hits++;
         *inode_out = entry->inode;
-        rinfs_shared_cache_unlock(mount, &cache->lock);
-        return 1;
+        *cache_hit_out = 1;
+        break;
     }
-    cache->misses++;
-    rinfs_shared_cache_unlock(mount, &cache->lock);
-    return 0;
+    if (!*cache_hit_out) cache->misses++;
+    unlock_err = rinfs_shared_cache_unlock(mount, &cache->lock);
+    return unlock_err;
 }
 
-static void rinfs_inode_cache_store(RinFS_Mount* mount, uint64_t ino,
-                                    const RinFS_Inode* inode) {
+static int rinfs_inode_cache_store(RinFS_Mount* mount, uint64_t ino,
+                                   const RinFS_Inode* inode) {
     RinFS_InodeCache* cache;
     uint32_t index;
     uint32_t victim = 0u;
     uint64_t oldest = UINT64_MAX;
-    if (!rinfs_inode_cache_eligible(mount, inode) || ino == 0u) return;
+    if (!rinfs_inode_cache_eligible(mount, inode) || ino == 0u)
+        return RINFS_OK;
     cache = mount->inode_cache;
-    if (rinfs_shared_cache_lock(mount, &cache->lock,
-                                RINFS_SHARED_CACHE_INODE) != RINFS_OK)
-        return;
+    {
+        int err = rinfs_shared_cache_lock(mount, &cache->lock,
+                                          RINFS_SHARED_CACHE_INODE);
+        if (err != RINFS_OK) return err;
+    }
     for (index = 0u; index < RINFS_INODE_CACHE_CAPACITY; ++index) {
         RinFS_InodeCacheEntry* entry = &cache->entries[index];
         if (!entry->valid) {
@@ -3825,7 +3832,7 @@ static void rinfs_inode_cache_store(RinFS_Mount* mount, uint64_t ino,
     cache->entries[victim].inode_generation = inode->i_generation;
     cache->entries[victim].inode = *inode;
     cache->entries[victim].valid = 1u;
-    rinfs_shared_cache_unlock(mount, &cache->lock);
+    return rinfs_shared_cache_unlock(mount, &cache->lock);
 }
 
 static void rinfs_inode_cache_invalidate(RinFS_Mount* mount, uint64_t ino) {
@@ -8127,7 +8134,10 @@ int rinfs_inode_read(RinFS_Mount* mount, uint64_t ino, RinFS_Inode* inode) {
     offset = (uint32_t)(((ino - 1) % inodes_per_block) * inode_size);
 
     if (!mount->shared_mapping_base || mount->shared_mount_ready == 0u) {
-        if (rinfs_inode_cache_lookup(mount, ino, inode)) return RINFS_OK;
+        int cache_hit = 0;
+        err = rinfs_inode_cache_lookup(mount, ino, inode, &cache_hit);
+        if (err != RINFS_OK) return err;
+        if (cache_hit) return RINFS_OK;
     }
     buf = (uint8_t*)rinfs_malloc(block_size);
     if (!buf) return RINFS_ERR_NOMEM;
@@ -8141,7 +8151,14 @@ int rinfs_inode_read(RinFS_Mount* mount, uint64_t ino, RinFS_Inode* inode) {
                    mount->shared_mount_ready != 0u;
     if (shared_guard) {
         RinFS_Inode cached;
-        if (rinfs_inode_cache_lookup(mount, ino, &cached)) {
+        int cache_hit = 0;
+        err = rinfs_inode_cache_lookup(mount, ino, &cached, &cache_hit);
+        if (err != RINFS_OK) {
+            (void)rinfs_inode_table_unlock(mount, block);
+            rinfs_free(buf);
+            return err;
+        }
+        if (cache_hit) {
             unlock_error = rinfs_inode_table_unlock(mount, block);
             if (unlock_error == RINFS_OK) *inode = cached;
             rinfs_free(buf);
@@ -8156,7 +8173,8 @@ int rinfs_inode_read(RinFS_Mount* mount, uint64_t ino, RinFS_Inode* inode) {
     }
     rinfs_memcpy(inode, buf + offset, sizeof(RinFS_Inode));
     rinfs_free(buf);
-    rinfs_inode_cache_store(mount, ino, inode);
+    err = rinfs_inode_cache_store(mount, ino, inode);
+    if (err != RINFS_OK) return err;
     return RINFS_OK;
 }
 
