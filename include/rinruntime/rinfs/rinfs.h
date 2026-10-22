@@ -459,6 +459,9 @@ typedef enum {
     RINFS_PAGE_CACHE_ACTIVE = 1
 } RinFS_PageCacheGeneration;
 
+#define RINFS_SHARED_OWNER_CAPACITY 32u
+#define RINFS_INODE_TABLE_LOCK_COUNT 64u
+
 typedef struct {
     uint64_t mount_epoch;
     uint64_t inode_num;
@@ -480,6 +483,16 @@ typedef struct {
     /* Freestanding mounts may back this entry with an allocator-owned
      * physical page. Hosted fixtures leave this zero and use storage. */
     uint64_t physical_address;
+    /* Shared-runtime writeback owner. A dead owner leaves dirty bytes in the
+     * cache page; takeover retries the complete page from that snapshot. */
+    uint32_t writeback_owner_row;
+    uint32_t reserved_owner;
+    uint64_t writeback_owner_cookie;
+    /* Set before mutating cached bytes or dirty-range metadata. Recovery
+     * widens an interrupted update to a full-page writeback. */
+    uint32_t dirty_intent_owner_row;
+    uint32_t reserved_dirty_intent;
+    uint64_t dirty_intent_owner_cookie;
 } RinFS_PageCacheEntry;
 
 typedef struct {
@@ -504,6 +517,13 @@ typedef struct {
     uint8_t device_flags;
     uint16_t reserved0;
     uint32_t readahead_limit_pages;
+    uint32_t recovery_failed;
+    struct RinFS_Mount* owner_mount;
+    uint64_t owner_cookies[RINFS_SHARED_OWNER_CAPACITY];
+    uint32_t owner_references[RINFS_SHARED_OWNER_CAPACITY]
+                             [RINFS_PAGE_CACHE_CAPACITY];
+    uint32_t owner_mapping_references[RINFS_SHARED_OWNER_CAPACITY]
+                                     [RINFS_PAGE_CACHE_CAPACITY];
     RinFS_PageCacheEntry entries[RINFS_PAGE_CACHE_CAPACITY];
 } RinFS_PageCache;
 
@@ -512,7 +532,6 @@ typedef struct {
  * runtime reconciles these per-handle deltas under content_lease_lock. */
 #define RINFS_SHARED_OWNER_LEDGER_MAGIC UINT32_C(0x524F574E)
 #define RINFS_SHARED_OWNER_LEDGER_VERSION 1u
-#define RINFS_SHARED_OWNER_CAPACITY 32u
 #define RINFS_SHARED_OWNER_REFERENCE_CAPACITY 512u
 #define RINFS_SHARED_OWNER_FREE 0u
 #define RINFS_SHARED_OWNER_ACTIVE 1u
@@ -555,7 +574,9 @@ typedef struct {
 } RinFS_SharedOwnerLedgerV1;
 
 /* Mount info */
-typedef struct {
+typedef struct RinFS_Mount RinFS_Mount;
+
+struct RinFS_Mount {
     int              mounted;
     int              readonly;
     uint32_t         mount_flags;
@@ -582,10 +603,18 @@ typedef struct {
     /* Internal synchronization/cache-safety state.  Logical content leases
      * are inode/file-object scoped; the striped locks protect only the short
      * physical inode-table read/modify/write operations. */
-    volatile uint32_t inode_table_locks[64];
+    volatile uint32_t inode_table_locks[RINFS_INODE_TABLE_LOCK_COUNT];
+    /* Shared-memory redo records for interrupted inode-table block writes. */
+    void* shared_inode_table_recovery_logs;
     volatile uint32_t block_allocation_lock;
     volatile uint32_t inode_allocation_lock;
     volatile uint32_t superblock_lock;
+    volatile uint32_t shared_superblock_recovery_state;
+    uint32_t shared_superblock_recovery_checksum;
+    uint32_t shared_superblock_recovery_owner_row;
+    uint32_t shared_superblock_recovery_reserved;
+    uint64_t shared_superblock_recovery_owner_cookie;
+    RinFS_Superblock shared_superblock_recovery_candidate;
     volatile uint32_t content_lease_lock;
     /* Serializes the single on-disk rename/rmdir journal transaction. */
     volatile uint32_t namespace_journal_lock;
@@ -624,7 +653,7 @@ typedef struct {
     uint32_t           shared_lease_released;
     uint32_t           shared_arena_recovery_failed;
     RinFS_SharedOwnerLedgerV1* shared_owner_ledger;
-} RinFS_Mount;
+};
 
 #define RINFS_SHARED_OWNER_LEDGER_ALIGNMENT 16u
 #define RINFS_SHARED_OWNER_LEDGER_OFFSET \

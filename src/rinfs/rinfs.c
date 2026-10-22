@@ -535,6 +535,19 @@ typedef struct {
     uint32_t reserved;
 } RinFS_SharedHeapBlock;
 
+#define RINFS_INODE_TABLE_RECOVERY_IDLE 0u
+#define RINFS_INODE_TABLE_RECOVERY_READY 1u
+
+typedef struct {
+    volatile uint32_t state;
+    uint32_t bytes;
+    uint64_t block;
+    uint32_t checksum;
+    uint32_t owner_row;
+    uint64_t owner_cookie;
+    uint8_t data[RINFS_PAGE_CACHE_PAGE_SIZE];
+} RinFS_InodeTableRecoveryLog;
+
 #define RINFS_SHARED_LOCK_OWNER_TAG UINT32_C(0x80000000)
 #define RINFS_SHARED_LOCK_OWNER_ROW_MASK UINT32_C(0x0000003f)
 #define RINFS_CONTENT_LEASE_CLOSING_FORK 2u
@@ -542,7 +555,9 @@ typedef struct {
 static int rinfs_shared_owner_query_row(RinFS_Mount* mount,
                                         uint32_t* row_out);
 static int rinfs_shared_owner_ledger_valid(const RinFS_Mount* mount);
+static int rinfs_journal_recover(RinFS_Mount* mount);
 static int rinfs_shared_owner_reap_locked(RinFS_Mount* mount);
+static int disk_flush(RinFS_Mount* mount);
 
 static uint32_t rinfs_shared_lock_token(RinFS_Mount* mount) {
     uint32_t row = 0u;
@@ -929,6 +944,7 @@ typedef struct {
 } RinFS_MmapSourceReference;
 
 static int rinfs_check_inode_type(uint16_t mode);
+static void rinfs_inode_cache_invalidate(RinFS_Mount* mount, uint64_t ino);
 static RinFS_ContentLeaseNode* rinfs_content_lease_find(
     RinFS_Mount* mount, uint64_t ino, uint32_t inode_generation);
 static int rinfs_shared_owner_reap_locked(RinFS_Mount* mount);
@@ -945,6 +961,10 @@ static int rinfs_shared_owner_query_row(RinFS_Mount* mount,
 static int rinfs_shared_owner_ledger_valid(const RinFS_Mount* mount);
 static void rinfs_shared_content_lock(RinFS_Mount* mount);
 static void rinfs_shared_content_unlock(RinFS_Mount* mount);
+static int rinfs_scan_bitmap(RinFS_Mount* mount, uint64_t bitmap_start,
+                             uint64_t bit_count, uint64_t reserved_bits,
+                             uint64_t* free_count, int* reserved_clear);
+static uint64_t rinfs_reserved_data_end(const RinFS_Mount* mount);
 static int rinfs_content_pin_retain(RinFS_Mount* mount, uint64_t ino,
                                     uint32_t inode_generation,
                                     uint64_t token,
@@ -996,6 +1016,219 @@ static void rinfs_spin_lock(volatile uint32_t* lock) {
 static void rinfs_spin_unlock(volatile uint32_t* lock) {
     __atomic_store_n(lock, 0u, __ATOMIC_RELEASE);
     rinfs_spin_preempt_leave();
+}
+
+static void rinfs_shared_allocation_recover_locked(RinFS_Mount* mount,
+                                                    int inode_bitmap) {
+    uint64_t free_count = 0u;
+    int reserved_clear = 0;
+    uint64_t bitmap_start;
+    uint64_t bit_count;
+    uint64_t reserved_bits;
+    int err;
+    if (!mount || !mount->mounted)
+        goto recovery_failed;
+    if (inode_bitmap) {
+        bitmap_start = mount->sb.s_inode_bitmap;
+        bit_count = mount->sb.s_inode_count;
+        reserved_bits = RINFS_INODE_FIRST - 1u;
+    } else {
+        bitmap_start = mount->sb.s_block_bitmap;
+        bit_count = mount->sb.s_block_count;
+        reserved_bits = rinfs_reserved_data_end(mount);
+    }
+    err = rinfs_scan_bitmap(mount, bitmap_start, bit_count, reserved_bits,
+                            &free_count, &reserved_clear);
+    if (err != RINFS_OK || reserved_clear || free_count > bit_count)
+        goto recovery_failed;
+    if (inode_bitmap)
+        mount->sb.s_free_inodes = free_count;
+    else
+        mount->sb.s_free_blocks = free_count;
+    return;
+
+recovery_failed:
+    if (mount) mount->readonly = 1;
+    __builtin_trap();
+}
+
+static void rinfs_block_allocation_lock(RinFS_Mount* mount) {
+    if (!mount) return;
+    if (!mount->shared_mapping_base || mount->shared_mount_ready == 0u) {
+        rinfs_spin_lock(&mount->block_allocation_lock);
+        return;
+    }
+    int recovered = 0;
+    rinfs_shared_lock_acquire(mount, &mount->block_allocation_lock,
+                              &recovered);
+    if (recovered) rinfs_shared_allocation_recover_locked(mount, 0);
+}
+
+static void rinfs_block_allocation_unlock(RinFS_Mount* mount) {
+    if (!mount) return;
+    if (!mount->shared_mapping_base || mount->shared_mount_ready == 0u) {
+        rinfs_spin_unlock(&mount->block_allocation_lock);
+        return;
+    }
+    rinfs_shared_lock_release(&mount->block_allocation_lock);
+}
+
+static void rinfs_inode_allocation_lock(RinFS_Mount* mount) {
+    if (!mount) return;
+    if (!mount->shared_mapping_base || mount->shared_mount_ready == 0u) {
+        rinfs_spin_lock(&mount->inode_allocation_lock);
+        return;
+    }
+    int recovered = 0;
+    rinfs_shared_lock_acquire(mount, &mount->inode_allocation_lock,
+                              &recovered);
+    if (recovered) rinfs_shared_allocation_recover_locked(mount, 1);
+}
+
+static void rinfs_inode_allocation_unlock(RinFS_Mount* mount) {
+    if (!mount) return;
+    if (!mount->shared_mapping_base || mount->shared_mount_ready == 0u) {
+        rinfs_spin_unlock(&mount->inode_allocation_lock);
+        return;
+    }
+    rinfs_shared_lock_release(&mount->inode_allocation_lock);
+}
+
+static void rinfs_inode_table_recovery_fail(RinFS_Mount* mount) {
+    if (mount) mount->readonly = 1;
+    __builtin_trap();
+}
+
+static RinFS_InodeTableRecoveryLog* rinfs_inode_table_log(
+    RinFS_Mount* mount, uint32_t lock_index) {
+    RinFS_InodeTableRecoveryLog* logs;
+    if (!mount || lock_index >= RINFS_INODE_TABLE_LOCK_COUNT ||
+        !mount->shared_inode_table_recovery_logs)
+        return NULL;
+    logs = (RinFS_InodeTableRecoveryLog*)
+        mount->shared_inode_table_recovery_logs;
+    return &logs[lock_index];
+}
+
+static void rinfs_inode_table_recover_log_locked(
+    RinFS_Mount* mount, uint32_t lock_index) {
+    RinFS_InodeTableRecoveryLog* log =
+        rinfs_inode_table_log(mount, lock_index);
+    uint32_t state;
+    uint32_t inodes_per_block;
+    uint64_t table_blocks;
+    uint8_t verify[RINFS_PAGE_CACHE_PAGE_SIZE];
+    int err;
+    if (!log || !mount || !mount->mounted)
+        rinfs_inode_table_recovery_fail(mount);
+    state = __atomic_load_n(&log->state, __ATOMIC_ACQUIRE);
+    if (state == RINFS_INODE_TABLE_RECOVERY_IDLE) return;
+    if (mount->readonly || state != RINFS_INODE_TABLE_RECOVERY_READY ||
+        log->bytes != mount->sb.s_block_size ||
+        log->bytes > sizeof(log->data) ||
+        log->checksum != rinfs_checksum(log->data, log->bytes) ||
+        mount->sb.s_inode_size == 0u ||
+        mount->sb.s_block_size % mount->sb.s_inode_size != 0u)
+        rinfs_inode_table_recovery_fail(mount);
+    inodes_per_block = mount->sb.s_block_size / mount->sb.s_inode_size;
+    if (inodes_per_block == 0u) rinfs_inode_table_recovery_fail(mount);
+    table_blocks = (mount->sb.s_inode_count + inodes_per_block - 1u) /
+                   inodes_per_block;
+    if (log->block < mount->sb.s_inode_table ||
+        log->block - mount->sb.s_inode_table >= table_blocks ||
+        (log->block & (RINFS_INODE_TABLE_LOCK_COUNT - 1u)) != lock_index)
+        rinfs_inode_table_recovery_fail(mount);
+
+    err = rinfs_block_write(mount, log->block, log->data);
+    if (err == RINFS_OK) err = disk_flush(mount);
+    if (err == RINFS_OK)
+        err = rinfs_block_read(mount, log->block, verify);
+    if (err != RINFS_OK ||
+        rinfs_memcmp(verify, log->data, log->bytes) != 0)
+        rinfs_inode_table_recovery_fail(mount);
+    rinfs_inode_cache_invalidate(mount, 0u);
+    __atomic_store_n(&log->state, RINFS_INODE_TABLE_RECOVERY_IDLE,
+                     __ATOMIC_RELEASE);
+}
+
+static void rinfs_inode_table_lock(RinFS_Mount* mount, uint64_t block) {
+    uint32_t lock_index = (uint32_t)(block &
+        (RINFS_INODE_TABLE_LOCK_COUNT - 1u));
+    volatile uint32_t* lock;
+    if (!mount) return;
+    lock = &mount->inode_table_locks[lock_index];
+    if (!mount->shared_mapping_base || mount->shared_mount_ready == 0u) {
+        rinfs_spin_lock(lock);
+        return;
+    }
+    int recovered = 0;
+    rinfs_shared_lock_acquire(mount, lock, &recovered);
+    (void)recovered;
+    rinfs_inode_table_recover_log_locked(mount, lock_index);
+}
+
+static void rinfs_inode_table_unlock(RinFS_Mount* mount, uint64_t block) {
+    uint32_t lock_index = (uint32_t)(block &
+        (RINFS_INODE_TABLE_LOCK_COUNT - 1u));
+    volatile uint32_t* lock;
+    if (!mount) return;
+    lock = &mount->inode_table_locks[lock_index];
+    if (!mount->shared_mapping_base || mount->shared_mount_ready == 0u) {
+        rinfs_spin_unlock(lock);
+        return;
+    }
+    /* A failed device write leaves a redo record. Retry it before exposing the
+     * lock to another inode-table reader or writer. */
+    rinfs_inode_table_recover_log_locked(mount, lock_index);
+    rinfs_shared_lock_release(lock);
+}
+
+static int rinfs_inode_table_write_block_locked(
+    RinFS_Mount* mount, uint64_t block, const uint8_t* data) {
+    uint32_t lock_index = (uint32_t)(block &
+        (RINFS_INODE_TABLE_LOCK_COUNT - 1u));
+    RinFS_InodeTableRecoveryLog* log;
+    uint32_t row = 0u;
+    int err;
+    if (!mount || !data) return RINFS_ERR_INVAL;
+    if (!mount->shared_mapping_base || mount->shared_mount_ready == 0u)
+        return rinfs_block_write(mount, block, data);
+    log = rinfs_inode_table_log(mount, lock_index);
+    if (!log || mount->sb.s_block_size > sizeof(log->data) ||
+        __atomic_load_n(&log->state, __ATOMIC_ACQUIRE) !=
+            RINFS_INODE_TABLE_RECOVERY_IDLE ||
+        rinfs_shared_owner_query_row(mount, &row) != RINFS_OK || row == 0u ||
+        row > RINFS_SHARED_OWNER_CAPACITY)
+        rinfs_inode_table_recovery_fail(mount);
+    log->block = block;
+    log->bytes = mount->sb.s_block_size;
+    log->owner_row = row;
+    log->owner_cookie =
+        mount->shared_owner_ledger->owners[row - 1u].owner_cookie;
+    if (log->owner_cookie == 0u) rinfs_inode_table_recovery_fail(mount);
+    rinfs_memcpy(log->data, data, log->bytes);
+    log->checksum = rinfs_checksum(log->data, log->bytes);
+    __atomic_store_n(&log->state, RINFS_INODE_TABLE_RECOVERY_READY,
+                     __ATOMIC_RELEASE);
+    err = rinfs_block_write(mount, block, data);
+    return err;
+}
+
+static void rinfs_inode_table_commit_log_locked(RinFS_Mount* mount,
+                                                 uint64_t block) {
+    uint32_t lock_index = (uint32_t)(block &
+        (RINFS_INODE_TABLE_LOCK_COUNT - 1u));
+    RinFS_InodeTableRecoveryLog* log;
+    if (!mount || !mount->shared_mapping_base ||
+        mount->shared_mount_ready == 0u)
+        return;
+    log = rinfs_inode_table_log(mount, lock_index);
+    if (!log || __atomic_load_n(&log->state, __ATOMIC_ACQUIRE) !=
+                    RINFS_INODE_TABLE_RECOVERY_READY ||
+        log->block != block)
+        rinfs_inode_table_recovery_fail(mount);
+    __atomic_store_n(&log->state, RINFS_INODE_TABLE_RECOVERY_IDLE,
+                     __ATOMIC_RELEASE);
 }
 
 static int rinfs_shared_owner_has_dead_row(RinFS_Mount* mount) {
@@ -1096,7 +1329,35 @@ static void rinfs_shared_cache_unlock(RinFS_Mount* mount,
 /* Page-cache contention telemetry is enabled only in performance-trace
  * builds.  The ordinary filesystem locks keep using the shared primitive;
  * this one preserves its yield cadence while recording only contended waits. */
+static int rinfs_page_cache_has_stale_owner(RinFS_PageCache* cache);
+static void rinfs_page_cache_recover_locked(RinFS_PageCache* cache);
+static void rinfs_page_cache_discard_locked(RinFS_PageCache* cache,
+                                            RinFS_PageCacheEntry* entry);
+
 static void rinfs_page_cache_lock(RinFS_PageCache* cache) {
+    RinFS_Mount* mount = cache ? cache->owner_mount : NULL;
+    if (mount && mount->shared_mapping_base &&
+        mount->shared_mount_ready != 0u) {
+        int recovered = 0;
+#if defined(RIN_PERFORMANCE_TRACE) && RIN_PERFORMANCE_TRACE
+        uint64_t started_at = RIN_TRACE_CYCLES_NOW();
+        int contended = __atomic_load_n(&cache->lock, __ATOMIC_RELAXED) != 0u;
+#endif
+        rinfs_shared_lock_acquire(mount, &cache->lock, &recovered);
+        if (cache->recovery_failed != 0u) __builtin_trap();
+        if (recovered || rinfs_page_cache_has_stale_owner(cache))
+            rinfs_page_cache_recover_locked(cache);
+#if defined(RIN_PERFORMANCE_TRACE) && RIN_PERFORMANCE_TRACE
+        if (contended) {
+            uint64_t waited_cycles = RIN_TRACE_CYCLES_NOW() - started_at;
+            ++cache->lock_wait_count;
+            cache->lock_wait_cycles += waited_cycles;
+            RIN_TRACE_EMIT_CURRENT(RIN_TRACE_PAGE_CACHE_LOCK_WAIT,
+                                   waited_cycles, 1u);
+        }
+#endif
+        return;
+    }
 #if defined(RIN_PERFORMANCE_TRACE) && RIN_PERFORMANCE_TRACE
     uint64_t started_at = RIN_TRACE_CYCLES_NOW();
     uint64_t spin_iterations = 0u;
@@ -1127,6 +1388,12 @@ static void rinfs_page_cache_lock(RinFS_PageCache* cache) {
 }
 
 static void rinfs_page_cache_unlock(RinFS_PageCache* cache) {
+    RinFS_Mount* mount = cache ? cache->owner_mount : NULL;
+    if (mount && mount->shared_mapping_base &&
+        mount->shared_mount_ready != 0u) {
+        rinfs_shared_lock_release(&cache->lock);
+        return;
+    }
     rinfs_spin_unlock(&cache->lock);
 }
 
@@ -1156,6 +1423,302 @@ static uint32_t rinfs_page_cache_mapping_references(
     const uint32_t* slot =
         rinfs_page_cache_mapping_reference_slot(cache, entry);
     return slot ? *slot : UINT32_MAX;
+}
+
+static int rinfs_page_cache_entry_index(
+    RinFS_PageCache* cache, const RinFS_PageCacheEntry* entry,
+    uint32_t* index_out) {
+    uintptr_t first;
+    uintptr_t address;
+    uintptr_t offset;
+    uint32_t index;
+    if (index_out) *index_out = 0u;
+    if (!cache || !entry || !index_out) return 0;
+    first = (uintptr_t)&cache->entries[0];
+    address = (uintptr_t)entry;
+    if (address < first) return 0;
+    offset = address - first;
+    if (offset % sizeof(RinFS_PageCacheEntry) != 0u) return 0;
+    index = (uint32_t)(offset / sizeof(RinFS_PageCacheEntry));
+    if (index >= RINFS_PAGE_CACHE_CAPACITY) return 0;
+    *index_out = index;
+    return 1;
+}
+
+static int rinfs_page_cache_current_owner_locked(
+    RinFS_PageCache* cache, uint32_t* row_out, uint64_t* cookie_out) {
+    RinFS_Mount* mount;
+    uint32_t row = 0u;
+    if (row_out) *row_out = 0u;
+    if (cookie_out) *cookie_out = 0u;
+    if (!cache || !row_out || !cookie_out) return RINFS_ERR_INVAL;
+    mount = cache->owner_mount;
+    if (!mount || !mount->shared_mapping_base ||
+        mount->shared_mount_ready == 0u)
+        return RINFS_OK;
+    if (!rinfs_shared_owner_ledger_valid(mount) ||
+        rinfs_shared_owner_query_row(mount, &row) != RINFS_OK || row == 0u ||
+        row > RINFS_SHARED_OWNER_CAPACITY)
+        return RINFS_ERR_STALE;
+    uint64_t cookie =
+        mount->shared_owner_ledger->owners[row - 1u].owner_cookie;
+    if (cookie == 0u || cache->owner_cookies[row - 1u] != cookie)
+        return RINFS_ERR_STALE;
+    *row_out = row;
+    *cookie_out = cookie;
+    return RINFS_OK;
+}
+
+static void rinfs_page_cache_clear_owner_refs_locked(
+    RinFS_PageCache* cache, uint32_t owner_index) {
+    if (!cache || owner_index >= RINFS_SHARED_OWNER_CAPACITY) return;
+    for (uint32_t index = 0u; index < RINFS_PAGE_CACHE_CAPACITY; ++index) {
+        cache->owner_references[owner_index][index] = 0u;
+        cache->owner_mapping_references[owner_index][index] = 0u;
+    }
+}
+
+static int rinfs_page_cache_has_stale_owner(RinFS_PageCache* cache) {
+    RinFS_Mount* mount;
+    if (!cache || !(mount = cache->owner_mount) ||
+        !mount->shared_mapping_base || mount->shared_mount_ready == 0u)
+        return 0;
+    if (!rinfs_shared_owner_ledger_valid(mount)) return 1;
+    for (uint32_t owner = 0u; owner < RINFS_SHARED_OWNER_CAPACITY; ++owner) {
+        const RinFS_SharedOwnerV1* row =
+            &mount->shared_owner_ledger->owners[owner];
+        uint32_t state = __atomic_load_n(&row->state, __ATOMIC_ACQUIRE);
+        uint64_t cookie = row->owner_cookie;
+        if ((state == RINFS_SHARED_OWNER_ACTIVE &&
+             (cache->owner_cookies[owner] == 0u ||
+              cookie != cache->owner_cookies[owner])) ||
+            (state != RINFS_SHARED_OWNER_ACTIVE &&
+             cache->owner_cookies[owner] != 0u))
+            return 1;
+        if (state != RINFS_SHARED_OWNER_ACTIVE) {
+            for (uint32_t index = 0u; index < RINFS_PAGE_CACHE_CAPACITY;
+                 ++index) {
+                if (cache->owner_references[owner][index] != 0u ||
+                    cache->owner_mapping_references[owner][index] != 0u)
+                    return 1;
+            }
+        }
+    }
+    for (uint32_t index = 0u; index < RINFS_PAGE_CACHE_CAPACITY; ++index) {
+        const RinFS_PageCacheEntry* entry = &cache->entries[index];
+        if (entry->valid && entry->state == RINFS_PAGE_CACHE_WRITEBACK) {
+            uint32_t row = entry->writeback_owner_row;
+            if (row == 0u || row > RINFS_SHARED_OWNER_CAPACITY ||
+                __atomic_load_n(
+                    &mount->shared_owner_ledger->owners[row - 1u].state,
+                    __ATOMIC_ACQUIRE) != RINFS_SHARED_OWNER_ACTIVE ||
+                mount->shared_owner_ledger->owners[row - 1u].owner_cookie !=
+                    entry->writeback_owner_cookie)
+                return 1;
+        }
+    }
+    return 0;
+}
+
+static void rinfs_page_cache_recovery_fail(RinFS_PageCache* cache) {
+    if (cache) {
+        cache->recovery_failed = 1u;
+        if (cache->owner_mount) cache->owner_mount->readonly = 1;
+    }
+    __builtin_trap();
+}
+
+static void rinfs_page_cache_recover_locked(RinFS_PageCache* cache) {
+    RinFS_Mount* mount;
+    uint64_t dirty_pages = 0u;
+    uint64_t dirty_bytes = 0u;
+    if (!cache || !(mount = cache->owner_mount) ||
+        !rinfs_shared_owner_ledger_valid(mount) ||
+        mount->sb.s_block_size != RINFS_PAGE_CACHE_PAGE_SIZE)
+        rinfs_page_cache_recovery_fail(cache);
+
+    /* Bind each matrix row to the kernel-issued process cookie. This also
+     * handles owner-row reuse after a prior process died before it next
+     * touched the page cache. */
+    for (uint32_t owner = 0u; owner < RINFS_SHARED_OWNER_CAPACITY; ++owner) {
+        RinFS_SharedOwnerV1* row =
+            &mount->shared_owner_ledger->owners[owner];
+        uint32_t state = __atomic_load_n(&row->state, __ATOMIC_ACQUIRE);
+        uint64_t cookie = row->owner_cookie;
+        if (state == RINFS_SHARED_OWNER_ACTIVE) {
+            if (cookie == 0u) rinfs_page_cache_recovery_fail(cache);
+            if (cache->owner_cookies[owner] != 0u &&
+                cache->owner_cookies[owner] != cookie)
+                rinfs_page_cache_clear_owner_refs_locked(cache, owner);
+            cache->owner_cookies[owner] = cookie;
+        } else {
+            rinfs_page_cache_clear_owner_refs_locked(cache, owner);
+            cache->owner_cookies[owner] = 0u;
+        }
+    }
+
+    for (uint32_t index = 0u; index < RINFS_PAGE_CACHE_CAPACITY; ++index) {
+        RinFS_PageCacheEntry* entry = &cache->entries[index];
+        uint32_t* mapped_references =
+            rinfs_page_cache_mapping_reference_slot(cache, entry);
+        uint64_t references = 0u;
+        uint64_t mappings = 0u;
+        if (!mapped_references) rinfs_page_cache_recovery_fail(cache);
+        if (!entry->valid) {
+            for (uint32_t owner = 0u;
+                 owner < RINFS_SHARED_OWNER_CAPACITY; ++owner) {
+                if (cache->owner_references[owner][index] != 0u ||
+                    cache->owner_mapping_references[owner][index] != 0u)
+                    rinfs_page_cache_recovery_fail(cache);
+            }
+            if (entry->state != RINFS_PAGE_CACHE_FREE)
+                rinfs_page_cache_discard_locked(cache, entry);
+            else
+                *mapped_references = 0u;
+            continue;
+        }
+        if (entry->state < RINFS_PAGE_CACHE_CLEAN ||
+            entry->state > RINFS_PAGE_CACHE_WRITEBACK)
+            rinfs_page_cache_recovery_fail(cache);
+        for (uint32_t owner = 0u;
+             owner < RINFS_SHARED_OWNER_CAPACITY; ++owner) {
+            references += cache->owner_references[owner][index];
+            mappings += cache->owner_mapping_references[owner][index];
+        }
+        if (references > UINT32_MAX || mappings > references)
+            rinfs_page_cache_recovery_fail(cache);
+        entry->references = (uint32_t)references;
+        *mapped_references = (uint32_t)mappings;
+
+        if (entry->state == RINFS_PAGE_CACHE_FILLING && references == 0u) {
+            rinfs_page_cache_discard_locked(cache, entry);
+            continue;
+        }
+        if (entry->dirty_intent_owner_row != 0u ||
+            entry->dirty_intent_owner_cookie != 0u) {
+            entry->state = RINFS_PAGE_CACHE_DIRTY;
+            entry->dirty_start = 0u;
+            entry->dirty_end = mount->sb.s_block_size;
+            if (cache->clock != UINT64_MAX) ++cache->clock;
+            entry->dirty_since = cache->clock;
+            entry->dirty_intent_owner_row = 0u;
+            entry->dirty_intent_owner_cookie = 0u;
+        }
+        if (entry->state == RINFS_PAGE_CACHE_WRITEBACK) {
+            uint32_t row = entry->writeback_owner_row;
+            int owner_live = row != 0u &&
+                row <= RINFS_SHARED_OWNER_CAPACITY &&
+                __atomic_load_n(
+                    &mount->shared_owner_ledger->owners[row - 1u].state,
+                    __ATOMIC_ACQUIRE) == RINFS_SHARED_OWNER_ACTIVE &&
+                mount->shared_owner_ledger->owners[row - 1u].owner_cookie ==
+                    entry->writeback_owner_cookie;
+            if (!owner_live) {
+                entry->state = RINFS_PAGE_CACHE_DIRTY;
+                entry->dirty_start = 0u;
+                entry->dirty_end = mount->sb.s_block_size;
+                entry->writeback_error = RINFS_ERR_IO;
+                if (cache->clock != UINT64_MAX) ++cache->clock;
+                entry->dirty_since = cache->clock;
+                if (cache->writeback_errors != UINT64_MAX)
+                    ++cache->writeback_errors;
+            }
+        }
+        if (entry->state == RINFS_PAGE_CACHE_CLEAN) {
+            entry->dirty_start = 0u;
+            entry->dirty_end = 0u;
+            entry->dirty_since = 0u;
+        } else if (entry->state == RINFS_PAGE_CACHE_DIRTY ||
+                   entry->state == RINFS_PAGE_CACHE_WRITEBACK) {
+            if (entry->dirty_start > entry->dirty_end ||
+                entry->dirty_end > mount->sb.s_block_size)
+                rinfs_page_cache_recovery_fail(cache);
+            ++dirty_pages;
+            dirty_bytes += entry->dirty_end - entry->dirty_start;
+        }
+        if (entry->state != RINFS_PAGE_CACHE_WRITEBACK) {
+            entry->writeback_owner_row = 0u;
+            entry->writeback_owner_cookie = 0u;
+        }
+    }
+    cache->dirty_pages = dirty_pages;
+    cache->dirty_bytes = dirty_bytes;
+}
+
+/* Owner references are kept per page so process death cannot leave a leaked
+ * aggregate pin or release a page still mapped by another live process. */
+static int rinfs_page_cache_reference_add_locked(
+    RinFS_PageCache* cache, RinFS_PageCacheEntry* entry, int mapped) {
+    uint32_t index;
+    uint32_t row = 0u;
+    uint64_t cookie = 0u;
+    uint32_t* mapped_references;
+    int owner_status;
+    if (!cache || !entry || !rinfs_page_cache_entry_index(cache, entry,
+                                                           &index))
+        return RINFS_ERR_INVAL;
+    if (entry->references == UINT32_MAX) return RINFS_ERR_OVERFLOW;
+    mapped_references = rinfs_page_cache_mapping_reference_slot(cache, entry);
+    if (!mapped_references) return RINFS_ERR_CORRUPT;
+    owner_status = rinfs_page_cache_current_owner_locked(cache, &row, &cookie);
+    if (owner_status != RINFS_OK) return owner_status;
+    if (row == 0u) {
+        if (mapped && *mapped_references == UINT32_MAX)
+            return RINFS_ERR_OVERFLOW;
+        ++entry->references;
+        if (mapped) ++*mapped_references;
+        return RINFS_OK;
+    }
+    uint32_t owner = row - 1u;
+    uint32_t* owner_count = mapped
+        ? &cache->owner_mapping_references[owner][index]
+        : &cache->owner_references[owner][index];
+    if (*owner_count == UINT32_MAX ||
+        (mapped && *mapped_references == UINT32_MAX))
+        return RINFS_ERR_OVERFLOW;
+    if (mapped && cache->owner_references[owner][index] == 0u)
+        return RINFS_ERR_STALE;
+    ++*owner_count;
+    ++entry->references;
+    if (mapped) ++*mapped_references;
+    return RINFS_OK;
+}
+
+static int rinfs_page_cache_reference_drop_locked(
+    RinFS_PageCache* cache, RinFS_PageCacheEntry* entry, int mapped) {
+    uint32_t index;
+    uint32_t row = 0u;
+    uint64_t cookie = 0u;
+    uint32_t* mapped_references;
+    int owner_status;
+    if (!cache || !entry || !rinfs_page_cache_entry_index(cache, entry,
+                                                           &index))
+        return RINFS_ERR_INVAL;
+    mapped_references = rinfs_page_cache_mapping_reference_slot(cache, entry);
+    if (!mapped_references) return RINFS_ERR_CORRUPT;
+    owner_status = rinfs_page_cache_current_owner_locked(cache, &row, &cookie);
+    if (owner_status != RINFS_OK) return owner_status;
+    if (row == 0u) {
+        if (entry->references == 0u ||
+            (mapped && *mapped_references == 0u) ||
+            (!mapped && entry->references <= *mapped_references))
+            return RINFS_ERR_STALE;
+        --entry->references;
+        if (mapped) --*mapped_references;
+        return RINFS_OK;
+    }
+    uint32_t owner = row - 1u;
+    uint32_t* owner_count = mapped
+        ? &cache->owner_mapping_references[owner][index]
+        : &cache->owner_references[owner][index];
+    if (*owner_count == 0u || entry->references == 0u ||
+        (mapped && *mapped_references == 0u) ||
+        (!mapped && entry->references <= *mapped_references))
+        return RINFS_ERR_STALE;
+    --*owner_count;
+    --entry->references;
+    if (mapped) --*mapped_references;
+    return RINFS_OK;
 }
 
 static uint64_t g_rinfs_mount_epoch_next = 1u;
@@ -2933,6 +3496,20 @@ static void rinfs_page_cache_discard_locked(RinFS_PageCache* cache,
     entry->dirty_end = 0u;
     entry->writeback_error = 0;
     entry->references = 0u;
+    entry->writeback_owner_row = 0u;
+    entry->writeback_owner_cookie = 0u;
+    entry->dirty_intent_owner_row = 0u;
+    entry->dirty_intent_owner_cookie = 0u;
+    {
+        uint32_t index = 0u;
+        if (rinfs_page_cache_entry_index(cache, entry, &index)) {
+            for (uint32_t owner = 0u;
+                 owner < RINFS_SHARED_OWNER_CAPACITY; ++owner) {
+                cache->owner_references[owner][index] = 0u;
+                cache->owner_mapping_references[owner][index] = 0u;
+            }
+        }
+    }
     {
         uint32_t* mapped_references =
             rinfs_page_cache_mapping_reference_slot(cache, entry);
@@ -2984,7 +3561,10 @@ int rinfs_page_cache_release_view(RinFS_Mount* mount,
         rinfs_page_cache_unlock(cache);
         return RINFS_ERR_STALE;
     }
-    entry->references--;
+    if (rinfs_page_cache_reference_drop_locked(cache, entry, 0) != RINFS_OK) {
+        rinfs_page_cache_unlock(cache);
+        return RINFS_ERR_STALE;
+    }
     rinfs_page_cache_unlock(cache);
     return RINFS_OK;
 }
@@ -3004,12 +3584,12 @@ int rinfs_page_cache_release_mapped_page(RinFS_Mount* mount,
         uint32_t* mapped_references =
             rinfs_page_cache_mapping_reference_slot(cache, entry);
         if (entry->references == 0u || !mapped_references ||
-            *mapped_references == 0u) {
+            *mapped_references == 0u ||
+            rinfs_page_cache_reference_drop_locked(cache, entry, 1) !=
+                RINFS_OK) {
             rinfs_page_cache_unlock(cache);
             return RINFS_ERR_STALE;
         }
-        (*mapped_references)--;
-        entry->references--;
         rinfs_page_cache_unlock(cache);
         return RINFS_OK;
     }
@@ -3032,6 +3612,8 @@ int rinfs_page_cache_mark_mapped_page_dirty(RinFS_Mount* mount,
         RinFS_PageCacheEntry* entry = &cache->entries[index];
         uint32_t* mapped_references;
         uint32_t old_length;
+        uint32_t intent_row = 0u;
+        uint64_t intent_cookie = 0u;
         if (!entry->valid || entry->physical_address != physical_address)
             continue;
         mapped_references =
@@ -3046,6 +3628,13 @@ int rinfs_page_cache_mark_mapped_page_dirty(RinFS_Mount* mount,
             rinfs_page_cache_unlock(cache);
             return RINFS_ERR_STALE;
         }
+        if (rinfs_page_cache_current_owner_locked(
+                cache, &intent_row, &intent_cookie) != RINFS_OK) {
+            rinfs_page_cache_unlock(cache);
+            return RINFS_ERR_STALE;
+        }
+        entry->dirty_intent_owner_row = intent_row;
+        entry->dirty_intent_owner_cookie = intent_cookie;
         old_length = entry->state == RINFS_PAGE_CACHE_CLEAN
             ? 0u : entry->dirty_end - entry->dirty_start;
         if (entry->state == RINFS_PAGE_CACHE_CLEAN) {
@@ -3059,6 +3648,8 @@ int rinfs_page_cache_mark_mapped_page_dirty(RinFS_Mount* mount,
          * live mapping reference and preserves the enlarged dirty range. */
         if (entry->state != RINFS_PAGE_CACHE_WRITEBACK)
             entry->state = RINFS_PAGE_CACHE_DIRTY;
+        entry->dirty_intent_owner_row = 0u;
+        entry->dirty_intent_owner_cookie = 0u;
         rinfs_page_cache_unlock(cache);
         return RINFS_OK;
     }
@@ -3093,11 +3684,11 @@ static int rinfs_page_cache_acquire(RinFS_Mount* mount, uint64_t inode_num,
             rinfs_page_cache_unlock(cache);
             return RINFS_ERR_PENDING;
         }
-        if (entry->references == UINT32_MAX) {
+        err = rinfs_page_cache_reference_add_locked(cache, entry, 0);
+        if (err != RINFS_OK) {
             rinfs_page_cache_unlock(cache);
-            return RINFS_ERR_OVERFLOW;
+            return err;
         }
-        entry->references++;
         entry->last_used = ++cache->clock;
         entry->generation = RINFS_PAGE_CACHE_ACTIVE;
         ++cache->hits;
@@ -3139,7 +3730,9 @@ static int rinfs_page_cache_acquire(RinFS_Mount* mount, uint64_t inode_num,
         entry->dirty_start = 0u;
         entry->dirty_end = 0u;
         entry->writeback_error = 0;
-        entry->references = 1u;
+        entry->references = 0u;
+        entry->writeback_owner_row = 0u;
+        entry->writeback_owner_cookie = 0u;
         {
             uint32_t* mapped_references =
                 rinfs_page_cache_mapping_reference_slot(cache, entry);
@@ -3154,6 +3747,12 @@ static int rinfs_page_cache_acquire(RinFS_Mount* mount, uint64_t inode_num,
         entry->valid = 1u;
         entry->generation = RINFS_PAGE_CACHE_INACTIVE;
         entry->readahead = 0u;
+        err = rinfs_page_cache_reference_add_locked(cache, entry, 0);
+        if (err != RINFS_OK) {
+            rinfs_page_cache_discard_locked(cache, entry);
+            rinfs_page_cache_unlock(cache);
+            return err;
+        }
         rinfs_page_cache_unlock(cache);
 
         err = rinfs_page_cache_ensure_storage(entry);
@@ -3204,9 +3803,8 @@ static void rinfs_page_cache_release(RinFS_Mount* mount,
                                      RinFS_PageCacheEntry* entry) {
     if (!mount || !mount->page_cache || !entry) return;
     rinfs_page_cache_lock(mount->page_cache);
-    if (entry->references > rinfs_page_cache_mapping_references(
-                                mount->page_cache, entry))
-        entry->references--;
+    (void)rinfs_page_cache_reference_drop_locked(
+        mount->page_cache, entry, 0);
     rinfs_page_cache_unlock(mount->page_cache);
 }
 
@@ -3224,7 +3822,12 @@ static int rinfs_page_cache_retain_mapping(RinFS_Mount* mount,
         rinfs_page_cache_unlock(cache);
         return RINFS_ERR_STALE;
     }
-    (*mapped_references)++;
+    int reference_err = rinfs_page_cache_reference_add_locked(
+        cache, entry, 1);
+    if (reference_err != RINFS_OK) {
+        rinfs_page_cache_unlock(cache);
+        return reference_err;
+    }
     rinfs_page_cache_unlock(cache);
     return RINFS_OK;
 }
@@ -3322,11 +3925,12 @@ static int rinfs_page_cache_reserve_fill(
             rinfs_page_cache_unlock(cache);
             return RINFS_ERR_PENDING;
         }
-        if (entry->references == UINT32_MAX) {
+        int reference_err = rinfs_page_cache_reference_add_locked(
+            cache, entry, 0);
+        if (reference_err != RINFS_OK) {
             rinfs_page_cache_unlock(cache);
-            return RINFS_ERR_OVERFLOW;
+            return reference_err;
         }
-        entry->references++;
         entry->last_used = ++cache->clock;
         entry->generation = RINFS_PAGE_CACHE_ACTIVE;
         *entry_out = entry;
@@ -3356,7 +3960,9 @@ static int rinfs_page_cache_reserve_fill(
         entry->dirty_start = 0u;
         entry->dirty_end = 0u;
         entry->writeback_error = 0;
-        entry->references = 1u;
+        entry->references = 0u;
+        entry->writeback_owner_row = 0u;
+        entry->writeback_owner_cookie = 0u;
         {
             uint32_t* mapped_references =
                 rinfs_page_cache_mapping_reference_slot(cache, entry);
@@ -3371,6 +3977,13 @@ static int rinfs_page_cache_reserve_fill(
         entry->valid = 1u;
         entry->generation = RINFS_PAGE_CACHE_INACTIVE;
         entry->readahead = 0u;
+        int reference_err = rinfs_page_cache_reference_add_locked(
+            cache, entry, 0);
+        if (reference_err != RINFS_OK) {
+            rinfs_page_cache_discard_locked(cache, entry);
+            rinfs_page_cache_unlock(cache);
+            return reference_err;
+        }
         *entry_out = entry;
         *fresh_out = 1;
     }
@@ -3403,7 +4016,8 @@ static void rinfs_page_cache_finish_fill(RinFS_Mount* mount,
     } else {
         rinfs_page_cache_discard_locked(cache, entry);
     }
-    if (entry->references != 0u) entry->references--;
+    if (rinfs_page_cache_reference_drop_locked(cache, entry, 0) != RINFS_OK)
+        rinfs_page_cache_recovery_fail(cache);
     rinfs_page_cache_unlock(cache);
 }
 
@@ -3519,6 +4133,8 @@ static int rinfs_page_cache_write(RinFS_Mount* mount, uint64_t inode_num,
     uint32_t old_length;
     uint32_t new_start;
     uint32_t new_end;
+    uint32_t intent_row = 0u;
+    uint64_t intent_cookie = 0u;
     int err;
     if (!input || offset >= RINFS_PAGE_CACHE_PAGE_SIZE ||
         size > RINFS_PAGE_CACHE_PAGE_SIZE - offset)
@@ -3550,6 +4166,21 @@ static int rinfs_page_cache_write(RinFS_Mount* mount, uint64_t inode_num,
         rinfs_page_cache_release(mount, entry);
         return RINFS_ERR_PENDING;
     }
+    if (entry->state == RINFS_PAGE_CACHE_DIRTY &&
+        (entry->dirty_start > entry->dirty_end ||
+         entry->dirty_end > mount->sb.s_block_size)) {
+        rinfs_page_cache_unlock(cache);
+        rinfs_page_cache_release(mount, entry);
+        return RINFS_ERR_CORRUPT;
+    }
+    if (rinfs_page_cache_current_owner_locked(
+            cache, &intent_row, &intent_cookie) != RINFS_OK) {
+        rinfs_page_cache_unlock(cache);
+        rinfs_page_cache_release(mount, entry);
+        return RINFS_ERR_STALE;
+    }
+    entry->dirty_intent_owner_row = intent_row;
+    entry->dirty_intent_owner_cookie = intent_cookie;
     rinfs_memcpy(entry->data + offset, input, size);
     old_length = entry->state == RINFS_PAGE_CACHE_DIRTY
                      ? entry->dirty_end - entry->dirty_start : 0u;
@@ -3566,6 +4197,8 @@ static int rinfs_page_cache_write(RinFS_Mount* mount, uint64_t inode_num,
     entry->dirty_start = new_start;
     entry->dirty_end = new_end;
     cache->dirty_bytes += (uint64_t)(new_end - new_start) - old_length;
+    entry->dirty_intent_owner_row = 0u;
+    entry->dirty_intent_owner_cookie = 0u;
     rinfs_page_cache_unlock(cache);
     rinfs_page_cache_release(mount, entry);
     return RINFS_OK;
@@ -3622,6 +4255,8 @@ static int rinfs_page_cache_sync(RinFS_Mount* mount, uint64_t inode_num,
         uint64_t selected_inode = 0u;
         uint64_t selected_version = 0u;
         uint32_t selected_generation = 0u;
+        uint32_t writeback_owner_row = 0u;
+        uint64_t writeback_owner_cookie = 0u;
 
         if (entry_budget != 0u && processed < entry_budget &&
             batch_capacity > entry_budget - processed)
@@ -3659,17 +4294,30 @@ static int rinfs_page_cache_sync(RinFS_Mount* mount, uint64_t inode_num,
 
         if (first_index >= 0) {
             RinFS_PageCacheEntry* first = &cache->entries[(uint32_t)first_index];
-            if (first->references == UINT32_MAX) {
+            if (rinfs_page_cache_current_owner_locked(
+                    cache, &writeback_owner_row,
+                    &writeback_owner_cookie) != RINFS_OK) {
                 rinfs_page_cache_unlock(cache);
                 if (run_buffer) rinfs_free(run_buffer);
-                return RINFS_ERR_OVERFLOW;
+                return RINFS_ERR_STALE;
             }
             first_physical = first->physical_block;
             selected_inode = first->inode_num;
             selected_version = first->content_version;
             selected_generation = first->inode_generation;
+            first->writeback_owner_row = writeback_owner_row;
+            first->writeback_owner_cookie = writeback_owner_cookie;
             first->state = RINFS_PAGE_CACHE_WRITEBACK;
-            first->references++;
+            int pin_err = rinfs_page_cache_reference_add_locked(
+                cache, first, 0);
+            if (pin_err != RINFS_OK) {
+                first->state = RINFS_PAGE_CACHE_DIRTY;
+                first->writeback_owner_row = 0u;
+                first->writeback_owner_cookie = 0u;
+                rinfs_page_cache_unlock(cache);
+                if (run_buffer) rinfs_free(run_buffer);
+                return pin_err;
+            }
             entries[selected_count++] = first;
             mapping_refs_at_start[0] =
                 rinfs_page_cache_mapping_references(cache, first);
@@ -3705,8 +4353,17 @@ static int rinfs_page_cache_sync(RinFS_Mount* mount, uint64_t inode_num,
                 {
                     RinFS_PageCacheEntry* entry =
                         &cache->entries[(uint32_t)continuation];
+                    entry->writeback_owner_row = writeback_owner_row;
+                    entry->writeback_owner_cookie = writeback_owner_cookie;
                     entry->state = RINFS_PAGE_CACHE_WRITEBACK;
-                    entry->references++;
+                    int pin_err = rinfs_page_cache_reference_add_locked(
+                        cache, entry, 0);
+                    if (pin_err != RINFS_OK) {
+                        entry->state = RINFS_PAGE_CACHE_DIRTY;
+                        entry->writeback_owner_row = 0u;
+                        entry->writeback_owner_cookie = 0u;
+                        break;
+                    }
                     entries[selected_count] = entry;
                     mapping_refs_at_start[selected_count] =
                         rinfs_page_cache_mapping_references(cache, entry);
@@ -3730,8 +4387,11 @@ static int rinfs_page_cache_sync(RinFS_Mount* mount, uint64_t inode_num,
             if (mapped_snapshot_unavailable) {
                 for (index = 0u; index < selected_count; ++index) {
                     entries[index]->state = RINFS_PAGE_CACHE_DIRTY;
-                    if (entries[index]->references != 0u)
-                        entries[index]->references--;
+                    entries[index]->writeback_owner_row = 0u;
+                    entries[index]->writeback_owner_cookie = 0u;
+                    if (rinfs_page_cache_reference_drop_locked(
+                            cache, entries[index], 0) != RINFS_OK)
+                        rinfs_page_cache_recovery_fail(cache);
                 }
             }
         }
@@ -3787,15 +4447,21 @@ static int rinfs_page_cache_sync(RinFS_Mount* mount, uint64_t inode_num,
                      * kernel trap. Keep its dirty latch set so a write racing
                      * this snapshot cannot be lost when writeback completes. */
                     entry->state = RINFS_PAGE_CACHE_DIRTY;
+                    entry->writeback_owner_row = 0u;
+                    entry->writeback_owner_cookie = 0u;
                     if (entry_index < RINFS_PAGE_CACHE_CAPACITY)
                         processed_mapped[entry_index] = 1u;
-                    if (entry->references != 0u) entry->references--;
+                    if (rinfs_page_cache_reference_drop_locked(
+                            cache, entry, 0) != RINFS_OK)
+                        rinfs_page_cache_recovery_fail(cache);
                     continue;
                 }
                 uint32_t length = entry->dirty_end >= entry->dirty_start
                                       ? entry->dirty_end - entry->dirty_start
                                       : 0u;
                 entry->state = RINFS_PAGE_CACHE_CLEAN;
+                entry->writeback_owner_row = 0u;
+                entry->writeback_owner_cookie = 0u;
                 entry->dirty_start = 0u;
                 entry->dirty_end = 0u;
                 entry->dirty_since = 0u;
@@ -3806,10 +4472,14 @@ static int rinfs_page_cache_sync(RinFS_Mount* mount, uint64_t inode_num,
                     cache->dirty_bytes = 0u;
             } else {
                 entry->state = RINFS_PAGE_CACHE_DIRTY;
+                entry->writeback_owner_row = 0u;
+                entry->writeback_owner_cookie = 0u;
                 entry->writeback_error = err;
                 ++cache->writeback_errors;
             }
-            if (entry->references != 0u) entry->references--;
+            if (rinfs_page_cache_reference_drop_locked(
+                    cache, entry, 0) != RINFS_OK)
+                rinfs_page_cache_recovery_fail(cache);
         }
         ++cache->writeback_ops;
         if (err == RINFS_OK) cache->writeback_pages += selected_count;
@@ -5958,12 +6628,20 @@ static int rinfs_block_write_durable_verified(RinFS_Mount* mount,
 int rinfs_block_alloc(RinFS_Mount* mount, uint64_t* block) {
     if (!mount || !mount->mounted || !block) return RINFS_ERR_INVAL;
     if (mount->readonly) return RINFS_ERR_ROFS;
-    if (mount->sb.s_free_blocks == 0) return RINFS_ERR_NOSPC;
-    
     uint32_t block_size = mount->sb.s_block_size;
     uint8_t* bitmap = (uint8_t*)rinfs_malloc(block_size);
     if (!bitmap) return RINFS_ERR_NOMEM;
-    rinfs_spin_lock(&mount->block_allocation_lock);
+    rinfs_block_allocation_lock(mount);
+    if (mount->readonly) {
+        rinfs_block_allocation_unlock(mount);
+        rinfs_free(bitmap);
+        return RINFS_ERR_ROFS;
+    }
+    if (mount->sb.s_free_blocks == 0u) {
+        rinfs_block_allocation_unlock(mount);
+        rinfs_free(bitmap);
+        return RINFS_ERR_NOSPC;
+    }
     
     /* Scan bitmap blocks */
     uint64_t bits_per_block = block_size * 8;
@@ -5972,7 +6650,7 @@ int rinfs_block_alloc(RinFS_Mount* mount, uint64_t* block) {
     for (uint64_t bm_block = 0; bm_block < bitmap_blocks; bm_block++) {
         int err = rinfs_block_read(mount, mount->sb.s_block_bitmap + bm_block, bitmap);
         if (err != RINFS_OK) {
-            rinfs_spin_unlock(&mount->block_allocation_lock);
+            rinfs_block_allocation_unlock(mount);
             rinfs_free(bitmap);
             return err;
         }
@@ -5988,7 +6666,7 @@ int rinfs_block_alloc(RinFS_Mount* mount, uint64_t* block) {
                         uint64_t reserved_end =
                             rinfs_reserved_data_end(mount);
                         if (blk < reserved_end) {
-                            rinfs_spin_unlock(&mount->block_allocation_lock);
+                            rinfs_block_allocation_unlock(mount);
                             rinfs_free(bitmap);
                             return RINFS_ERR_CORRUPT;
                         }
@@ -5997,14 +6675,15 @@ int rinfs_block_alloc(RinFS_Mount* mount, uint64_t* block) {
                         bitmap[byte] |= (1 << bit);
                         err = rinfs_block_write(mount, mount->sb.s_block_bitmap + bm_block, bitmap);
                         if (err != RINFS_OK) {
-                            rinfs_spin_unlock(&mount->block_allocation_lock);
+                            mount->readonly = 1;
+                            rinfs_block_allocation_unlock(mount);
                             rinfs_free(bitmap);
                             return err;
                         }
                         
                         mount->sb.s_free_blocks--;
                         *block = blk;
-                        rinfs_spin_unlock(&mount->block_allocation_lock);
+                        rinfs_block_allocation_unlock(mount);
                         rinfs_free(bitmap);
                         return RINFS_OK;
                     }
@@ -6013,7 +6692,7 @@ int rinfs_block_alloc(RinFS_Mount* mount, uint64_t* block) {
         }
     }
     
-    rinfs_spin_unlock(&mount->block_allocation_lock);
+    rinfs_block_allocation_unlock(mount);
     rinfs_free(bitmap);
     return RINFS_ERR_NOSPC;
 }
@@ -6034,30 +6713,39 @@ int rinfs_block_free(RinFS_Mount* mount, uint64_t block) {
     
     uint8_t* bitmap = (uint8_t*)rinfs_malloc(block_size);
     if (!bitmap) return RINFS_ERR_NOMEM;
-    rinfs_spin_lock(&mount->block_allocation_lock);
+    rinfs_block_allocation_lock(mount);
+    if (mount->readonly) {
+        rinfs_block_allocation_unlock(mount);
+        rinfs_free(bitmap);
+        return RINFS_ERR_ROFS;
+    }
     
     int err = rinfs_block_read(mount, mount->sb.s_block_bitmap + bm_block, bitmap);
     if (err != RINFS_OK) {
-        rinfs_spin_unlock(&mount->block_allocation_lock);
+        rinfs_block_allocation_unlock(mount);
         rinfs_free(bitmap);
         return err;
     }
     
     if (!(bitmap[byte_off] & (1 << bit))) {
         /* Already free - double free error */
-        rinfs_spin_unlock(&mount->block_allocation_lock);
+        rinfs_block_allocation_unlock(mount);
         rinfs_free(bitmap);
         return RINFS_ERR_INVAL;
     }
     
     bitmap[byte_off] &= ~(1 << bit);
     err = rinfs_block_write(mount, mount->sb.s_block_bitmap + bm_block, bitmap);
-    rinfs_spin_unlock(&mount->block_allocation_lock);
-    rinfs_free(bitmap);
-    
     if (err == RINFS_OK) {
-        mount->sb.s_free_blocks++;
+        if (mount->sb.s_free_blocks >= mount->sb.s_block_count) {
+            err = RINFS_ERR_CORRUPT;
+        } else {
+            mount->sb.s_free_blocks++;
+        }
     }
+    if (err != RINFS_OK) mount->readonly = 1;
+    rinfs_block_allocation_unlock(mount);
+    rinfs_free(bitmap);
     return err;
 }
 
@@ -6080,11 +6768,31 @@ static int rinfs_rmdir_internal(RinFS_Mount* mount, uint64_t parent_ino,
                                 uint32_t expected_generation);
 
 static void rinfs_journal_transaction_lock(RinFS_Mount* mount) {
-    if (mount) rinfs_spin_lock(&mount->namespace_journal_lock);
+    if (!mount) return;
+    if (!mount->shared_mapping_base || mount->shared_mount_ready == 0u) {
+        rinfs_spin_lock(&mount->namespace_journal_lock);
+        return;
+    }
+    int recovered = 0;
+    rinfs_shared_lock_acquire(mount, &mount->namespace_journal_lock,
+                              &recovered);
+    (void)recovered;
+    if (!mount->readonly && rinfs_journal_recover(mount) != RINFS_OK) {
+        /* Keep the namespace closed to mutation, but release the robust lock
+         * normally. A later mount can retry the durable journal recovery. */
+        mount->readonly = 1;
+    }
 }
 
 static void rinfs_journal_transaction_unlock(RinFS_Mount* mount) {
-    if (mount) rinfs_spin_unlock(&mount->namespace_journal_lock);
+    if (!mount) return;
+    if (!mount->shared_mapping_base || mount->shared_mount_ready == 0u) {
+        rinfs_spin_unlock(&mount->namespace_journal_lock);
+        return;
+    }
+    if (!mount->readonly && rinfs_journal_recover(mount) != RINFS_OK)
+        mount->readonly = 1;
+    rinfs_shared_lock_release(&mount->namespace_journal_lock);
 }
 
 #define RINFS_XATTR_HEADER_BYTES 16u
@@ -6560,36 +7268,52 @@ int rinfs_inode_copy_persistent_flags(RinFS_Mount* source_mount,
  * ═══════════════════════════════════════════════════════════════*/
 
 int rinfs_inode_read(RinFS_Mount* mount, uint64_t ino, RinFS_Inode* inode) {
+    int shared_guard = 0;
+    int err;
+    uint32_t inode_size;
+    uint32_t block_size;
+    uint32_t inodes_per_block;
+    uint64_t block;
+    uint32_t offset;
+    uint8_t* buf;
     if (!mount || !mount->mounted || !inode) return RINFS_ERR_INVAL;
     if (ino == 0 || ino > mount->sb.s_inode_count) return RINFS_ERR_INVAL;
 
     /* A cache hit is safe only for the content-versioned inode format.  Older
      * volumes deliberately retain the checked block read path because they
      * cannot prove that an inode image has not changed behind this owner. */
-    if (rinfs_inode_cache_lookup(mount, ino, inode)) return RINFS_OK;
-    
-    uint32_t inode_size = mount->sb.s_inode_size;
-    uint32_t block_size = mount->sb.s_block_size;
-    uint32_t inodes_per_block = block_size / inode_size;
-    
-    uint64_t block = mount->sb.s_inode_table + (ino - 1) / inodes_per_block;
-    uint32_t offset = ((ino - 1) % inodes_per_block) * inode_size;
-    volatile uint32_t* table_lock =
-        &mount->inode_table_locks[block & 63u];
-    
-    uint8_t* buf = (uint8_t*)rinfs_malloc(block_size);
+    inode_size = mount->sb.s_inode_size;
+    block_size = mount->sb.s_block_size;
+    if (inode_size == 0u || block_size % inode_size != 0u)
+        return RINFS_ERR_CORRUPT;
+    inodes_per_block = block_size / inode_size;
+    if (inodes_per_block == 0u) return RINFS_ERR_CORRUPT;
+    block = mount->sb.s_inode_table + (ino - 1) / inodes_per_block;
+    offset = (uint32_t)(((ino - 1) % inodes_per_block) * inode_size);
+
+    if (!mount->shared_mapping_base || mount->shared_mount_ready == 0u) {
+        if (rinfs_inode_cache_lookup(mount, ino, inode)) return RINFS_OK;
+    }
+    buf = (uint8_t*)rinfs_malloc(block_size);
     if (!buf) return RINFS_ERR_NOMEM;
-    
-    rinfs_spin_lock(table_lock);
-    int err = rinfs_block_read(mount, block, buf);
+
+    rinfs_inode_table_lock(mount, block);
+    shared_guard = mount->shared_mapping_base &&
+                   mount->shared_mount_ready != 0u;
+    if (shared_guard && rinfs_inode_cache_lookup(mount, ino, inode)) {
+        rinfs_inode_table_unlock(mount, block);
+        rinfs_free(buf);
+        return RINFS_OK;
+    }
+    err = rinfs_block_read(mount, block, buf);
     if (err != RINFS_OK) {
-        rinfs_spin_unlock(table_lock);
+        rinfs_inode_table_unlock(mount, block);
         rinfs_free(buf);
         return err;
     }
     
     rinfs_memcpy(inode, buf + offset, sizeof(RinFS_Inode));
-    rinfs_spin_unlock(table_lock);
+    rinfs_inode_table_unlock(mount, block);
     rinfs_free(buf);
     if (err == RINFS_OK) rinfs_inode_cache_store(mount, ino, inode);
     return RINFS_OK;
@@ -6608,20 +7332,21 @@ static int rinfs_inode_write_internal(RinFS_Mount* mount, uint64_t ino,
     
     uint32_t inode_size = mount->sb.s_inode_size;
     uint32_t block_size = mount->sb.s_block_size;
+    if (inode_size == 0u || block_size % inode_size != 0u)
+        return RINFS_ERR_CORRUPT;
     uint32_t inodes_per_block = block_size / inode_size;
+    if (inodes_per_block == 0u) return RINFS_ERR_CORRUPT;
     
     uint64_t block = mount->sb.s_inode_table + (ino - 1) / inodes_per_block;
-    uint32_t offset = ((ino - 1) % inodes_per_block) * inode_size;
-    volatile uint32_t* table_lock =
-        &mount->inode_table_locks[block & 63u];
+    uint32_t offset = (uint32_t)(((ino - 1) % inodes_per_block) * inode_size);
     
     uint8_t* buf = (uint8_t*)rinfs_malloc(block_size);
     if (!buf) return RINFS_ERR_NOMEM;
     
-    rinfs_spin_lock(table_lock);
+    rinfs_inode_table_lock(mount, block);
     int err = rinfs_block_read(mount, block, buf);
     if (err != RINFS_OK) {
-        rinfs_spin_unlock(table_lock);
+        rinfs_inode_table_unlock(mount, block);
         rinfs_free(buf);
         return err;
     }
@@ -6631,7 +7356,7 @@ static int rinfs_inode_write_internal(RinFS_Mount* mount, uint64_t ino,
         RinFS_Inode current;
         rinfs_memcpy(&current, buf + offset, sizeof(current));
         if (current.i_generation != candidate.i_generation) {
-            rinfs_spin_unlock(table_lock);
+            rinfs_inode_table_unlock(mount, block);
             rinfs_free(buf);
             return RINFS_ERR_STALE;
         }
@@ -6658,31 +7383,35 @@ static int rinfs_inode_write_internal(RinFS_Mount* mount, uint64_t ino,
             if (current.i_generation != candidate.i_generation ||
                 rinfs_inode_content_version_raw(&current) !=
                     rinfs_inode_content_version_raw(&candidate)) {
-                rinfs_spin_unlock(table_lock);
+                rinfs_inode_table_unlock(mount, block);
                 rinfs_free(buf);
                 return RINFS_ERR_STALE;
             }
             current.i_flags &=
                 (uint16_t)~RINFS_IFLG_CONTENT_UNCERTAIN;
             rinfs_memcpy(buf + offset, &current, sizeof(current));
-            err = rinfs_block_write(mount, block, buf);
+            err = rinfs_inode_table_write_block_locked(mount, block, buf);
             if (err == RINFS_OK) {
                 RinFS_Inode committed;
                 rinfs_memcpy(&committed, buf + offset, sizeof(committed));
+                if (mount->shared_mapping_base &&
+                    mount->shared_mount_ready != 0u)
+                    rinfs_inode_cache_invalidate(mount, 0u);
                 if (rinfs_inode_cache_eligible(mount, &committed))
                     rinfs_inode_cache_store(mount, ino, &committed);
                 else
                     rinfs_inode_cache_invalidate(mount, ino);
+                rinfs_inode_table_commit_log_locked(mount, block);
             } else {
                 rinfs_inode_cache_invalidate(mount, ino);
             }
-            rinfs_spin_unlock(table_lock);
+            rinfs_inode_table_unlock(mount, block);
             rinfs_free(buf);
             return err;
         }
         if (tracking_mode == 4) {
             if (current.i_generation != candidate.i_generation) {
-                rinfs_spin_unlock(table_lock);
+                rinfs_inode_table_unlock(mount, block);
                 rinfs_free(buf);
                 return RINFS_ERR_STALE;
             }
@@ -6710,24 +7439,27 @@ static int rinfs_inode_write_internal(RinFS_Mount* mount, uint64_t ino,
     } else {
         rinfs_memcpy(buf + offset, inode, sizeof(RinFS_Inode));
     }
-    err = rinfs_block_write(mount, block, buf);
+    err = rinfs_inode_table_write_block_locked(mount, block, buf);
     if (err == RINFS_OK) {
         RinFS_Inode committed;
         rinfs_memcpy(&committed, buf + offset, sizeof(committed));
         /* Tombstones clear content-version metadata and therefore cannot be
          * retained in the verified inode cache.  Leaving the previous entry
          * live makes the post-free read observe a reclaimed inode. */
+        if (mount->shared_mapping_base && mount->shared_mount_ready != 0u)
+            rinfs_inode_cache_invalidate(mount, 0u);
         if (rinfs_inode_cache_eligible(mount, &committed))
             rinfs_inode_cache_store(mount, ino, &committed);
         else
             rinfs_inode_cache_invalidate(mount, ino);
+        rinfs_inode_table_commit_log_locked(mount, block);
     } else {
         /* A failed metadata write cannot leave a previous copy looking
          * authoritative to a later caller.  The next read must go back to
          * the device and report the device's actual result. */
         rinfs_inode_cache_invalidate(mount, ino);
     }
-    rinfs_spin_unlock(table_lock);
+    rinfs_inode_table_unlock(mount, block);
     rinfs_free(buf);
     return err;
 }
@@ -7498,12 +8230,20 @@ int rinfs_inode_alloc(RinFS_Mount* mount, uint64_t* ino) {
     int final_err = RINFS_ERR_NOSPC;
     if (!mount || !mount->mounted || !ino) return RINFS_ERR_INVAL;
     if (mount->readonly) return RINFS_ERR_ROFS;
-    if (mount->sb.s_free_inodes == 0) return RINFS_ERR_NOSPC;
-    
     uint32_t block_size = mount->sb.s_block_size;
     uint8_t* bitmap = (uint8_t*)rinfs_malloc(block_size);
     if (!bitmap) return RINFS_ERR_NOMEM;
-    rinfs_spin_lock(&mount->inode_allocation_lock);
+    rinfs_inode_allocation_lock(mount);
+    if (mount->readonly) {
+        rinfs_inode_allocation_unlock(mount);
+        rinfs_free(bitmap);
+        return RINFS_ERR_ROFS;
+    }
+    if (mount->sb.s_free_inodes == 0u) {
+        rinfs_inode_allocation_unlock(mount);
+        rinfs_free(bitmap);
+        return RINFS_ERR_NOSPC;
+    }
     
     uint64_t bits_per_block = block_size * 8;
     uint64_t bitmap_blocks = (mount->sb.s_inode_count + bits_per_block - 1) / bits_per_block;
@@ -7511,7 +8251,7 @@ int rinfs_inode_alloc(RinFS_Mount* mount, uint64_t* ino) {
     for (uint64_t bm_block = 0; bm_block < bitmap_blocks; bm_block++) {
         int err = rinfs_block_read(mount, mount->sb.s_inode_bitmap + bm_block, bitmap);
         if (err != RINFS_OK) {
-            rinfs_spin_unlock(&mount->inode_allocation_lock);
+            rinfs_inode_allocation_unlock(mount);
             rinfs_free(bitmap);
             return err;
         }
@@ -7523,7 +8263,7 @@ int rinfs_inode_alloc(RinFS_Mount* mount, uint64_t* ino) {
                         uint64_t inode_num = bm_block * bits_per_block + byte * 8 + bit + 1;
                         if (inode_num > mount->sb.s_inode_count) continue;
                         if (inode_num < RINFS_INODE_FIRST) {
-                            rinfs_spin_unlock(&mount->inode_allocation_lock);
+                            rinfs_inode_allocation_unlock(mount);
                             rinfs_free(bitmap);
                             return RINFS_ERR_CORRUPT;
                         }
@@ -7537,7 +8277,8 @@ int rinfs_inode_alloc(RinFS_Mount* mount, uint64_t* ino) {
                         RinFS_Inode verify;
                         err = rinfs_inode_read(mount, inode_num, &previous);
                         if (err != RINFS_OK) {
-                            rinfs_spin_unlock(&mount->inode_allocation_lock);
+                            mount->readonly = 1;
+                            rinfs_inode_allocation_unlock(mount);
                             rinfs_free(bitmap);
                             return err;
                         }
@@ -7559,7 +8300,8 @@ int rinfs_inode_alloc(RinFS_Mount* mount, uint64_t* ino) {
                         if (err != RINFS_OK ||
                             rinfs_memcmp(&prepared, &verify,
                                          sizeof(prepared)) != 0) {
-                            rinfs_spin_unlock(&mount->inode_allocation_lock);
+                            mount->readonly = 1;
+                            rinfs_inode_allocation_unlock(mount);
                             rinfs_free(bitmap);
                             return err == RINFS_OK ? RINFS_ERR_IO : err;
                         }
@@ -7580,14 +8322,18 @@ int rinfs_inode_alloc(RinFS_Mount* mount, uint64_t* ino) {
                             }
                         }
                         if (err != RINFS_OK) {
-                            rinfs_spin_unlock(&mount->inode_allocation_lock);
+                            /* The allocation bit may have reached media even
+                             * when writeback/readback failed. Fence later
+                             * allocations until mount recovery reconciles it. */
+                            mount->readonly = 1;
+                            rinfs_inode_allocation_unlock(mount);
                             rinfs_free(bitmap);
                             return err;
                         }
                         
                         mount->sb.s_free_inodes--;
                         *ino = inode_num;
-                        rinfs_spin_unlock(&mount->inode_allocation_lock);
+                        rinfs_inode_allocation_unlock(mount);
                         rinfs_free(bitmap);
                         return RINFS_OK;
                     }
@@ -7596,7 +8342,7 @@ int rinfs_inode_alloc(RinFS_Mount* mount, uint64_t* ino) {
         }
     }
     
-    rinfs_spin_unlock(&mount->inode_allocation_lock);
+    rinfs_inode_allocation_unlock(mount);
     rinfs_free(bitmap);
     return final_err;
 }
@@ -7615,21 +8361,26 @@ static int rinfs_inode_free_under_lease(RinFS_Mount* mount, uint64_t ino,
     RinFS_Inode verify;
     int err;
 
-    rinfs_spin_lock(&mount->inode_allocation_lock);
+    rinfs_inode_allocation_lock(mount);
+    if (mount->readonly) {
+        rinfs_inode_allocation_unlock(mount);
+        rinfs_free(bitmap);
+        return RINFS_ERR_ROFS;
+    }
     err = rinfs_block_read(mount, mount->sb.s_inode_bitmap + bm_block, bitmap);
     if (err != RINFS_OK) {
-        rinfs_spin_unlock(&mount->inode_allocation_lock);
+        rinfs_inode_allocation_unlock(mount);
         rinfs_free(bitmap);
         return err;
     }
     if ((bitmap[byte_off] & (1 << bit)) == 0) {
-        rinfs_spin_unlock(&mount->inode_allocation_lock);
+        rinfs_inode_allocation_unlock(mount);
         rinfs_free(bitmap);
         return RINFS_ERR_INVAL;
     }
     err = rinfs_inode_read(mount, ino, &previous_inode);
     if (err != RINFS_OK || previous_inode.i_generation != inode_generation) {
-        rinfs_spin_unlock(&mount->inode_allocation_lock);
+        rinfs_inode_allocation_unlock(mount);
         rinfs_free(bitmap);
         return err == RINFS_OK ? RINFS_ERR_STALE : err;
     }
@@ -7642,7 +8393,8 @@ static int rinfs_inode_free_under_lease(RinFS_Mount* mount, uint64_t ino,
     if (err == RINFS_OK) err = rinfs_inode_read(mount, ino, &verify);
     if (err != RINFS_OK ||
         rinfs_memcmp(&cleared_inode, &verify, sizeof(verify)) != 0) {
-        rinfs_spin_unlock(&mount->inode_allocation_lock);
+        mount->readonly = 1;
+        rinfs_inode_allocation_unlock(mount);
         rinfs_free(bitmap);
         return err == RINFS_OK ? RINFS_ERR_IO : err;
     }
@@ -7656,9 +8408,15 @@ static int rinfs_inode_free_under_lease(RinFS_Mount* mount, uint64_t ino,
         if (err == RINFS_OK && (bitmap[byte_off] & (1 << bit)) != 0)
             err = RINFS_ERR_IO;
     }
-    rinfs_spin_unlock(&mount->inode_allocation_lock);
+    if (err == RINFS_OK) {
+        if (mount->sb.s_free_inodes >= mount->sb.s_inode_count)
+            err = RINFS_ERR_CORRUPT;
+        else
+            mount->sb.s_free_inodes++;
+    }
+    if (err != RINFS_OK) mount->readonly = 1;
+    rinfs_inode_allocation_unlock(mount);
     rinfs_free(bitmap);
-    if (err == RINFS_OK) mount->sb.s_free_inodes++;
     return err;
 }
 
@@ -12346,6 +13104,11 @@ static void rinfs_mount_free_runtime_buffers(RinFS_Mount* mount) {
         rinfs_mount_runtime_free(mount, mount->inode_cache);
         mount->inode_cache = NULL;
     }
+    if (mount->shared_inode_table_recovery_logs) {
+        rinfs_mount_runtime_free(
+            mount, mount->shared_inode_table_recovery_logs);
+        mount->shared_inode_table_recovery_logs = NULL;
+    }
     if (mount->block_buffer) {
         rinfs_mount_runtime_free(mount, mount->block_buffer);
         mount->block_buffer = NULL;
@@ -12630,6 +13393,18 @@ static int rinfs_mount_sized_io_unleased(
     if (!mount->block_buffer) {
         return RINFS_ERR_NOMEM;
     }
+    if (mount->shared_mapping_base) {
+        size_t recovery_bytes = sizeof(RinFS_InodeTableRecoveryLog) *
+                                RINFS_INODE_TABLE_LOCK_COUNT;
+        mount->shared_inode_table_recovery_logs =
+            rinfs_mount_runtime_alloc(mount, recovery_bytes);
+        if (!mount->shared_inode_table_recovery_logs) {
+            rinfs_mount_free_runtime_buffers(mount);
+            return RINFS_ERR_NOMEM;
+        }
+        rinfs_memset(mount->shared_inode_table_recovery_logs, 0,
+                     (uint32_t)recovery_bytes);
+    }
     mount->buffer_block = (uint32_t)-1;
     mount->buffer_dirty = 0;
     mount->dentry_cache = (RinFS_DentryCache*)rinfs_mount_runtime_alloc(
@@ -12668,6 +13443,7 @@ static int rinfs_mount_sized_io_unleased(
             return RINFS_ERR_NOMEM;
         }
         rinfs_memset(mount->page_cache, 0, sizeof(RinFS_PageCache));
+        mount->page_cache->owner_mount = mount;
         mount->page_cache->device_flags =
             (uint8_t)(mount->device_flags & 0xffu);
         mount->page_cache->readahead_limit_pages =
@@ -14005,6 +14781,118 @@ void rinfs_mount_set_epoch(RinFS_Mount* mount, uint64_t mount_epoch) {
     mount->mount_epoch = mount_epoch;
 }
 
+#define RINFS_SUPERBLOCK_RECOVERY_IDLE 0u
+#define RINFS_SUPERBLOCK_RECOVERY_READY 1u
+
+static void rinfs_superblock_recovery_fail(RinFS_Mount* mount) {
+    if (mount) mount->readonly = 1;
+    __builtin_trap();
+}
+
+static void rinfs_superblock_recover_locked(RinFS_Mount* mount) {
+    RinFS_Superblock candidate;
+    RinFS_Superblock checksum_image;
+    uint8_t sb_buf[RINFS_SECTOR_SIZE * 2u];
+    uint32_t state;
+    uint32_t stored_checksum;
+    int err;
+    if (!mount || !mount->mounted)
+        rinfs_superblock_recovery_fail(mount);
+    state = __atomic_load_n(&mount->shared_superblock_recovery_state,
+                            __ATOMIC_ACQUIRE);
+    if (state == RINFS_SUPERBLOCK_RECOVERY_IDLE) return;
+    if (state != RINFS_SUPERBLOCK_RECOVERY_READY || mount->readonly ||
+        mount->shared_superblock_recovery_owner_row == 0u ||
+        mount->shared_superblock_recovery_owner_row >
+            RINFS_SHARED_OWNER_CAPACITY ||
+        mount->shared_superblock_recovery_owner_cookie == 0u)
+        rinfs_superblock_recovery_fail(mount);
+    candidate = mount->shared_superblock_recovery_candidate;
+    if (rinfs_checksum(&candidate, sizeof(candidate)) !=
+            mount->shared_superblock_recovery_checksum)
+        rinfs_superblock_recovery_fail(mount);
+    stored_checksum = candidate.s_checksum;
+    checksum_image = candidate;
+    checksum_image.s_checksum = 0u;
+    if (stored_checksum != rinfs_checksum(&checksum_image,
+                                          sizeof(checksum_image)) ||
+        candidate.s_magic != RINFS_MAGIC ||
+        candidate.s_magic2 != RINFS_MAGIC2)
+        rinfs_superblock_recovery_fail(mount);
+    rinfs_memset(sb_buf, 0, sizeof(sb_buf));
+    rinfs_memcpy(sb_buf, &candidate, sizeof(candidate));
+    err = disk_write(mount, 0u, 2u, sb_buf);
+    if (err == RINFS_OK) err = disk_flush(mount);
+    if (err == RINFS_OK) err = disk_read(mount, 0u, 2u, sb_buf);
+    if (err != RINFS_OK ||
+        rinfs_memcmp(sb_buf, &candidate, sizeof(candidate)) != 0)
+        rinfs_superblock_recovery_fail(mount);
+    mount->sb = candidate;
+    __atomic_store_n(&mount->shared_superblock_recovery_state,
+                     RINFS_SUPERBLOCK_RECOVERY_IDLE, __ATOMIC_RELEASE);
+}
+
+static void rinfs_superblock_lock(RinFS_Mount* mount) {
+    if (!mount) return;
+    if (!mount->shared_mapping_base || mount->shared_mount_ready == 0u) {
+        rinfs_spin_lock(&mount->superblock_lock);
+        return;
+    }
+    int recovered = 0;
+    rinfs_shared_lock_acquire(mount, &mount->superblock_lock, &recovered);
+    (void)recovered;
+    rinfs_superblock_recover_locked(mount);
+}
+
+static void rinfs_superblock_unlock(RinFS_Mount* mount) {
+    if (!mount) return;
+    if (!mount->shared_mapping_base || mount->shared_mount_ready == 0u) {
+        rinfs_spin_unlock(&mount->superblock_lock);
+        return;
+    }
+    rinfs_superblock_recover_locked(mount);
+    rinfs_shared_lock_release(&mount->superblock_lock);
+}
+
+static int rinfs_superblock_recovery_prepare_locked(
+    RinFS_Mount* mount, const RinFS_Superblock* candidate) {
+    uint32_t row = 0u;
+    if (!mount || !candidate) return RINFS_ERR_INVAL;
+    if (!mount->shared_mapping_base || mount->shared_mount_ready == 0u)
+        return RINFS_OK;
+    if (__atomic_load_n(&mount->shared_superblock_recovery_state,
+                         __ATOMIC_ACQUIRE) != RINFS_SUPERBLOCK_RECOVERY_IDLE ||
+        !rinfs_shared_owner_ledger_valid(mount) ||
+        rinfs_shared_owner_query_row(mount, &row) != RINFS_OK || row == 0u ||
+        row > RINFS_SHARED_OWNER_CAPACITY)
+        return RINFS_ERR_STALE;
+    mount->shared_superblock_recovery_candidate = *candidate;
+    mount->shared_superblock_recovery_checksum =
+        rinfs_checksum(candidate, sizeof(*candidate));
+    mount->shared_superblock_recovery_owner_row = row;
+    mount->shared_superblock_recovery_owner_cookie =
+        mount->shared_owner_ledger->owners[row - 1u].owner_cookie;
+    if (mount->shared_superblock_recovery_owner_cookie == 0u)
+        return RINFS_ERR_STALE;
+    __atomic_store_n(&mount->shared_superblock_recovery_state,
+                     RINFS_SUPERBLOCK_RECOVERY_READY, __ATOMIC_RELEASE);
+    return RINFS_OK;
+}
+
+static void rinfs_superblock_recovery_commit_locked(
+    RinFS_Mount* mount, const RinFS_Superblock* candidate) {
+    if (!mount || !candidate || !mount->shared_mapping_base ||
+        mount->shared_mount_ready == 0u)
+        return;
+    if (__atomic_load_n(&mount->shared_superblock_recovery_state,
+                        __ATOMIC_ACQUIRE) != RINFS_SUPERBLOCK_RECOVERY_READY ||
+        rinfs_memcmp(&mount->shared_superblock_recovery_candidate,
+                     candidate, sizeof(*candidate)) != 0)
+        rinfs_superblock_recovery_fail(mount);
+    __atomic_store_n(&mount->shared_superblock_recovery_state,
+                     RINFS_SUPERBLOCK_RECOVERY_IDLE, __ATOMIC_RELEASE);
+}
+
 /* Write the superblock to disk as-is, without changing s_state. */
 static int superblock_writeback(RinFS_Mount* mount) {
     RinFS_Superblock candidate;
@@ -14013,15 +14901,19 @@ static int superblock_writeback(RinFS_Mount* mount) {
 
     if (!mount || !mount->mounted) return RINFS_ERR_INVAL;
     if (mount->readonly) return RINFS_ERR_ROFS;
-    rinfs_spin_lock(&mount->superblock_lock);
+    rinfs_superblock_lock(mount);
     candidate = mount->sb;
     candidate.s_checksum = 0u;
     candidate.s_checksum = rinfs_checksum(&candidate, sizeof(candidate));
     rinfs_memset(sb_buf, 0, sizeof(sb_buf));
     rinfs_memcpy(sb_buf, &candidate, sizeof(candidate));
-    result = disk_write(mount, 0, 2, sb_buf);
-    if (result == RINFS_OK) mount->sb.s_checksum = candidate.s_checksum;
-    rinfs_spin_unlock(&mount->superblock_lock);
+    result = rinfs_superblock_recovery_prepare_locked(mount, &candidate);
+    if (result == RINFS_OK) result = disk_write(mount, 0, 2, sb_buf);
+    if (result == RINFS_OK) {
+        mount->sb.s_checksum = candidate.s_checksum;
+        rinfs_superblock_recovery_commit_locked(mount, &candidate);
+    }
+    rinfs_superblock_unlock(mount);
     return result;
 }
 
@@ -14044,7 +14936,7 @@ static int rinfs_enable_incompat_feature(RinFS_Mount* mount,
         (feature & ~RINFS_FEATURE_INCOMPAT_SUPPORTED) != 0u)
         return RINFS_ERR_INVAL;
     if (mount->readonly) return RINFS_ERR_ROFS;
-    rinfs_spin_lock(&mount->superblock_lock);
+    rinfs_superblock_lock(mount);
     if ((mount->sb.s_incompat_features & feature) != 0u) goto done;
 
     candidate = mount->sb;
@@ -14053,7 +14945,8 @@ static int rinfs_enable_incompat_feature(RinFS_Mount* mount,
     candidate.s_checksum = rinfs_checksum(&candidate, sizeof(candidate));
     rinfs_memset(sb_buf, 0, sizeof(sb_buf));
     rinfs_memcpy(sb_buf, &candidate, sizeof(candidate));
-    result = disk_write(mount, 0, 2, sb_buf);
+    result = rinfs_superblock_recovery_prepare_locked(mount, &candidate);
+    if (result == RINFS_OK) result = disk_write(mount, 0, 2, sb_buf);
     if (result != RINFS_OK) goto done;
     result = disk_flush(mount);
     if (result != RINFS_OK) goto done;
@@ -14079,9 +14972,10 @@ static int rinfs_enable_incompat_feature(RinFS_Mount* mount,
         goto done;
     }
     mount->sb = observed;
+    rinfs_superblock_recovery_commit_locked(mount, &candidate);
 
 done:
-    rinfs_spin_unlock(&mount->superblock_lock);
+    rinfs_superblock_unlock(mount);
     return result;
 }
 
@@ -14099,7 +14993,7 @@ static int rinfs_disable_incompat_feature(RinFS_Mount* mount,
         (feature & ~RINFS_FEATURE_INCOMPAT_SUPPORTED) != 0u)
         return RINFS_ERR_INVAL;
     if (mount->readonly) return RINFS_ERR_ROFS;
-    rinfs_spin_lock(&mount->superblock_lock);
+    rinfs_superblock_lock(mount);
     if ((mount->sb.s_incompat_features & feature) == 0u) goto done;
 
     candidate = mount->sb;
@@ -14108,7 +15002,8 @@ static int rinfs_disable_incompat_feature(RinFS_Mount* mount,
     candidate.s_checksum = rinfs_checksum(&candidate, sizeof(candidate));
     rinfs_memset(sb_buf, 0, sizeof(sb_buf));
     rinfs_memcpy(sb_buf, &candidate, sizeof(candidate));
-    result = disk_write(mount, 0, 2, sb_buf);
+    result = rinfs_superblock_recovery_prepare_locked(mount, &candidate);
+    if (result == RINFS_OK) result = disk_write(mount, 0, 2, sb_buf);
     if (result != RINFS_OK) goto done;
     result = disk_flush(mount);
     if (result != RINFS_OK) goto done;
@@ -14134,9 +15029,10 @@ static int rinfs_disable_incompat_feature(RinFS_Mount* mount,
         goto done;
     }
     mount->sb = observed;
+    rinfs_superblock_recovery_commit_locked(mount, &candidate);
 
 done:
-    rinfs_spin_unlock(&mount->superblock_lock);
+    rinfs_superblock_unlock(mount);
     return result;
 }
 
@@ -14154,6 +15050,10 @@ static int rinfs_delete_on_close_clear_feature_if_idle(RinFS_Mount* mount) {
      * through marker publication. Serialize feature removal with that whole
      * sequence so a new marker can never outlive its incompat bit. */
     rinfs_journal_transaction_lock(mount);
+    if (mount->readonly) {
+        result = RINFS_ERR_ROFS;
+        goto journal_done;
+    }
     rinfs_shared_content_lock(mount);
     for (lease = (RinFS_ContentLeaseNode*)mount->content_leases;
          lease != NULL; lease = lease->next) {
@@ -14168,6 +15068,7 @@ static int rinfs_delete_on_close_clear_feature_if_idle(RinFS_Mount* mount) {
             mount, RINFS_FEATURE_INCOMPAT_DELETE_ON_CLOSE);
         if (result != RINFS_OK) mount->readonly = 1;
     }
+journal_done:
     rinfs_journal_transaction_unlock(mount);
     return result;
 }
@@ -17873,6 +18774,11 @@ int rinfs_delete_on_close_register(RinFS_Mount* mount,
      * lock before the inode lease so the validated dentry cannot move between
      * identity checking and publishing the pending owner. */
     rinfs_journal_transaction_lock(mount);
+    if (mount->readonly) {
+        rinfs_journal_transaction_unlock(mount);
+        rinfs_mount_runtime_free(mount, pending);
+        return RINFS_ERR_ROFS;
+    }
     result = rinfs_content_lease_acquire(
         mount, target_ino, target_generation, 1, &lease, &lease_token);
     if (result != RINFS_OK) {
