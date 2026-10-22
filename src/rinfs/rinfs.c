@@ -17130,12 +17130,10 @@ int rinfs_mmap_source_invalidate_range(
     }
 
 invalidate_range_finish:
-    {
-        int release_error = rinfs_content_lease_release(
-            identity.mount, identity.inode_num, identity.inode_generation,
-            lease_token, 0);
-        return err != RINFS_OK ? err : release_error;
-    }
+    rinfs_content_lease_release(
+        identity.mount, identity.inode_num, identity.inode_generation,
+        lease_token, 0);
+    return err;
 }
 
 int rinfs_mmap_source_release(RinFS_MmapSource* source,
