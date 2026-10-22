@@ -892,15 +892,21 @@ int rinfs_mount_sized_io(int dev_id, uint64_t offset, uint64_t sector_count,
  * idempotent for the same callbacks/context. Prepare callbacks run in
  * registration order and must release their own partial state on failure;
  * successful callbacks are completed in reverse order after the fork
- * syscall. The registry stays locked from prepare through completion. Every
- * completion runs even when an earlier one fails; the first error is
- * returned after all prepared callbacks have had a chance to release state. */
+ * syscall. The registry stays locked from prepare through completion. The
+ * original void completion callback and registration function remain for ABI
+ * compatibility. New owners should use the V2 callback, whose errors are
+ * returned after every prepared callback has had a chance to release state. */
 typedef int (*RinFS_ForkPrepareCallback)(void* context);
-typedef int (*RinFS_ForkCompleteCallback)(void* context,
-                                          int fork_succeeded);
+typedef void (*RinFS_ForkCompleteCallback)(void* context,
+                                           int fork_succeeded);
+typedef int (*RinFS_ForkCompleteCallbackV2)(void* context,
+                                            int fork_succeeded);
 int rinfs_fork_hook_register(RinFS_ForkPrepareCallback prepare,
                              RinFS_ForkCompleteCallback complete,
                              void* context);
+int rinfs_fork_hook_register_v2(
+    RinFS_ForkPrepareCallback prepare,
+    RinFS_ForkCompleteCallbackV2 complete, void* context);
 int rinfs_fork_hooks_prepare(void);
 int rinfs_fork_hooks_complete(int fork_succeeded);
 /* Create a kernel SHM-backed mount whose mount object, synchronization state,

@@ -18,6 +18,7 @@ int rinfs_fork_complete(int fork_succeeded);
 typedef struct {
     RinFS_ForkPrepareCallback prepare;
     RinFS_ForkCompleteCallback complete;
+    RinFS_ForkCompleteCallbackV2 complete_v2;
     void* context;
 } RinFS_ForkHookRecord;
 
@@ -39,15 +40,19 @@ static void rinfs_fork_hook_registry_unlock(void) {
                      __ATOMIC_RELEASE);
 }
 
-int rinfs_fork_hook_register(RinFS_ForkPrepareCallback prepare,
-                             RinFS_ForkCompleteCallback complete,
-                             void* context) {
+static int rinfs_fork_hook_register_internal(
+    RinFS_ForkPrepareCallback prepare,
+    RinFS_ForkCompleteCallback complete,
+    RinFS_ForkCompleteCallbackV2 complete_v2, void* context) {
     int free_index = -1;
-    if (!prepare || !complete) return RINFS_ERR_INVAL;
+    if (!prepare || (!complete && !complete_v2) ||
+        (complete && complete_v2))
+        return RINFS_ERR_INVAL;
     rinfs_fork_hook_registry_lock();
     for (uint32_t index = 0u; index < RINFS_FORK_HOOK_CAPACITY; ++index) {
         RinFS_ForkHookRecord* record = &g_rinfs_fork_hooks[index];
         if (record->prepare == prepare && record->complete == complete &&
+            record->complete_v2 == complete_v2 &&
             record->context == context) {
             rinfs_fork_hook_registry_unlock();
             return RINFS_OK;
@@ -58,10 +63,37 @@ int rinfs_fork_hook_register(RinFS_ForkPrepareCallback prepare,
         RinFS_ForkHookRecord* record = &g_rinfs_fork_hooks[free_index];
         record->context = context;
         record->complete = complete;
+        record->complete_v2 = complete_v2;
         record->prepare = prepare;
     }
     rinfs_fork_hook_registry_unlock();
     return free_index >= 0 ? RINFS_OK : RINFS_ERR_NOMEM;
+}
+
+int rinfs_fork_hook_register(RinFS_ForkPrepareCallback prepare,
+                             RinFS_ForkCompleteCallback complete,
+                             void* context) {
+    return rinfs_fork_hook_register_internal(prepare, complete, NULL,
+                                             context);
+}
+
+int rinfs_fork_hook_register_v2(
+    RinFS_ForkPrepareCallback prepare,
+    RinFS_ForkCompleteCallbackV2 complete, void* context) {
+    return rinfs_fork_hook_register_internal(prepare, NULL, complete,
+                                             context);
+}
+
+static int rinfs_fork_hook_complete_record(RinFS_ForkHookRecord* record,
+                                           int fork_succeeded) {
+    if (!record) return RINFS_ERR_INVAL;
+    if (record->complete_v2)
+        return record->complete_v2(record->context, fork_succeeded);
+    if (record->complete) {
+        record->complete(record->context, fork_succeeded);
+        return RINFS_OK;
+    }
+    return RINFS_ERR_CORRUPT;
 }
 
 /* The registry lock remains held until every successfully prepared owner has
@@ -88,7 +120,7 @@ int rinfs_fork_hooks_prepare(void) {
                 RinFS_ForkHookRecord* prepared =
                     &g_rinfs_fork_hooks[prepared_index];
                 int complete_result =
-                    prepared->complete(prepared->context, 0);
+                    rinfs_fork_hook_complete_record(prepared, 0);
                 if (complete_result != RINFS_OK &&
                     rollback_error == RINFS_OK)
                     rollback_error = complete_result;
@@ -116,8 +148,8 @@ int rinfs_fork_hooks_complete(int fork_succeeded) {
         RinFS_ForkHookRecord* prepared =
             &g_rinfs_fork_hooks[prepared_index];
         {
-            int complete_result =
-                prepared->complete(prepared->context, fork_succeeded);
+            int complete_result = rinfs_fork_hook_complete_record(
+                prepared, fork_succeeded);
             if (complete_result != RINFS_OK && result == RINFS_OK)
                 result = complete_result;
         }
