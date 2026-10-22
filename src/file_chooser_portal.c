@@ -471,7 +471,7 @@ rinruntime_file_chooser_delegated_atomic_save_request_decode(
     rin_unix_peer_app_identity_v1* origin_peer_out, uint64_t* data_size_out,
     uint64_t* request_id_out)
 {
-    rin_unix_peer_app_identity_v1 origin_peer = {};
+    rin_unix_peer_app_identity_v1 origin_peer = {0};
     if (capability_out != NULL) chooser_zero(capability_out, sizeof(*capability_out));
     if (origin_peer_out != NULL) chooser_zero(origin_peer_out, sizeof(*origin_peer_out));
     if (data_size_out != NULL) *data_size_out = 0u;

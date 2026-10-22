@@ -108,6 +108,7 @@ set(RINRUNTIME_SOURCES
     src/frame_copy.c
     ${RINRUNTIME_RINPATH_ROOT}/path.c
     src/serial_portal_protocol.c
+    src/file_chooser_portal.c
     src/unicode_grapheme.c
     src/unicode.c
     ${RINRUNTIME_LIBUNICODE_ROOT}/core.c
@@ -137,7 +138,6 @@ if(NOT WIN32)
         src/file_portal.c
         src/file_portal_startup.c
         src/durable_file_portal.c
-        src/file_chooser_portal.c
         src/file_operation_service_client.c
         src/accessibility_service_client.c
         src/audio/rin_audio_service_client.c)
