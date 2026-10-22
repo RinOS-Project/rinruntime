@@ -7641,6 +7641,8 @@ static int rinfs_rmdir_internal(RinFS_Mount* mount, uint64_t parent_ino,
 
 static int rinfs_journal_transaction_lock(RinFS_Mount* mount)
     __attribute__((warn_unused_result));
+static int rinfs_journal_transaction_unlock(RinFS_Mount* mount)
+    __attribute__((warn_unused_result));
 
 static int rinfs_journal_transaction_lock(RinFS_Mount* mount) {
     if (!mount) return RINFS_ERR_INVAL;
@@ -7665,15 +7667,30 @@ static int rinfs_journal_transaction_lock(RinFS_Mount* mount) {
     return RINFS_OK;
 }
 
-static void rinfs_journal_transaction_unlock(RinFS_Mount* mount) {
-    if (!mount) return;
+static int rinfs_journal_transaction_unlock(RinFS_Mount* mount) {
+    int recovery_err = RINFS_OK;
+    int unlock_err;
+    if (!mount) return RINFS_ERR_INVAL;
     if (!mount->shared_mapping_base || mount->shared_mount_ready == 0u) {
         rinfs_spin_unlock(&mount->namespace_journal_lock);
-        return;
+        return RINFS_OK;
     }
-    if (!mount->readonly && rinfs_journal_recover(mount) != RINFS_OK)
-        mount->readonly = 1;
-    (void)rinfs_shared_lock_release(mount, &mount->namespace_journal_lock);
+    if (!mount->readonly) {
+        recovery_err = rinfs_journal_recover(mount);
+        if (recovery_err != RINFS_OK) mount->readonly = 1;
+    }
+    unlock_err = rinfs_shared_lock_release(
+        mount, &mount->namespace_journal_lock);
+    return recovery_err != RINFS_OK ? recovery_err : unlock_err;
+}
+
+static int rinfs_journal_transaction_unlock_status(
+    RinFS_Mount* mount, int operation_error) {
+    int unlock_error = rinfs_journal_transaction_unlock(mount);
+    if (unlock_error != RINFS_OK &&
+        (unlock_error != RINFS_ERR_ROFS || operation_error == RINFS_OK))
+        return unlock_error;
+    return operation_error;
 }
 
 #define RINFS_XATTR_HEADER_BYTES 16u
@@ -16436,8 +16453,7 @@ static int rinfs_delete_on_close_clear_feature_if_idle(RinFS_Mount* mount) {
         if (result != RINFS_OK) mount->readonly = 1;
     }
 journal_done:
-    rinfs_journal_transaction_unlock(mount);
-    return result;
+    return rinfs_journal_transaction_unlock_status(mount, result);
 }
 
 static int rinfs_enable_content_versions(RinFS_Mount* mount) {
@@ -19078,8 +19094,7 @@ int rinfs_mkdirat_open_owned(RinFS_Mount* mount, uint64_t parent_ino,
             if (rollback != RINFS_OK) result = rollback;
         }
     }
-    rinfs_journal_transaction_unlock(mount);
-    return result;
+    return rinfs_journal_transaction_unlock_status(mount, result);
 }
 
 /* Create a directory */
@@ -20176,14 +20191,15 @@ int rinfs_delete_on_close_register(RinFS_Mount* mount,
         return result;
     }
     if (mount->readonly) {
-        rinfs_journal_transaction_unlock(mount);
+        result = rinfs_journal_transaction_unlock_status(
+            mount, RINFS_ERR_ROFS);
         rinfs_mount_runtime_free(mount, pending);
-        return RINFS_ERR_ROFS;
+        return result;
     }
     result = rinfs_content_lease_acquire(
         mount, target_ino, target_generation, 1, &lease, &lease_token);
     if (result != RINFS_OK) {
-        rinfs_journal_transaction_unlock(mount);
+        result = rinfs_journal_transaction_unlock_status(mount, result);
         rinfs_mount_runtime_free(mount, pending);
         return result;
     }
@@ -20279,8 +20295,7 @@ done:
     rinfs_content_lease_release(mount, target_ino, target_generation,
                                 lease_token, 1);
     if (pending) rinfs_mount_runtime_free(mount, pending);
-    rinfs_journal_transaction_unlock(mount);
-    return result;
+    return rinfs_journal_transaction_unlock_status(mount, result);
 }
 
 static int rinfs_delete_on_close_find_directory_name(
@@ -21601,8 +21616,7 @@ int rinfs_rename(RinFS_Mount* mount, uint64_t old_dir, const char* old_name,
     if (result != RINFS_OK) return result;
     result = rinfs_rename_impl(mount, old_dir, old_name, new_dir, new_name,
                                0, 0u, 0u);
-    rinfs_journal_transaction_unlock(mount);
-    return result;
+    return rinfs_journal_transaction_unlock_status(mount, result);
 }
 
 int rinfs_rename_no_replace(RinFS_Mount* mount, uint64_t old_dir,
@@ -21614,8 +21628,7 @@ int rinfs_rename_no_replace(RinFS_Mount* mount, uint64_t old_dir,
     if (result != RINFS_OK) return result;
     result = rinfs_rename_impl(mount, old_dir, old_name, new_dir, new_name,
                                1, 0u, 0u);
-    rinfs_journal_transaction_unlock(mount);
-    return result;
+    return rinfs_journal_transaction_unlock_status(mount, result);
 }
 
 int rinfs_rename_no_replace_expected(
@@ -21631,8 +21644,7 @@ int rinfs_rename_no_replace_expected(
     result = rinfs_rename_impl(mount, old_dir, old_name, new_dir, new_name,
                                1, expected_source_inode,
                                expected_source_generation);
-    rinfs_journal_transaction_unlock(mount);
-    return result;
+    return rinfs_journal_transaction_unlock_status(mount, result);
 }
 
 int rinfs_rename_expected(
@@ -21648,8 +21660,7 @@ int rinfs_rename_expected(
     result = rinfs_rename_impl(mount, old_dir, old_name, new_dir, new_name,
                                0, expected_source_inode,
                                expected_source_generation);
-    rinfs_journal_transaction_unlock(mount);
-    return result;
+    return rinfs_journal_transaction_unlock_status(mount, result);
 }
 
 /* Unlink (delete) a file */
@@ -21791,8 +21802,7 @@ int rinfs_unlink_entry_expected(RinFS_Mount* mount, uint64_t parent_ino,
     if (result == RINFS_OK)
         result = rinfs_unlink_internal(mount, parent_ino, name,
                                        expected_inode, expected_generation);
-    rinfs_journal_transaction_unlock(mount);
-    return result;
+    return rinfs_journal_transaction_unlock_status(mount, result);
 }
 
 /* Remove an empty directory after closing mutation races with its open
@@ -21965,8 +21975,7 @@ int rinfs_rmdir(RinFS_Mount* mount, uint64_t parent_ino, const char* name) {
     result = rinfs_journal_transaction_lock(mount);
     if (result != RINFS_OK) return result;
     result = rinfs_rmdir_internal(mount, parent_ino, name, 0u, 0u);
-    rinfs_journal_transaction_unlock(mount);
-    return result;
+    return rinfs_journal_transaction_unlock_status(mount, result);
 }
 
 int rinfs_rmdir_expected(RinFS_Mount* mount, uint64_t parent_ino,
@@ -21980,8 +21989,7 @@ int rinfs_rmdir_expected(RinFS_Mount* mount, uint64_t parent_ino,
     {
         int result = rinfs_rmdir_internal(
             mount, parent_ino, name, expected_inode, expected_generation);
-        rinfs_journal_transaction_unlock(mount);
-        return result;
+        return rinfs_journal_transaction_unlock_status(mount, result);
     }
 }
 
@@ -22004,8 +22012,7 @@ int rinfs_rmdir_entry_expected(RinFS_Mount* mount, uint64_t parent_ino,
     if (result == RINFS_OK)
         result = rinfs_rmdir_internal(mount, parent_ino, name,
                                       expected_inode, expected_generation);
-    rinfs_journal_transaction_unlock(mount);
-    return result;
+    return rinfs_journal_transaction_unlock_status(mount, result);
 }
 
 /* ═══════════════════════════════════════════════════════════════
