@@ -17562,9 +17562,11 @@ int rinfs_truncate_ino(RinFS_Mount* mount, uint64_t ino, uint64_t size) {
     block_size = mount->sb.s_block_size;
 
     err = rinfs_page_cache_sync(mount, ino, 0u, 0u, 0u, 0u, 0u);
-    if (err != RINFS_OK) return err;
+    if (err != RINFS_OK)
+        return err == RINFS_ERR_PENDING ? RINFS_ERR_BUSY : err;
     err = rinfs_page_cache_invalidate_inode(mount, ino);
-    if (err != RINFS_OK) return err;
+    if (err != RINFS_OK)
+        return err == RINFS_ERR_PENDING ? RINFS_ERR_BUSY : err;
 
     /* Refuse sizes that cannot be represented by the direct/indirect map. */
     if (size != 0) {
