@@ -8244,6 +8244,7 @@ static int rinfs_inode_write_internal(RinFS_Mount* mount, uint64_t ino,
         uint32_t state;
         rinfs_memcpy(&current, buf + offset, sizeof(current));
         if (tracking_mode == 2) {
+            int cache_error = RINFS_OK;
             if (current.i_generation != candidate.i_generation ||
                 rinfs_inode_content_version_raw(&current) !=
                     rinfs_inode_content_version_raw(&candidate)) {
@@ -8266,7 +8267,8 @@ static int rinfs_inode_write_internal(RinFS_Mount* mount, uint64_t ino,
                     mount->shared_mount_ready != 0u)
                     rinfs_inode_cache_invalidate(mount, 0u);
                 if (rinfs_inode_cache_eligible(mount, &committed))
-                    rinfs_inode_cache_store(mount, ino, &committed);
+                    cache_error = rinfs_inode_cache_store(
+                        mount, ino, &committed);
                 else
                     rinfs_inode_cache_invalidate(mount, ino);
             } else {
@@ -8276,6 +8278,8 @@ static int rinfs_inode_write_internal(RinFS_Mount* mount, uint64_t ino,
             if (unlock_error != RINFS_OK &&
                 (unlock_error != RINFS_ERR_ROFS || err == RINFS_OK))
                 err = unlock_error;
+            if (err == RINFS_OK && cache_error != RINFS_OK)
+                err = cache_error;
             if (err != RINFS_OK) rinfs_inode_cache_invalidate(mount, ino);
             rinfs_free(buf);
             return err;
@@ -8313,6 +8317,7 @@ static int rinfs_inode_write_internal(RinFS_Mount* mount, uint64_t ino,
     }
     err = rinfs_inode_table_write_block_locked(mount, block, buf);
     if (err == RINFS_OK) {
+        int cache_error = RINFS_OK;
         RinFS_Inode committed;
         rinfs_memcpy(&committed, buf + offset, sizeof(committed));
         /* Tombstones clear content-version metadata and therefore cannot be
@@ -8321,10 +8326,12 @@ static int rinfs_inode_write_internal(RinFS_Mount* mount, uint64_t ino,
         if (mount->shared_mapping_base && mount->shared_mount_ready != 0u)
             rinfs_inode_cache_invalidate(mount, 0u);
         if (rinfs_inode_cache_eligible(mount, &committed))
-            rinfs_inode_cache_store(mount, ino, &committed);
+            cache_error = rinfs_inode_cache_store(mount, ino, &committed);
         else
             rinfs_inode_cache_invalidate(mount, ino);
         err = rinfs_inode_table_commit_log_locked(mount, block);
+        if (err == RINFS_OK && cache_error != RINFS_OK)
+            err = cache_error;
         if (err != RINFS_OK) rinfs_inode_cache_invalidate(mount, ino);
     } else {
         /* A failed metadata write cannot leave a previous copy looking
