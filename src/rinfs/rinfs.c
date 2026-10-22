@@ -1665,11 +1665,15 @@ static int rinfs_close_ref_reserve(RinFS_Mount* mount, uint64_t inode_num,
         return RINFS_ERR_CORRUPT;
     }
     rinfs_spin_lock(&mount->content_lease_lock);
-    if (!mount->mounted || mount->content_lease_closing != 0u ||
-        mount->mount_epoch == 0u) {
+    if (!mount->mounted || mount->mount_epoch == 0u) {
         rinfs_spin_unlock(&mount->content_lease_lock);
         rinfs_spin_unlock(&g_rinfs_close_reference_lock);
         return RINFS_ERR_STALE;
+    }
+    if (mount->content_lease_closing != 0u) {
+        rinfs_spin_unlock(&mount->content_lease_lock);
+        rinfs_spin_unlock(&g_rinfs_close_reference_lock);
+        return RINFS_ERR_BUSY;
     }
     if (g_rinfs_close_reference_next_generation == UINT64_MAX) {
         rinfs_spin_unlock(&mount->content_lease_lock);
@@ -3547,10 +3551,15 @@ static int rinfs_content_lease_acquire(RinFS_Mount* mount, uint64_t ino,
     candidate->inode_generation = inode_generation;
 
     rinfs_spin_lock(&mount->content_lease_lock);
-    if (!mount->mounted || mount->content_lease_closing != 0u) {
+    if (!mount->mounted) {
         rinfs_spin_unlock(&mount->content_lease_lock);
         rinfs_mount_runtime_free(mount, candidate);
         return RINFS_ERR_INVAL;
+    }
+    if (mount->content_lease_closing != 0u) {
+        rinfs_spin_unlock(&mount->content_lease_lock);
+        rinfs_mount_runtime_free(mount, candidate);
+        return RINFS_ERR_BUSY;
     }
     node = rinfs_content_lease_find(mount, ino, inode_generation);
     if (node == NULL) {
@@ -3850,7 +3859,7 @@ static int rinfs_close_ref_begin_operation(
         rinfs_spin_lock(&mount->content_lease_lock);
         record = rinfs_close_ref_find_locked(generation);
         if (mount->content_lease_closing != 0u) {
-            result = RINFS_ERR_PENDING;
+            result = RINFS_ERR_BUSY;
         } else if (rinfs_close_ref_fields_match(
                 record, mount, mount_epoch, inode_num, inode_generation,
                 content_pin_token, kind, generation, cookie) &&
@@ -4196,7 +4205,7 @@ static int rinfs_content_pin_retain(RinFS_Mount* mount, uint64_t ino,
     rinfs_spin_lock(&mount->content_lease_lock);
     node = rinfs_content_lease_find(mount, ino, inode_generation);
     if (mount->content_lease_closing != 0u) {
-        result = RINFS_ERR_PENDING;
+        result = RINFS_ERR_BUSY;
     } else if (node != NULL && node->token_generation == token &&
         node->open_references != 0u &&
         node->open_references != UINT32_MAX) {
