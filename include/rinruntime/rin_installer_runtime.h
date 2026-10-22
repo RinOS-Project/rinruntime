@@ -66,7 +66,8 @@ enum {
     RINFS_SHARED_LEASE_READY = 1u,
     RINFS_SHARED_LEASE_RELEASE_UNMOUNTED = 2u,
     RINFS_SHARED_LEASE_BEGIN_UNMOUNT = 3u,
-    RINFS_SHARED_LEASE_FINISH = 4u
+    RINFS_SHARED_LEASE_FINISH = 4u,
+    RINFS_SHARED_LEASE_OWNER_QUERY = 5u
 };
 RinResultCode rin_app_rinfs_cache_lease_shared_transition(
     const void* mapping_base, uint64_t mapping_size, uint32_t action,

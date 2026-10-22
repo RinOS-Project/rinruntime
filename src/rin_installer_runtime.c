@@ -2,6 +2,7 @@
 /* Public adapters for kernel-owned installer target sessions. */
 
 #include "../include/rinruntime/rin_installer_runtime.h"
+#include "../include/rinruntime/rinfs/rinfs.h"
 
 #include <limits.h>
 #include <stddef.h>
@@ -346,7 +347,7 @@ RinResultCode rin_app_rinfs_cache_lease_shared_transition(
         mapping_size > (uint64_t)UINTPTR_MAX ||
         (uintptr_t)mapping_base > UINTPTR_MAX - (uintptr_t)mapping_size ||
         action < RINFS_SHARED_LEASE_READY ||
-        action > RINFS_SHARED_LEASE_FINISH)
+        action > RINFS_SHARED_LEASE_OWNER_QUERY)
         return RIN_RESULT_INVALID_ARGUMENT;
 #if defined(_WIN32)
     return RIN_RESULT_NOT_SUPPORTED;
@@ -356,9 +357,13 @@ RinResultCode rin_app_rinfs_cache_lease_shared_transition(
         (uintptr_t)mapping_base, (uintptr_t)mapping_size,
         (uintptr_t)action, (uintptr_t)mount_lease_token);
     if (result < 0) return installer_runtime_result(result);
-    if (result > 1 || (result == 1 &&
-                       action != RINFS_SHARED_LEASE_BEGIN_UNMOUNT))
+    if (action == RINFS_SHARED_LEASE_OWNER_QUERY) {
+        if (result <= 0 || result > (intptr_t)RINFS_SHARED_OWNER_CAPACITY)
+            return RIN_RESULT_IO;
+    } else if (result > 1 || (result == 1 &&
+                              action != RINFS_SHARED_LEASE_BEGIN_UNMOUNT)) {
         return RIN_RESULT_IO;
+    }
     *final_owner_out = (uint32_t)result;
     return RIN_RESULT_OK;
 #endif

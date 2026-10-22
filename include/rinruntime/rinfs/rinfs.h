@@ -507,6 +507,53 @@ typedef struct {
     RinFS_PageCacheEntry entries[RINFS_PAGE_CACHE_CAPACITY];
 } RinFS_PageCache;
 
+/* Shared-mount owner accounting is a fixed SHM ABI so the kernel can mark an
+ * exact process generation dead without interpreting userland pointers. The
+ * runtime reconciles these per-handle deltas under content_lease_lock. */
+#define RINFS_SHARED_OWNER_LEDGER_MAGIC UINT32_C(0x524F574E)
+#define RINFS_SHARED_OWNER_LEDGER_VERSION 1u
+#define RINFS_SHARED_OWNER_CAPACITY 32u
+#define RINFS_SHARED_OWNER_REFERENCE_CAPACITY 512u
+#define RINFS_SHARED_OWNER_FREE 0u
+#define RINFS_SHARED_OWNER_ACTIVE 1u
+#define RINFS_SHARED_OWNER_DEAD 2u
+#define RINFS_SHARED_OWNER_REAPED 3u
+#define RINFS_SHARED_OWNER_REFERENCE_FREE 0u
+#define RINFS_SHARED_OWNER_REFERENCE_ACTIVE 1u
+#define RINFS_SHARED_OWNER_REFERENCE_MMAP 3u
+
+typedef struct {
+    uint64_t mount_epoch;
+    uint64_t inode_num;
+    uint64_t content_pin_token;
+    uint64_t close_generation;
+    uint64_t close_cookie;
+    uint32_t inode_generation;
+    uint32_t kind;
+    uint32_t state;
+    uint32_t open_reference;
+    uint32_t tracked_reference;
+    uint32_t wincompat_share_registered;
+    uint32_t wincompat_share_access;
+    uint32_t wincompat_share_mode;
+} RinFS_SharedOwnerReferenceV1;
+
+typedef struct {
+    volatile uint32_t state;
+    uint32_t owner_slot;
+    uint64_t owner_cookie;
+    RinFS_SharedOwnerReferenceV1
+        references[RINFS_SHARED_OWNER_REFERENCE_CAPACITY];
+} RinFS_SharedOwnerV1;
+
+typedef struct {
+    uint32_t magic;
+    uint32_t version;
+    uint32_t owner_capacity;
+    uint32_t reference_capacity;
+    RinFS_SharedOwnerV1 owners[RINFS_SHARED_OWNER_CAPACITY];
+} RinFS_SharedOwnerLedgerV1;
+
 /* Mount info */
 typedef struct {
     int              mounted;
@@ -572,7 +619,13 @@ typedef struct {
     uint32_t           shared_mount_ready;
     uint32_t           shared_close_started;
     uint32_t           shared_lease_released;
+    RinFS_SharedOwnerLedgerV1* shared_owner_ledger;
 } RinFS_Mount;
+
+#define RINFS_SHARED_OWNER_LEDGER_ALIGNMENT 16u
+#define RINFS_SHARED_OWNER_LEDGER_OFFSET \
+    ((sizeof(RinFS_Mount) + RINFS_SHARED_OWNER_LEDGER_ALIGNMENT - 1u) & \
+     ~(size_t)(RINFS_SHARED_OWNER_LEDGER_ALIGNMENT - 1u))
 
 /* Open file */
 typedef struct {
