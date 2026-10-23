@@ -14700,6 +14700,20 @@ static int rinfs_journal_recover(RinFS_Mount* mount) {
     return err;
 }
 
+/* During initial mount the object has not been returned to a caller yet, so
+ * there is no later operation that can retry a transient journal failure.
+ * Replay is idempotent while its durable record remains present; make a
+ * small bounded number of attempts before aborting the unpublished mount. */
+static int rinfs_journal_recover_mount_startup(RinFS_Mount* mount) {
+    int error = RINFS_OK;
+    for (uint32_t attempt = 0u; attempt < 3u; ++attempt) {
+        error = rinfs_journal_recover(mount);
+        if (error != RINFS_ERR_IO && error != RINFS_ERR_NOMEM)
+            return error;
+    }
+    return error;
+}
+
 /* Replay the durable unlink/reclaim intent records before the namespace is
  * exposed.  A marker with remaining links means the namespace removal had
  * not published yet and is completed by clearing the marker.  A zero-link
@@ -15301,7 +15315,7 @@ static int rinfs_mount_sized_io_unleased(
     /* Resolve a durable rename intent before exposing the namespace. Rescue
      * mode is the sole exception: it never writes and deliberately exposes
      * the last on-disk view so files can be copied out for offline repair. */
-    int recovery_err = rinfs_journal_recover(mount);
+    int recovery_err = rinfs_journal_recover_mount_startup(mount);
     if (recovery_err != RINFS_OK) {
         if ((flags & RINFS_MNT_RESCUE) != 0 &&
             recovery_err == RINFS_ERR_ROFS) {
