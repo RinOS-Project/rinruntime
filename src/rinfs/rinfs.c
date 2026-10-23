@@ -19541,6 +19541,43 @@ int rinfs_dirent_add(RinFS_Mount* mount, uint64_t dir_ino, const char* name,
 /* Create a file below an already-resolved directory inode. This is the
  * capability-safe counterpart to pathname create: callers that already hold
  * a directory object never re-resolve its textual path. */
+static int rinfs_publish_orphan_intent_inode(
+    RinFS_Mount* mount, uint64_t parent_ino, const char* name,
+    uint64_t new_ino, RinFS_Inode* inode, uint8_t file_type,
+    uint64_t* created_ino) {
+    int err;
+    if (!mount || !inode || !rinfs_mount_has_content_versions(mount))
+        return RINFS_ERR_INVAL;
+
+    /* Keep the inode recoverable until its namespace name is durable. On a
+     * failed directory write, the result may be ambiguous: mount recovery
+     * recounts names and either publishes this inode or reclaims it. */
+    inode->i_links = 0u;
+    inode->i_flags |= RINFS_IFLG_ORPHAN_INTENT;
+    err = rinfs_inode_orphan_commit(mount, new_ino, inode, 1);
+    if (err != RINFS_OK) {
+        rinfs_mount_force_readonly(mount);
+        return err;
+    }
+
+    err = dir_add_entry(mount, parent_ino, name, new_ino, file_type);
+    if (err != RINFS_OK) {
+        rinfs_mount_force_readonly(mount);
+        return err;
+    }
+
+    inode->i_links = 1u;
+    err = rinfs_inode_orphan_commit(mount, new_ino, inode, 0);
+    if (err != RINFS_OK) {
+        /* The durable dentry and the intent marker let mount recovery
+         * reconstruct the link count. Do not free an inode it may reference. */
+        rinfs_mount_force_readonly(mount);
+        return err;
+    }
+    if (created_ino) *created_ino = new_ino;
+    return RINFS_OK;
+}
+
 int rinfs_createat_owned(RinFS_Mount* mount, uint64_t parent_ino,
                          const char* name, uint16_t mode, uint32_t uid,
                          uint32_t gid, uint64_t* created_ino) {
@@ -19577,34 +19614,29 @@ int rinfs_createat_owned(RinFS_Mount* mount, uint64_t parent_ino,
     if (err == RINFS_OK) return RINFS_ERR_EXIST;
     if (err != RINFS_ERR_NOENT) return err;
 
+    err = rinfs_enable_content_versions(mount);
+    if (err != RINFS_OK) return err;
     err = rinfs_inode_alloc(mount, &new_ino);
     if (err != RINFS_OK) return err;
     err = rinfs_prepare_new_inode(mount, new_ino, &inode);
     if (err != RINFS_OK) {
-        rinfs_inode_free(mount, new_ino);
+        int cleanup_error = rinfs_inode_free(mount, new_ino);
+        if (cleanup_error != RINFS_OK) {
+            rinfs_mount_force_readonly(mount);
+            return cleanup_error;
+        }
         return err;
     }
     inode.i_mode = (RINFS_FT_REG << 12) | (mode & 0777);
     inode.i_uid = uid;
     inode.i_gid = gid;
     inode.i_size = 0;
-    inode.i_links = 1;
     inode.i_blocks = 0;
-    if (rinfs_mount_has_content_versions(mount))
-        rinfs_inode_content_version_set_raw(&inode, 1u);
+    rinfs_inode_content_version_set_raw(&inode, 1u);
     rinfs_touch_created(&inode);
-    err = rinfs_inode_write(mount, new_ino, &inode);
-    if (err != RINFS_OK) {
-        rinfs_inode_free(mount, new_ino);
-        return err;
-    }
-    err = dir_add_entry(mount, parent_ino, name, new_ino, RINFS_FT_REG);
-    if (err != RINFS_OK) {
-        rinfs_inode_free(mount, new_ino);
-        return err;
-    }
-    if (created_ino) *created_ino = new_ino;
-    return RINFS_OK;
+    return rinfs_publish_orphan_intent_inode(
+        mount, parent_ino, name, new_ino, &inode, RINFS_FT_REG,
+        created_ino);
 }
 
 int rinfs_mknodat_owned(RinFS_Mount* mount, uint64_t parent_ino,
@@ -19658,36 +19690,30 @@ int rinfs_mknodat_owned(RinFS_Mount* mount, uint64_t parent_ino,
         err = rinfs_enable_special_inodes(mount);
         if (err != RINFS_OK) return err;
     }
+    err = rinfs_enable_content_versions(mount);
+    if (err != RINFS_OK) return err;
     err = rinfs_inode_alloc(mount, &new_ino);
     if (err != RINFS_OK) return err;
     err = rinfs_prepare_new_inode(mount, new_ino, &inode);
     if (err != RINFS_OK) {
-        (void)rinfs_inode_free(mount, new_ino);
+        int cleanup_error = rinfs_inode_free(mount, new_ino);
+        if (cleanup_error != RINFS_OK) {
+            rinfs_mount_force_readonly(mount);
+            return cleanup_error;
+        }
         return err;
     }
     inode.i_mode = (uint16_t)(((uint16_t)type << 12u) | (mode & 07777u));
     inode.i_uid = uid;
     inode.i_gid = gid;
     inode.i_size = 0u;
-    inode.i_links = 1u;
     inode.i_blocks = 0u;
-    if (rinfs_mount_has_content_versions(mount))
-        rinfs_inode_content_version_set_raw(&inode, 1u);
+    rinfs_inode_content_version_set_raw(&inode, 1u);
     if (type == RINFS_FT_CHR || type == RINFS_FT_BLK)
         rinfs_inode_device_number_set(&inode, device_number);
     rinfs_touch_created(&inode);
-    err = rinfs_inode_write(mount, new_ino, &inode);
-    if (err != RINFS_OK) {
-        (void)rinfs_inode_free(mount, new_ino);
-        return err;
-    }
-    err = dir_add_entry(mount, parent_ino, name, new_ino, type);
-    if (err != RINFS_OK) {
-        (void)rinfs_inode_free(mount, new_ino);
-        return err;
-    }
-    if (created_ino) *created_ino = new_ino;
-    return RINFS_OK;
+    return rinfs_publish_orphan_intent_inode(
+        mount, parent_ino, name, new_ino, &inode, type, created_ino);
 }
 
 /* O_TMPFILE has no dentry to publish. Store its zero link count together with
