@@ -678,6 +678,8 @@ static int rinfs_mount_recovery_only(const RinFS_Mount* mount) {
 
 static int rinfs_inode_table_retry_pending(RinFS_Mount* mount);
 static int rinfs_mount_prepare_write(RinFS_Mount* mount);
+static int rinfs_block_write_unprepared(RinFS_Mount* mount, uint64_t block,
+                                        const void* buf);
 static int rinfs_superblock_lock(RinFS_Mount* mount);
 static int rinfs_superblock_unlock_status(RinFS_Mount* mount,
                                            int operation_error);
@@ -2062,7 +2064,7 @@ static int rinfs_inode_table_write_block_locked(
     int err;
     if (!mount || !data) return RINFS_ERR_INVAL;
     if (!mount->shared_mapping_base || mount->shared_mount_ready == 0u)
-        return rinfs_block_write(mount, block, data);
+        return rinfs_block_write_unprepared(mount, block, data);
     log = rinfs_inode_table_log(mount, lock_index);
     if (!log || mount->sb.s_block_size > sizeof(log->data) ||
         __atomic_load_n(&log->state, __ATOMIC_ACQUIRE) !=
@@ -2091,7 +2093,7 @@ static int rinfs_inode_table_write_block_locked(
     log->header_checksum = rinfs_inode_table_log_header_checksum(log);
     __atomic_store_n(&log->state, RINFS_INODE_TABLE_RECOVERY_READY,
                      __ATOMIC_RELEASE);
-    err = rinfs_block_write(mount, block, data);
+    err = rinfs_block_write_unprepared(mount, block, data);
     return err;
 }
 
@@ -5552,13 +5554,13 @@ static int rinfs_page_cache_sync(RinFS_Mount* mount, uint64_t inode_num,
             err = RINFS_ERR_CORRUPT;
         } else if (run_buffer) {
             if (selected_count == 1u) {
-                err = rinfs_block_write(mount, first_physical, run_buffer);
+                err = rinfs_block_write_unprepared(mount, first_physical, run_buffer);
             } else {
                 err = rinfs_write_physical_run(mount, first_physical,
                                                 selected_count, run_buffer);
             }
         } else if (selected_count == 1u) {
-            err = rinfs_block_write(mount, first_physical, entries[0]->data);
+            err = rinfs_block_write_unprepared(mount, first_physical, entries[0]->data);
         } else {
             err = RINFS_ERR_CORRUPT;
         }
@@ -5855,6 +5857,8 @@ int rinfs_page_cache_writeback_step(RinFS_Mount* mount, uint32_t max_entries,
     if (!mount || !mount->mounted || max_entries == 0u)
         return RINFS_ERR_INVAL;
     if (!mount->page_cache) return RINFS_ERR_NOT_SUPPORTED;
+    err = rinfs_mount_prepare_write(mount);
+    if (err != RINFS_OK) return err;
 
     err = rinfs_page_cache_lock(mount->page_cache);
     if (err != RINFS_OK) return err;
@@ -7952,7 +7956,8 @@ static int rinfs_write_physical_run(RinFS_Mount* mount, uint64_t first_block,
     return err;
 }
 
-int rinfs_block_write(RinFS_Mount* mount, uint64_t block, const void* buf) {
+static int rinfs_block_write_unprepared(RinFS_Mount* mount, uint64_t block,
+                                        const void* buf) {
     if (!mount || !mount->mounted || !buf) return RINFS_ERR_INVAL;
     if (mount->readonly) return RINFS_ERR_ROFS;
     if (block >= mount->sb.s_block_count) return RINFS_ERR_INVAL;
@@ -7963,6 +7968,17 @@ int rinfs_block_write(RinFS_Mount* mount, uint64_t block, const void* buf) {
     uint64_t sector = block_to_sector(mount, block);
     uint32_t sectors = mount->sb.s_block_size / RINFS_SECTOR_SIZE;
     return disk_write(mount, sector, sectors, buf);
+}
+
+/* External low-level writes participate in same-mount recovery. Internal
+ * mutation paths use the helper above after their own preflight, avoiding a
+ * mount-wide retry while a metadata stripe or allocator lock is held. */
+int rinfs_block_write(RinFS_Mount* mount, uint64_t block, const void* buf) {
+    int write_error;
+    if (!mount || !mount->mounted || !buf) return RINFS_ERR_INVAL;
+    write_error = rinfs_mount_prepare_write(mount);
+    if (write_error != RINFS_OK) return write_error;
+    return rinfs_block_write_unprepared(mount, block, buf);
 }
 
 /* A pointer-bearing metadata block may not make one of its former children
@@ -7978,7 +7994,7 @@ static int rinfs_block_write_durable_verified(RinFS_Mount* mount,
     if (!mount || !expected) return RINFS_ERR_INVAL;
     verify = (uint8_t*)rinfs_malloc(mount->sb.s_block_size);
     if (!verify) return RINFS_ERR_NOMEM;
-    err = rinfs_block_write(mount, block, expected);
+    err = rinfs_block_write_unprepared(mount, block, expected);
     if (err == RINFS_OK) err = disk_flush(mount);
     if (err == RINFS_OK) err = rinfs_block_read(mount, block, verify);
     if (err == RINFS_OK &&
@@ -8057,7 +8073,9 @@ int rinfs_block_alloc(RinFS_Mount* mount, uint64_t* block) {
                         
                         /* Mark as used */
                         bitmap[byte] |= (1 << bit);
-                        err = rinfs_block_write(mount, mount->sb.s_block_bitmap + bm_block, bitmap);
+                        err = rinfs_block_write_unprepared(
+                            mount, mount->sb.s_block_bitmap + bm_block,
+                            bitmap);
                         if (err != RINFS_OK) {
                             int recovery_err =
                                 rinfs_allocator_recover_failed_write_locked(
@@ -8150,7 +8168,7 @@ int rinfs_block_free(RinFS_Mount* mount, uint64_t block) {
     }
     
     bitmap[byte_off] &= ~(1 << bit);
-    err = rinfs_block_write(mount, mount->sb.s_block_bitmap + bm_block, bitmap);
+    err = rinfs_block_write_unprepared(mount, mount->sb.s_block_bitmap + bm_block, bitmap);
     if (err == RINFS_OK) {
         if (mount->sb.s_free_blocks >= mount->sb.s_block_count) {
             err = RINFS_ERR_CORRUPT;
@@ -8408,7 +8426,7 @@ static int rinfs_xattr_publish_buffer(RinFS_Mount* mount, uint64_t ino,
     uint64_t new_block;
     int result = rinfs_block_alloc(mount, &new_block);
     if (result != RINFS_OK) return result;
-    result = rinfs_block_write(mount, new_block, block);
+    result = rinfs_block_write_unprepared(mount, new_block, block);
     if (result != RINFS_OK) {
         (void)rinfs_block_free(mount, new_block);
         return result;
@@ -9473,7 +9491,7 @@ static int rinfs_journal_load(RinFS_Mount* mount, RinFS_RenameJournal* record,
 static int rinfs_journal_write_slot(RinFS_Mount* mount, uint64_t block,
                                     const uint8_t* buffer) {
     uint8_t* observed;
-    int err = rinfs_block_write(mount, block, buffer);
+    int err = rinfs_block_write_unprepared(mount, block, buffer);
     if (err != RINFS_OK) return err;
     err = disk_flush(mount);
     if (err != RINFS_OK) return err;
@@ -9848,7 +9866,7 @@ int rinfs_inode_alloc(RinFS_Mount* mount, uint64_t* ino) {
                         }
 
                         bitmap[byte] |= (1 << bit);
-                        err = rinfs_block_write(
+                        err = rinfs_block_write_unprepared(
                             mount, mount->sb.s_inode_bitmap + bm_block,
                             bitmap);
                         if (err == RINFS_OK) err = disk_flush(mount);
@@ -9975,7 +9993,7 @@ static int rinfs_inode_free_under_lease(RinFS_Mount* mount, uint64_t ino,
     }
 
     bitmap[byte_off] &= ~(1 << bit);
-    err = rinfs_block_write(mount, mount->sb.s_inode_bitmap + bm_block, bitmap);
+    err = rinfs_block_write_unprepared(mount, mount->sb.s_inode_bitmap + bm_block, bitmap);
     if (err == RINFS_OK) err = disk_flush(mount);
     if (err == RINFS_OK) {
         err = rinfs_block_read(mount, mount->sb.s_inode_bitmap + bm_block,
@@ -10604,7 +10622,7 @@ static int rinfs_check_unique_directory_names(RinFS_Mount* mount,
             goto out;
         }
         entry->d_inode = 0;
-        err = rinfs_block_write(mount, location->physical_block, block);
+        err = rinfs_block_write_unprepared(mount, location->physical_block, block);
         if (err != RINFS_OK) goto out;
         (*quarantined)++;
     }
@@ -11315,6 +11333,10 @@ int rinfs_check_allocation_metadata(RinFS_Mount* mount, uint32_t flags,
 
     if (!mount || !mount->mounted) return RINFS_ERR_INVAL;
     if ((flags & ~RINFS_CHECK_REPAIR_COUNTERS) != 0) return RINFS_ERR_INVAL;
+    if ((flags & RINFS_CHECK_REPAIR_COUNTERS) != 0) {
+        err = rinfs_mount_prepare_write(mount);
+        if (err != RINFS_OK) return err;
+    }
     rinfs_memset(&local_report, 0, sizeof(local_report));
 
     reserved_blocks = rinfs_reserved_data_end(mount);
@@ -11983,7 +12005,7 @@ static int rinfs_repair_block_bitmap(RinFS_FullCheckContext* context) {
             }
         }
         if (page_changed) {
-            err = rinfs_block_write(mount, mount->sb.s_block_bitmap + page,
+            err = rinfs_block_write_unprepared(mount, mount->sb.s_block_bitmap + page,
                                     context->block_buffer);
             if (err != RINFS_OK) return err;
             changed_any = 1;
@@ -12396,7 +12418,7 @@ static int rinfs_clone_indirect_metadata_tree(
         }
     }
     err = rinfs_block_alloc(mount, &new_block);
-    if (err == RINFS_OK) err = rinfs_block_write(mount, new_block, pointers);
+    if (err == RINFS_OK) err = rinfs_block_write_unprepared(mount, new_block, pointers);
     if (err == RINFS_OK) err = disk_flush(mount);
     rinfs_free(pointers);
     if (err != RINFS_OK) return err;
@@ -12741,7 +12763,7 @@ static int rinfs_clone_ambiguous_data_block(
     err = rinfs_block_read(mount, source, context->block_buffer);
     if (err == RINFS_OK) err = rinfs_block_alloc(mount, &new_block);
     if (err == RINFS_OK) {
-        err = rinfs_block_write(mount, new_block, context->block_buffer);
+        err = rinfs_block_write_unprepared(mount, new_block, context->block_buffer);
     }
     if (err == RINFS_OK) err = disk_flush(mount);
     if (err != RINFS_OK) return err;
@@ -12811,7 +12833,7 @@ static int rinfs_rebuild_ambiguous_indirect_tree(
         }
     }
     if (err == RINFS_OK) err = rinfs_block_alloc(mount, &new_block);
-    if (err == RINFS_OK) err = rinfs_block_write(mount, new_block, pointers);
+    if (err == RINFS_OK) err = rinfs_block_write_unprepared(mount, new_block, pointers);
     if (err == RINFS_OK) err = disk_flush(mount);
     rinfs_free(pointers);
     if (err != RINFS_OK) return err;
@@ -13052,7 +13074,7 @@ static int rinfs_clone_duplicate_data_block(
     if (err != RINFS_OK) return err;
     err = rinfs_block_alloc(mount, replacement);
     if (err != RINFS_OK) return err;
-    err = rinfs_block_write(mount, *replacement, context->block_buffer);
+    err = rinfs_block_write_unprepared(mount, *replacement, context->block_buffer);
     if (err == RINFS_OK) err = disk_flush(mount);
     return err;
 }
@@ -13094,7 +13116,7 @@ static int rinfs_clone_duplicate_indirect_data(
         err = rinfs_clone_duplicate_data_block(context, source, &replacement);
         if (err != RINFS_OK) break;
         pointers[index] = replacement;
-        err = rinfs_block_write(mount, tree_block, pointers);
+        err = rinfs_block_write_unprepared(mount, tree_block, pointers);
         if (err == RINFS_OK) err = disk_flush(mount);
         if (err != RINFS_OK) break;
         context->report->cloned_duplicate_blocks++;
@@ -13956,6 +13978,8 @@ int rinfs_repair_full(RinFS_Mount* mount, uint32_t flags,
         (flags & RINFS_FULL_REPAIR_CLONE_DATA_DUPLICATES) == 0) {
         return RINFS_ERR_INVAL;
     }
+    err = rinfs_mount_prepare_write(mount);
+    if (err != RINFS_OK) return err;
     rinfs_memset(&repair_report, 0, sizeof(repair_report));
     /* Structural actions change the reference/reachability graph. Run at
      * most one such action per scan and discard that scan before deriving the
@@ -14085,7 +14109,7 @@ static int rinfs_resize_bitmap_set(RinFS_Mount* mount, uint64_t block,
     if (err == RINFS_OK) {
         if (allocated) page[local / 8u] |= mask;
         else page[local / 8u] &= (uint8_t)~mask;
-        err = rinfs_block_write(mount,
+        err = rinfs_block_write_unprepared(mount,
                                 mount->sb.s_block_bitmap + page_index, page);
     }
     rinfs_free(page);
@@ -14193,7 +14217,7 @@ static int rinfs_resize_reference_set(RinFS_Mount* mount,
         err = rinfs_block_read(mount, record->parent_block, pointers);
         if (err == RINFS_OK) {
             pointers[record->reference_index] = block;
-            err = rinfs_block_write(mount, record->parent_block, pointers);
+            err = rinfs_block_write_unprepared(mount, record->parent_block, pointers);
         }
         rinfs_free(pointers);
     } else {
@@ -14257,7 +14281,7 @@ static int rinfs_resize_recover_move(RinFS_Mount* mount,
             if (!buffer) return RINFS_ERR_NOMEM;
             err = rinfs_block_read(mount, record->source_block, buffer);
             if (err == RINFS_OK)
-                err = rinfs_block_write(mount, record->destination_block,
+                err = rinfs_block_write_unprepared(mount, record->destination_block,
                                         buffer);
             rinfs_free(buffer);
             if (err == RINFS_OK) err = disk_flush(mount);
@@ -14406,7 +14430,7 @@ static int rinfs_resize_rewrite_bitmap(RinFS_Mount* mount,
                 free_count++;
             }
         }
-        err = rinfs_block_write(mount,
+        err = rinfs_block_write_unprepared(mount,
                                 mount->sb.s_block_bitmap + page_index, page);
         if (err != RINFS_OK) break;
     }
@@ -14513,11 +14537,13 @@ int rinfs_resize(RinFS_Mount* mount, uint64_t target_blocks) {
     int resize_active = 0;
     int rename_active = 0;
     int err;
-    if (!mount || !mount->mounted || mount->readonly ||
+    if (!mount || !mount->mounted ||
         (mount->mount_flags & RINFS_MNT_RESIZE) == 0u ||
         target_blocks == 0u) {
         return RINFS_ERR_INVAL;
     }
+    err = rinfs_mount_prepare_write(mount);
+    if (err != RINFS_OK) return err;
     if ((mount->sb.s_compat_features &
          (RINFS_FEATURE_COMPAT_RENAME_JOURNAL |
           RINFS_FEATURE_COMPAT_DUAL_JOURNAL)) !=
@@ -16931,7 +16957,8 @@ static int rinfs_enable_incompat_feature(RinFS_Mount* mount,
         (feature & (feature - 1u)) != 0u ||
         (feature & ~RINFS_FEATURE_INCOMPAT_SUPPORTED) != 0u)
         return RINFS_ERR_INVAL;
-    if (mount->readonly) return RINFS_ERR_ROFS;
+    result = rinfs_mount_prepare_write(mount);
+    if (result != RINFS_OK) return result;
     result = rinfs_superblock_lock(mount);
     if (result != RINFS_OK) return result;
     if ((mount->sb.s_incompat_features & feature) != 0u) goto done;
@@ -16994,7 +17021,8 @@ static int rinfs_disable_incompat_feature(RinFS_Mount* mount,
         (feature & (feature - 1u)) != 0u ||
         (feature & ~RINFS_FEATURE_INCOMPAT_SUPPORTED) != 0u)
         return RINFS_ERR_INVAL;
-    if (mount->readonly) return RINFS_ERR_ROFS;
+    result = rinfs_mount_prepare_write(mount);
+    if (result != RINFS_OK) return result;
     result = rinfs_superblock_lock(mount);
     if (result != RINFS_OK) return result;
     if ((mount->sb.s_incompat_features & feature) == 0u) goto done;
@@ -17049,8 +17077,12 @@ static int rinfs_delete_on_close_clear_feature_if_idle(RinFS_Mount* mount) {
     int pending = 0;
     int result = RINFS_OK;
     if (!mount || !mount->mounted) return rinfs_content_unlock_status((RINFS_ERR_INVAL), content_unlock_error);
-    if (mount->readonly ||
-        (mount->sb.s_incompat_features &
+    if (rinfs_mount_sticky_readonly(mount))
+        return rinfs_content_unlock_status((RINFS_OK), content_unlock_error);
+    result = rinfs_mount_prepare_write(mount);
+    if (result != RINFS_OK)
+        return rinfs_content_unlock_status((result), content_unlock_error);
+    if ((mount->sb.s_incompat_features &
          RINFS_FEATURE_INCOMPAT_DELETE_ON_CLOSE) == 0u)
         return rinfs_content_unlock_status((RINFS_OK), content_unlock_error);
 
@@ -17116,7 +17148,7 @@ int rinfs_sync(RinFS_Mount* mount) {
     
     /* Flush block buffer */
     if (mount->buffer_dirty && mount->buffer_block != (uint32_t)-1) {
-        int err = rinfs_block_write(mount, mount->buffer_block, mount->block_buffer);
+        int err = rinfs_block_write_unprepared(mount, mount->buffer_block, mount->block_buffer);
         if (err != RINFS_OK) return err;
         mount->buffer_dirty = 0;
     }
@@ -18633,7 +18665,7 @@ static int alloc_file_block(RinFS_Mount* mount, RinFS_Inode* inode, uint64_t fil
         return RINFS_ERR_NOMEM;
     }
     rinfs_memset(zero_buf, 0, block_size);
-    err = rinfs_block_write(mount, *phys_block, zero_buf);
+    err = rinfs_block_write_unprepared(mount, *phys_block, zero_buf);
     rinfs_free(zero_buf);
     if (err != RINFS_OK) {
         rinfs_block_free(mount, *phys_block);
@@ -18696,7 +18728,7 @@ static int alloc_file_block(RinFS_Mount* mount, RinFS_Inode* inode, uint64_t fil
             goto fail_data;
         }
         pointers[indices[depth - 1]] = *phys_block;
-        err = rinfs_block_write(mount, current, pointers);
+        err = rinfs_block_write_unprepared(mount, current, pointers);
         if (err != RINFS_OK) goto fail_data;
         inode->i_blocks += block_size / RINFS_SECTOR_SIZE;
         rinfs_free(pointers);
@@ -18714,7 +18746,7 @@ static int alloc_file_block(RinFS_Mount* mount, RinFS_Inode* inode, uint64_t fil
         rinfs_memset(pointers, 0, block_size);
         pointers[indices[level]] = level + 1 == depth
                                        ? *phys_block : new_nodes[level + 1];
-        err = rinfs_block_write(mount, new_nodes[level], pointers);
+        err = rinfs_block_write_unprepared(mount, new_nodes[level], pointers);
         if (err != RINFS_OK) goto fail_nodes;
     }
 
@@ -18730,7 +18762,7 @@ static int alloc_file_block(RinFS_Mount* mount, RinFS_Inode* inode, uint64_t fil
             goto fail_nodes;
         }
         pointers[existing_parent_index] = new_nodes[first_missing];
-        err = rinfs_block_write(mount, existing_parent, pointers);
+        err = rinfs_block_write_unprepared(mount, existing_parent, pointers);
         if (err != RINFS_OK) goto fail_nodes;
     }
 
@@ -19123,7 +19155,7 @@ static int rinfs_commit_directory_block_mutation(
     if (err != RINFS_OK) return err;
     *inode = mutation->inode;
     rinfs_content_mutation_started(mutation);
-    err = rinfs_block_write(mutation->mount, physical_block, block);
+    err = rinfs_block_write_unprepared(mutation->mount, physical_block, block);
     if (err == RINFS_OK) {
         rinfs_touch_modified(inode);
         err = rinfs_inode_write_content(mutation->mount,
@@ -19321,7 +19353,7 @@ static int dir_add_entry_internal(RinFS_Mount* mount, uint64_t dir_ino,
     rinfs_memcpy(de->d_name, name, name_len);
     de->d_name[name_len] = '\0';
     
-    err = rinfs_block_write(mount, new_phys_block, block);
+    err = rinfs_block_write_unprepared(mount, new_phys_block, block);
     rinfs_free(block);
     if (err != RINFS_OK) {
         rinfs_content_mutation_poison(&mutation);
@@ -19701,7 +19733,7 @@ int rinfs_mkdirat_owned(RinFS_Mount* mount, uint64_t parent_ino,
     dotdot->d_name[0] = '.';
     dotdot->d_name[1] = '.';
     
-    err = rinfs_block_write(mount, data_block, block);
+    err = rinfs_block_write_unprepared(mount, data_block, block);
     rinfs_free(block);
     if (err != RINFS_OK) {
         rinfs_block_free(mount, data_block);
@@ -20009,7 +20041,7 @@ static int64_t rinfs_write_core(RinFS_File* file, const void* buf,
                    block_off == 0u && chunk == block_size) {
             /* An aligned direct write owns a complete block, so publish the
              * caller's buffer straight to the checked block-write path. */
-            err = rinfs_block_write(mount, phys_block, src);
+            err = rinfs_block_write_unprepared(mount, phys_block, src);
             if (err != RINFS_OK) {
                 write_error = err;
                 break;
@@ -20029,7 +20061,7 @@ static int64_t rinfs_write_core(RinFS_File* file, const void* buf,
                 rinfs_memset(block_buf + gap_start, 0, gap_length);
             /* Copy data and write the block through the checked direct path. */
             rinfs_memcpy(block_buf + block_off, src, chunk);
-            err = rinfs_block_write(mount, phys_block, block_buf);
+            err = rinfs_block_write_unprepared(mount, phys_block, block_buf);
             if (err != RINFS_OK) {
                 write_error = err;
                 break;
@@ -20871,7 +20903,9 @@ int rinfs_delete_on_close_register(RinFS_Mount* mount,
         (name_length == 2u && name[0] == '.' && name[1] == '.'))
         return rinfs_content_unlock_status((RINFS_ERR_INVAL), content_unlock_error);
     if (!mount->mounted) return rinfs_content_unlock_status((RINFS_ERR_STALE), content_unlock_error);
-    if (mount->readonly) return rinfs_content_unlock_status((RINFS_ERR_ROFS), content_unlock_error);
+    result = rinfs_mount_prepare_write(mount);
+    if (result != RINFS_OK)
+        return rinfs_content_unlock_status((result), content_unlock_error);
 
     pending = (RinFS_DeleteOnClosePath*)rinfs_mount_runtime_alloc(
         mount, sizeof(*pending), &allocation_error);
@@ -22997,7 +23031,7 @@ int rinfs_symlink_owned(RinFS_Mount* mount, uint64_t dir_ino, const char* name,
 
         rinfs_memset(buf, 0, block_size);
         rinfs_memcpy(buf, target, target_len + 1);
-        err = rinfs_block_write(mount, block, buf);
+        err = rinfs_block_write_unprepared(mount, block, buf);
         rinfs_free(buf);
 
         if (err != RINFS_OK) {
@@ -23158,7 +23192,7 @@ int rinfs_truncate_ino(RinFS_Mount* mount, uint64_t ino, uint64_t size) {
                 if (err == RINFS_OK) {
                     rinfs_memset(block + (size % block_size), 0,
                                  block_size - (size % block_size));
-                    err = rinfs_block_write(mount, phys_block, block);
+                    err = rinfs_block_write_unprepared(mount, phys_block, block);
                 }
                 rinfs_free(block);
                 if (err != RINFS_OK) goto failed;
@@ -23189,7 +23223,7 @@ int rinfs_truncate_ino(RinFS_Mount* mount, uint64_t ino, uint64_t size) {
                 if (err == RINFS_OK) {
                     rinfs_memset(block + (old_size % block_size), 0,
                                  (uint32_t)(zero_end - old_size));
-                    err = rinfs_block_write(mount, phys_block, block);
+                    err = rinfs_block_write_unprepared(mount, phys_block, block);
                 }
                 rinfs_free(block);
                 if (err != RINFS_OK) goto failed;
@@ -24542,12 +24576,14 @@ int rinfs_restore_transaction_begin(RinFS_Mount* mount,
     int present = 0;
     int error;
     if (!mount || !mount->mounted || mount->mount_epoch == 0u ||
-        mount->readonly || !transaction ||
-        !staging_root_inode_out ||
-        (mount->sb.s_incompat_features &
-         RINFS_FEATURE_INCOMPAT_CONTENT_VERSION64) == 0u)
+        !transaction || !staging_root_inode_out)
         return RINFS_ERR_INVAL;
     *staging_root_inode_out = 0u;
+    error = rinfs_mount_prepare_write(mount);
+    if (error != RINFS_OK) return error;
+    if ((mount->sb.s_incompat_features &
+         RINFS_FEATURE_INCOMPAT_CONTENT_VERSION64) == 0u)
+        return RINFS_ERR_INVAL;
     error = rinfs_restore_transaction_reserve(
         mount, mount->mount_epoch, transaction, &handle_token);
     if (error != RINFS_OK) return error;
