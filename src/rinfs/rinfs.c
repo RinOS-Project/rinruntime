@@ -953,49 +953,77 @@ static void* rinfs_mount_runtime_alloc(RinFS_Mount* mount, size_t size,
     return NULL;
 }
 
-static void rinfs_mount_runtime_free(RinFS_Mount* mount, void* pointer) {
+static int rinfs_mount_runtime_free(RinFS_Mount* mount, void* pointer,
+                                   int* released_out) {
     size_t header_bytes = rinfs_shared_heap_align(
         sizeof(RinFS_SharedHeapBlock));
     uintptr_t base;
     uintptr_t value;
     uint64_t offset;
-    if (!pointer) return;
+    int error = RINFS_OK;
+    if (released_out) *released_out = 0;
+    if (!pointer) {
+        if (released_out) *released_out = 1;
+        return RINFS_OK;
+    }
     if (!mount || !mount->shared_mapping_base ||
         mount->shared_arena_offset == 0u) {
         rinfs_free(pointer);
-        return;
+        if (released_out) *released_out = 1;
+        return RINFS_OK;
     }
     base = (uintptr_t)mount->shared_mapping_base;
     value = (uintptr_t)pointer;
-    if (value < base || value - base >= mount->shared_mapping_size) {
+    if (value < base ||
+        (uint64_t)(value - base) >= mount->shared_mapping_size) {
         rinfs_free(pointer);
-        return;
+        if (released_out) *released_out = 1;
+        return RINFS_OK;
     }
-    if (value < base + mount->shared_arena_offset + header_bytes ||
+    if (header_bytes == 0u ||
+        mount->shared_arena_offset > mount->shared_mapping_size ||
+        header_bytes > mount->shared_mapping_size -
+                           mount->shared_arena_offset ||
+        (uint64_t)(value - base) <
+            mount->shared_arena_offset + header_bytes ||
         ((value - base - header_bytes) &
-         (RINFS_SHARED_HEAP_ALIGNMENT - 1u)) != 0u)
-        return;
+         (RINFS_SHARED_HEAP_ALIGNMENT - 1u)) != 0u) {
+        mount->readonly = 1;
+        mount->shared_arena_recovery_failed = 1u;
+        return RINFS_ERR_CORRUPT;
+    }
     offset = (uint64_t)(value - base - header_bytes);
-    if (rinfs_shared_heap_lock(mount) != RINFS_OK) return;
+    error = rinfs_shared_heap_lock(mount);
+    if (error != RINFS_OK) {
+        mount->readonly = 1;
+        mount->shared_arena_recovery_failed = 1u;
+        return error;
+    }
     if (mount->shared_arena_recovery_failed != 0u) {
-        rinfs_shared_heap_unlock(mount);
-        return;
+        error = RINFS_ERR_ROFS;
+        rinfs_keep_first_error(&error, rinfs_shared_heap_unlock(mount));
+        mount->readonly = 1;
+        return error;
     }
     if (offset < mount->shared_arena_offset ||
         offset > mount->shared_mapping_size - header_bytes) {
-        rinfs_shared_heap_unlock(mount);
-        return;
+        error = RINFS_ERR_CORRUPT;
+        goto corrupt_locked;
     }
     RinFS_SharedHeapBlock* target =
         (RinFS_SharedHeapBlock*)((uint8_t*)mount->shared_mapping_base +
                                 (size_t)offset);
     if (target->magic != RINFS_SHARED_HEAP_MAGIC || target->is_free != 0u ||
         target->total_bytes < header_bytes ||
-        target->total_bytes > mount->shared_mapping_size - offset) {
-        rinfs_shared_heap_unlock(mount);
-        return;
+        target->total_bytes > mount->shared_mapping_size - offset ||
+        (target->total_bytes &
+         (RINFS_SHARED_HEAP_ALIGNMENT - 1u)) != 0u ||
+        target->reserved != 0u) {
+        error = RINFS_ERR_CORRUPT;
+        goto corrupt_locked;
     }
     target->is_free = 1u;
+    if (released_out) *released_out = 1;
     /* Coalesce adjacent free blocks so content lease churn cannot fragment
      * the fixed shared arena over a long-lived mount. */
     offset = mount->shared_arena_offset;
@@ -1006,8 +1034,13 @@ static void rinfs_mount_runtime_free(RinFS_Mount* mount, void* pointer) {
         uint64_t next_offset;
         if (block->magic != RINFS_SHARED_HEAP_MAGIC ||
             block->total_bytes < header_bytes ||
-            block->total_bytes > mount->shared_mapping_size - offset)
+            block->total_bytes > mount->shared_mapping_size - offset ||
+            (block->total_bytes &
+             (RINFS_SHARED_HEAP_ALIGNMENT - 1u)) != 0u ||
+            block->is_free > 1u || block->reserved != 0u) {
+            error = RINFS_ERR_CORRUPT;
             break;
+        }
         next_offset = offset + block->total_bytes;
         if (block->is_free && next_offset < mount->shared_mapping_size) {
             RinFS_SharedHeapBlock* next =
@@ -1015,8 +1048,13 @@ static void rinfs_mount_runtime_free(RinFS_Mount* mount, void* pointer) {
                                         (size_t)next_offset);
             if (next->magic != RINFS_SHARED_HEAP_MAGIC ||
                 next->total_bytes < header_bytes ||
-                next->total_bytes > mount->shared_mapping_size - next_offset)
+                next->total_bytes > mount->shared_mapping_size - next_offset ||
+                (next->total_bytes &
+                 (RINFS_SHARED_HEAP_ALIGNMENT - 1u)) != 0u ||
+                next->is_free > 1u || next->reserved != 0u) {
+                error = RINFS_ERR_CORRUPT;
                 break;
+            }
             if (next->is_free) {
                 block->total_bytes += next->total_bytes;
                 continue;
@@ -1024,7 +1062,22 @@ static void rinfs_mount_runtime_free(RinFS_Mount* mount, void* pointer) {
         }
         offset = next_offset;
     }
-    rinfs_shared_heap_unlock(mount);
+    if (error != RINFS_OK) {
+        mount->shared_arena_recovery_failed = 1u;
+        mount->readonly = 1;
+    }
+    rinfs_keep_first_error(&error, rinfs_shared_heap_unlock(mount));
+    if (error != RINFS_OK) {
+        mount->shared_arena_recovery_failed = 1u;
+        mount->readonly = 1;
+    }
+    return error;
+
+corrupt_locked:
+    mount->shared_arena_recovery_failed = 1u;
+    mount->readonly = 1;
+    rinfs_keep_first_error(&error, rinfs_shared_heap_unlock(mount));
+    return error;
 }
 
 typedef struct RinFS_DeleteOnClosePath {
@@ -1871,6 +1924,13 @@ static int64_t rinfs_content_unlock_status(int64_t operation_error,
         (unlock_error != RINFS_ERR_ROFS || operation_error >= RINFS_OK))
         return unlock_error;
     return operation_error;
+}
+
+static int64_t rinfs_mount_runtime_free_status(RinFS_Mount* mount,
+                                              void* pointer,
+                                              int64_t operation_error) {
+    int free_error = rinfs_mount_runtime_free(mount, pointer, NULL);
+    return free_error != RINFS_OK ? free_error : operation_error;
 }
 
 typedef enum {
@@ -6058,6 +6118,7 @@ static int rinfs_shared_owner_reap_locked(RinFS_Mount* mount) {
 
 static int rinfs_shared_owner_reap(RinFS_Mount* mount) {
     int content_unlock_error = RINFS_OK;
+    int free_error = RINFS_OK;
     RinFS_ContentLeaseNode* free_list = NULL;
     int result;
     if (!mount) return rinfs_content_unlock_status((RINFS_ERR_INVAL), content_unlock_error);
@@ -6091,10 +6152,14 @@ static int rinfs_shared_owner_reap(RinFS_Mount* mount) {
     rinfs_keep_first_error(&content_unlock_error, rinfs_shared_content_unlock(mount));
     while (free_list) {
         RinFS_ContentLeaseNode* next = free_list->next;
-        rinfs_mount_runtime_free(mount, free_list);
+        rinfs_keep_first_error(
+            &free_error,
+            rinfs_mount_runtime_free(mount, free_list, NULL));
         free_list = next;
     }
-    return rinfs_content_unlock_status((result), content_unlock_error);
+    return rinfs_content_unlock_status(
+        rinfs_content_unlock_status(result, content_unlock_error),
+        free_error);
 }
 
 static int rinfs_content_lease_acquire(RinFS_Mount* mount, uint64_t ino,
@@ -6123,26 +6188,31 @@ static int rinfs_content_lease_acquire(RinFS_Mount* mount, uint64_t ino,
     {
         int content_lock_error = rinfs_shared_content_lock(mount);
         if (content_lock_error != RINFS_OK) {
-            if (candidate)
-                rinfs_mount_runtime_free(mount, candidate);
-            return rinfs_content_unlock_status((content_lock_error), content_unlock_error);
+            return rinfs_mount_runtime_free_status(
+                mount, candidate, content_lock_error);
         }
     }
     if (!mount->mounted) {
         rinfs_keep_first_error(&content_unlock_error, rinfs_shared_content_unlock(mount));
-        rinfs_mount_runtime_free(mount, candidate);
-        return rinfs_content_unlock_status((RINFS_ERR_INVAL), content_unlock_error);
+        return rinfs_mount_runtime_free_status(
+            mount, candidate,
+            rinfs_content_unlock_status(RINFS_ERR_INVAL,
+                                        content_unlock_error));
     }
     if (mount->content_lease_closing != 0u) {
         rinfs_keep_first_error(&content_unlock_error, rinfs_shared_content_unlock(mount));
-        rinfs_mount_runtime_free(mount, candidate);
-        return rinfs_content_unlock_status((RINFS_ERR_BUSY), content_unlock_error);
+        return rinfs_mount_runtime_free_status(
+            mount, candidate,
+            rinfs_content_unlock_status(RINFS_ERR_BUSY,
+                                        content_unlock_error));
     }
     reap_result = rinfs_shared_owner_reap_locked(mount);
     if (reap_result != RINFS_OK) {
         rinfs_keep_first_error(&content_unlock_error, rinfs_shared_content_unlock(mount));
-        rinfs_mount_runtime_free(mount, candidate);
-        return rinfs_content_unlock_status((reap_result), content_unlock_error);
+        return rinfs_mount_runtime_free_status(
+            mount, candidate,
+            rinfs_content_unlock_status(reap_result,
+                                        content_unlock_error));
     }
     node = rinfs_content_lease_find(mount, ino, inode_generation);
     if (node == NULL) {
@@ -6152,8 +6222,10 @@ static int rinfs_content_lease_acquire(RinFS_Mount* mount, uint64_t ino,
          * mount; existing nodes remain usable and can still drain normally. */
         if (mount->content_lease_generation == UINT64_MAX) {
             rinfs_keep_first_error(&content_unlock_error, rinfs_shared_content_unlock(mount));
-            rinfs_mount_runtime_free(mount, candidate);
-            return rinfs_content_unlock_status((RINFS_ERR_OVERFLOW), content_unlock_error);
+            return rinfs_mount_runtime_free_status(
+                mount, candidate,
+                rinfs_content_unlock_status(RINFS_ERR_OVERFLOW,
+                                            content_unlock_error));
         }
         candidate->token_generation = ++mount->content_lease_generation;
         candidate->next = (RinFS_ContentLeaseNode*)mount->content_leases;
@@ -6171,8 +6243,10 @@ static int rinfs_content_lease_acquire(RinFS_Mount* mount, uint64_t ino,
           (!writer && node->shared_waiting_readers[shared_owner_row - 1u] ==
                           UINT32_MAX)))) {
         rinfs_keep_first_error(&content_unlock_error, rinfs_shared_content_unlock(mount));
-        if (candidate) rinfs_mount_runtime_free(mount, candidate);
-        return rinfs_content_unlock_status((RINFS_ERR_OVERFLOW), content_unlock_error);
+        return rinfs_mount_runtime_free_status(
+            mount, candidate,
+            rinfs_content_unlock_status(RINFS_ERR_OVERFLOW,
+                                        content_unlock_error));
     }
     node->references++;
     if (writer) {
@@ -6215,17 +6289,18 @@ static int rinfs_content_lease_acquire(RinFS_Mount* mount, uint64_t ino,
             *node_out = node;
             *token_out = node->token_generation;
             rinfs_keep_first_error(&content_unlock_error, rinfs_shared_content_unlock(mount));
-            if (candidate) rinfs_mount_runtime_free(mount, candidate);
-            return rinfs_content_unlock_status((RINFS_OK), content_unlock_error);
+            return rinfs_mount_runtime_free_status(
+                mount, candidate,
+                rinfs_content_unlock_status(RINFS_OK,
+                                            content_unlock_error));
         }
         rinfs_keep_first_error(&content_unlock_error, rinfs_shared_content_unlock(mount));
         __asm__ volatile("pause");
         {
             int content_lock_error = rinfs_shared_content_lock(mount);
             if (content_lock_error != RINFS_OK) {
-                if (candidate)
-                    rinfs_mount_runtime_free(mount, candidate);
-                return rinfs_content_unlock_status((content_lock_error), content_unlock_error);
+                return rinfs_mount_runtime_free_status(
+                    mount, candidate, content_lock_error);
             }
         }
     }
@@ -6309,8 +6384,9 @@ static int rinfs_content_lease_release(RinFS_Mount* mount, uint64_t ino,
         mount->readonly = 1;
         return err;
     }
-    if (free_node) rinfs_mount_runtime_free(mount, node);
-    return RINFS_OK;
+    return free_node
+        ? (int)rinfs_mount_runtime_free_status(mount, node, RINFS_OK)
+        : RINFS_OK;
 }
 
 static int rinfs_content_pin_acquire(RinFS_Mount* mount, uint64_t ino,
@@ -6608,7 +6684,10 @@ static int rinfs_content_pin_release(RinFS_Mount* mount, uint64_t ino,
     rinfs_keep_first_error(&content_unlock_error, rinfs_shared_content_unlock(mount));
     if (exact_close)
         rinfs_spin_unlock(&g_rinfs_close_reference_lock);
-    if (free_node) rinfs_mount_runtime_free(mount, node);
+    if (free_node)
+        rinfs_keep_first_error(
+            &content_unlock_error,
+            rinfs_mount_runtime_free(mount, node, NULL));
     return rinfs_content_unlock_status((RINFS_OK), content_unlock_error);
 }
 
@@ -7132,7 +7211,10 @@ static int rinfs_close_ref_finish(
     rinfs_close_ref_integrity_update();
     rinfs_keep_first_error(&content_unlock_error, rinfs_shared_content_unlock(mount));
     rinfs_spin_unlock(&g_rinfs_close_reference_lock);
-    if (free_node) rinfs_mount_runtime_free(mount, node);
+    if (free_node)
+        rinfs_keep_first_error(
+            &content_unlock_error,
+            rinfs_mount_runtime_free(mount, node, NULL));
     return rinfs_content_unlock_status((RINFS_OK), content_unlock_error);
 }
 
@@ -14273,8 +14355,10 @@ static int rinfs_directory_link_counts_recover(RinFS_Mount* mount) {
     return RINFS_OK;
 }
 
-static void rinfs_mount_free_runtime_buffers(RinFS_Mount* mount) {
-    if (!mount) return;
+static int rinfs_mount_free_runtime_buffers(RinFS_Mount* mount) {
+    int released;
+    int error;
+    if (!mount) return RINFS_ERR_INVAL;
     if (mount->page_cache) {
 #if defined(RIN_KERNEL) && defined(RIN_FREESTANDING) && defined(__x86_64__)
         for (uint32_t index = 0u; index < RINFS_PAGE_CACHE_CAPACITY; ++index)
@@ -14282,38 +14366,60 @@ static void rinfs_mount_free_runtime_buffers(RinFS_Mount* mount) {
                 &mount->page_cache->entries[index]);
 #endif
         if (mount->page_cache->storage) {
-            rinfs_mount_runtime_free(mount, mount->page_cache->storage);
-            mount->page_cache->storage = NULL;
+            error = rinfs_mount_runtime_free(
+                mount, mount->page_cache->storage, &released);
+            if (released) mount->page_cache->storage = NULL;
+            if (error != RINFS_OK) return error;
         }
-        rinfs_mount_runtime_free(mount, mount->page_cache);
-        mount->page_cache = NULL;
+        error = rinfs_mount_runtime_free(mount, mount->page_cache,
+                                         &released);
+        if (released) mount->page_cache = NULL;
+        if (error != RINFS_OK) return error;
     }
     if (mount->dentry_cache) {
-        rinfs_mount_runtime_free(mount, mount->dentry_cache);
-        mount->dentry_cache = NULL;
+        error = rinfs_mount_runtime_free(mount, mount->dentry_cache,
+                                         &released);
+        if (released) mount->dentry_cache = NULL;
+        if (error != RINFS_OK) return error;
     }
     if (mount->directory_index) {
-        rinfs_mount_runtime_free(mount, mount->directory_index);
-        mount->directory_index = NULL;
+        error = rinfs_mount_runtime_free(mount, mount->directory_index,
+                                         &released);
+        if (released) mount->directory_index = NULL;
+        if (error != RINFS_OK) return error;
     }
     if (mount->inode_cache) {
-        rinfs_mount_runtime_free(mount, mount->inode_cache);
-        mount->inode_cache = NULL;
+        error = rinfs_mount_runtime_free(mount, mount->inode_cache,
+                                         &released);
+        if (released) mount->inode_cache = NULL;
+        if (error != RINFS_OK) return error;
     }
     if (mount->shared_inode_table_recovery_logs) {
-        rinfs_mount_runtime_free(
-            mount, mount->shared_inode_table_recovery_logs);
-        mount->shared_inode_table_recovery_logs = NULL;
+        error = rinfs_mount_runtime_free(
+            mount, mount->shared_inode_table_recovery_logs, &released);
+        if (released) mount->shared_inode_table_recovery_logs = NULL;
+        if (error != RINFS_OK) return error;
     }
     if (mount->shared_allocation_recovery_logs) {
-        rinfs_mount_runtime_free(
-            mount, mount->shared_allocation_recovery_logs);
-        mount->shared_allocation_recovery_logs = NULL;
+        error = rinfs_mount_runtime_free(
+            mount, mount->shared_allocation_recovery_logs, &released);
+        if (released) mount->shared_allocation_recovery_logs = NULL;
+        if (error != RINFS_OK) return error;
     }
     if (mount->block_buffer) {
-        rinfs_mount_runtime_free(mount, mount->block_buffer);
-        mount->block_buffer = NULL;
+        error = rinfs_mount_runtime_free(mount, mount->block_buffer,
+                                         &released);
+        if (released) mount->block_buffer = NULL;
+        if (error != RINFS_OK) return error;
     }
+    return RINFS_OK;
+}
+
+static int rinfs_mount_abort_with_cleanup(RinFS_Mount* mount,
+                                         int operation_error) {
+    int cleanup_error = rinfs_mount_free_runtime_buffers(mount);
+    if (mount) mount->mounted = 0;
+    return cleanup_error != RINFS_OK ? cleanup_error : operation_error;
 }
 
 /* A successful owner-ledger drain should also leave no pinned or transitional
@@ -14602,8 +14708,7 @@ static int rinfs_mount_sized_io_unleased(
             rinfs_mount_runtime_alloc(mount, recovery_bytes,
                                       &allocation_error);
         if (!mount->shared_inode_table_recovery_logs) {
-            rinfs_mount_free_runtime_buffers(mount);
-            return allocation_error;
+            return rinfs_mount_abort_with_cleanup(mount, allocation_error);
         }
         rinfs_memset(mount->shared_inode_table_recovery_logs, 0,
                      (uint32_t)recovery_bytes);
@@ -14611,8 +14716,7 @@ static int rinfs_mount_sized_io_unleased(
             mount, sizeof(RinFS_AllocatorRecoveryLog) * 2u,
             &allocation_error);
         if (!mount->shared_allocation_recovery_logs) {
-            rinfs_mount_free_runtime_buffers(mount);
-            return allocation_error;
+            return rinfs_mount_abort_with_cleanup(mount, allocation_error);
         }
         rinfs_memset(mount->shared_allocation_recovery_logs, 0,
                      (uint32_t)(sizeof(RinFS_AllocatorRecoveryLog) * 2u));
@@ -14623,8 +14727,7 @@ static int rinfs_mount_sized_io_unleased(
         mount,
         sizeof(RinFS_DentryCache), &allocation_error);
     if (!mount->dentry_cache && allocation_error != RINFS_ERR_NOMEM) {
-        rinfs_mount_free_runtime_buffers(mount);
-        return allocation_error;
+        return rinfs_mount_abort_with_cleanup(mount, allocation_error);
     }
     if (mount->dentry_cache)
         rinfs_memset(mount->dentry_cache, 0, sizeof(RinFS_DentryCache));
@@ -14632,8 +14735,7 @@ static int rinfs_mount_sized_io_unleased(
         mount,
         sizeof(RinFS_DirectoryIndex), &allocation_error);
     if (!mount->directory_index && allocation_error != RINFS_ERR_NOMEM) {
-        rinfs_mount_free_runtime_buffers(mount);
-        return allocation_error;
+        return rinfs_mount_abort_with_cleanup(mount, allocation_error);
     }
     if (mount->directory_index)
         rinfs_memset(mount->directory_index, 0,
@@ -14642,8 +14744,7 @@ static int rinfs_mount_sized_io_unleased(
         mount,
         sizeof(RinFS_InodeCache), &allocation_error);
     if (!mount->inode_cache && allocation_error != RINFS_ERR_NOMEM) {
-        rinfs_mount_free_runtime_buffers(mount);
-        return allocation_error;
+        return rinfs_mount_abort_with_cleanup(mount, allocation_error);
     }
     if (mount->inode_cache)
         rinfs_memset(mount->inode_cache, 0, sizeof(RinFS_InodeCache));
@@ -14654,8 +14755,8 @@ static int rinfs_mount_sized_io_unleased(
         size_t mapped_reference_bytes;
         if ((size_t)RINFS_PAGE_CACHE_CAPACITY >
             ((size_t)-1) / sizeof(uint32_t)) {
-            rinfs_mount_free_runtime_buffers(mount);
-            return RINFS_ERR_OVERFLOW;
+            return rinfs_mount_abort_with_cleanup(mount,
+                                                  RINFS_ERR_OVERFLOW);
         }
         mapped_reference_bytes =
             (size_t)RINFS_PAGE_CACHE_CAPACITY * sizeof(uint32_t);
@@ -14663,8 +14764,7 @@ static int rinfs_mount_sized_io_unleased(
             mount,
             sizeof(RinFS_PageCache), &allocation_error);
         if (!mount->page_cache) {
-            rinfs_mount_free_runtime_buffers(mount);
-            return allocation_error;
+            return rinfs_mount_abort_with_cleanup(mount, allocation_error);
         }
         rinfs_memset(mount->page_cache, 0, sizeof(RinFS_PageCache));
         mount->page_cache->owner_mount = mount;
@@ -14680,8 +14780,7 @@ static int rinfs_mount_sized_io_unleased(
             mount,
             mapped_reference_bytes, &allocation_error);
         if (!mount->page_cache->storage) {
-            rinfs_mount_free_runtime_buffers(mount);
-            return allocation_error;
+            return rinfs_mount_abort_with_cleanup(mount, allocation_error);
         }
         rinfs_memset(mount->page_cache->storage, 0,
                      mapped_reference_bytes);
@@ -14691,8 +14790,8 @@ static int rinfs_mount_sized_io_unleased(
         for (index = 0u; index < RINFS_PAGE_CACHE_CAPACITY; ++index) {
             uint64_t physical = platform_pmm_alloc_file_cache_page();
             if (physical == 0u) {
-                rinfs_mount_free_runtime_buffers(mount);
-                return RINFS_ERR_NOMEM;
+                return rinfs_mount_abort_with_cleanup(mount,
+                                                      RINFS_ERR_NOMEM);
             }
             mount->page_cache->entries[index].physical_address = physical;
             mount->page_cache->entries[index].data =
@@ -14707,8 +14806,8 @@ static int rinfs_mount_sized_io_unleased(
             (size_t)RINFS_PAGE_CACHE_CAPACITY *
                     RINFS_PAGE_CACHE_PAGE_SIZE >
                 ((size_t)-1) - mapped_reference_bytes) {
-            rinfs_mount_free_runtime_buffers(mount);
-            return RINFS_ERR_OVERFLOW;
+            return rinfs_mount_abort_with_cleanup(mount,
+                                                  RINFS_ERR_OVERFLOW);
         }
         page_storage_bytes = (size_t)RINFS_PAGE_CACHE_CAPACITY *
                              RINFS_PAGE_CACHE_PAGE_SIZE;
@@ -14717,8 +14816,7 @@ static int rinfs_mount_sized_io_unleased(
             mapped_reference_bytes + page_storage_bytes,
             &allocation_error);
         if (!mount->page_cache->storage) {
-            rinfs_mount_free_runtime_buffers(mount);
-            return allocation_error;
+            return rinfs_mount_abort_with_cleanup(mount, allocation_error);
         }
         rinfs_memset(mount->page_cache->storage, 0,
                      mapped_reference_bytes);
@@ -14751,9 +14849,7 @@ static int rinfs_mount_sized_io_unleased(
                 check_err == RINFS_ERR_CORRUPT) {
                 rinfs_debug("[RinFS] Rescue mount tolerating allocation metadata damage\n");
             } else {
-                rinfs_mount_free_runtime_buffers(mount);
-                mount->mounted = 0;
-                return check_err;
+                return rinfs_mount_abort_with_cleanup(mount, check_err);
             }
         }
         if (scheduled_check && !mount->readonly) mount->sb.s_mount_count = 0;
@@ -14768,9 +14864,7 @@ static int rinfs_mount_sized_io_unleased(
             recovery_err == RINFS_ERR_ROFS) {
             rinfs_debug("[RinFS] Rescue mount leaving rename intent unreplayed\n");
         } else {
-            rinfs_mount_free_runtime_buffers(mount);
-            mount->mounted = 0;
-            return recovery_err;
+            return rinfs_mount_abort_with_cleanup(mount, recovery_err);
         }
     }
 
@@ -14779,22 +14873,17 @@ static int rinfs_mount_sized_io_unleased(
         if (orphan_err != RINFS_OK) {
             if ((flags & RINFS_MNT_RDONLY) != 0 &&
                 orphan_err == RINFS_ERR_ROFS) {
-                rinfs_mount_free_runtime_buffers(mount);
-                mount->mounted = 0;
-                return orphan_err;
+                return rinfs_mount_abort_with_cleanup(mount, orphan_err);
             }
-            rinfs_mount_free_runtime_buffers(mount);
-            mount->mounted = 0;
-            return orphan_err;
+            return rinfs_mount_abort_with_cleanup(mount, orphan_err);
         }
         if (!was_clean || scheduled_check ||
             (flags & RINFS_MNT_REPAIR) != 0u) {
             int link_recovery_err =
                 rinfs_directory_link_counts_recover(mount);
             if (link_recovery_err != RINFS_OK) {
-                rinfs_mount_free_runtime_buffers(mount);
-                mount->mounted = 0;
-                return link_recovery_err;
+                return rinfs_mount_abort_with_cleanup(
+                    mount, link_recovery_err);
             }
         }
     }
@@ -14806,9 +14895,7 @@ static int rinfs_mount_sized_io_unleased(
     {
         int restore_err = rinfs_restore_transaction_mount_recover(mount);
         if (restore_err != RINFS_OK) {
-            rinfs_mount_free_runtime_buffers(mount);
-            mount->mounted = 0;
-            return restore_err;
+            return rinfs_mount_abort_with_cleanup(mount, restore_err);
         }
     }
 
@@ -14826,9 +14913,7 @@ static int rinfs_mount_sized_io_unleased(
                 mount, RINFS_FULL_REPAIR_ALL_SAFE, &full_report);
         }
         if (full_err != RINFS_OK) {
-            rinfs_mount_free_runtime_buffers(mount);
-            mount->mounted = 0;
-            return full_err;
+            return rinfs_mount_abort_with_cleanup(mount, full_err);
         }
         if (structural_repair_required &&
             (flags & RINFS_MNT_REPAIR) != 0) {
@@ -14850,9 +14935,7 @@ static int rinfs_mount_sized_io_unleased(
         int err = superblock_writeback(mount);
         if (err == RINFS_OK) err = disk_flush(mount);
         if (err != RINFS_OK) {
-            rinfs_mount_free_runtime_buffers(mount);
-            mount->mounted = 0;
-            return err;
+            return rinfs_mount_abort_with_cleanup(mount, err);
         }
     }
 
@@ -14864,17 +14947,13 @@ static int rinfs_mount_sized_io_unleased(
         int delete_recovery = rinfs_delete_on_close_recover(mount);
         if (delete_recovery != RINFS_OK) {
             (void)rinfs_delete_on_close_discard_recovered(mount);
-            rinfs_mount_free_runtime_buffers(mount);
-            mount->mounted = 0;
-            return delete_recovery;
+            return rinfs_mount_abort_with_cleanup(mount, delete_recovery);
         }
         if (!mount->readonly && (flags & RINFS_MNT_RESCUE) == 0u) {
             int delete_result = rinfs_delete_on_close_reap(mount);
             if (delete_result == RINFS_ERR_CORRUPT) {
                 (void)rinfs_delete_on_close_discard_recovered(mount);
-                rinfs_mount_free_runtime_buffers(mount);
-                mount->mounted = 0;
-                return delete_result;
+                return rinfs_mount_abort_with_cleanup(mount, delete_result);
             }
         }
     }
@@ -15981,7 +16060,10 @@ static int rinfs_abandon_dirty_mount_core(RinFS_Mount* mount) {
      * any partially completed operation on the next mount. */
     int quiescent_err = rinfs_mount_page_cache_quiescent(mount, 1);
     if (quiescent_err != RINFS_OK) return rinfs_content_unlock_status((quiescent_err), content_unlock_error);
-    rinfs_mount_free_runtime_buffers(mount);
+    int free_error = rinfs_mount_free_runtime_buffers(mount);
+    if (free_error != RINFS_OK)
+        return rinfs_content_unlock_status(free_error,
+                                           content_unlock_error);
     mount->mounted = 0;
     return rinfs_content_unlock_status((rinfs_mount_external_lease_end(mount)), content_unlock_error);
 }
@@ -16173,7 +16255,10 @@ static int rinfs_unmount_core(RinFS_Mount* mount) {
     
     int quiescent_err = rinfs_mount_page_cache_quiescent(mount, 0);
     if (quiescent_err != RINFS_OK) return rinfs_content_unlock_status((quiescent_err), content_unlock_error);
-    rinfs_mount_free_runtime_buffers(mount);
+    int free_error = rinfs_mount_free_runtime_buffers(mount);
+    if (free_error != RINFS_OK)
+        return rinfs_content_unlock_status(free_error,
+                                           content_unlock_error);
     
     mount->mounted = 0;
     rinfs_debug("[RinFS] Unmounted\n");
@@ -20436,21 +20521,18 @@ int rinfs_delete_on_close_register(RinFS_Mount* mount,
      * identity checking and publishing the pending owner. */
     result = rinfs_journal_transaction_lock(mount);
     if (result != RINFS_OK) {
-        rinfs_mount_runtime_free(mount, pending);
-        return rinfs_content_unlock_status((result), content_unlock_error);
+        return rinfs_mount_runtime_free_status(mount, pending, result);
     }
     if (mount->readonly) {
         result = rinfs_journal_transaction_unlock_status(
             mount, RINFS_ERR_ROFS);
-        rinfs_mount_runtime_free(mount, pending);
-        return rinfs_content_unlock_status((result), content_unlock_error);
+        return rinfs_mount_runtime_free_status(mount, pending, result);
     }
     result = rinfs_content_lease_acquire(
         mount, target_ino, target_generation, 1, &lease, &lease_token);
     if (result != RINFS_OK) {
         result = rinfs_journal_transaction_unlock_status(mount, result);
-        rinfs_mount_runtime_free(mount, pending);
-        return rinfs_content_unlock_status((result), content_unlock_error);
+        return rinfs_mount_runtime_free_status(mount, pending, result);
     }
     result = rinfs_inode_read(mount, parent_ino, &parent_inode);
     if (result != RINFS_OK || parent_inode.i_generation != parent_generation ||
@@ -20543,7 +20625,10 @@ int rinfs_delete_on_close_register(RinFS_Mount* mount,
 done:
     rinfs_keep_first_error(&content_unlock_error, rinfs_content_lease_release(mount, target_ino, target_generation,
                                 lease_token, 1));
-    if (pending) rinfs_mount_runtime_free(mount, pending);
+    if (pending)
+        rinfs_keep_first_error(
+            &content_unlock_error,
+            rinfs_mount_runtime_free(mount, pending, NULL));
     return rinfs_content_unlock_status((rinfs_journal_transaction_unlock_status(mount, result)), content_unlock_error);
 }
 
@@ -20682,6 +20767,7 @@ static int rinfs_delete_on_close_reap_inode(RinFS_Mount* mount,
     int satisfied;
     int removed;
     int free_lease;
+    int free_error;
 
     for (;;) {
         free_lease = 0;
@@ -20799,8 +20885,11 @@ static int rinfs_delete_on_close_reap_inode(RinFS_Mount* mount,
             }
         }
         rinfs_keep_first_error(&content_unlock_error, rinfs_shared_content_unlock(mount));
-        rinfs_mount_runtime_free(mount, pending);
-        if (free_lease) rinfs_mount_runtime_free(mount, lease);
+        free_error = rinfs_mount_runtime_free(mount, pending, NULL);
+        if (free_lease)
+            rinfs_keep_first_error(
+                &free_error,
+                rinfs_mount_runtime_free(mount, lease, NULL));
 #if defined(RIN_KERNEL)
         if (removed && path[0] == '/')
             platform_rinfs_delete_on_close_notify(path, directory != 0u);
@@ -20808,6 +20897,9 @@ static int rinfs_delete_on_close_reap_inode(RinFS_Mount* mount,
         (void)path;
         (void)removed;
 #endif
+        if (free_error != RINFS_OK)
+            return rinfs_content_unlock_status(free_error,
+                                               content_unlock_error);
         if (result == RINFS_ERR_CORRUPT) return rinfs_content_unlock_status((result), content_unlock_error);
     }
 }
@@ -20868,6 +20960,7 @@ static int rinfs_delete_on_close_recover_entry(
     uint32_t name_length;
     int inserted = 0;
     int result;
+    int free_error;
     int allocation_error = RINFS_OK;
 
     if (!mount || !entry || !target_inode || entry->d_inode == 0u ||
@@ -20899,16 +20992,17 @@ static int rinfs_delete_on_close_recover_entry(
         mount, target_ino, target_inode->i_generation, 1,
         &lease, &lease_token);
     if (result != RINFS_OK) {
-        rinfs_mount_runtime_free(mount, pending);
-        return rinfs_content_unlock_status((result), content_unlock_error);
+        return rinfs_mount_runtime_free_status(mount, pending, result);
     }
     {
         int content_lock_error = rinfs_shared_content_lock(mount);
         if (content_lock_error != RINFS_OK) {
             rinfs_keep_first_error(&content_unlock_error, rinfs_content_lease_release(
                 mount, target_ino, target_inode->i_generation, lease_token, 1));
-            rinfs_mount_runtime_free(mount, pending);
-            return rinfs_content_unlock_status((content_lock_error), content_unlock_error);
+            return rinfs_mount_runtime_free_status(
+                mount, pending,
+                rinfs_content_unlock_status(content_lock_error,
+                                            content_unlock_error));
         }
     }
     lease =
@@ -20942,7 +21036,10 @@ static int rinfs_delete_on_close_recover_entry(
     rinfs_keep_first_error(&content_unlock_error, rinfs_content_lease_release(mount, target_ino,
                                 target_inode->i_generation,
                                 lease_token, 1));
-    if (!inserted) rinfs_mount_runtime_free(mount, pending);
+    if (!inserted) {
+        free_error = rinfs_mount_runtime_free(mount, pending, NULL);
+        rinfs_keep_first_error(&content_unlock_error, free_error);
+    }
     return rinfs_content_unlock_status((result), content_unlock_error);
 }
 
@@ -21091,6 +21188,7 @@ done:
 
 static int rinfs_delete_on_close_discard_recovered(RinFS_Mount* mount) {
     int content_unlock_error = RINFS_OK;
+    int free_error = RINFS_OK;
     if (!mount) return rinfs_content_unlock_status((RINFS_ERR_INVAL), content_unlock_error);
     {
         int reap_result = rinfs_shared_owner_reap(mount);
@@ -21132,10 +21230,16 @@ static int rinfs_delete_on_close_discard_recovered(RinFS_Mount* mount) {
         if (!lease) return rinfs_content_unlock_status((RINFS_OK), content_unlock_error);
         while (paths) {
             RinFS_DeleteOnClosePath* next = paths->next;
-            rinfs_mount_runtime_free(mount, paths);
+            rinfs_keep_first_error(
+                &free_error,
+                rinfs_mount_runtime_free(mount, paths, NULL));
             paths = next;
         }
-        rinfs_mount_runtime_free(mount, lease);
+        rinfs_keep_first_error(
+            &free_error, rinfs_mount_runtime_free(mount, lease, NULL));
+        if (free_error != RINFS_OK)
+            return rinfs_content_unlock_status(free_error,
+                                               content_unlock_error);
     }
 }
 
