@@ -16294,6 +16294,10 @@ _Static_assert(RINFS_SHARED_OWNER_LEDGER_OFFSET <=
                        RINFS_SHARED_OWNER_LEDGER_OFFSET,
                "shared RinFS owner ledger exceeds its SHM mapping");
 #define RINFS_SHARED_MOUNT_REGISTRY_CAPACITY 64u
+#define RINFS_SHARED_MOUNT_REGISTRY_OPEN 0u
+#define RINFS_SHARED_MOUNT_REGISTRY_UNMOUNTING 1u
+#define RINFS_SHARED_MOUNT_REGISTRY_DETACH_RETRY 2u
+#define RINFS_SHARED_MOUNT_REGISTRY_FINAL_DETACH_RETRY 3u
 static volatile uint32_t g_rinfs_shared_mount_name_sequence = 1u;
 static volatile uint32_t g_rinfs_shared_mount_registry_lock;
 static volatile uint32_t g_rinfs_shared_mount_fork_prepared;
@@ -16551,6 +16555,8 @@ static int rinfs_shared_mount_registry_acquire_exact(
         if (mount->shared_mapping_base != (void*)mount ||
             mount->shared_mount_ready == 0u || mount->mounted == 0 ||
             mount->shared_lease_released != 0u ||
+            mount->shared_close_started != 0u ||
+            mount->content_lease_closing != 0u ||
             g_rinfs_shared_mount_registry_closing[index] != 0u ||
             g_rinfs_shared_mount_registry_references[index] == 0u ||
             g_rinfs_shared_mount_registry_references[index] == UINT32_MAX) {
@@ -16566,16 +16572,32 @@ static int rinfs_shared_mount_registry_acquire_exact(
     return 0;
 }
 
-/* Claim the final local unmount so duplicate/concurrent calls cannot tear
- * down the same mapping. Return 1 for a released alias, 2 for a final claim,
- * 0 for a mount outside this registry, and -1 for a busy claim. */
+/* Claim a local unmount so duplicate/concurrent calls cannot tear down the
+ * same mapping. Return 1 for a released alias, 2 for a fresh claim, 3 for a
+ * nonfinal-owner detach retry, 4 for a final-owner cleanup retry, 0 for a
+ * mount outside this registry, and -1 for a busy claim. */
 static int rinfs_shared_mount_registry_claim_unmount(RinFS_Mount* mount) {
     if (!mount) return 0;
     rinfs_shared_mount_registry_lock();
     for (uint32_t index = 0u;
          index < RINFS_SHARED_MOUNT_REGISTRY_CAPACITY; ++index) {
         if (g_rinfs_shared_mount_registry[index] != mount) continue;
-        if (g_rinfs_shared_mount_registry_closing[index] != 0u) {
+        if (g_rinfs_shared_mount_registry_closing[index] ==
+            RINFS_SHARED_MOUNT_REGISTRY_DETACH_RETRY) {
+            g_rinfs_shared_mount_registry_closing[index] =
+                RINFS_SHARED_MOUNT_REGISTRY_UNMOUNTING;
+            rinfs_shared_mount_registry_unlock();
+            return 3;
+        }
+        if (g_rinfs_shared_mount_registry_closing[index] ==
+            RINFS_SHARED_MOUNT_REGISTRY_FINAL_DETACH_RETRY) {
+            g_rinfs_shared_mount_registry_closing[index] =
+                RINFS_SHARED_MOUNT_REGISTRY_UNMOUNTING;
+            rinfs_shared_mount_registry_unlock();
+            return 4;
+        }
+        if (g_rinfs_shared_mount_registry_closing[index] !=
+            RINFS_SHARED_MOUNT_REGISTRY_OPEN) {
             rinfs_shared_mount_registry_unlock();
             return -1;
         }
@@ -16588,7 +16610,8 @@ static int rinfs_shared_mount_registry_claim_unmount(RinFS_Mount* mount) {
             rinfs_shared_mount_registry_unlock();
             return 1;
         }
-        g_rinfs_shared_mount_registry_closing[index] = 1u;
+        g_rinfs_shared_mount_registry_closing[index] =
+            RINFS_SHARED_MOUNT_REGISTRY_UNMOUNTING;
         rinfs_shared_mount_registry_unlock();
         return 2;
     }
@@ -16602,8 +16625,30 @@ static void rinfs_shared_mount_registry_unclaim_unmount(
     rinfs_shared_mount_registry_lock();
     for (uint32_t index = 0u;
          index < RINFS_SHARED_MOUNT_REGISTRY_CAPACITY; ++index) {
-        if (g_rinfs_shared_mount_registry[index] == mount)
-            g_rinfs_shared_mount_registry_closing[index] = 0u;
+        if (g_rinfs_shared_mount_registry[index] == mount &&
+            g_rinfs_shared_mount_registry_closing[index] ==
+                RINFS_SHARED_MOUNT_REGISTRY_UNMOUNTING)
+            g_rinfs_shared_mount_registry_closing[index] =
+                RINFS_SHARED_MOUNT_REGISTRY_OPEN;
+    }
+    rinfs_shared_mount_registry_unlock();
+}
+
+static void rinfs_shared_mount_registry_mark_detach_retry(
+    RinFS_Mount* mount, uint32_t retry_state) {
+    if (!mount ||
+        (retry_state != RINFS_SHARED_MOUNT_REGISTRY_DETACH_RETRY &&
+         retry_state != RINFS_SHARED_MOUNT_REGISTRY_FINAL_DETACH_RETRY))
+        return;
+    rinfs_shared_mount_registry_lock();
+    for (uint32_t index = 0u;
+         index < RINFS_SHARED_MOUNT_REGISTRY_CAPACITY; ++index) {
+        if (g_rinfs_shared_mount_registry[index] == mount &&
+            g_rinfs_shared_mount_registry_closing[index] ==
+                RINFS_SHARED_MOUNT_REGISTRY_UNMOUNTING) {
+            g_rinfs_shared_mount_registry_closing[index] = retry_state;
+            break;
+        }
     }
     rinfs_shared_mount_registry_unlock();
 }
@@ -17569,6 +17614,28 @@ int rinfs_unmount(RinFS_Mount* mount) {
 #if defined(RINFS_USERLAND_MOUNT_LEASES) && !defined(RIN_KERNEL)
     if (mount->shared_mapping_base) {
         int claim = rinfs_shared_mount_registry_claim_unmount(mount);
+        /* A nonfinal owner has already dropped its VFS lease. Its SHM mapping
+         * is still the shared cache used by other owners, so retry detach
+         * directly and never free the shared runtime buffers here. */
+        if (claim == 3) {
+            result = rinfs_shared_mount_release_local_mapping(mount);
+            if (result != RINFS_OK)
+                rinfs_shared_mount_registry_mark_detach_retry(
+                    mount, RINFS_SHARED_MOUNT_REGISTRY_DETACH_RETRY);
+            return result;
+        }
+        /* The final owner has already completed durable unmount. Retry any
+         * allocator cleanup left behind before detaching its private mapping. */
+        if (claim == 4) {
+            result = rinfs_mount_free_runtime_buffers(mount);
+            if (result == RINFS_OK)
+                result = rinfs_shared_mount_release_local_mapping(mount);
+            if (result != RINFS_OK)
+                rinfs_shared_mount_registry_mark_detach_retry(
+                    mount,
+                    RINFS_SHARED_MOUNT_REGISTRY_FINAL_DETACH_RETRY);
+            return result;
+        }
         if (claim == 1) return RINFS_OK;
         if (claim < 0) return RINFS_ERR_BUSY;
         registry_unmount_claimed = claim == 2;
@@ -17607,7 +17674,8 @@ int rinfs_unmount(RinFS_Mount* mount) {
             rinfs_restore_mount_teardown_end(mount, mount_epoch, 1);
             result = rinfs_shared_mount_release_local_mapping(mount);
             if (result != RINFS_OK && registry_unmount_claimed)
-                rinfs_shared_mount_registry_unclaim_unmount(mount);
+                rinfs_shared_mount_registry_mark_detach_retry(
+                    mount, RINFS_SHARED_MOUNT_REGISTRY_DETACH_RETRY);
             return result;
         }
     }
@@ -17618,7 +17686,11 @@ int rinfs_unmount(RinFS_Mount* mount) {
 #if defined(RINFS_USERLAND_MOUNT_LEASES) && !defined(RIN_KERNEL)
     if (result == RINFS_OK && mount->shared_mapping_base)
         result = rinfs_shared_mount_release_local_mapping(mount);
-    if (result != RINFS_OK && registry_unmount_claimed)
+    if (result != RINFS_OK && registry_unmount_claimed &&
+        mount->shared_lease_released != 0u && mount->mounted == 0)
+        rinfs_shared_mount_registry_mark_detach_retry(
+            mount, RINFS_SHARED_MOUNT_REGISTRY_FINAL_DETACH_RETRY);
+    else if (result != RINFS_OK && registry_unmount_claimed)
         rinfs_shared_mount_registry_unclaim_unmount(mount);
 #endif
     return result;
