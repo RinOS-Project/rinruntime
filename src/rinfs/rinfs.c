@@ -4675,6 +4675,13 @@ int rinfs_page_cache_mark_mapped_page_dirty(RinFS_Mount* mount,
     uint32_t index;
     if (!mount || !mount->page_cache || physical_address == 0u)
         return RINFS_ERR_NOENT;
+    /* A writable mmap fault reaches this entry before the writable PTE is
+     * published. Give retryable metadata/journal recovery a chance to finish
+     * before changing the shared dirty ledger. */
+    {
+        int prepare_error = rinfs_mount_prepare_write(mount);
+        if (prepare_error != RINFS_OK) return prepare_error;
+    }
     if (mount->readonly) return RINFS_ERR_ROFS;
     if (mount->sb.s_block_size != RINFS_PAGE_CACHE_PAGE_SIZE)
         return RINFS_ERR_NOT_SUPPORTED;
