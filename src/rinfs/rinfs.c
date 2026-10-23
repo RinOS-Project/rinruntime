@@ -2264,7 +2264,7 @@ static int rinfs_inode_table_recover_log_locked(
             rinfs_inode_table_log_header_checksum(log) ||
         log->checksum != rinfs_checksum(log->data, log->bytes) ||
         mount->sb.s_inode_size == 0u ||
-        mount->sb.s_block_size % mount->sb.s_inode_size != 0u)
+        mount->sb.s_block_size / mount->sb.s_inode_size == 0u)
         return rinfs_inode_table_recovery_fail(mount,
                                                RINFS_ERR_CORRUPT);
     if (rinfs_recovery_log_owner_token(
@@ -9700,8 +9700,10 @@ int rinfs_inode_read(RinFS_Mount* mount, uint64_t ino, RinFS_Inode* inode) {
      * cannot prove that an inode image has not changed behind this owner. */
     inode_size = mount->sb.s_inode_size;
     block_size = mount->sb.s_block_size;
-    if (inode_size == 0u || block_size % inode_size != 0u)
-        return RINFS_ERR_CORRUPT;
+    /* The on-disk ABI permits an inode record size that does not divide the
+     * filesystem block size (v1.6 uses 304-byte inodes in 4096-byte blocks).
+     * Any trailing bytes at the end of an inode-table block are padding. */
+    if (inode_size == 0u) return RINFS_ERR_CORRUPT;
     inodes_per_block = block_size / inode_size;
     if (inodes_per_block == 0u) return RINFS_ERR_CORRUPT;
     block = mount->sb.s_inode_table + (ino - 1) / inodes_per_block;
@@ -9765,8 +9767,9 @@ static int rinfs_inode_write_internal(RinFS_Mount* mount, uint64_t ino,
     
     uint32_t inode_size = mount->sb.s_inode_size;
     uint32_t block_size = mount->sb.s_block_size;
-    if (inode_size == 0u || block_size % inode_size != 0u)
-        return RINFS_ERR_CORRUPT;
+    /* Match inode_read(): deployed inode-table layouts use floor division and
+     * leave the remainder of each block unused. */
+    if (inode_size == 0u) return RINFS_ERR_CORRUPT;
     uint32_t inodes_per_block = block_size / inode_size;
     if (inodes_per_block == 0u) return RINFS_ERR_CORRUPT;
     

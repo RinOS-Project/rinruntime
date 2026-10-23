@@ -26,7 +26,8 @@
  * Sector 0-1:    Superblock (1024 bytes)
  * Sector 2-N:    Block Bitmap (1 bit per block)
  * Sector N+1-M:  Inode Bitmap (1 bit per inode)
- * Sector M+1-P:  Inode Table (304 bytes per inode in deployed v1)
+ * Sector M+1-P:  Inode Table (304-byte records; floor(block size / record
+ *                 size) records per block; unused block tails are padding)
  * Sector P+1-...: Data Blocks
  * 
  * ═══════════════════════════════════════════════════════════════*/
