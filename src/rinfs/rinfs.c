@@ -14594,7 +14594,7 @@ static int rinfs_resize_apply(RinFS_Mount* mount,
     return rinfs_resize_journal_clear(mount, transaction->sequence);
 }
 
-int rinfs_resize(RinFS_Mount* mount, uint64_t target_blocks) {
+static int rinfs_resize_locked(RinFS_Mount* mount, uint64_t target_blocks) {
     RinFS_ResizeJournal transaction;
     RinFS_RenameJournal rename_record;
     RinFS_FullCheckReport report;
@@ -14664,6 +14664,18 @@ int rinfs_resize(RinFS_Mount* mount, uint64_t target_blocks) {
         rinfs_mount_recovery_fence(
             mount, RINFS_READONLY_RECOVERY_NAMESPACE_JOURNAL, err);
     return err;
+}
+
+int rinfs_resize(RinFS_Mount* mount, uint64_t target_blocks) {
+    int err;
+    if (!mount || !mount->mounted ||
+        (mount->mount_flags & RINFS_MNT_RESIZE) == 0u ||
+        target_blocks == 0u)
+        return RINFS_ERR_INVAL;
+    err = rinfs_journal_transaction_lock(mount);
+    if (err != RINFS_OK) return err;
+    err = rinfs_resize_locked(mount, target_blocks);
+    return rinfs_journal_transaction_unlock_status(mount, err);
 }
 
 static int rinfs_journal_recover(RinFS_Mount* mount) {
