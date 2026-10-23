@@ -6687,14 +6687,18 @@ static int rinfs_shared_owner_reap_locked(RinFS_Mount* mount) {
  * chains remain stable during this check. */
 static int rinfs_shared_heap_payload_referenced_locked(
     RinFS_Mount* mount, void* payload, uint64_t node_count,
-    int* referenced_out) {
+    int* referenced_out, RinFS_ContentLeaseNode** path_owner_out,
+    uint32_t* path_count_out) {
     const uint64_t header_bytes =
         rinfs_shared_heap_align(sizeof(RinFS_SharedHeapBlock));
     uintptr_t base;
     RinFS_ContentLeaseNode* lease;
     uint64_t path_limit;
     if (referenced_out) *referenced_out = 0;
-    if (!mount || !payload || !referenced_out || header_bytes == 0u)
+    if (path_owner_out) *path_owner_out = NULL;
+    if (path_count_out) *path_count_out = 0u;
+    if (!mount || !payload || !referenced_out || !path_owner_out ||
+        !path_count_out || header_bytes == 0u)
         return RINFS_ERR_INVAL;
     if (payload == mount->block_buffer ||
         payload == mount->shared_inode_table_recovery_logs ||
@@ -6703,7 +6707,6 @@ static int rinfs_shared_heap_payload_referenced_locked(
         payload == mount->directory_index ||
         payload == mount->inode_cache || payload == mount->page_cache) {
         *referenced_out = 1;
-        return RINFS_OK;
     }
     base = (uintptr_t)mount->shared_mapping_base;
     path_limit = mount->shared_mapping_size / sizeof(RinFS_DeleteOnClosePath);
@@ -6711,6 +6714,7 @@ static int rinfs_shared_heap_payload_referenced_locked(
     for (uint64_t index = 0u; index < node_count; ++index) {
         RinFS_DeleteOnClosePath* path = lease->delete_on_close_paths;
         uint64_t remaining = path_limit;
+        uint64_t path_count = 0u;
         if ((void*)lease == payload) *referenced_out = 1;
         while (path) {
             uintptr_t address = (uintptr_t)path;
@@ -6724,9 +6728,17 @@ static int rinfs_shared_heap_payload_referenced_locked(
                 address % __alignof__(RinFS_DeleteOnClosePath) != 0u)
                 return RINFS_ERR_CORRUPT;
             --remaining;
-            if ((void*)path == payload) *referenced_out = 1;
+            ++path_count;
+            if (path_count > UINT32_MAX) return RINFS_ERR_CORRUPT;
+            if ((void*)path == payload) {
+                if (*path_owner_out != NULL) return RINFS_ERR_CORRUPT;
+                *referenced_out = 1;
+                *path_owner_out = lease;
+            }
             path = path->next;
         }
+        if (*path_owner_out == lease)
+            *path_count_out = (uint32_t)path_count;
         lease = lease->next;
     }
     return RINFS_OK;
@@ -6791,6 +6803,8 @@ static int rinfs_shared_heap_reap_detached_pending_locked(
             if (block->reserved ==
                 RINFS_SHARED_HEAP_REAP_PENDING_ALLOCATION) {
                 int owner_dead;
+                RinFS_ContentLeaseNode* path_owner = NULL;
+                uint32_t path_count = 0u;
                 if (block->owner_token == 0u) {
                     result = RINFS_ERR_CORRUPT;
                     break;
@@ -6806,14 +6820,22 @@ static int rinfs_shared_heap_reap_detached_pending_locked(
                     continue;
                 }
                 result = rinfs_shared_heap_payload_referenced_locked(
-                    mount, payload, node_count, &linked);
+                    mount, payload, node_count, &linked, &path_owner,
+                    &path_count);
                 if (result != RINFS_OK) break;
                 /* The owner can die after publishing a list pointer and
                  * before clearing the allocation marker. Preserve reachable
                  * objects and normalize that interrupted transition. */
                 block->reserved = 0u;
                 block->owner_token = 0u;
-                if (!linked) block->is_free = 1u;
+                if (!linked) {
+                    block->is_free = 1u;
+                } else if (path_owner) {
+                    /* Linking and incrementing the aggregate count are
+                     * separate stores. Recount before exposing this path to
+                     * the ordinary delete-on-close reaper. */
+                    path_owner->delete_on_close_count = path_count;
+                }
                 changed = 1;
                 offset = next_offset;
                 continue;
