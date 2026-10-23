@@ -6433,7 +6433,8 @@ static int rinfs_shared_owner_reap(RinFS_Mount* mount) {
                 node->tracked_open_references == 0u &&
                 node->wincompat_share_handle_count == 0u &&
                 node->delete_pending == 0u &&
-                node->delete_on_close_count == 0u) {
+                node->delete_on_close_count == 0u &&
+                node->delete_on_close_paths == NULL) {
                 *link = node->next;
                 node->next = NULL;
                 {
@@ -21859,59 +21860,66 @@ done:
 
 static int rinfs_delete_on_close_discard_recovered(RinFS_Mount* mount) {
     int content_unlock_error = RINFS_OK;
-    int free_error = RINFS_OK;
     if (!mount) return rinfs_content_unlock_status((RINFS_ERR_INVAL), content_unlock_error);
     {
         int reap_result = rinfs_shared_owner_reap(mount);
         if (reap_result != RINFS_OK) return rinfs_content_unlock_status((reap_result), content_unlock_error);
     }
     for (;;) {
-        RinFS_ContentLeaseNode** link;
         RinFS_ContentLeaseNode* lease = NULL;
-        RinFS_DeleteOnClosePath* paths = NULL;
+        RinFS_DeleteOnClosePath* path = NULL;
+        int result = RINFS_OK;
+        int path_free_error = RINFS_OK;
+        int released = 0;
 
         {
             int content_lock_error = rinfs_shared_content_lock(mount);
             if (content_lock_error != RINFS_OK)
                 return rinfs_content_unlock_status((content_lock_error), content_unlock_error);
         }
-        link = (RinFS_ContentLeaseNode**)&mount->content_leases;
-        while (*link != NULL) {
-            RinFS_ContentLeaseNode* candidate = *link;
-            if (candidate->delete_on_close_count != 0u) {
-                if (candidate->references != 0u ||
-                    candidate->waiting_writers != 0u ||
-                    candidate->writer != 0u || candidate->readers != 0u ||
-                    candidate->open_references != 0u ||
-                    candidate->tracked_open_references != 0u ||
-                    candidate->wincompat_share_handle_count != 0u ||
-                    candidate->delete_pending != 0u ||
-                    candidate->delete_on_close_reaping != 0u) {
-                    rinfs_keep_first_error(&content_unlock_error, rinfs_shared_content_unlock(mount));
-                    return rinfs_content_unlock_status((RINFS_ERR_PENDING), content_unlock_error);
-                }
-                *link = candidate->next;
-                lease = candidate;
-                paths = candidate->delete_on_close_paths;
+        for (lease = (RinFS_ContentLeaseNode*)mount->content_leases;
+             lease != NULL; lease = lease->next) {
+            if ((lease->delete_on_close_count == 0u) !=
+                (lease->delete_on_close_paths == NULL)) {
+                rinfs_mount_force_readonly(mount);
+                result = RINFS_ERR_CORRUPT;
                 break;
             }
-            link = &candidate->next;
+            if (lease->delete_on_close_count != 0u) {
+                if (lease->references != 0u ||
+                    lease->waiting_writers != 0u || lease->writer != 0u ||
+                    lease->readers != 0u || lease->open_references != 0u ||
+                    lease->tracked_open_references != 0u ||
+                    lease->wincompat_share_handle_count != 0u ||
+                    lease->delete_pending != 0u ||
+                    lease->delete_on_close_reaping != 0u) {
+                    result = RINFS_ERR_PENDING;
+                    break;
+                }
+                path = lease->delete_on_close_paths;
+                lease->delete_on_close_paths = path->next;
+                path->next = NULL;
+                lease->delete_on_close_count--;
+                path_free_error = rinfs_mount_runtime_free(
+                    mount, path, &released);
+                if (!released) {
+                    path->next = lease->delete_on_close_paths;
+                    lease->delete_on_close_paths = path;
+                    lease->delete_on_close_count++;
+                }
+                result = path_free_error;
+                break;
+            }
         }
         rinfs_keep_first_error(&content_unlock_error, rinfs_shared_content_unlock(mount));
-        if (!lease) return rinfs_content_unlock_status((RINFS_OK), content_unlock_error);
-        while (paths) {
-            RinFS_DeleteOnClosePath* next = paths->next;
-            rinfs_keep_first_error(
-                &free_error,
-                rinfs_mount_runtime_free(mount, paths, NULL));
-            paths = next;
-        }
-        rinfs_keep_first_error(
-            &free_error, rinfs_mount_runtime_free(mount, lease, NULL));
-        if (free_error != RINFS_OK)
-            return rinfs_content_unlock_status(free_error,
+        if (result != RINFS_OK)
+            return rinfs_content_unlock_status(result,
                                                content_unlock_error);
+        if (content_unlock_error != RINFS_OK)
+            return content_unlock_error;
+        if (!path) break;
     }
+    return rinfs_shared_owner_reap(mount);
 }
 
 /* Update moved directory's ".." entry */
