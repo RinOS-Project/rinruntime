@@ -17840,6 +17840,9 @@ int rinfs_mmap_source_sync_range(RinFS_MmapSource* source,
         source, reference_generation, reference_cookie, &identity);
     if (err != RINFS_OK || identity.inode_num != expected_inode)
         return rinfs_content_unlock_status((err == RINFS_OK ? RINFS_ERR_STALE : err), content_unlock_error);
+    err = rinfs_mount_prepare_write(identity.mount);
+    if (err != RINFS_OK)
+        return rinfs_content_unlock_status((err), content_unlock_error);
     if (identity.mount->readonly) return rinfs_content_unlock_status((RINFS_ERR_ROFS), content_unlock_error);
 
     /* The read lease keeps the content-version key and block map stable from
@@ -22170,8 +22173,10 @@ static int rinfs_rename_impl(RinFS_Mount* mount, uint64_t old_dir,
                              const char* new_name, int no_replace,
                              uint64_t expected_source_inode,
                              uint32_t expected_source_generation) {
+    int prepare_error;
     if (!mount || !mount->mounted || !old_name || !new_name) return RINFS_ERR_INVAL;
-    if (mount->readonly) return RINFS_ERR_ROFS;
+    prepare_error = rinfs_mount_prepare_write(mount);
+    if (prepare_error != RINFS_OK) return prepare_error;
 
     if (old_name[0] == '\0' || new_name[0] == '\0') return RINFS_ERR_INVAL;
     if (rinfs_strlen(old_name) > RINFS_NAME_MAX || rinfs_strlen(new_name) > RINFS_NAME_MAX) {
@@ -23630,9 +23635,12 @@ static int rinfs_restore_transaction_operation_begin(
         (void)rinfs_restore_transaction_operation_end(operation, 0);
         return RINFS_ERR_STALE;
     }
-    if (!allow_stale_mount && internal->mount->readonly) {
-        (void)rinfs_restore_transaction_operation_end(operation, 0);
-        return RINFS_ERR_ROFS;
+    if (!allow_stale_mount) {
+        int prepare_error = rinfs_mount_prepare_write(internal->mount);
+        if (prepare_error != RINFS_OK) {
+            (void)rinfs_restore_transaction_operation_end(operation, 0);
+            return prepare_error;
+        }
     }
     *internal_out = internal;
     return RINFS_OK;
@@ -24553,6 +24561,10 @@ int rinfs_restore_transaction_mount_recover(RinFS_Mount* mount) {
     int present = 0;
     int error;
     if (!mount || !mount->mounted) return RINFS_ERR_INVAL;
+    if (rinfs_mount_recovery_only(mount)) {
+        error = rinfs_mount_prepare_write(mount);
+        if (error != RINFS_OK) return error;
+    }
     error = rinfs_restore_record_load(mount, &record, &present);
     if (error != RINFS_OK || !present) return error;
     if (mount->readonly) return RINFS_ERR_ROFS;
