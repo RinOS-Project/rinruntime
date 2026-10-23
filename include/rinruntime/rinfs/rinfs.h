@@ -531,7 +531,7 @@ typedef struct {
  * exact process generation dead without interpreting userland pointers. The
  * runtime reconciles these per-handle deltas under content_lease_lock. */
 #define RINFS_SHARED_OWNER_LEDGER_MAGIC UINT32_C(0x524F574E)
-#define RINFS_SHARED_OWNER_LEDGER_VERSION 4u
+#define RINFS_SHARED_OWNER_LEDGER_VERSION 5u
 #define RINFS_SHARED_OWNER_LOCK_GENERATION_MAX UINT32_C(0x01ffffff)
 #define RINFS_SHARED_OWNER_REFERENCE_CAPACITY 512u
 #define RINFS_SHARED_OWNER_FREE 0u
