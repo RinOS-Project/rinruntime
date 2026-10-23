@@ -3694,9 +3694,15 @@ int rinfs_wincompat_share_register(RinFS_Mount* mount, uint64_t inode_num,
         if (!shared_reference || shared_reference->open_reference != 1u ||
             shared_reference->tracked_reference != 1u ||
             shared_reference->wincompat_share_registered != 0u) {
-            (void)rinfs_wincompat_share_counts_change_locked(
+            int rollback_error = rinfs_wincompat_share_counts_change_locked(
                 node, access, share_mode, 0, 0);
-            result = RINFS_ERR_CORRUPT;
+            /* The process-local share counters were tentatively incremented,
+             * but the generation-bound shared owner row cannot publish them.
+             * If that increment cannot be rolled back, keep the mount fenced
+             * so later opens cannot make decisions from partial accounting. */
+            rinfs_mount_force_readonly(mount);
+            if (rollback_error != RINFS_OK) result = rollback_error;
+            else result = RINFS_ERR_CORRUPT;
         }
     }
     if (result == RINFS_OK) {
