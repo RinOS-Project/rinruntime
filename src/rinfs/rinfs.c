@@ -574,6 +574,7 @@ void rinfs_host_fail_flushes_after(int successful_flushes) {
 
 #define RINFS_SHARED_HEAP_MAGIC UINT64_C(0x52494e4653484541)
 #define RINFS_SHARED_HEAP_ALIGNMENT 16u
+#define RINFS_SHARED_HEAP_REAP_PENDING_CONTENT_LEASE 1u
 
 typedef struct {
     uint64_t magic;
@@ -942,10 +943,17 @@ static int rinfs_shared_heap_recover_locked(RinFS_Mount* mount) {
                 RINFS_SHARED_HEAP_MAGIC || block->total_bytes < header_bytes ||
             block->total_bytes > remaining ||
             (block->total_bytes & (RINFS_SHARED_HEAP_ALIGNMENT - 1u)) != 0u ||
-            block->is_free > 1u) {
+            block->is_free > 1u ||
+            block->reserved >
+                RINFS_SHARED_HEAP_REAP_PENDING_CONTENT_LEASE) {
             mount->shared_arena_recovery_failed = 1u;
             return 0;
         }
+        /* A reaper marks an allocation before unlinking it. If the owner
+         * died after publishing the free state, completing the tag clear is
+         * idempotent and keeps the block reusable. */
+        if (block->is_free && block->reserved != 0u)
+            block->reserved = 0u;
         next_offset = offset + block->total_bytes;
         if (block->is_free && next_offset < arena_end) {
             RinFS_SharedHeapBlock* next =
@@ -958,7 +966,9 @@ static int rinfs_shared_heap_recover_locked(RinFS_Mount* mount) {
                 next->total_bytes > next_remaining ||
                 (next->total_bytes &
                     (RINFS_SHARED_HEAP_ALIGNMENT - 1u)) != 0u ||
-                next->is_free > 1u) {
+                next->is_free > 1u ||
+                next->reserved >
+                    RINFS_SHARED_HEAP_REAP_PENDING_CONTENT_LEASE) {
                 mount->shared_arena_recovery_failed = 1u;
                 return 0;
             }
@@ -997,6 +1007,68 @@ static int rinfs_shared_heap_lock(RinFS_Mount* mount) {
 static int rinfs_shared_heap_unlock(RinFS_Mount* mount) {
     return rinfs_shared_lock_release(mount, &mount->shared_arena_lock);
 }
+
+/* Mark a shared-heap object before unlinking it from its owning list. The
+ * marker survives owner death in the interval between list removal and
+ * allocator release; ordinary allocated blocks are never reaped this way. */
+static int rinfs_shared_heap_mark_reaper_pending(
+    RinFS_Mount* mount, void* pointer, uint32_t pending_kind) {
+    const size_t header_bytes = rinfs_shared_heap_align(
+        sizeof(RinFS_SharedHeapBlock));
+    uintptr_t base;
+    uintptr_t value;
+    uint64_t offset;
+    int result;
+    if (!mount || !pointer || header_bytes == 0u ||
+        pending_kind != RINFS_SHARED_HEAP_REAP_PENDING_CONTENT_LEASE)
+        return RINFS_ERR_INVAL;
+    if (!mount->shared_mapping_base || mount->shared_arena_offset == 0u)
+        return RINFS_OK;
+    base = (uintptr_t)mount->shared_mapping_base;
+    value = (uintptr_t)pointer;
+    if (value < base ||
+        (uint64_t)(value - base) >= mount->shared_mapping_size ||
+        mount->shared_arena_offset > mount->shared_mapping_size ||
+        header_bytes > mount->shared_mapping_size -
+                           mount->shared_arena_offset ||
+        (uint64_t)(value - base) <
+            mount->shared_arena_offset + header_bytes ||
+        ((value - base - header_bytes) &
+         (RINFS_SHARED_HEAP_ALIGNMENT - 1u)) != 0u)
+        return RINFS_ERR_CORRUPT;
+    offset = (uint64_t)(value - base - header_bytes);
+    result = rinfs_shared_heap_lock(mount);
+    if (result != RINFS_OK) return result;
+    if (offset < mount->shared_arena_offset ||
+        offset > mount->shared_mapping_size - header_bytes) {
+        result = RINFS_ERR_CORRUPT;
+    } else {
+        RinFS_SharedHeapBlock* target = (RinFS_SharedHeapBlock*)(
+            (uint8_t*)mount->shared_mapping_base + (size_t)offset);
+        if (target->magic != RINFS_SHARED_HEAP_MAGIC ||
+            target->is_free != 0u || target->total_bytes < header_bytes ||
+            target->total_bytes > mount->shared_mapping_size - offset ||
+            (target->total_bytes &
+             (RINFS_SHARED_HEAP_ALIGNMENT - 1u)) != 0u ||
+            (target->reserved != 0u &&
+             target->reserved != pending_kind)) {
+            result = RINFS_ERR_CORRUPT;
+        } else {
+            __atomic_store_n(&target->reserved, pending_kind,
+                             __ATOMIC_RELEASE);
+        }
+    }
+    {
+        int unlock_error = rinfs_shared_heap_unlock(mount);
+        if (result == RINFS_OK) result = unlock_error;
+    }
+    if (result == RINFS_ERR_CORRUPT) {
+        mount->shared_arena_recovery_failed = 1u;
+        rinfs_mount_force_readonly(mount);
+    }
+    return result;
+}
+
 
 static void* rinfs_mount_runtime_alloc(RinFS_Mount* mount, size_t size,
                                        int* error_out) {
@@ -1040,7 +1112,10 @@ static void* rinfs_mount_runtime_alloc(RinFS_Mount* mount, size_t size,
         if (remaining < header_bytes || block->magic !=
                 RINFS_SHARED_HEAP_MAGIC || block->total_bytes < header_bytes ||
             block->total_bytes > remaining ||
-            (block->total_bytes & (RINFS_SHARED_HEAP_ALIGNMENT - 1u)) != 0u) {
+            (block->total_bytes & (RINFS_SHARED_HEAP_ALIGNMENT - 1u)) != 0u ||
+            block->is_free > 1u ||
+            block->reserved >
+                RINFS_SHARED_HEAP_REAP_PENDING_CONTENT_LEASE) {
             mount->shared_arena_recovery_failed = 1u;
             rinfs_shared_lock_fence(mount);
             error = rinfs_shared_heap_unlock(mount);
@@ -1048,6 +1123,8 @@ static void* rinfs_mount_runtime_alloc(RinFS_Mount* mount, size_t size,
             if (error_out) *error_out = error;
             return NULL;
         }
+        if (block->is_free && block->reserved != 0u)
+            block->reserved = 0u;
         if (block->is_free && block->total_bytes >=
                 (uint64_t)header_bytes + payload_bytes) {
             uint64_t required = (uint64_t)header_bytes + payload_bytes;
@@ -1149,12 +1226,15 @@ static int rinfs_mount_runtime_free(RinFS_Mount* mount, void* pointer,
         target->total_bytes > mount->shared_mapping_size - offset ||
         (target->total_bytes &
          (RINFS_SHARED_HEAP_ALIGNMENT - 1u)) != 0u ||
-        target->reserved != 0u) {
+        (target->reserved != 0u &&
+         target->reserved !=
+             RINFS_SHARED_HEAP_REAP_PENDING_CONTENT_LEASE)) {
         error = RINFS_ERR_CORRUPT;
         goto corrupt_locked;
     }
     target->is_free = 1u;
     if (released_out) *released_out = 1;
+    target->reserved = 0u;
     /* Coalesce adjacent free blocks so content lease churn cannot fragment
      * the fixed shared arena over a long-lived mount. */
     offset = mount->shared_arena_offset;
@@ -1168,7 +1248,9 @@ static int rinfs_mount_runtime_free(RinFS_Mount* mount, void* pointer,
             block->total_bytes > mount->shared_mapping_size - offset ||
             (block->total_bytes &
              (RINFS_SHARED_HEAP_ALIGNMENT - 1u)) != 0u ||
-            block->is_free > 1u || block->reserved != 0u) {
+            block->is_free > 1u ||
+            block->reserved >
+                RINFS_SHARED_HEAP_REAP_PENDING_CONTENT_LEASE) {
             error = RINFS_ERR_CORRUPT;
             break;
         }
@@ -1182,7 +1264,9 @@ static int rinfs_mount_runtime_free(RinFS_Mount* mount, void* pointer,
                 next->total_bytes > mount->shared_mapping_size - next_offset ||
                 (next->total_bytes &
                  (RINFS_SHARED_HEAP_ALIGNMENT - 1u)) != 0u ||
-                next->is_free > 1u || next->reserved != 0u) {
+                next->is_free > 1u ||
+                next->reserved >
+                    RINFS_SHARED_HEAP_REAP_PENDING_CONTENT_LEASE) {
                 error = RINFS_ERR_CORRUPT;
                 break;
             }
@@ -5996,6 +6080,20 @@ static int rinfs_shared_owner_ledger_valid(const RinFS_Mount* mount) {
                RINFS_SHARED_OWNER_REFERENCE_CAPACITY;
 }
 
+static int rinfs_shared_owner_dead_row_exists(const RinFS_Mount* mount) {
+    if (!rinfs_shared_owner_ledger_valid(mount) ||
+        !mount->shared_owner_ledger)
+        return 0;
+    for (uint32_t owner_index = 0u;
+         owner_index < RINFS_SHARED_OWNER_CAPACITY; ++owner_index) {
+        if (__atomic_load_n(
+                &mount->shared_owner_ledger->owners[owner_index].state,
+                __ATOMIC_ACQUIRE) == RINFS_SHARED_OWNER_DEAD)
+            return 1;
+    }
+    return 0;
+}
+
 static RinFS_SharedOwnerReferenceV1* rinfs_shared_owner_reference_find_locked(
     RinFS_Mount* mount, uint32_t row, uint64_t generation, uint64_t cookie) {
     RinFS_SharedOwnerV1* owner;
@@ -6410,9 +6508,98 @@ static int rinfs_shared_owner_reap_locked(RinFS_Mount* mount) {
     return RINFS_OK;
 }
 
+/* Finish pending content-lease frees whose owner died after unlinking them.
+ * The caller holds the content lock, so the lease list is stable while the
+ * shared arena is scanned. */
+static int rinfs_shared_heap_reap_detached_pending_locked(
+    RinFS_Mount* mount) {
+    const uint64_t header_bytes =
+        rinfs_shared_heap_align(sizeof(RinFS_SharedHeapBlock));
+    uint64_t node_count = 0u;
+    uint64_t arena_end;
+    uint64_t offset;
+    int changed = 0;
+    int result;
+    if (!mount || !mount->shared_mapping_base) return RINFS_OK;
+    if (!rinfs_shared_owner_node_list_valid_locked(mount, &node_count))
+        return RINFS_ERR_CORRUPT;
+    arena_end = mount->shared_arena_offset + mount->shared_arena_size;
+    if (header_bytes == 0u || arena_end < mount->shared_arena_offset ||
+        arena_end > mount->shared_mapping_size)
+        return RINFS_ERR_CORRUPT;
+    result = rinfs_shared_heap_lock(mount);
+    if (result != RINFS_OK) return result;
+    offset = mount->shared_arena_offset;
+    while (offset < arena_end) {
+        RinFS_SharedHeapBlock* block = (RinFS_SharedHeapBlock*)(
+            (uint8_t*)mount->shared_mapping_base + (size_t)offset);
+        uint64_t remaining = arena_end - offset;
+        uint64_t next_offset;
+        if (remaining < header_bytes || block->magic !=
+                RINFS_SHARED_HEAP_MAGIC || block->total_bytes < header_bytes ||
+            block->total_bytes > remaining ||
+            (block->total_bytes &
+             (RINFS_SHARED_HEAP_ALIGNMENT - 1u)) != 0u ||
+            block->is_free > 1u ||
+            block->reserved >
+                RINFS_SHARED_HEAP_REAP_PENDING_CONTENT_LEASE) {
+            result = RINFS_ERR_CORRUPT;
+            break;
+        }
+        next_offset = offset + block->total_bytes;
+        if (block->reserved == 0u) {
+            offset = next_offset;
+            continue;
+        }
+        if (block->is_free != 0u) {
+            block->reserved = 0u;
+            changed = 1;
+            offset = next_offset;
+            continue;
+        }
+        {
+            void* payload = (uint8_t*)block + (size_t)header_bytes;
+            int linked = 0;
+            RinFS_ContentLeaseNode* lease =
+                (RinFS_ContentLeaseNode*)mount->content_leases;
+            for (uint64_t index = 0u; index < node_count; ++index) {
+                if ((void*)lease == payload) {
+                    linked = 1;
+                    break;
+                }
+                lease = lease->next;
+            }
+            if (linked) {
+                result = RINFS_ERR_CORRUPT;
+                break;
+            } else {
+                block->is_free = 1u;
+                block->reserved = 0u;
+                changed = 1;
+            }
+        }
+        offset = next_offset;
+    }
+    if (result == RINFS_OK && offset != arena_end)
+        result = RINFS_ERR_CORRUPT;
+    if (result == RINFS_OK && changed &&
+        !rinfs_shared_heap_recover_locked(mount))
+        result = RINFS_ERR_CORRUPT;
+    {
+        int unlock_error = rinfs_shared_heap_unlock(mount);
+        if (result == RINFS_OK) result = unlock_error;
+    }
+    if (result == RINFS_ERR_CORRUPT) {
+        mount->shared_arena_recovery_failed = 1u;
+        rinfs_mount_force_readonly(mount);
+    }
+    return result;
+}
+
 static int rinfs_shared_owner_reap(RinFS_Mount* mount) {
     int content_unlock_error = RINFS_OK;
     int free_error = RINFS_OK;
+    int had_dead_owner;
     int result;
     if (!mount) return rinfs_content_unlock_status((RINFS_ERR_INVAL), content_unlock_error);
     {
@@ -6421,6 +6608,7 @@ static int rinfs_shared_owner_reap(RinFS_Mount* mount) {
             return rinfs_content_unlock_status((content_lock_error), content_unlock_error);
         }
     }
+    had_dead_owner = rinfs_shared_owner_dead_row_exists(mount);
     result = rinfs_shared_owner_reap_locked(mount);
     if (result == RINFS_OK) {
         RinFS_ContentLeaseNode** link =
@@ -6435,6 +6623,13 @@ static int rinfs_shared_owner_reap(RinFS_Mount* mount) {
                 node->delete_pending == 0u &&
                 node->delete_on_close_count == 0u &&
                 node->delete_on_close_paths == NULL) {
+                int pending_error = rinfs_shared_heap_mark_reaper_pending(
+                    mount, node,
+                    RINFS_SHARED_HEAP_REAP_PENDING_CONTENT_LEASE);
+                if (pending_error != RINFS_OK) {
+                    free_error = pending_error;
+                    break;
+                }
                 *link = node->next;
                 node->next = NULL;
                 {
@@ -6458,6 +6653,9 @@ static int rinfs_shared_owner_reap(RinFS_Mount* mount) {
                 link = &node->next;
             }
         }
+        if (free_error == RINFS_OK && had_dead_owner)
+            free_error =
+                rinfs_shared_heap_reap_detached_pending_locked(mount);
     }
     rinfs_keep_first_error(&content_unlock_error, rinfs_shared_content_unlock(mount));
     return rinfs_content_unlock_status(
