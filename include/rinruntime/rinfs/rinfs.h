@@ -930,6 +930,9 @@ int rinfs_mount_sized_shared(int dev_id, uint64_t offset,
                              uint64_t sector_count, uint32_t flags,
                              const RinFS_DeviceOps* device_ops,
                              RinFS_Mount** mount_out);
+/* If mount initialization fails after allocating runtime buffers and its
+ * rollback also fails, retain the caller's RinFS_Mount and call unmount to
+ * retry that cleanup before reusing or discarding the object. */
 int rinfs_unmount(RinFS_Mount* mount);
 /* Discard a failed writable mount without publishing CLEAN. The caller must
  * still own the mount and all open file, directory, and mmap handles must be

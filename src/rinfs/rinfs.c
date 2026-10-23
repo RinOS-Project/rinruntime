@@ -14888,6 +14888,14 @@ static int rinfs_mount_free_runtime_buffers(RinFS_Mount* mount) {
     return RINFS_OK;
 }
 
+static int rinfs_mount_runtime_buffers_pending(const RinFS_Mount* mount) {
+    return mount && (mount->page_cache || mount->dentry_cache ||
+                     mount->directory_index || mount->inode_cache ||
+                     mount->shared_inode_table_recovery_logs ||
+                     mount->shared_allocation_recovery_logs ||
+                     mount->block_buffer);
+}
+
 static int rinfs_mount_abort_with_cleanup(RinFS_Mount* mount,
                                          int operation_error) {
     int cleanup_error = rinfs_mount_free_runtime_buffers(mount);
@@ -16585,13 +16593,23 @@ static int rinfs_unmount_core(RinFS_Mount* mount) {
     int content_unlock_error = RINFS_OK;
     if (!mount) return rinfs_content_unlock_status((RINFS_ERR_INVAL), content_unlock_error);
     if (!mount->mounted) {
+        int cleanup_pending =
+            rinfs_mount_runtime_buffers_pending(mount);
+        if (cleanup_pending) {
+            int cleanup_error = rinfs_mount_free_runtime_buffers(mount);
+            if (cleanup_error != RINFS_OK)
+                return rinfs_content_unlock_status(
+                    cleanup_error, content_unlock_error);
+        }
 #if defined(RINFS_USERLAND_MOUNT_LEASES) && !defined(RIN_KERNEL)
         if (mount->shared_mapping_base)
             return rinfs_content_unlock_status((rinfs_mount_external_lease_end(mount)), content_unlock_error);
 #endif
         if (mount->external_mount_lease_token != 0u)
             return rinfs_content_unlock_status((rinfs_mount_external_lease_end(mount)), content_unlock_error);
-        return rinfs_content_unlock_status((RINFS_ERR_INVAL), content_unlock_error);
+        return rinfs_content_unlock_status(
+            cleanup_pending ? RINFS_OK : RINFS_ERR_INVAL,
+            content_unlock_error);
     }
 
     /* A final descriptor close may have retained a pathname obligation after
@@ -16760,7 +16778,9 @@ int rinfs_unmount(RinFS_Mount* mount) {
     }
     if (mount->shared_mapping_base && !mount->mounted &&
         mount->shared_lease_released != 0u) {
-        result = rinfs_shared_mount_release_local_mapping(mount);
+        result = rinfs_mount_free_runtime_buffers(mount);
+        if (result == RINFS_OK)
+            result = rinfs_shared_mount_release_local_mapping(mount);
         if (result != RINFS_OK && registry_unmount_claimed)
             rinfs_shared_mount_registry_unclaim_unmount(mount);
         return result;

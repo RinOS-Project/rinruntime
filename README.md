@@ -806,3 +806,12 @@ ID, generation, and revision. The operation has no separate per-call
 capability check today; this API adds no new capability or authority. Device
 health inspection belongs to DeviceManager. DiskManager continues to own disk
 and partition operations, including storage mutations.
+
+## Failed RinFS mount cleanup
+
+Mount initialization attempts to release every runtime buffer before it
+returns an error. If a release itself fails, the caller still owns the
+unmounted `RinFS_Mount` and can call `rinfs_unmount()` to retry releasing the
+remaining buffers and external mount lease before reusing or discarding the
+object. This retry only finishes local cleanup; a later `rinfs_mount()` must
+replay any unfinished on-disk recovery.
