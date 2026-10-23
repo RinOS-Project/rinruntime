@@ -25354,6 +25354,8 @@ rinfs_restore_transaction_handle_find_locked(uint32_t token) {
 
 static int rinfs_restore_transaction_operation_end(
     RinFS_RestoreTransactionOperation* operation, int retire);
+static void rinfs_restore_internal_destroy(
+    RinFS_RestoreTransactionInternal* internal);
 
 static int rinfs_restore_transaction_registry_audit_locked(void) {
     uint32_t handle_count[RINFS_MAX_RESTORE_MOUNT_GATES] = {0u};
@@ -25634,6 +25636,7 @@ static int rinfs_restore_transaction_operation_end(
     RinFS_RestoreTransactionOperation* operation, int retire) {
     RinFS_RestoreTransactionHandleRecord* record;
     RinFS_RestoreMountGateRecord* gate;
+    RinFS_RestoreTransactionInternal* retired_internal = NULL;
     int result = RINFS_ERR_CORRUPT;
     if (!operation || operation->active != 1u ||
         operation->slot >= RINFS_MAX_RESTORE_TRANSACTION_HANDLES ||
@@ -25655,6 +25658,7 @@ static int rinfs_restore_transaction_operation_end(
                     result = RINFS_ERR_CORRUPT;
                 } else {
                     --gate->transaction_references;
+                    retired_internal = operation->internal;
                     rinfs_memset(record->handle, 0,
                                  sizeof(*record->handle));
                     rinfs_memset(record, 0, sizeof(*record));
@@ -25670,6 +25674,10 @@ static int rinfs_restore_transaction_operation_end(
         }
     }
     rinfs_spin_unlock(&g_rinfs_restore_transaction_lock);
+    /* Retain the transaction object unless registry retirement succeeds, so
+     * a failed cleanup cannot leave a public handle pointing at freed memory. */
+    if (result == RINFS_OK && retired_internal)
+        rinfs_restore_internal_destroy(retired_internal);
     rinfs_memset(operation, 0, sizeof(*operation));
     return result;
 }
@@ -26323,10 +26331,7 @@ static int rinfs_restore_transaction_remove_dir(RinFS_Mount* mount,
 }
 
 static void rinfs_restore_internal_destroy(
-    RinFS_RestoreTransactionV1* transaction) {
-    RinFS_RestoreTransactionInternal* internal;
-    if (!transaction) return;
-    internal = (RinFS_RestoreTransactionInternal*)transaction->internal;
+    RinFS_RestoreTransactionInternal* internal) {
     if (internal) {
         rinfs_memset(internal, 0, sizeof(*internal));
         rinfs_free(internal);
@@ -26445,7 +26450,6 @@ static int rinfs_restore_abort_record(RinFS_Mount* mount,
 }
 
 static int rinfs_restore_transaction_commit_core(
-    RinFS_RestoreTransactionV1* transaction,
     RinFS_RestoreTransactionInternal* internal) {
     int error;
     if (internal->record.phase == RINFS_RESTORE_PHASE_RECEIVING) {
@@ -26466,7 +26470,6 @@ static int rinfs_restore_transaction_commit_core(
         rinfs_mount_force_readonly(internal->mount);
         return error;
     }
-    rinfs_restore_internal_destroy(transaction);
     return RINFS_OK;
 }
 
@@ -26478,14 +26481,13 @@ int rinfs_restore_transaction_commit(
         transaction, 0, &operation, &internal);
     int release_error;
     if (error != RINFS_OK) return error;
-    error = rinfs_restore_transaction_commit_core(transaction, internal);
+    error = rinfs_restore_transaction_commit_core(internal);
     release_error = rinfs_restore_transaction_operation_end(
         &operation, error == RINFS_OK);
     return release_error == RINFS_OK ? error : release_error;
 }
 
 static int rinfs_restore_transaction_abort_core(
-    RinFS_RestoreTransactionV1* transaction,
     RinFS_RestoreTransactionInternal* internal) {
     int error;
     if (internal->record.phase != RINFS_RESTORE_PHASE_RECEIVING &&
@@ -26496,7 +26498,6 @@ static int rinfs_restore_transaction_abort_core(
         rinfs_mount_force_readonly(internal->mount);
         return error;
     }
-    rinfs_restore_internal_destroy(transaction);
     return RINFS_OK;
 }
 
@@ -26508,7 +26509,7 @@ int rinfs_restore_transaction_abort(
         transaction, 0, &operation, &internal);
     int release_error;
     if (error != RINFS_OK) return error;
-    error = rinfs_restore_transaction_abort_core(transaction, internal);
+    error = rinfs_restore_transaction_abort_core(internal);
     release_error = rinfs_restore_transaction_operation_end(
         &operation, error == RINFS_OK);
     return release_error == RINFS_OK ? error : release_error;
@@ -26522,7 +26523,6 @@ static int rinfs_restore_transaction_forget_core(
         return RINFS_ERR_CORRUPT;
     /* This intentionally does not touch the volume. The checksummed pending
      * record remains authoritative and recovery runs on the next mount. */
-    rinfs_restore_internal_destroy(transaction);
     return RINFS_OK;
 }
 
