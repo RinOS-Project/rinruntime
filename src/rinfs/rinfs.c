@@ -23774,20 +23774,24 @@ static int rinfs_restore_transaction_operation_begin(
     internal = operation->internal;
     if (internal->magic != RINFS_RESTORE_TX_MAGIC ||
         internal->mount == NULL || internal->mount_epoch == 0u) {
-        (void)rinfs_restore_transaction_operation_end(operation, 0);
-        return RINFS_ERR_CORRUPT;
+        int release_error = rinfs_restore_transaction_operation_end(
+            operation, 0);
+        return release_error == RINFS_OK ? RINFS_ERR_CORRUPT
+                                         : release_error;
     }
     if (!allow_stale_mount &&
         (internal->mount->mount_epoch != internal->mount_epoch ||
          !internal->mount->mounted)) {
-        (void)rinfs_restore_transaction_operation_end(operation, 0);
-        return RINFS_ERR_STALE;
+        int release_error = rinfs_restore_transaction_operation_end(
+            operation, 0);
+        return release_error == RINFS_OK ? RINFS_ERR_STALE : release_error;
     }
     if (!allow_stale_mount) {
         int prepare_error = rinfs_mount_prepare_write(internal->mount);
         if (prepare_error != RINFS_OK) {
-            (void)rinfs_restore_transaction_operation_end(operation, 0);
-            return prepare_error;
+            int release_error = rinfs_restore_transaction_operation_end(
+                operation, 0);
+            return release_error == RINFS_OK ? prepare_error : release_error;
         }
     }
     *internal_out = internal;
@@ -24825,11 +24829,16 @@ preflight_failed:
 
 failed:
     if (mount->readonly == 0) {
+        int cleanup_error;
         if (error == RINFS_ERR_EXIST &&
             internal->record.transaction_inode == 0u)
-            (void)rinfs_restore_record_clear(mount);
+            cleanup_error = rinfs_restore_record_clear(mount);
         else
-            (void)rinfs_restore_transaction_mount_recover(mount);
+            cleanup_error = rinfs_restore_transaction_mount_recover(mount);
+        if (cleanup_error != RINFS_OK) {
+            rinfs_mount_force_readonly(mount);
+            error = cleanup_error;
+        }
     }
     rinfs_memset(internal, 0, sizeof(*internal));
     rinfs_free(internal);
@@ -24863,8 +24872,10 @@ static int rinfs_restore_transaction_store_inode_core(
     written = rinfs_pwrite(&file, &inode_number, sizeof(inode_number), offset);
     if (written != (int64_t)sizeof(inode_number)) {
         error = written < 0 ? (int)written : RINFS_ERR_IO;
-        (void)rinfs_close(&file);
-        return error;
+        {
+            int close_error = rinfs_close(&file);
+            return close_error == RINFS_OK ? error : close_error;
+        }
     }
     error = rinfs_restore_file_sync_close(&file);
     if (error != RINFS_OK) return error;
@@ -24894,6 +24905,7 @@ static int rinfs_restore_transaction_load_inode_core(
     uint64_t inode_number = 0u;
     uint64_t offset;
     int64_t read_size;
+    int read_error;
     int error;
     if (!inode_number_out) return RINFS_ERR_INVAL;
     *inode_number_out = 0u;
@@ -24908,9 +24920,11 @@ static int rinfs_restore_transaction_load_inode_core(
     if (error != RINFS_OK) return error;
     read_size = rinfs_pread(&file, &inode_number, sizeof(inode_number), offset);
     error = rinfs_close(&file);
-    if (read_size != (int64_t)sizeof(inode_number))
-        return read_size < 0 ? (int)read_size : RINFS_ERR_CORRUPT;
     if (error != RINFS_OK) return error;
+    read_error = read_size == (int64_t)sizeof(inode_number)
+        ? RINFS_OK
+        : (read_size < 0 ? (int)read_size : RINFS_ERR_CORRUPT);
+    if (read_error != RINFS_OK) return read_error;
     if (inode_number == 0u ||
         inode_number > internal->mount->sb.s_inode_count)
         return RINFS_ERR_CORRUPT;
@@ -25023,8 +25037,10 @@ static int rinfs_restore_transaction_set_inode_metadata_core(
     written = rinfs_pwrite(&file, &metadata, sizeof(metadata), offset);
     if (written != (int64_t)sizeof(metadata)) {
         error = written < 0 ? (int)written : RINFS_ERR_IO;
-        (void)rinfs_close(&file);
-        return error;
+        {
+            int close_error = rinfs_close(&file);
+            return close_error == RINFS_OK ? error : close_error;
+        }
     }
     error = rinfs_restore_file_sync_close(&file);
     if (error != RINFS_OK) return error;
