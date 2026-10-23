@@ -8854,7 +8854,7 @@ int rinfs_inode_read(RinFS_Mount* mount, uint64_t ino, RinFS_Inode* inode) {
         int cache_hit = 0;
         err = rinfs_inode_cache_lookup(mount, ino, &cached, &cache_hit);
         if (err != RINFS_OK) {
-            (void)rinfs_inode_table_unlock(mount, block);
+            err = rinfs_inode_table_unlock_status(mount, block, err);
             rinfs_free(buf);
             return err;
         }
@@ -19746,7 +19746,11 @@ int rinfs_create_tmpfile_owned(RinFS_Mount* mount, uint64_t parent_ino,
     if (err != RINFS_OK) return err;
     err = rinfs_prepare_new_inode(mount, new_ino, &inode);
     if (err != RINFS_OK) {
-        (void)rinfs_inode_free(mount, new_ino);
+        int cleanup_error = rinfs_inode_free(mount, new_ino);
+        if (cleanup_error != RINFS_OK) {
+            rinfs_mount_force_readonly(mount);
+            return cleanup_error;
+        }
         return err;
     }
     inode.i_mode = (RINFS_FT_REG << 12u) | (mode & 0777u);
@@ -19759,20 +19763,41 @@ int rinfs_create_tmpfile_owned(RinFS_Mount* mount, uint64_t parent_ino,
     rinfs_inode_content_version_set_raw(&inode, 1u);
     rinfs_touch_created(&inode);
     err = rinfs_inode_orphan_commit(mount, new_ino, &inode, 1);
-    if (err != RINFS_OK) return err;
+    if (err != RINFS_OK) {
+        /* The metadata write may have reached storage even when readback or
+         * flush failed. Keep the mount fenced and let mount recovery decide
+         * whether the orphan intent is durable. */
+        rinfs_mount_force_readonly(mount);
+        return err;
+    }
 
     err = rinfs_open_ino(mount, new_ino, open_flags, file);
     if (err != RINFS_OK) {
-        (void)rinfs_reclaim_deferred_inode(mount, new_ino,
-                                           inode.i_generation);
+        int cleanup_error = rinfs_reclaim_deferred_inode(
+            mount, new_ino, inode.i_generation);
+        if (cleanup_error != RINFS_OK) {
+            rinfs_mount_force_readonly(mount);
+            return cleanup_error;
+        }
         return err;
     }
     if (!rinfs_content_delete_mark(mount, new_ino,
                                   file->content_pin_generation)) {
-        (void)rinfs_close(file);
-        (void)rinfs_reclaim_deferred_inode(mount, new_ino,
-                                           inode.i_generation);
-        return RINFS_ERR_STALE;
+        int consumed = 0;
+        int retryable = 0;
+        int close_error = rinfs_close_with_disposition(
+            file, &consumed, &retryable);
+        if (!consumed) {
+            if (close_error != RINFS_OK) return close_error;
+            return retryable ? RINFS_ERR_PENDING : RINFS_ERR_CORRUPT;
+        }
+        int cleanup_error = rinfs_reclaim_deferred_inode(
+            mount, new_ino, inode.i_generation);
+        if (cleanup_error != RINFS_OK) {
+            rinfs_mount_force_readonly(mount);
+            return cleanup_error;
+        }
+        return close_error != RINFS_OK ? close_error : RINFS_ERR_STALE;
     }
     return RINFS_OK;
 }

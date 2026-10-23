@@ -1224,7 +1224,9 @@ int rinfs_mknodat_owned(RinFS_Mount* mount, uint64_t parent_ino,
 uint32_t rinfs_inode_device_number(const RinFS_Inode* inode);
 /* Create an unnamed, zero-link regular inode below a validated parent. The
  * returned open lifetime owns deferred reclamation until a durable link is
- * published or the last descriptor closes. */
+ * published or the last descriptor closes. If failure cleanup cannot consume
+ * an internally opened handle, file remains live and must be closed/retried
+ * with the disposition API. */
 int rinfs_create_tmpfile_owned(RinFS_Mount* mount, uint64_t parent_ino,
                                uint16_t mode, uint32_t uid, uint32_t gid,
                                int open_flags, RinFS_File* file);
