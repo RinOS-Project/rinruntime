@@ -1224,6 +1224,11 @@ static int rinfs_content_lease_release(RinFS_Mount* mount, uint64_t ino,
                                        uint32_t inode_generation,
                                        uint64_t token, int writer)
     __attribute__((warn_unused_result));
+static int rinfs_content_lease_release_ex(RinFS_Mount* mount, uint64_t ino,
+                                          uint32_t inode_generation,
+                                          uint64_t token, int writer,
+                                          int* released_out)
+    __attribute__((warn_unused_result));
 static int rinfs_content_delete_clear(RinFS_Mount* mount, uint64_t ino,
                                       uint32_t inode_generation,
                                       uint64_t token)
@@ -6323,14 +6328,16 @@ static int rinfs_content_lease_acquire(RinFS_Mount* mount, uint64_t ino,
     }
 }
 
-static int rinfs_content_lease_release(RinFS_Mount* mount, uint64_t ino,
-                                       uint32_t inode_generation,
-                                       uint64_t token, int writer) {
+static int rinfs_content_lease_release_ex(RinFS_Mount* mount, uint64_t ino,
+                                          uint32_t inode_generation,
+                                          uint64_t token, int writer,
+                                          int* released_out) {
     RinFS_ContentLeaseNode *node;
     RinFS_ContentLeaseNode** link;
     uint32_t shared_owner_row = 0u;
     int free_node = 0;
     int err;
+    if (released_out) *released_out = 0;
     if (!mount) return RINFS_ERR_INVAL;
     if (mount->shared_mapping_base && mount->shared_mount_ready != 0u) {
         err = rinfs_shared_owner_query_row(mount, &shared_owner_row);
@@ -6360,6 +6367,7 @@ static int rinfs_content_lease_release(RinFS_Mount* mount, uint64_t ino,
         }
         /* A copied, already released handle is rejected without poisoning
          * the mount; no lease state was changed. */
+        if (released_out) *released_out = 1;
         return RINFS_ERR_STALE;
     }
     if (!rinfs_wincompat_share_counts_consistent(node) ||
@@ -6396,6 +6404,9 @@ static int rinfs_content_lease_release(RinFS_Mount* mount, uint64_t ino,
             free_node = 1;
         }
     }
+    /* The lease counters have been decremented. If unlock or deferred node
+     * reclamation fails, the caller must not retry this token. */
+    if (released_out) *released_out = 1;
     err = rinfs_shared_content_unlock(mount);
     if (err != RINFS_OK) {
         mount->readonly = 1;
@@ -6404,6 +6415,13 @@ static int rinfs_content_lease_release(RinFS_Mount* mount, uint64_t ino,
     return free_node
         ? (int)rinfs_mount_runtime_free_status(mount, node, RINFS_OK)
         : RINFS_OK;
+}
+
+static int rinfs_content_lease_release(RinFS_Mount* mount, uint64_t ino,
+                                       uint32_t inode_generation,
+                                       uint64_t token, int writer) {
+    return rinfs_content_lease_release_ex(
+        mount, ino, inode_generation, token, writer, NULL);
 }
 
 static int rinfs_content_pin_acquire(RinFS_Mount* mount, uint64_t ino,
@@ -17010,18 +17028,14 @@ int rinfs_content_snapshot_revalidate(RinFS_ContentSnapshot* snapshot) {
 }
 
 int rinfs_content_snapshot_end(RinFS_ContentSnapshot* snapshot) {
-    RinFS_Mount* mount;
-    uint64_t ino;
-    uint32_t inode_generation;
-    uint64_t generation;
+    int released = 0;
+    int err;
     if (!snapshot || !snapshot->active) return RINFS_OK;
-    mount = snapshot->mount;
-    ino = snapshot->inode_num;
-    inode_generation = snapshot->inode_generation;
-    generation = snapshot->lease_generation;
-    rinfs_memset(snapshot, 0, sizeof(*snapshot));
-    return rinfs_content_lease_release(mount, ino, inode_generation,
-                                       generation, 0);
+    err = rinfs_content_lease_release_ex(
+        snapshot->mount, snapshot->inode_num, snapshot->inode_generation,
+        snapshot->lease_generation, 0, &released);
+    if (released) rinfs_memset(snapshot, 0, sizeof(*snapshot));
+    return err;
 }
 
 static int rinfs_mmap_source_create_core(
