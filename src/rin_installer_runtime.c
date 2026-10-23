@@ -347,7 +347,7 @@ RinResultCode rin_app_rinfs_cache_lease_shared_transition(
         mapping_size > (uint64_t)UINTPTR_MAX ||
         (uintptr_t)mapping_base > UINTPTR_MAX - (uintptr_t)mapping_size ||
         action < RINFS_SHARED_LEASE_READY ||
-        action > RINFS_SHARED_LEASE_OWNER_QUERY)
+        action > RINFS_SHARED_LEASE_EXEC_SUSPEND)
         return RIN_RESULT_INVALID_ARGUMENT;
 #if defined(_WIN32)
     return RIN_RESULT_NOT_SUPPORTED;

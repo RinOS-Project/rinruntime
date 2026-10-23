@@ -12,6 +12,10 @@
 #include "../platform.h"
 int rinfs_fork_prepare(void);
 int rinfs_fork_complete(int fork_succeeded);
+static int rinfs_exec_mount_lifecycle_begin(RinFS_Mount* mount);
+static int rinfs_exec_mount_lifecycle_admit(void);
+static void rinfs_exec_mount_lifecycle_end(RinFS_Mount* mount,
+                                           int unregister_mount);
 #endif
 
 #define RINFS_FORK_HOOK_CAPACITY 8u
@@ -629,6 +633,7 @@ typedef struct {
 #define RINFS_SHARED_LOCK_OWNER_GENERATION_MASK \
     RINFS_SHARED_OWNER_LOCK_GENERATION_MAX
 #define RINFS_CONTENT_LEASE_CLOSING_FORK 2u
+#define RINFS_CONTENT_LEASE_CLOSING_EXEC 3u
 
 /* Keep RinFS_Mount's public layout stable. The existing readonly integer is
  * a nonzero fence, so use its otherwise-unused bits to remember which
@@ -6816,8 +6821,10 @@ static int rinfs_shared_owner_reap_locked(RinFS_Mount* mount) {
             rinfs_memset(reference, 0, sizeof(*reference));
         }
         if (mount->content_lease_fork_owner_row == owner_index + 1u &&
-            mount->content_lease_closing ==
-                RINFS_CONTENT_LEASE_CLOSING_FORK) {
+            (mount->content_lease_closing ==
+                 RINFS_CONTENT_LEASE_CLOSING_FORK ||
+             mount->content_lease_closing ==
+                 RINFS_CONTENT_LEASE_CLOSING_EXEC)) {
             mount->content_lease_closing = 0u;
             mount->content_lease_fork_owner_row = 0u;
         }
@@ -16311,11 +16318,15 @@ int rinfs_mount_sized_io(int dev_id, uint64_t offset, uint64_t sector_count,
     int result;
     if (!mount) return RINFS_ERR_INVAL;
 #if defined(RINFS_USERLAND_MOUNT_LEASES) && !defined(RIN_KERNEL)
+    result = rinfs_exec_mount_lifecycle_begin(mount);
+    if (result != RINFS_OK) return result;
     if (dev_id > 0) {
         if (rin_app_rinfs_cache_lease_begin(
                 (uint32_t)dev_id, offset, sector_count, &lease_token) !=
-            RIN_RESULT_OK)
+            RIN_RESULT_OK) {
+            rinfs_exec_mount_lifecycle_end(mount, 1);
             return RINFS_ERR_BUSY;
+        }
     }
 #endif
     result = rinfs_mount_sized_io_unleased(
@@ -16329,13 +16340,20 @@ int rinfs_mount_sized_io(int dev_id, uint64_t offset, uint64_t sector_count,
             if (rin_app_rinfs_cache_lease_end(lease_token) == RIN_RESULT_OK) {
                 mount->external_mount_lease_token = 0u;
             } else {
+                rinfs_exec_mount_lifecycle_end(mount, 0);
                 return RINFS_ERR_PENDING;
             }
 #endif
         }
+#if defined(RINFS_USERLAND_MOUNT_LEASES) && !defined(RIN_KERNEL)
+        rinfs_exec_mount_lifecycle_end(mount, 1);
+#endif
         return result;
     }
     mount->external_mount_lease_token = lease_token;
+#if defined(RINFS_USERLAND_MOUNT_LEASES) && !defined(RIN_KERNEL)
+    rinfs_exec_mount_lifecycle_end(mount, 0);
+#endif
     return RINFS_OK;
 }
 
@@ -16353,10 +16371,36 @@ _Static_assert(RINFS_SHARED_OWNER_LEDGER_OFFSET <=
 #define RINFS_SHARED_MOUNT_REGISTRY_UNMOUNTING 1u
 #define RINFS_SHARED_MOUNT_REGISTRY_DETACH_RETRY 2u
 #define RINFS_SHARED_MOUNT_REGISTRY_FINAL_DETACH_RETRY 3u
+#define RINFS_SHARED_MOUNT_REGISTRY_EXEC_DETACH 4u
+#define RINFS_EXEC_PRIVATE_MOUNT_CAPACITY 64u
+#define RINFS_EXEC_MOUNT_RECORD_CAPACITY \
+    (RINFS_SHARED_MOUNT_REGISTRY_CAPACITY + \
+     RINFS_EXEC_PRIVATE_MOUNT_CAPACITY)
+#define RINFS_EXEC_STATE_IDLE 0u
+#define RINFS_EXEC_STATE_PREPARING 1u
+#define RINFS_EXEC_STATE_PREPARED 2u
+typedef struct RinFSExecMountRecord {
+    RinFS_Mount* mount;
+    uint32_t shared_registry_index;
+    uint32_t shared_owner_row;
+    uint8_t shared;
+    uint8_t gate_closed;
+    uint8_t had_kernel_lease;
+    uint8_t lease_suspended;
+    uint8_t lease_reacquired;
+} RinFSExecMountRecord;
 static volatile uint32_t g_rinfs_shared_mount_name_sequence = 1u;
 static volatile uint32_t g_rinfs_shared_mount_registry_lock;
+static volatile uint32_t g_rinfs_exec_mount_lifecycle_lock;
+static volatile uint32_t g_rinfs_exec_transaction_state;
+static uint32_t g_rinfs_exec_mount_record_count;
+static RinFSExecMountRecord
+    g_rinfs_exec_mount_records[RINFS_EXEC_MOUNT_RECORD_CAPACITY];
+static RinFS_Mount* g_rinfs_exec_private_mount_registry[
+    RINFS_EXEC_PRIVATE_MOUNT_CAPACITY];
 static volatile uint32_t g_rinfs_shared_mount_fork_prepared;
 static uint32_t g_rinfs_shared_mount_fork_open_refs_applied;
+static volatile uint32_t g_rinfs_fork_mount_lifecycle_lock_held;
 static volatile uint32_t g_rinfs_fork_close_reference_lock_held;
 static volatile uint32_t g_rinfs_fork_mmap_source_lock_held;
 static RinFS_Mount* g_rinfs_shared_mount_registry[
@@ -16375,6 +16419,70 @@ static void rinfs_shared_mount_registry_lock(void) {
 static void rinfs_shared_mount_registry_unlock(void) {
     __atomic_store_n(&g_rinfs_shared_mount_registry_lock, 0u,
                      __ATOMIC_RELEASE);
+}
+
+static void rinfs_exec_mount_lifecycle_lock(void) {
+    while (__atomic_exchange_n(&g_rinfs_exec_mount_lifecycle_lock, 1u,
+                               __ATOMIC_ACQUIRE) != 0u)
+        __asm__ volatile("pause");
+}
+
+static void rinfs_exec_mount_lifecycle_unlock(void) {
+    __atomic_store_n(&g_rinfs_exec_mount_lifecycle_lock, 0u,
+                     __ATOMIC_RELEASE);
+}
+
+static int rinfs_exec_private_mount_register_locked(RinFS_Mount* mount) {
+    int free_index = -1;
+    if (!mount) return RINFS_ERR_INVAL;
+    for (uint32_t index = 0u; index < RINFS_EXEC_PRIVATE_MOUNT_CAPACITY;
+         ++index) {
+        if (g_rinfs_exec_private_mount_registry[index] == mount)
+            return RINFS_OK;
+        if (!g_rinfs_exec_private_mount_registry[index] && free_index < 0)
+            free_index = (int)index;
+    }
+    if (free_index >= 0)
+        g_rinfs_exec_private_mount_registry[free_index] = mount;
+    return free_index >= 0 ? RINFS_OK : RINFS_ERR_NOMEM;
+}
+
+static void rinfs_exec_private_mount_unregister_locked(RinFS_Mount* mount) {
+    if (!mount) return;
+    for (uint32_t index = 0u; index < RINFS_EXEC_PRIVATE_MOUNT_CAPACITY;
+         ++index) {
+        if (g_rinfs_exec_private_mount_registry[index] == mount) {
+            g_rinfs_exec_private_mount_registry[index] = NULL;
+            break;
+        }
+    }
+}
+
+static int rinfs_exec_mount_lifecycle_begin(RinFS_Mount* mount) {
+    int result;
+    if (!mount) return RINFS_ERR_INVAL;
+    if (mount->shared_mapping_base) return RINFS_ERR_BUSY;
+    result = rinfs_exec_mount_lifecycle_admit();
+    if (result != RINFS_OK) return result;
+    result = rinfs_exec_private_mount_register_locked(mount);
+    if (result != RINFS_OK) rinfs_exec_mount_lifecycle_unlock();
+    return result;
+}
+
+static int rinfs_exec_mount_lifecycle_admit(void) {
+    rinfs_exec_mount_lifecycle_lock();
+    if (__atomic_load_n(&g_rinfs_exec_transaction_state,
+                        __ATOMIC_ACQUIRE) != RINFS_EXEC_STATE_IDLE) {
+        rinfs_exec_mount_lifecycle_unlock();
+        return RINFS_ERR_BUSY;
+    }
+    return RINFS_OK;
+}
+
+static void rinfs_exec_mount_lifecycle_end(RinFS_Mount* mount,
+                                           int unregister_mount) {
+    if (unregister_mount) rinfs_exec_private_mount_unregister_locked(mount);
+    rinfs_exec_mount_lifecycle_unlock();
 }
 
 /* These process-local ledgers are copied by fork.  Their locks must remain
@@ -16638,6 +16746,22 @@ static int rinfs_shared_mount_registry_claim_unmount(RinFS_Mount* mount) {
          index < RINFS_SHARED_MOUNT_REGISTRY_CAPACITY; ++index) {
         if (g_rinfs_shared_mount_registry[index] != mount) continue;
         if (g_rinfs_shared_mount_registry_closing[index] ==
+            RINFS_SHARED_MOUNT_REGISTRY_EXEC_DETACH) {
+            if (g_rinfs_shared_mount_registry_references[index] == 0u) {
+                rinfs_shared_mount_registry_unlock();
+                return -1;
+            }
+            if (g_rinfs_shared_mount_registry_references[index] > 1u) {
+                --g_rinfs_shared_mount_registry_references[index];
+                rinfs_shared_mount_registry_unlock();
+                return 1;
+            }
+            g_rinfs_shared_mount_registry_closing[index] =
+                RINFS_SHARED_MOUNT_REGISTRY_DETACH_RETRY;
+            rinfs_shared_mount_registry_unlock();
+            return 3;
+        }
+        if (g_rinfs_shared_mount_registry_closing[index] ==
             RINFS_SHARED_MOUNT_REGISTRY_DETACH_RETRY) {
             g_rinfs_shared_mount_registry_closing[index] =
                 RINFS_SHARED_MOUNT_REGISTRY_UNMOUNTING;
@@ -16724,6 +16848,18 @@ int rinfs_fork_prepare(void) {
     if (__atomic_load_n(&g_rinfs_shared_mount_fork_prepared,
                         __ATOMIC_ACQUIRE) != 0u)
         return rinfs_content_unlock_status((RINFS_ERR_PENDING), content_unlock_error);
+    rinfs_exec_mount_lifecycle_lock();
+    __atomic_store_n(&g_rinfs_fork_mount_lifecycle_lock_held, 1u,
+                     __ATOMIC_RELEASE);
+    if (__atomic_load_n(&g_rinfs_exec_transaction_state,
+                        __ATOMIC_ACQUIRE) != RINFS_EXEC_STATE_IDLE ||
+        __atomic_load_n(&g_rinfs_shared_mount_fork_prepared,
+                        __ATOMIC_ACQUIRE) != 0u) {
+        __atomic_store_n(&g_rinfs_fork_mount_lifecycle_lock_held, 0u,
+                         __ATOMIC_RELEASE);
+        rinfs_exec_mount_lifecycle_unlock();
+        return rinfs_content_unlock_status((RINFS_ERR_BUSY), content_unlock_error);
+    }
     rinfs_shared_mount_registry_lock();
     rinfs_fork_local_lock(&g_rinfs_close_reference_lock);
     __atomic_store_n(&g_rinfs_fork_close_reference_lock_held, 1u,
@@ -16939,6 +17075,9 @@ rollback_finish:
                             __ATOMIC_ACQ_REL) != 0u)
         rinfs_fork_local_unlock(&g_rinfs_close_reference_lock);
     rinfs_shared_mount_registry_unlock();
+    if (__atomic_exchange_n(&g_rinfs_fork_mount_lifecycle_lock_held, 0u,
+                            __ATOMIC_ACQ_REL) != 0u)
+        rinfs_exec_mount_lifecycle_unlock();
     return rinfs_content_unlock_status((result), content_unlock_error);
 }
 
@@ -17074,6 +17213,9 @@ int rinfs_fork_complete(int fork_succeeded) {
                             __ATOMIC_ACQ_REL) != 0u)
         rinfs_fork_local_unlock(&g_rinfs_close_reference_lock);
     rinfs_shared_mount_registry_unlock();
+    if (__atomic_exchange_n(&g_rinfs_fork_mount_lifecycle_lock_held, 0u,
+                            __ATOMIC_ACQ_REL) != 0u)
+        rinfs_exec_mount_lifecycle_unlock();
     return RINFS_OK;
 
 fork_complete_failed:
@@ -17087,6 +17229,9 @@ fork_complete_failed:
                             __ATOMIC_ACQ_REL) != 0u)
         rinfs_fork_local_unlock(&g_rinfs_close_reference_lock);
     rinfs_shared_mount_registry_unlock();
+    if (__atomic_exchange_n(&g_rinfs_fork_mount_lifecycle_lock_held, 0u,
+                            __ATOMIC_ACQ_REL) != 0u)
+        rinfs_exec_mount_lifecycle_unlock();
     return result != RINFS_OK ? result : RINFS_ERR_IO;
 }
 
@@ -17133,10 +17278,9 @@ static int rinfs_shared_owner_query_row(RinFS_Mount* mount,
     return RINFS_OK;
 }
 
-int rinfs_mount_sized_shared(int dev_id, uint64_t offset,
-                             uint64_t sector_count, uint32_t flags,
-                             const RinFS_DeviceOps* device_ops,
-                             RinFS_Mount** mount_out) {
+static int rinfs_mount_sized_shared_internal(
+    int dev_id, uint64_t offset, uint64_t sector_count, uint32_t flags,
+    const RinFS_DeviceOps* device_ops, RinFS_Mount** mount_out) {
     char name[RIN_SHM_NAME_MAX];
     int handle;
     void* mapping;
@@ -17232,6 +17376,445 @@ int rinfs_mount_sized_shared(int dev_id, uint64_t offset,
     *mount_out = mount;
     rinfs_shared_mount_registry_unlock();
     return RINFS_OK;
+}
+
+int rinfs_mount_sized_shared(int dev_id, uint64_t offset,
+                             uint64_t sector_count, uint32_t flags,
+                             const RinFS_DeviceOps* device_ops,
+                             RinFS_Mount** mount_out) {
+    int result = rinfs_exec_mount_lifecycle_admit();
+    if (result != RINFS_OK) {
+        if (mount_out) *mount_out = NULL;
+        return result;
+    }
+    result = rinfs_mount_sized_shared_internal(
+        dev_id, offset, sector_count, flags, device_ops, mount_out);
+    rinfs_exec_mount_lifecycle_unlock();
+    return result;
+}
+
+static int rinfs_exec_record_add(RinFS_Mount* mount, int shared,
+                                 uint32_t registry_index,
+                                 uint32_t owner_row) {
+    RinFSExecMountRecord* record;
+    if (!mount || g_rinfs_exec_mount_record_count >=
+                      RINFS_EXEC_MOUNT_RECORD_CAPACITY)
+        return RINFS_ERR_NOMEM;
+    record = &g_rinfs_exec_mount_records[
+        g_rinfs_exec_mount_record_count++];
+    rinfs_memset(record, 0, sizeof(*record));
+    record->mount = mount;
+    record->shared_registry_index = registry_index;
+    record->shared_owner_row = owner_row;
+    record->shared = (uint8_t)(shared != 0);
+    record->had_kernel_lease =
+        (uint8_t)(mount->external_mount_lease_token != 0u);
+    return RINFS_OK;
+}
+
+/* The close and mmap ledgers are held by the caller. Any surviving local
+ * handle could point into a mount whose address space is about to disappear. */
+static int rinfs_exec_mount_has_local_handles_locked(
+    const RinFS_Mount* mount) {
+    if (!mount) return 1;
+    for (uint32_t index = 0u; index < RINFS_MAX_CLOSE_REFERENCES; ++index) {
+        const RinFS_CloseReferenceRecord* record =
+            &g_rinfs_close_references[index];
+        if (record->in_use != 0u && record->mount == mount) return 1;
+    }
+    for (uint32_t index = 0u; index < RINFS_MAX_MMAP_SOURCE_REFERENCES;
+         ++index) {
+        const RinFS_MmapSourceReference* record =
+            &g_rinfs_mmap_source_references[index];
+        if (record->source != NULL && record->mount == mount) return 1;
+    }
+    return 0;
+}
+
+/* Caller holds the content lock. Private mounts have no sibling owner whose
+ * open handles could legitimately keep a content node alive. */
+static int rinfs_exec_mount_private_idle_locked(RinFS_Mount* mount,
+                                                 int* idle_out) {
+    if (!mount || !idle_out) return RINFS_ERR_INVAL;
+    *idle_out = 0;
+    if (mount->content_leases != NULL) return RINFS_OK;
+    return rinfs_shared_mount_fork_cache_idle(mount, idle_out);
+}
+
+static int rinfs_exec_mount_sync(RinFS_Mount* mount) {
+    RinFS_PageCache* cache;
+    int dirty = 0;
+    int err;
+    if (!mount || !mount->mounted) return RINFS_ERR_INVAL;
+    if ((rinfs_mount_readonly_state(mount) & RINFS_READONLY_STICKY) != 0u)
+        return RINFS_ERR_ROFS;
+    if ((mount->mount_flags & RINFS_MNT_RDONLY) == 0u)
+        return rinfs_sync(mount);
+    if (mount->buffer_dirty) return RINFS_ERR_ROFS;
+    cache = mount->page_cache;
+    if (!cache) return RINFS_OK;
+    err = rinfs_page_cache_lock(cache);
+    if (err != RINFS_OK) return err;
+    if (cache->dirty_pages != 0u) dirty = 1;
+    for (uint32_t index = 0u; index < RINFS_PAGE_CACHE_CAPACITY; ++index) {
+        const RinFS_PageCacheEntry* entry = &cache->entries[index];
+        if (entry->state == RINFS_PAGE_CACHE_DIRTY ||
+            entry->state == RINFS_PAGE_CACHE_WRITEBACK ||
+            entry->state == RINFS_PAGE_CACHE_FILLING) {
+            dirty = 1;
+            break;
+        }
+    }
+    err = rinfs_page_cache_unlock(cache);
+    if (err != RINFS_OK) return err;
+    if (dirty) return RINFS_ERR_ROFS;
+    return disk_flush(mount);
+}
+
+static void rinfs_exec_mount_fence(RinFSExecMountRecord* record) {
+    RinFS_Mount* mount;
+    if (!record || !(mount = record->mount)) return;
+    rinfs_mount_force_readonly(mount);
+    mount->mounted = 1;
+    __atomic_store_n(&mount->content_lease_closing, UINT32_MAX,
+                     __ATOMIC_RELEASE);
+    if (record->shared) {
+        if (mount->external_mount_lease_token == 0u) {
+            mount->shared_lease_released = 1u;
+            if (record->shared_registry_index <
+                RINFS_SHARED_MOUNT_REGISTRY_CAPACITY) {
+                g_rinfs_shared_mount_registry_closing[
+                    record->shared_registry_index] =
+                    RINFS_SHARED_MOUNT_REGISTRY_EXEC_DETACH;
+            }
+        }
+    }
+}
+
+/* Reacquire every lease that was dropped by exec preflight. The caller still
+ * owns the lifecycle, mount, close-reference, and mmap-source interlocks. */
+static int rinfs_exec_mounts_rollback_locked(void) {
+    int first_error = RINFS_OK;
+    while (g_rinfs_exec_mount_record_count != 0u) {
+        RinFSExecMountRecord* record = &g_rinfs_exec_mount_records[
+            --g_rinfs_exec_mount_record_count];
+        RinFS_Mount* mount = record->mount;
+        int reacquired = 1;
+        if (!mount) {
+            rinfs_keep_first_error(&first_error, RINFS_ERR_CORRUPT);
+            continue;
+        }
+        if (record->lease_suspended && record->had_kernel_lease) {
+            if (record->shared) {
+                uint64_t token = 0u;
+                uint32_t ignored_owner = 0u;
+                uint32_t owner_row = 0u;
+                RinResultCode begin_result =
+                    rin_app_rinfs_cache_lease_begin_shared(
+                        (uint32_t)mount->dev_id, mount->dev_offset,
+                        mount->dev_sector_count, mount->shared_mapping_base,
+                        mount->shared_mapping_size, &token);
+                if (begin_result != RIN_RESULT_OK || token == 0u) {
+                    if (token != 0u) {
+                        mount->external_mount_lease_token = token;
+                        mount->shared_lease_released = 0u;
+                    }
+                    reacquired = 0;
+                } else {
+                    mount->external_mount_lease_token = token;
+                    mount->shared_lease_released = 0u;
+                    if (rinfs_shared_lease_transition(
+                            mount, RINFS_SHARED_LEASE_READY,
+                            &ignored_owner) != RIN_RESULT_OK) {
+                        uint32_t unused_owner = 0u;
+                        if (rinfs_shared_lease_transition(
+                            mount, RINFS_SHARED_LEASE_RELEASE_UNMOUNTED,
+                            &unused_owner) == RIN_RESULT_OK) {
+                            mount->external_mount_lease_token = 0u;
+                            mount->shared_lease_released = 1u;
+                        }
+                        reacquired = 0;
+                    } else if (rinfs_shared_owner_query_row(
+                                   mount, &owner_row) != RINFS_OK ||
+                               owner_row == 0u ||
+                               owner_row > RINFS_SHARED_OWNER_CAPACITY) {
+                        reacquired = 0;
+                    } else {
+                        record->shared_owner_row = owner_row;
+                        record->lease_reacquired = 1u;
+                    }
+                }
+            } else {
+                uint64_t token = 0u;
+                RinResultCode begin_result = rin_app_rinfs_cache_lease_begin(
+                    (uint32_t)mount->dev_id, mount->dev_offset,
+                    mount->dev_sector_count, &token);
+                if (begin_result != RIN_RESULT_OK || token == 0u) {
+                    if (token != 0u)
+                        mount->external_mount_lease_token = token;
+                    reacquired = 0;
+                } else {
+                    mount->external_mount_lease_token = token;
+                    record->lease_reacquired = 1u;
+                }
+            }
+        }
+        if (record->lease_suspended && !record->shared && reacquired)
+            mount->mounted = 1;
+
+        if (record->gate_closed && reacquired) {
+            int content_lock_error = rinfs_shared_content_lock(mount);
+            if (content_lock_error != RINFS_OK) {
+                reacquired = 0;
+                rinfs_keep_first_error(&first_error, content_lock_error);
+            } else {
+                if (record->shared) {
+                    if (rinfs_shared_owner_reap_locked(mount) != RINFS_OK) {
+                        reacquired = 0;
+                        rinfs_keep_first_error(&first_error,
+                                               RINFS_ERR_CORRUPT);
+                    }
+                    if (reacquired &&
+                        mount->content_lease_closing ==
+                            RINFS_CONTENT_LEASE_CLOSING_EXEC) {
+                        mount->content_lease_fork_owner_row =
+                            record->shared_owner_row;
+                        mount->content_lease_closing = 0u;
+                    } else if (reacquired &&
+                               mount->content_lease_closing == 0u) {
+                        mount->content_lease_fork_owner_row =
+                            record->shared_owner_row;
+                    } else if (reacquired &&
+                               mount->content_lease_closing != 0u) {
+                        reacquired = 0;
+                        rinfs_keep_first_error(&first_error,
+                                               RINFS_ERR_CORRUPT);
+                    }
+                } else if (mount->content_lease_closing ==
+                           RINFS_CONTENT_LEASE_CLOSING_EXEC) {
+                    mount->content_lease_closing = 0u;
+                } else if (mount->content_lease_closing != 0u) {
+                    reacquired = 0;
+                    rinfs_keep_first_error(&first_error,
+                                           RINFS_ERR_CORRUPT);
+                }
+                {
+                    int unlock_error = rinfs_shared_content_unlock(mount);
+                    if (unlock_error != RINFS_OK) {
+                        reacquired = 0;
+                        rinfs_keep_first_error(&first_error, unlock_error);
+                    }
+                }
+            }
+        }
+
+        if (reacquired) {
+            if (record->shared &&
+                record->shared_registry_index <
+                    RINFS_SHARED_MOUNT_REGISTRY_CAPACITY)
+                g_rinfs_shared_mount_registry_closing[
+                    record->shared_registry_index] =
+                    RINFS_SHARED_MOUNT_REGISTRY_OPEN;
+        } else {
+            rinfs_exec_mount_fence(record);
+            rinfs_keep_first_error(&first_error, RINFS_ERR_IO);
+        }
+        rinfs_memset(record, 0, sizeof(*record));
+    }
+    return first_error;
+}
+
+/* Flush and suspend all process-local RinFS owners before exec. The locks are
+ * intentionally retained on success; exec failure must call abort to resume. */
+int rinfs_exec_prepare_all(void) {
+    uint32_t expected_state = RINFS_EXEC_STATE_IDLE;
+    int result = RINFS_ERR_BUSY;
+    int rollback_error;
+    if (!__atomic_compare_exchange_n(&g_rinfs_exec_transaction_state,
+                                     &expected_state,
+                                     RINFS_EXEC_STATE_PREPARING, 0,
+                                     __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
+        return RINFS_ERR_BUSY;
+    if (__atomic_load_n(&g_rinfs_shared_mount_fork_prepared,
+                        __ATOMIC_ACQUIRE) != 0u) {
+        __atomic_store_n(&g_rinfs_exec_transaction_state,
+                         RINFS_EXEC_STATE_IDLE, __ATOMIC_RELEASE);
+        return RINFS_ERR_BUSY;
+    }
+    g_rinfs_exec_mount_record_count = 0u;
+    rinfs_exec_mount_lifecycle_lock();
+    rinfs_shared_mount_registry_lock();
+    rinfs_fork_local_lock(&g_rinfs_close_reference_lock);
+    rinfs_fork_local_lock(&g_rinfs_mmap_source_lock);
+    if (!rinfs_close_ref_audit_locked() ||
+        !rinfs_mmap_source_audit_locked()) {
+        result = RINFS_ERR_CORRUPT;
+        goto rollback;
+    }
+
+    for (uint32_t index = 0u;
+         index < RINFS_SHARED_MOUNT_REGISTRY_CAPACITY; ++index) {
+        RinFS_Mount* mount = g_rinfs_shared_mount_registry[index];
+        uint32_t owner_row = 0u;
+        int idle = 0;
+        int content_lock_error;
+        if (!mount) continue;
+        if (g_rinfs_shared_mount_registry_closing[index] !=
+                RINFS_SHARED_MOUNT_REGISTRY_OPEN ||
+            g_rinfs_shared_mount_registry_references[index] == 0u ||
+            g_rinfs_shared_mount_registry_references[index] == UINT32_MAX ||
+            mount->shared_mapping_base != (void*)mount ||
+            mount->shared_mapping_size != RINFS_SHARED_MOUNT_MAPPING_BYTES ||
+            mount->shared_mount_ready == 0u || mount->mounted == 0 ||
+            mount->shared_lease_released != 0u ||
+            mount->shared_close_started != 0u ||
+            mount->external_mount_lease_token == 0u ||
+            rinfs_exec_mount_has_local_handles_locked(mount) ||
+            rinfs_shared_owner_query_row(mount, &owner_row) != RINFS_OK ||
+            owner_row == 0u || owner_row > RINFS_SHARED_OWNER_CAPACITY) {
+            result = RINFS_ERR_BUSY;
+            goto rollback;
+        }
+        result = rinfs_exec_record_add(mount, 1, index, owner_row);
+        if (result != RINFS_OK) goto rollback;
+        content_lock_error = rinfs_shared_content_lock(mount);
+        if (content_lock_error != RINFS_OK) {
+            result = content_lock_error;
+            goto rollback;
+        }
+        if (rinfs_shared_owner_reap_locked(mount) != RINFS_OK ||
+            mount->content_lease_closing != 0u) {
+            result = RINFS_ERR_BUSY;
+        } else {
+            result = rinfs_shared_mount_fork_idle_locked(mount, &idle);
+            if (result == RINFS_OK && idle) {
+                RinFSExecMountRecord* record =
+                    &g_rinfs_exec_mount_records[
+                        g_rinfs_exec_mount_record_count - 1u];
+                mount->content_lease_fork_owner_row = owner_row;
+                mount->content_lease_closing =
+                    RINFS_CONTENT_LEASE_CLOSING_EXEC;
+                record->gate_closed = 1u;
+            } else if (result == RINFS_OK) {
+                result = RINFS_ERR_BUSY;
+            }
+        }
+        {
+            int unlock_error = rinfs_shared_content_unlock(mount);
+            if (result == RINFS_OK && unlock_error != RINFS_OK)
+                result = unlock_error;
+        }
+        if (result != RINFS_OK) goto rollback;
+    }
+
+    for (uint32_t index = 0u;
+         index < RINFS_EXEC_PRIVATE_MOUNT_CAPACITY; ++index) {
+        RinFS_Mount* mount = g_rinfs_exec_private_mount_registry[index];
+        int idle = 0;
+        int content_lock_error;
+        if (!mount) continue;
+        if (mount->shared_mapping_base || mount->mounted == 0 ||
+            mount->content_lease_closing != 0u ||
+            rinfs_exec_mount_has_local_handles_locked(mount)) {
+            result = RINFS_ERR_BUSY;
+            goto rollback;
+        }
+        result = rinfs_exec_record_add(mount, 0, 0u, 0u);
+        if (result != RINFS_OK) goto rollback;
+        content_lock_error = rinfs_shared_content_lock(mount);
+        if (content_lock_error != RINFS_OK) {
+            result = content_lock_error;
+            goto rollback;
+        }
+        if (mount->content_lease_closing != 0u) {
+            result = RINFS_ERR_BUSY;
+        } else {
+            result = rinfs_exec_mount_private_idle_locked(mount, &idle);
+            if (result == RINFS_OK && idle) {
+                mount->content_lease_closing =
+                    RINFS_CONTENT_LEASE_CLOSING_EXEC;
+                g_rinfs_exec_mount_records[
+                    g_rinfs_exec_mount_record_count - 1u].gate_closed = 1u;
+            } else if (result == RINFS_OK) {
+                result = RINFS_ERR_BUSY;
+            }
+        }
+        {
+            int unlock_error = rinfs_shared_content_unlock(mount);
+            if (result == RINFS_OK && unlock_error != RINFS_OK)
+                result = unlock_error;
+        }
+        if (result != RINFS_OK) goto rollback;
+    }
+
+    for (uint32_t index = 0u;
+         index < g_rinfs_exec_mount_record_count; ++index) {
+        RinFS_Mount* mount = g_rinfs_exec_mount_records[index].mount;
+        result = rinfs_exec_mount_sync(mount);
+        if (result != RINFS_OK) goto rollback;
+    }
+    for (uint32_t index = 0u;
+         index < g_rinfs_exec_mount_record_count; ++index) {
+        RinFSExecMountRecord* record = &g_rinfs_exec_mount_records[index];
+        RinFS_Mount* mount = record->mount;
+        if (record->shared) {
+            uint32_t ignored_owner = 0u;
+            if (rinfs_shared_lease_transition(
+                    mount, RINFS_SHARED_LEASE_EXEC_SUSPEND,
+                    &ignored_owner) != RIN_RESULT_OK) {
+                result = RINFS_ERR_BUSY;
+                goto rollback;
+            }
+            mount->external_mount_lease_token = 0u;
+            mount->shared_lease_released = 1u;
+            record->lease_suspended = 1u;
+        } else {
+            if (mount->external_mount_lease_token != 0u) {
+                if (rin_app_rinfs_cache_lease_end(
+                        mount->external_mount_lease_token) != RIN_RESULT_OK) {
+                    result = RINFS_ERR_PENDING;
+                    goto rollback;
+                }
+                mount->external_mount_lease_token = 0u;
+            }
+            mount->mounted = 0;
+            record->lease_suspended = 1u;
+        }
+    }
+    __atomic_store_n(&g_rinfs_exec_transaction_state,
+                     RINFS_EXEC_STATE_PREPARED, __ATOMIC_RELEASE);
+    return RINFS_OK;
+
+rollback:
+    rollback_error = rinfs_exec_mounts_rollback_locked();
+    if (rollback_error != RINFS_OK) result = rollback_error;
+    rinfs_fork_local_unlock(&g_rinfs_mmap_source_lock);
+    rinfs_fork_local_unlock(&g_rinfs_close_reference_lock);
+    rinfs_shared_mount_registry_unlock();
+    rinfs_exec_mount_lifecycle_unlock();
+    __atomic_store_n(&g_rinfs_exec_transaction_state,
+                     RINFS_EXEC_STATE_IDLE, __ATOMIC_RELEASE);
+    return result;
+}
+
+/* Called only after SYS_EXEC returned, which means the current address space
+ * is still alive. On exec success the syscall never returns and these locks,
+ * records, and owner gates disappear with the process image. */
+int rinfs_exec_abort_all(void) {
+    int result;
+    if (__atomic_load_n(&g_rinfs_exec_transaction_state,
+                        __ATOMIC_ACQUIRE) != RINFS_EXEC_STATE_PREPARED)
+        return RINFS_ERR_INVAL;
+    __atomic_store_n(&g_rinfs_exec_transaction_state,
+                     RINFS_EXEC_STATE_PREPARING, __ATOMIC_RELEASE);
+    result = rinfs_exec_mounts_rollback_locked();
+    rinfs_fork_local_unlock(&g_rinfs_mmap_source_lock);
+    rinfs_fork_local_unlock(&g_rinfs_close_reference_lock);
+    rinfs_shared_mount_registry_unlock();
+    rinfs_exec_mount_lifecycle_unlock();
+    __atomic_store_n(&g_rinfs_exec_transaction_state,
+                     RINFS_EXEC_STATE_IDLE, __ATOMIC_RELEASE);
+    return result;
 }
 #else
 static int rinfs_shared_owner_query_row(RinFS_Mount* mount,
@@ -17451,7 +18034,7 @@ static int rinfs_abandon_dirty_mount_core(RinFS_Mount* mount) {
     return rinfs_content_unlock_status((rinfs_mount_external_lease_end(mount)), content_unlock_error);
 }
 
-int rinfs_abandon_dirty_mount(RinFS_Mount* mount) {
+static int rinfs_abandon_dirty_mount_internal(RinFS_Mount* mount) {
     uint64_t mount_epoch;
     int result;
     if (!mount) return RINFS_ERR_INVAL;
@@ -17484,6 +18067,22 @@ int rinfs_abandon_dirty_mount(RinFS_Mount* mount) {
         result = rinfs_shared_mount_release_local_mapping(mount);
 #endif
     return result;
+}
+
+int rinfs_abandon_dirty_mount(RinFS_Mount* mount) {
+#if defined(RINFS_USERLAND_MOUNT_LEASES) && !defined(RIN_KERNEL)
+    int result;
+    if (!mount) return RINFS_ERR_INVAL;
+    if (mount->shared_mapping_base)
+        return rinfs_abandon_dirty_mount_internal(mount);
+    result = rinfs_exec_mount_lifecycle_admit();
+    if (result != RINFS_OK) return result;
+    result = rinfs_abandon_dirty_mount_internal(mount);
+    rinfs_exec_mount_lifecycle_end(mount, result == RINFS_OK);
+    return result;
+#else
+    return rinfs_abandon_dirty_mount_internal(mount);
+#endif
 }
 
 static int rinfs_unmount_core(RinFS_Mount* mount) {
@@ -17659,7 +18258,7 @@ static int rinfs_unmount_core(RinFS_Mount* mount) {
     return rinfs_content_unlock_status((rinfs_mount_external_lease_end(mount)), content_unlock_error);
 }
 
-int rinfs_unmount(RinFS_Mount* mount) {
+static int rinfs_unmount_internal(RinFS_Mount* mount) {
     uint64_t mount_epoch;
     int result;
 #if defined(RINFS_USERLAND_MOUNT_LEASES) && !defined(RIN_KERNEL)
@@ -17749,6 +18348,21 @@ int rinfs_unmount(RinFS_Mount* mount) {
         rinfs_shared_mount_registry_unclaim_unmount(mount);
 #endif
     return result;
+}
+
+int rinfs_unmount(RinFS_Mount* mount) {
+#if defined(RINFS_USERLAND_MOUNT_LEASES) && !defined(RIN_KERNEL)
+    int result;
+    if (!mount) return RINFS_ERR_INVAL;
+    if (mount->shared_mapping_base) return rinfs_unmount_internal(mount);
+    result = rinfs_exec_mount_lifecycle_admit();
+    if (result != RINFS_OK) return result;
+    result = rinfs_unmount_internal(mount);
+    rinfs_exec_mount_lifecycle_end(mount, result == RINFS_OK);
+    return result;
+#else
+    return rinfs_unmount_internal(mount);
+#endif
 }
 
 int rinfs_mount_set_device_flags(RinFS_Mount* mount, uint32_t device_flags) {
