@@ -18762,11 +18762,19 @@ int rinfs_stat(RinFS_Mount* mount, const char* path, RinFS_Inode* inode) {
  * ═══════════════════════════════════════════════════════════════*/
 
 /* Allocate a new block for file/directory and update inode */
+static int rinfs_rollback_allocated_block(RinFS_Mount* mount,
+                                          uint64_t block) {
+    int error = rinfs_block_free(mount, block);
+    if (error != RINFS_OK) rinfs_mount_force_readonly(mount);
+    return error;
+}
+
 static int alloc_file_block(RinFS_Mount* mount, RinFS_Inode* inode, uint64_t file_block, uint64_t* phys_block) {
     uint32_t block_size = mount->sb.s_block_size;
     uint64_t indices[3] = {0, 0, 0};
     uint32_t depth;
     int err = rinfs_file_block_path(mount, file_block, &depth, indices);
+    int rollback_error = RINFS_OK;
     if (err != RINFS_OK) return err;
 
     /* Allocation is idempotent for callers that raced with a refreshed inode. */
@@ -18781,15 +18789,20 @@ static int alloc_file_block(RinFS_Mount* mount, RinFS_Inode* inode, uint64_t fil
     /* Clear the new block */
     uint8_t* zero_buf = (uint8_t*)rinfs_malloc(block_size);
     if (!zero_buf) {
-        rinfs_block_free(mount, *phys_block);
-        return RINFS_ERR_NOMEM;
+        rollback_error = rinfs_rollback_allocated_block(
+            mount, allocated_data_block);
+        *phys_block = 0u;
+        return rollback_error != RINFS_OK ? rollback_error
+                                          : RINFS_ERR_NOMEM;
     }
     rinfs_memset(zero_buf, 0, block_size);
     err = rinfs_block_write_unprepared(mount, *phys_block, zero_buf);
     rinfs_free(zero_buf);
     if (err != RINFS_OK) {
-        rinfs_block_free(mount, *phys_block);
-        return err;
+        rollback_error = rinfs_rollback_allocated_block(
+            mount, allocated_data_block);
+        *phys_block = 0u;
+        return rollback_error != RINFS_OK ? rollback_error : err;
     }
     
     if (depth == 0) {
@@ -18802,14 +18815,20 @@ static int alloc_file_block(RinFS_Mount* mount, RinFS_Inode* inode, uint64_t fil
                                : (depth == 2 ? inode->i_indirect2
                                              : inode->i_indirect3);
     if (root != 0 && !rinfs_valid_allocated_block(mount, root)) {
-        (void)rinfs_block_free(mount, *phys_block);
-        return RINFS_ERR_CORRUPT;
+        rollback_error = rinfs_rollback_allocated_block(
+            mount, allocated_data_block);
+        *phys_block = 0u;
+        return rollback_error != RINFS_OK ? rollback_error
+                                          : RINFS_ERR_CORRUPT;
     }
 
     uint64_t* pointers = (uint64_t*)rinfs_malloc(block_size);
     if (!pointers) {
-        (void)rinfs_block_free(mount, *phys_block);
-        return RINFS_ERR_NOMEM;
+        rollback_error = rinfs_rollback_allocated_block(
+            mount, allocated_data_block);
+        *phys_block = 0u;
+        return rollback_error != RINFS_OK ? rollback_error
+                                          : RINFS_ERR_NOMEM;
     }
 
     /* Walk the existing prefix.  A missing suffix is built off-tree and only
@@ -18893,13 +18912,19 @@ static int alloc_file_block(RinFS_Mount* mount, RinFS_Inode* inode, uint64_t fil
 
 fail_nodes:
     for (uint32_t level = first_missing; level < depth; level++) {
-        if (new_nodes[level] != 0) (void)rinfs_block_free(mount, new_nodes[level]);
+        if (new_nodes[level] != 0) {
+            rollback_error = rinfs_rollback_allocated_block(
+                mount, new_nodes[level]);
+            if (rollback_error != RINFS_OK) break;
+        }
     }
 fail_data:
-    (void)rinfs_block_free(mount, allocated_data_block);
+    if (rollback_error == RINFS_OK)
+        rollback_error = rinfs_rollback_allocated_block(
+            mount, allocated_data_block);
     *phys_block = 0;
     rinfs_free(pointers);
-    return err;
+    return rollback_error != RINFS_OK ? rollback_error : err;
 }
 
 static uint64_t rinfs_indirect_entry_capacity(uint64_t ptrs_per_block,
