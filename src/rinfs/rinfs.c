@@ -214,7 +214,7 @@ static inline void rinfs_spin_preempt_leave(void) {}
 #endif
 
 #if defined(RIN_KERNEL) && defined(RIN_FREESTANDING) && defined(__x86_64__)
-#include "kernel/arch/x86_64/va_layout.h"
+#include "kernel/arch/x86_64/mmu/va_layout.h"
 extern uint64_t platform_pmm_alloc_file_cache_page(void);
 extern void platform_pmm_free_page(uint64_t address);
 #endif
