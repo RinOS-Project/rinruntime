@@ -781,6 +781,14 @@ static int rinfs_shared_lock_release(RinFS_Mount* mount,
     return result;
 }
 
+static int rinfs_shared_lock_error_after_release(int operation_error,
+                                                  int release_error) {
+    if (release_error != RINFS_OK &&
+        (release_error != RINFS_ERR_ROFS || operation_error == RINFS_OK))
+        return release_error;
+    return operation_error;
+}
+
 static size_t rinfs_shared_heap_align(size_t value) {
     const size_t mask = (size_t)RINFS_SHARED_HEAP_ALIGNMENT - 1u;
     return value > (size_t)-1 - mask ? 0u : (value + mask) & ~mask;
@@ -859,8 +867,9 @@ static int rinfs_shared_heap_lock(RinFS_Mount* mount) {
     if (recovered && !rinfs_shared_heap_recover_locked(mount)) {
         mount->shared_arena_recovery_failed = 1u;
         rinfs_shared_lock_fence(mount);
-        (void)rinfs_shared_lock_release(mount, &mount->shared_arena_lock);
-        return RINFS_ERR_CORRUPT;
+        return rinfs_shared_lock_error_after_release(
+            RINFS_ERR_CORRUPT,
+            rinfs_shared_lock_release(mount, &mount->shared_arena_lock));
     }
     return RINFS_OK;
 }
@@ -1562,8 +1571,9 @@ static int rinfs_block_allocation_lock(RinFS_Mount* mount) {
             err = rinfs_shared_allocation_recover_locked(mount, 0);
         if (err != RINFS_OK) {
             mount->readonly = 1;
-            (void)rinfs_shared_lock_release(
-                mount, &mount->block_allocation_lock);
+            err = rinfs_shared_lock_error_after_release(
+                err, rinfs_shared_lock_release(
+                         mount, &mount->block_allocation_lock));
         }
         return err;
     }
@@ -1612,8 +1622,9 @@ static int rinfs_inode_allocation_lock(RinFS_Mount* mount) {
             err = rinfs_shared_allocation_recover_locked(mount, 1);
         if (err != RINFS_OK) {
             mount->readonly = 1;
-            (void)rinfs_shared_lock_release(
-                mount, &mount->inode_allocation_lock);
+            err = rinfs_shared_lock_error_after_release(
+                err, rinfs_shared_lock_release(
+                         mount, &mount->inode_allocation_lock));
         }
         return err;
     }
@@ -1746,12 +1757,14 @@ static int rinfs_inode_table_lock(RinFS_Mount* mount, uint64_t block) {
     if (lock_err != RINFS_OK) return lock_err;
     if (!recovered) owner_token = rinfs_shared_lock_token(mount);
     if (owner_token == 0u) {
-        (void)rinfs_shared_lock_release(mount, lock);
-        return RINFS_ERR_CORRUPT;
+        return rinfs_shared_lock_error_after_release(
+            RINFS_ERR_CORRUPT, rinfs_shared_lock_release(mount, lock));
     }
     int err = rinfs_inode_table_recover_log_locked(
         mount, lock_index, owner_token);
-    if (err != RINFS_OK) (void)rinfs_shared_lock_release(mount, lock);
+    if (err != RINFS_OK)
+        err = rinfs_shared_lock_error_after_release(
+            err, rinfs_shared_lock_release(mount, lock));
     return err;
 }
 
@@ -1897,8 +1910,9 @@ static int rinfs_shared_content_lock(RinFS_Mount* mount) {
          * mount, release the shared lock, and propagate the recovery error. */
         mount->readonly = 1;
         mount->content_lease_closing = UINT32_MAX;
-        (void)rinfs_shared_lock_release(mount, &mount->content_lease_lock);
-        return err;
+        return rinfs_shared_lock_error_after_release(
+            err, rinfs_shared_lock_release(
+                     mount, &mount->content_lease_lock));
     }
     return RINFS_OK;
 }
@@ -1990,8 +2004,8 @@ static int rinfs_shared_cache_lock(RinFS_Mount* mount,
         break;
     default:
         rinfs_shared_lock_fence(mount);
-        (void)rinfs_shared_lock_release(mount, lock);
-        return RINFS_ERR_CORRUPT;
+        return rinfs_shared_lock_error_after_release(
+            RINFS_ERR_CORRUPT, rinfs_shared_lock_release(mount, lock));
     }
     return RINFS_OK;
 }
@@ -2033,14 +2047,15 @@ static int rinfs_page_cache_lock(RinFS_PageCache* cache) {
             if (lock_err != RINFS_OK) return lock_err;
         }
         if (cache->recovery_failed != 0u) {
-            (void)rinfs_shared_lock_release(mount, &cache->lock);
-            return RINFS_ERR_CORRUPT;
+            return rinfs_shared_lock_error_after_release(
+                RINFS_ERR_CORRUPT,
+                rinfs_shared_lock_release(mount, &cache->lock));
         }
         if (recovered || rinfs_page_cache_has_stale_owner(cache))
             err = rinfs_page_cache_recover_locked(cache);
         if (err != RINFS_OK) {
-            (void)rinfs_shared_lock_release(mount, &cache->lock);
-            return err;
+            return rinfs_shared_lock_error_after_release(
+                err, rinfs_shared_lock_release(mount, &cache->lock));
         }
 #if defined(RIN_PERFORMANCE_TRACE) && RIN_PERFORMANCE_TRACE
         if (contended) {
@@ -7906,9 +7921,9 @@ static int rinfs_journal_transaction_lock(RinFS_Mount* mount) {
         /* Keep the namespace closed to mutation, but release the robust lock
          * normally. A later mount can retry the durable journal recovery. */
         mount->readonly = 1;
-        (void)rinfs_shared_lock_release(
-            mount, &mount->namespace_journal_lock);
-        return lock_err;
+        return rinfs_shared_lock_error_after_release(
+            lock_err, rinfs_shared_lock_release(
+                          mount, &mount->namespace_journal_lock));
     }
     return RINFS_OK;
 }
@@ -16462,12 +16477,14 @@ static int rinfs_superblock_lock(RinFS_Mount* mount) {
     if (lock_err != RINFS_OK) return lock_err;
     if (!recovered) owner_token = rinfs_shared_lock_token(mount);
     if (owner_token == 0u) {
-        (void)rinfs_shared_lock_release(mount, &mount->superblock_lock);
-        return RINFS_ERR_CORRUPT;
+        return rinfs_shared_lock_error_after_release(
+            RINFS_ERR_CORRUPT,
+            rinfs_shared_lock_release(mount, &mount->superblock_lock));
     }
     int err = rinfs_superblock_recover_locked(mount, owner_token);
     if (err != RINFS_OK)
-        (void)rinfs_shared_lock_release(mount, &mount->superblock_lock);
+        err = rinfs_shared_lock_error_after_release(
+            err, rinfs_shared_lock_release(mount, &mount->superblock_lock));
     return err;
 }
 
