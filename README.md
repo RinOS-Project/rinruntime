@@ -8,8 +8,12 @@ the corresponding Core gitlink. The resolver reuses the complete sibling set
 only when every checkout is clean and at its pinned revision. Otherwise it
 fetches the full set into the build directory's `rinruntime-deps` cache, so a
 dirty or missing sibling checkout is never changed and relative includes keep
-their expected sibling layout. Set `RINRUNTIME_DEPENDENCY_CACHE_ROOT` to share
-that cache between separate CMake and Meson build directories.
+their expected sibling layout. Cached dependency sets are isolated by a digest
+of their locked URLs and revisions, and per-dependency OS locks serialize
+initialization across concurrent CMake/Meson configurations. A second build
+with different pins therefore cannot move a checkout while the first build is
+using it. Set `RINRUNTIME_DEPENDENCY_CACHE_ROOT` to share that cache between
+separate CMake and Meson build directories.
 
 For example:
 

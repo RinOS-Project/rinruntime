@@ -5,11 +5,15 @@
 from __future__ import annotations
 
 import argparse
+import errno
+import hashlib
 import json
 import os
 import re
 import subprocess
 import sys
+import time
+from contextlib import contextmanager
 from pathlib import Path
 
 from prepare_i18n_header import prepare as prepare_i18n_header
@@ -52,10 +56,59 @@ def _is_clean_pinned_checkout(path: Path, dependency: dict[str, object]) -> bool
         return False
 
 
+@contextmanager
+def _dependency_cache_lock(path: Path):
+    """Serialize initialization and validation of one pinned checkout."""
+    lock_path = path.with_name(path.name + ".lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a+b") as lock_file:
+        lock_file.seek(0, os.SEEK_END)
+        if lock_file.tell() == 0:
+            lock_file.write(b"\0")
+            lock_file.flush()
+        lock_file.seek(0)
+        if os.name == "nt":
+            import msvcrt
+
+            retryable = {
+                errno.EACCES,
+                getattr(errno, "EAGAIN", errno.EACCES),
+                getattr(errno, "EDEADLK", errno.EACCES),
+            }
+            while True:
+                try:
+                    msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, 1)
+                    break
+                except OSError as error:
+                    if error.errno not in retryable:
+                        raise
+                    time.sleep(0.05)
+            try:
+                yield
+            finally:
+                lock_file.seek(0)
+                msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
 def _ensure_cache_checkout(path: Path, dependency: dict[str, object]) -> Path:
+    path = path.resolve()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with _dependency_cache_lock(path):
+        return _ensure_cache_checkout_locked(path, dependency)
+
+
+def _ensure_cache_checkout_locked(path: Path,
+                                  dependency: dict[str, object]) -> Path:
     url = str(dependency["url"])
     revision = str(dependency["revision"])
-    path.parent.mkdir(parents=True, exist_ok=True)
 
     if path.exists():
         if not path.is_dir() or not (path / ".git").exists():
@@ -127,6 +180,20 @@ def _verify_core_dependency_pins(source_root: Path, names: list[str],
                 f"{name} to {entries[name]['revision']}")
 
 
+def _dependency_cache_namespace(
+        names: list[str], entries: dict[str, dict[str, object]]) -> str:
+    identity = {
+        name: {
+            "url": str(entries[name].get("url", "")),
+            "revision": str(entries[name].get("revision", "")),
+        }
+        for name in sorted(names)
+    }
+    canonical = json.dumps(identity, sort_keys=True,
+                           separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(canonical).hexdigest()
+
+
 def _resolve(source_root: Path, build_root: Path, names: list[str],
              manifest_path: Path) -> dict[str, Path]:
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -154,6 +221,7 @@ def _resolve(source_root: Path, build_root: Path, names: list[str],
     if any(not cache_name for cache_name in cache_names.values()) or \
        len(set(cache_names.values())) != len(cache_names):
         raise RuntimeError("dependency checkout paths must have unique directory names")
+    cache_namespace = _dependency_cache_namespace(names, entries)
     # Keep sibling-relative includes inside libi18n valid by choosing all local
     # checkouts together or resolving the complete dependency set in one cache.
     # Preserve each checkout's sibling name (for example RinOS-SDK and RinGPU)
@@ -167,7 +235,8 @@ def _resolve(source_root: Path, build_root: Path, names: list[str],
         cache_root = (Path(configured_cache).expanduser().resolve()
                       if configured_cache else build_root / "rinruntime-deps")
         resolved = {
-            name: _ensure_cache_checkout(cache_root / cache_names[name], entries[name])
+            name: _ensure_cache_checkout(
+                cache_root / cache_namespace / cache_names[name], entries[name])
             for name in names
         }
 
