@@ -580,6 +580,8 @@ typedef struct RinFS_Mount RinFS_Mount;
 
 struct RinFS_Mount {
     int              mounted;
+    /* Nonzero denies writes. RinFS uses bit 0 for a sticky read-only fence
+     * and higher private bits for recovery work that may be retried in-place. */
     int              readonly;
     uint32_t         mount_flags;
     RinFS_Superblock sb;
