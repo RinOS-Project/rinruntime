@@ -6614,7 +6614,6 @@ static int rinfs_content_lease_release_ex(RinFS_Mount* mount, uint64_t ino,
                                           uint64_t token, int writer,
                                           int* released_out) {
     RinFS_ContentLeaseNode *node;
-    RinFS_ContentLeaseNode** link;
     uint32_t shared_owner_row = 0u;
     int free_node = 0;
     int err;
@@ -6677,13 +6676,9 @@ static int rinfs_content_lease_release_ex(RinFS_Mount* mount, uint64_t ino,
         node->tracked_open_references == 0u &&
         node->wincompat_share_handle_count == 0u &&
         node->delete_pending == 0u &&
-        node->delete_on_close_count == 0u) {
-        link = (RinFS_ContentLeaseNode**)&mount->content_leases;
-        while (*link != NULL && *link != node) link = &(*link)->next;
-        if (*link == node) {
-            *link = node->next;
-            free_node = 1;
-        }
+        node->delete_on_close_count == 0u &&
+        node->delete_on_close_paths == NULL) {
+        free_node = 1;
     }
     /* The lease counters have been decremented. If unlock or deferred node
      * reclamation fails, the caller must not retry this token. */
@@ -6693,9 +6688,7 @@ static int rinfs_content_lease_release_ex(RinFS_Mount* mount, uint64_t ino,
         rinfs_mount_force_readonly(mount);
         return err;
     }
-    return free_node
-        ? (int)rinfs_mount_runtime_free_status(mount, node, RINFS_OK)
-        : RINFS_OK;
+    return free_node ? rinfs_shared_owner_reap(mount) : RINFS_OK;
 }
 
 static int rinfs_content_lease_release(RinFS_Mount* mount, uint64_t ino,
@@ -6856,7 +6849,6 @@ static int rinfs_content_pin_release(RinFS_Mount* mount, uint64_t ino,
                                      uint64_t shared_reference_cookie) {
     int content_unlock_error = RINFS_OK;
     RinFS_ContentLeaseNode* node;
-    RinFS_ContentLeaseNode** link;
     RinFS_CloseReferenceRecord* close_record = NULL;
     RinFS_SharedOwnerReferenceV1* shared_reference = NULL;
     uint32_t tracked_count = 0u;
@@ -6988,13 +6980,9 @@ static int rinfs_content_pin_release(RinFS_Mount* mount, uint64_t ino,
             node->references == 0u && node->waiting_writers == 0u &&
             node->writer == 0u && node->readers == 0u &&
             node->delete_pending == 0u &&
-            node->delete_on_close_count == 0u) {
-        link = (RinFS_ContentLeaseNode**)&mount->content_leases;
-        while (*link != NULL && *link != node) link = &(*link)->next;
-        if (*link == node) {
-            *link = node->next;
-            free_node = 1;
-        }
+            node->delete_on_close_count == 0u &&
+            node->delete_on_close_paths == NULL) {
+        free_node = 1;
     }
     *reclaim_out = reclaim;
     rinfs_keep_first_error(&content_unlock_error, rinfs_shared_content_unlock(mount));
@@ -7003,7 +6991,7 @@ static int rinfs_content_pin_release(RinFS_Mount* mount, uint64_t ino,
     if (free_node)
         rinfs_keep_first_error(
             &content_unlock_error,
-            rinfs_mount_runtime_free(mount, node, NULL));
+            rinfs_shared_owner_reap(mount));
     return rinfs_content_unlock_status((RINFS_OK), content_unlock_error);
 }
 
@@ -7401,7 +7389,6 @@ static int rinfs_close_ref_finish(
     RinFS_CloseReferenceRecord identity;
     RinFS_CloseReferenceRecord* record;
     RinFS_ContentLeaseNode* node;
-    RinFS_ContentLeaseNode** link;
     RinFS_SharedOwnerReferenceV1* shared_reference = NULL;
     uint32_t tracked_count;
     uint32_t active_count;
@@ -7516,13 +7503,9 @@ static int rinfs_close_ref_finish(
         node->tracked_open_references == 0u &&
         node->wincompat_share_handle_count == 0u &&
         node->delete_pending == 0u &&
-        node->delete_on_close_count == 0u) {
-        link = (RinFS_ContentLeaseNode**)&mount->content_leases;
-        while (*link != NULL && *link != node) link = &(*link)->next;
-        if (*link == node) {
-            *link = node->next;
-            free_node = 1;
-        }
+        node->delete_on_close_count == 0u &&
+        node->delete_on_close_paths == NULL) {
+        free_node = 1;
     }
     rinfs_close_ref_integrity_update();
     rinfs_keep_first_error(&content_unlock_error, rinfs_shared_content_unlock(mount));
@@ -7530,7 +7513,7 @@ static int rinfs_close_ref_finish(
     if (free_node)
         rinfs_keep_first_error(
             &content_unlock_error,
-            rinfs_mount_runtime_free(mount, node, NULL));
+            rinfs_shared_owner_reap(mount));
     return rinfs_content_unlock_status((RINFS_OK), content_unlock_error);
 }
 
@@ -21438,11 +21421,10 @@ static int rinfs_delete_on_close_reap_inode(RinFS_Mount* mount,
     int result;
     int satisfied;
     int removed;
-    int free_lease;
     int free_error;
+    int released;
 
     for (;;) {
-        free_lease = 0;
         {
             int content_lock_error = rinfs_shared_content_lock(mount);
             if (content_lock_error != RINFS_OK)
@@ -21534,34 +21516,24 @@ static int rinfs_delete_on_close_reap_inode(RinFS_Mount* mount,
             return rinfs_content_unlock_status((RINFS_ERR_CORRUPT), content_unlock_error);
         }
         *link = pending->next;
+        pending->next = NULL;
         lease->delete_on_close_count--;
         lease->delete_on_close_last_error = 0u;
-        if (lease->delete_on_close_count == 0u) {
-            RinFS_ContentLeaseNode** lease_link =
-                (RinFS_ContentLeaseNode**)&mount->content_leases;
+        free_error = rinfs_mount_runtime_free(mount, pending, &released);
+        if (!released) {
+            pending->next = *link;
+            *link = pending;
+            lease->delete_on_close_count++;
             lease->delete_on_close_reaping = 0u;
-            if (lease->references == 0u && lease->waiting_writers == 0u &&
-                lease->writer == 0u && lease->readers == 0u &&
-                lease->open_references == 0u &&
-                lease->tracked_open_references == 0u &&
-                lease->wincompat_share_handle_count == 0u &&
-                lease->delete_pending == 0u) {
-                while (*lease_link && *lease_link != lease)
-                    lease_link = &(*lease_link)->next;
-                if (*lease_link == lease) {
-                    *lease_link = lease->next;
-                    free_lease = 1;
-                } else {
-                    result = RINFS_ERR_CORRUPT;
-                }
-            }
+            lease->delete_on_close_last_error = (uint32_t)free_error;
+        } else if (lease->delete_on_close_count == 0u ||
+                   free_error != RINFS_OK) {
+            lease->delete_on_close_reaping = 0u;
+        }
+        if (free_error != RINFS_OK) {
+            lease->delete_on_close_last_error = (uint32_t)free_error;
         }
         rinfs_keep_first_error(&content_unlock_error, rinfs_shared_content_unlock(mount));
-        free_error = rinfs_mount_runtime_free(mount, pending, NULL);
-        if (free_lease)
-            rinfs_keep_first_error(
-                &free_error,
-                rinfs_mount_runtime_free(mount, lease, NULL));
 #if defined(RIN_KERNEL)
         if (removed && path[0] == '/')
             platform_rinfs_delete_on_close_notify(path, directory != 0u);
@@ -21607,6 +21579,9 @@ int rinfs_delete_on_close_reap(RinFS_Mount* mount) {
         rinfs_keep_first_error(&content_unlock_error, rinfs_shared_content_unlock(mount));
         if (inode_num == 0u) {
             if (first_error != RINFS_OK) return rinfs_content_unlock_status((first_error), content_unlock_error);
+            first_error = rinfs_shared_owner_reap(mount);
+            if (first_error != RINFS_OK)
+                return rinfs_content_unlock_status((first_error), content_unlock_error);
             return rinfs_content_unlock_status((rinfs_delete_on_close_clear_feature_if_idle(mount)), content_unlock_error);
         }
         result = rinfs_delete_on_close_reap_inode(
