@@ -23778,6 +23778,14 @@ static int rinfs_count_inode_namespace_links(RinFS_Mount* mount,
             ino = first_ino + bit;
             err = rinfs_inode_read(mount, ino, &inode);
             if (err != RINFS_OK) goto out;
+            /* A zero-link directory with an orphan intent may already have
+             * had its contents removed while inode reclaim is pending. It
+             * cannot contribute reachable namespace links, so do not parse
+             * its transient empty-size image while recovering another
+             * orphan. */
+            if (inode.i_links == 0u &&
+                (inode.i_flags & RINFS_IFLG_ORPHAN_INTENT) != 0u)
+                continue;
             if ((inode.i_mode >> 12) != RINFS_FT_DIR) continue;
             if (inode.i_size == 0 ||
                 inode.i_size % mount->sb.s_block_size != 0) {
@@ -23908,7 +23916,7 @@ static int rinfs_rmdir_journal_recover(
     int err;
     if (!mount || !record || record->flags != RINFS_RENAME_RMDIR ||
         record->old_type != RINFS_FT_DIR ||
-        record->old_dir < RINFS_INODE_FIRST ||
+        record->old_dir < RINFS_INODE_ROOT ||
         record->old_dir > mount->sb.s_inode_count ||
         record->new_dir != record->old_dir ||
         record->old_ino < RINFS_INODE_FIRST ||
@@ -26358,8 +26366,27 @@ static int rinfs_restore_transaction_validate_internal(
     return RINFS_OK;
 }
 
+static int rinfs_restore_recover_cleanup_leaks(RinFS_Mount* mount) {
+    RinFS_FullCheckReport report;
+    int error = rinfs_check_full(mount, &report);
+    if (error == RINFS_ERR_CORRUPT &&
+        report.issues == RINFS_FULL_ISSUE_LEAKED_BLOCK &&
+        report.leaked_blocks != 0u) {
+        uint32_t mount_flags = mount->mount_flags;
+        mount->mount_flags |= RINFS_MNT_REPAIR;
+        error = rinfs_repair_full(
+            mount, RINFS_FULL_REPAIR_SAFE_METADATA, &report);
+        mount->mount_flags = mount_flags;
+        return error;
+    }
+    if (error != RINFS_OK || report.issues != 0u)
+        return error != RINFS_OK ? error : RINFS_ERR_CORRUPT;
+    return RINFS_OK;
+}
+
 static int rinfs_restore_commit_record(RinFS_Mount* mount,
-                                       RinFS_RestoreRecord* record) {
+                                       RinFS_RestoreRecord* record,
+                                       int recover_cleanup_leaks) {
     int error;
     if (record->phase == RINFS_RESTORE_PHASE_MOVING_OLD) {
         error = rinfs_restore_record_refresh_children(mount, record);
@@ -26400,6 +26427,10 @@ static int rinfs_restore_commit_record(RinFS_Mount* mount,
     if (record->phase == RINFS_RESTORE_PHASE_DONE) {
         error = rinfs_restore_transaction_remove_dir(mount, record);
         if (error != RINFS_OK) return error;
+        if (recover_cleanup_leaks) {
+            error = rinfs_restore_recover_cleanup_leaks(mount);
+            if (error != RINFS_OK) return error;
+        }
         if (record->root_metadata_valid == 0u)
             return RINFS_ERR_CORRUPT;
         {
@@ -26468,7 +26499,8 @@ static int rinfs_restore_transaction_commit_core(
         internal->record.phase != RINFS_RESTORE_PHASE_CLEANING &&
         internal->record.phase != RINFS_RESTORE_PHASE_DONE)
         return RINFS_ERR_PENDING;
-    error = rinfs_restore_commit_record(internal->mount, &internal->record);
+    error = rinfs_restore_commit_record(internal->mount, &internal->record,
+                                        0);
     if (error != RINFS_OK) {
         rinfs_mount_force_readonly(internal->mount);
         return error;
@@ -26559,7 +26591,7 @@ int rinfs_restore_transaction_mount_recover(RinFS_Mount* mount) {
         record.phase == RINFS_RESTORE_PHASE_ABORTING)
         error = rinfs_restore_abort_record(mount, &record);
     else
-        error = rinfs_restore_commit_record(mount, &record);
+        error = rinfs_restore_commit_record(mount, &record, 1);
     if (error != RINFS_OK) rinfs_mount_force_readonly(mount);
     return error;
 }
