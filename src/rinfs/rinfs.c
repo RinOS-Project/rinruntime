@@ -113,7 +113,13 @@ int rinfs_fork_hooks_prepare(void) {
     for (uint32_t index = 0u; index < RINFS_FORK_HOOK_CAPACITY; ++index) {
         RinFS_ForkHookRecord* record = &g_rinfs_fork_hooks[index];
         if (!record->prepare) continue;
-        if (record->prepare(record->context) != RINFS_OK) {
+        {
+            int prepare_error = record->prepare(record->context);
+            if (prepare_error == RINFS_OK) {
+                g_rinfs_fork_hook_dispatch_indices[
+                    g_rinfs_fork_hook_dispatch_count++] = index;
+                continue;
+            }
             while (g_rinfs_fork_hook_dispatch_count != 0u) {
                 uint32_t prepared_index = g_rinfs_fork_hook_dispatch_indices[
                     --g_rinfs_fork_hook_dispatch_count];
@@ -127,10 +133,8 @@ int rinfs_fork_hooks_prepare(void) {
             }
             rinfs_fork_hook_registry_unlock();
             return rollback_error != RINFS_OK ? rollback_error
-                                               : RINFS_ERR_PENDING;
+                                               : prepare_error;
         }
-        g_rinfs_fork_hook_dispatch_indices[
-            g_rinfs_fork_hook_dispatch_count++] = index;
     }
     __atomic_store_n(&g_rinfs_fork_hook_dispatch_prepared, 1u,
                      __ATOMIC_RELEASE);
