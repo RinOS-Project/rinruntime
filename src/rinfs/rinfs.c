@@ -632,6 +632,7 @@ typedef struct {
 #define RINFS_READONLY_RECOVERY_INODE_ALLOC UINT32_C(0x00000004)
 #define RINFS_READONLY_RECOVERY_INODE_TABLE UINT32_C(0x00000008)
 #define RINFS_READONLY_RECOVERY_SUPERBLOCK UINT32_C(0x00000010)
+#define RINFS_READONLY_RECOVERY_NAMESPACE_JOURNAL UINT32_C(0x00000020)
 
 static uint32_t rinfs_mount_readonly_state(const RinFS_Mount* mount) {
     if (!mount) return RINFS_READONLY_STICKY;
@@ -678,6 +679,7 @@ static int rinfs_mount_recovery_only(const RinFS_Mount* mount) {
 
 static int rinfs_inode_table_retry_pending(RinFS_Mount* mount);
 static int rinfs_mount_prepare_write(RinFS_Mount* mount);
+static int rinfs_namespace_journal_retry_pending(RinFS_Mount* mount);
 static int rinfs_block_write_unprepared(RinFS_Mount* mount, uint64_t block,
                                         const void* buf);
 static int rinfs_superblock_lock(RinFS_Mount* mount);
@@ -1846,6 +1848,11 @@ static int rinfs_mount_prepare_write(RinFS_Mount* mount) {
         err = rinfs_inode_allocation_lock(mount);
         if (err != RINFS_OK) return err;
         err = rinfs_inode_allocation_unlock_status(mount, RINFS_OK);
+        if (err != RINFS_OK) return err;
+    }
+    state = rinfs_mount_readonly_state(mount);
+    if ((state & RINFS_READONLY_RECOVERY_NAMESPACE_JOURNAL) != 0u) {
+        err = rinfs_namespace_journal_retry_pending(mount);
         if (err != RINFS_OK) return err;
     }
     return rinfs_mount_readonly_state(mount) == 0u
@@ -8212,6 +8219,57 @@ static int rinfs_journal_transaction_lock(RinFS_Mount* mount)
 static int rinfs_journal_transaction_unlock(RinFS_Mount* mount)
     __attribute__((warn_unused_result));
 
+/* A failed namespace transaction leaves its durable journal as the recovery
+ * authority. Keep the retry under the same lock as ordinary namespace
+ * mutations, and only clear the fence while replay owns that lock so nested
+ * inode/data helpers can pass their write preflight. */
+static int rinfs_namespace_journal_retry_pending(RinFS_Mount* mount) {
+    const uint32_t recovery_bit =
+        RINFS_READONLY_RECOVERY_NAMESPACE_JOURNAL;
+    int shared_lock;
+    int lock_error;
+    int operation_error = RINFS_OK;
+    int release_error = RINFS_OK;
+    int recovered = 0;
+
+    if (!mount) return RINFS_ERR_INVAL;
+    if (rinfs_mount_sticky_readonly(mount)) return RINFS_ERR_ROFS;
+    if ((rinfs_mount_readonly_state(mount) & recovery_bit) == 0u)
+        return RINFS_OK;
+
+    shared_lock = mount->shared_mapping_base != NULL &&
+                  mount->shared_mount_ready != 0u;
+    if (shared_lock) {
+        lock_error = rinfs_shared_lock_acquire(
+            mount, &mount->namespace_journal_lock, &recovered, NULL);
+        if (lock_error != RINFS_OK) return lock_error;
+    } else {
+        rinfs_spin_lock(&mount->namespace_journal_lock);
+    }
+    (void)recovered;
+
+    if (rinfs_mount_sticky_readonly(mount)) {
+        operation_error = RINFS_ERR_ROFS;
+    } else if ((rinfs_mount_readonly_state(mount) & recovery_bit) != 0u) {
+        /* The lock serializes retry callers. Clear only for this replay so
+         * its nested metadata helpers are not rejected as read-only. */
+        rinfs_mount_recovery_clear(mount, recovery_bit);
+        operation_error = rinfs_journal_recover(mount);
+        if (operation_error != RINFS_OK)
+            rinfs_mount_recovery_fence(mount, recovery_bit,
+                                       operation_error);
+    }
+
+    if (shared_lock) {
+        release_error = rinfs_shared_lock_release(
+            mount, &mount->namespace_journal_lock);
+        return rinfs_shared_lock_error_after_release(
+            operation_error, release_error);
+    }
+    rinfs_spin_unlock(&mount->namespace_journal_lock);
+    return operation_error;
+}
+
 static int rinfs_journal_transaction_lock(RinFS_Mount* mount) {
     if (!mount) return RINFS_ERR_INVAL;
     int prepare_error = rinfs_mount_prepare_write(mount);
@@ -8227,9 +8285,10 @@ static int rinfs_journal_transaction_lock(RinFS_Mount* mount) {
     (void)recovered;
     if (!mount->readonly &&
         (lock_err = rinfs_journal_recover(mount)) != RINFS_OK) {
-        /* Keep the namespace closed to mutation, but release the robust lock
-         * normally. A later mount can retry the durable journal recovery. */
-        rinfs_mount_force_readonly(mount);
+        /* Keep the namespace closed to mutation while preserving same-mount
+         * retry for transient storage and scratch-allocation failures. */
+        rinfs_mount_recovery_fence(
+            mount, RINFS_READONLY_RECOVERY_NAMESPACE_JOURNAL, lock_err);
         return rinfs_shared_lock_error_after_release(
             lock_err, rinfs_shared_lock_release(
                           mount, &mount->namespace_journal_lock));
@@ -8247,7 +8306,10 @@ static int rinfs_journal_transaction_unlock(RinFS_Mount* mount) {
     }
     if (!mount->readonly) {
         recovery_err = rinfs_journal_recover(mount);
-        if (recovery_err != RINFS_OK) rinfs_mount_force_readonly(mount);
+        if (recovery_err != RINFS_OK)
+            rinfs_mount_recovery_fence(
+                mount, RINFS_READONLY_RECOVERY_NAMESPACE_JOURNAL,
+                recovery_err);
     }
     unlock_err = rinfs_shared_lock_release(
         mount, &mount->namespace_journal_lock);
@@ -9729,7 +9791,9 @@ static int rinfs_journal_begin_rmdir(RinFS_Mount* mount,
 static int rinfs_journal_finish(RinFS_Mount* mount) {
     int err = rinfs_sync(mount);
     if (err == RINFS_OK) err = rinfs_journal_clear(mount);
-    if (err != RINFS_OK && mount) rinfs_mount_force_readonly(mount);
+    if (err != RINFS_OK && mount)
+        rinfs_mount_recovery_fence(
+            mount, RINFS_READONLY_RECOVERY_NAMESPACE_JOURNAL, err);
     return err;
 }
 
@@ -14552,11 +14616,19 @@ int rinfs_resize(RinFS_Mount* mount, uint64_t target_blocks) {
         return RINFS_ERR_INVAL;
     }
     err = rinfs_resize_journal_load(mount, &transaction, &resize_active);
-    if (err != RINFS_OK) return err;
+    if (err != RINFS_OK) {
+        rinfs_mount_recovery_fence(
+            mount, RINFS_READONLY_RECOVERY_NAMESPACE_JOURNAL, err);
+        return err;
+    }
     if (resize_active) {
         if (transaction.target_block_count != target_blocks)
             return RINFS_ERR_INVAL;
-        return rinfs_resize_apply(mount, &transaction);
+        err = rinfs_resize_apply(mount, &transaction);
+        if (err != RINFS_OK)
+            rinfs_mount_recovery_fence(
+                mount, RINFS_READONLY_RECOVERY_NAMESPACE_JOURNAL, err);
+        return err;
     }
     if (target_blocks == mount->sb.s_block_count) return RINFS_OK;
     if (!rinfs_resize_layout_compatible(
@@ -14564,7 +14636,11 @@ int rinfs_resize(RinFS_Mount* mount, uint64_t target_blocks) {
         return RINFS_ERR_INVAL;
     }
     err = rinfs_journal_load(mount, &rename_record, &rename_active);
-    if (err != RINFS_OK) return err;
+    if (err != RINFS_OK) {
+        rinfs_mount_recovery_fence(
+            mount, RINFS_READONLY_RECOVERY_NAMESPACE_JOURNAL, err);
+        return err;
+    }
     if (rename_active) return RINFS_ERR_PENDING;
     err = rinfs_check_full(mount, &report);
     if (err != RINFS_OK || report.issues != 0u)
@@ -14578,8 +14654,16 @@ int rinfs_resize(RinFS_Mount* mount, uint64_t target_blocks) {
     transaction.old_block_count = mount->sb.s_block_count;
     transaction.target_block_count = target_blocks;
     err = rinfs_resize_journal_store(mount, &transaction);
-    if (err != RINFS_OK) return err;
-    return rinfs_resize_apply(mount, &transaction);
+    if (err != RINFS_OK) {
+        rinfs_mount_recovery_fence(
+            mount, RINFS_READONLY_RECOVERY_NAMESPACE_JOURNAL, err);
+        return err;
+    }
+    err = rinfs_resize_apply(mount, &transaction);
+    if (err != RINFS_OK)
+        rinfs_mount_recovery_fence(
+            mount, RINFS_READONLY_RECOVERY_NAMESPACE_JOURNAL, err);
+    return err;
 }
 
 static int rinfs_journal_recover(RinFS_Mount* mount) {
@@ -22255,7 +22339,8 @@ static int rinfs_rename_impl(RinFS_Mount* mount, uint64_t old_dir,
     if (err != RINFS_OK) {
         if ((mount->sb.s_compat_features &
              RINFS_FEATURE_COMPAT_RENAME_JOURNAL) != 0u)
-            rinfs_mount_force_readonly(mount);
+            rinfs_mount_recovery_fence(
+                mount, RINFS_READONLY_RECOVERY_NAMESPACE_JOURNAL, err);
         return err;
     }
 
@@ -22266,7 +22351,8 @@ static int rinfs_rename_impl(RinFS_Mount* mount, uint64_t old_dir,
             /* The block mutation may have reached stable storage even when
              * its readback reported an error. Leave the intent for mount
              * recovery instead of clearing the only reconciliation record. */
-            rinfs_mount_force_readonly(mount);
+            rinfs_mount_recovery_fence(
+                mount, RINFS_READONLY_RECOVERY_NAMESPACE_JOURNAL, err);
             return err;
         }
     }
@@ -22281,7 +22367,9 @@ static int rinfs_rename_impl(RinFS_Mount* mount, uint64_t old_dir,
         if (rollback_err == RINFS_OK)
             (void)rinfs_journal_finish(mount);
         else
-            rinfs_mount_force_readonly(mount);
+            rinfs_mount_recovery_fence(
+                mount, RINFS_READONLY_RECOVERY_NAMESPACE_JOURNAL,
+                rollback_err);
         return err;
     }
 
@@ -22290,7 +22378,8 @@ static int rinfs_rename_impl(RinFS_Mount* mount, uint64_t old_dir,
     if (err != RINFS_OK) {
         if ((mount->sb.s_compat_features &
              RINFS_FEATURE_COMPAT_RENAME_JOURNAL) != 0u)
-            rinfs_mount_force_readonly(mount);
+            rinfs_mount_recovery_fence(
+                mount, RINFS_READONLY_RECOVERY_NAMESPACE_JOURNAL, err);
         return err;
     }
 
@@ -22306,7 +22395,9 @@ static int rinfs_rename_impl(RinFS_Mount* mount, uint64_t old_dir,
         if (rollback_err == RINFS_OK)
             (void)rinfs_journal_finish(mount);
         else
-            rinfs_mount_force_readonly(mount);
+            rinfs_mount_recovery_fence(
+                mount, RINFS_READONLY_RECOVERY_NAMESPACE_JOURNAL,
+                rollback_err);
         return err;
     }
 
@@ -22329,7 +22420,9 @@ static int rinfs_rename_impl(RinFS_Mount* mount, uint64_t old_dir,
             if (rollback_err == RINFS_OK)
                 (void)rinfs_journal_finish(mount);
             else
-                rinfs_mount_force_readonly(mount);
+                rinfs_mount_recovery_fence(
+                    mount, RINFS_READONLY_RECOVERY_NAMESPACE_JOURNAL,
+                    rollback_err);
             return err;
         }
     }
@@ -22338,7 +22431,8 @@ static int rinfs_rename_impl(RinFS_Mount* mount, uint64_t old_dir,
     if (err != RINFS_OK) {
         if ((mount->sb.s_compat_features &
              RINFS_FEATURE_COMPAT_RENAME_JOURNAL) != 0u)
-            rinfs_mount_force_readonly(mount);
+            rinfs_mount_recovery_fence(
+                mount, RINFS_READONLY_RECOVERY_NAMESPACE_JOURNAL, err);
         return err;
     }
     if (new_dir != old_dir) {
@@ -22346,7 +22440,8 @@ static int rinfs_rename_impl(RinFS_Mount* mount, uint64_t old_dir,
         if (err != RINFS_OK) {
             if ((mount->sb.s_compat_features &
                  RINFS_FEATURE_COMPAT_RENAME_JOURNAL) != 0u)
-                rinfs_mount_force_readonly(mount);
+                rinfs_mount_recovery_fence(
+                    mount, RINFS_READONLY_RECOVERY_NAMESPACE_JOURNAL, err);
             return err;
         }
     }
@@ -22359,7 +22454,8 @@ static int rinfs_rename_impl(RinFS_Mount* mount, uint64_t old_dir,
         if (err != RINFS_OK) {
             if ((mount->sb.s_compat_features &
                  RINFS_FEATURE_COMPAT_RENAME_JOURNAL) != 0u)
-                rinfs_mount_force_readonly(mount);
+                rinfs_mount_recovery_fence(
+                    mount, RINFS_READONLY_RECOVERY_NAMESPACE_JOURNAL, err);
             return err;
         }
     }
@@ -22373,7 +22469,8 @@ static int rinfs_rename_impl(RinFS_Mount* mount, uint64_t old_dir,
     if (err != RINFS_OK) {
         if ((mount->sb.s_compat_features &
              RINFS_FEATURE_COMPAT_RENAME_JOURNAL) != 0u)
-            rinfs_mount_force_readonly(mount);
+            rinfs_mount_recovery_fence(
+                mount, RINFS_READONLY_RECOVERY_NAMESPACE_JOURNAL, err);
         return err;
     }
 
@@ -22670,7 +22767,8 @@ static int rinfs_rmdir_internal(RinFS_Mount* mount, uint64_t parent_ino,
     if (journal_enabled) {
         err = rinfs_journal_begin_rmdir(mount, parent_ino, name, dir_ino);
         if (err != RINFS_OK) {
-            rinfs_mount_force_readonly(mount);
+            rinfs_mount_recovery_fence(
+                mount, RINFS_READONLY_RECOVERY_NAMESPACE_JOURNAL, err);
             rinfs_keep_first_error(&content_unlock_error, rinfs_content_lease_release(mount, dir_ino, inode_generation,
                                         lease_token, 1));
             return rinfs_content_unlock_status((err), content_unlock_error);
@@ -22679,7 +22777,11 @@ static int rinfs_rmdir_internal(RinFS_Mount* mount, uint64_t parent_ino,
 
     err = rinfs_inode_orphan_commit(mount, dir_ino, &dir_inode, 1);
     if (err != RINFS_OK) {
-        rinfs_mount_force_readonly(mount);
+        if (journal_enabled)
+            rinfs_mount_recovery_fence(
+                mount, RINFS_READONLY_RECOVERY_NAMESPACE_JOURNAL, err);
+        else
+            rinfs_mount_force_readonly(mount);
         rinfs_keep_first_error(&content_unlock_error, rinfs_content_lease_release(mount, dir_ino, inode_generation,
                                     lease_token, 1));
         return rinfs_content_unlock_status((err), content_unlock_error);
@@ -22688,7 +22790,11 @@ static int rinfs_rmdir_internal(RinFS_Mount* mount, uint64_t parent_ino,
     /* Remove directory entry from parent */
     err = rinfs_dirent_remove_identity(mount, parent_ino, name, dir_ino);
     if (err != RINFS_OK) {
-        rinfs_mount_force_readonly(mount);
+        if (journal_enabled)
+            rinfs_mount_recovery_fence(
+                mount, RINFS_READONLY_RECOVERY_NAMESPACE_JOURNAL, err);
+        else
+            rinfs_mount_force_readonly(mount);
         rinfs_keep_first_error(&content_unlock_error, rinfs_content_lease_release(mount, dir_ino, inode_generation,
                                     lease_token, 1));
         return rinfs_content_unlock_status((err), content_unlock_error);
@@ -22697,7 +22803,11 @@ static int rinfs_rmdir_internal(RinFS_Mount* mount, uint64_t parent_ino,
     dir_inode.i_links = 0u;
     err = rinfs_inode_orphan_commit(mount, dir_ino, &dir_inode, 1);
     if (err != RINFS_OK) {
-        rinfs_mount_force_readonly(mount);
+        if (journal_enabled)
+            rinfs_mount_recovery_fence(
+                mount, RINFS_READONLY_RECOVERY_NAMESPACE_JOURNAL, err);
+        else
+            rinfs_mount_force_readonly(mount);
         rinfs_keep_first_error(&content_unlock_error, rinfs_content_lease_release(mount, dir_ino, inode_generation,
                                     lease_token, 1));
         return rinfs_content_unlock_status((err), content_unlock_error);
@@ -22710,7 +22820,11 @@ static int rinfs_rmdir_internal(RinFS_Mount* mount, uint64_t parent_ino,
      * lost after the dentry commit. */
     err = rinfs_dir_recount_links(mount, parent_ino);
     if (err != RINFS_OK) {
-        rinfs_mount_force_readonly(mount);
+        if (journal_enabled)
+            rinfs_mount_recovery_fence(
+                mount, RINFS_READONLY_RECOVERY_NAMESPACE_JOURNAL, err);
+        else
+            rinfs_mount_force_readonly(mount);
         rinfs_keep_first_error(&content_unlock_error, rinfs_content_lease_release(mount, dir_ino, inode_generation,
                                     lease_token, 1));
         return rinfs_content_unlock_status((err), content_unlock_error);
@@ -22718,7 +22832,8 @@ static int rinfs_rmdir_internal(RinFS_Mount* mount, uint64_t parent_ino,
     if (journal_enabled) {
         err = rinfs_journal_finish(mount);
         if (err != RINFS_OK) {
-            rinfs_mount_force_readonly(mount);
+            rinfs_mount_recovery_fence(
+                mount, RINFS_READONLY_RECOVERY_NAMESPACE_JOURNAL, err);
             rinfs_keep_first_error(&content_unlock_error, rinfs_content_lease_release(mount, dir_ino, inode_generation,
                                         lease_token, 1));
             return rinfs_content_unlock_status((err), content_unlock_error);
