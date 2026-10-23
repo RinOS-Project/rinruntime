@@ -1114,6 +1114,10 @@ int rinfs_mmap_source_invalidate_range(RinFS_MmapSource* source,
 int rinfs_mmap_source_release(RinFS_MmapSource* source,
                               uint64_t reference_generation,
                               uint64_t reference_cookie);
+int rinfs_mmap_source_release_ex(RinFS_MmapSource* source,
+                                 uint64_t reference_generation,
+                                 uint64_t reference_cookie,
+                                 int* source_consumed_out);
 int rinfs_inode_alloc(RinFS_Mount* mount, uint64_t* ino);
 int rinfs_inode_free(RinFS_Mount* mount, uint64_t ino);
 

@@ -1638,6 +1638,7 @@ struct RinFS_MmapSource {
 #define RINFS_MAX_MMAP_SOURCE_REFERENCES 1024u
 #define RINFS_MMAP_SOURCE_ACTIVE 1u
 #define RINFS_MMAP_SOURCE_RETIRING 2u
+#define RINFS_MMAP_SOURCE_RELEASED 3u
 
 typedef struct {
     RinFS_MmapSource* source;
@@ -1646,6 +1647,7 @@ typedef struct {
     uint64_t cookie;
     uint32_t state;
     uint32_t active_operations;
+    uint32_t pin_released;
 } RinFS_MmapSourceReference;
 
 static int rinfs_check_inode_type(uint16_t mode);
@@ -3170,6 +3172,7 @@ static int rinfs_mmap_source_register(RinFS_MmapSource* source,
     free_record->cookie = cookie;
     free_record->state = RINFS_MMAP_SOURCE_ACTIVE;
     free_record->active_operations = 0u;
+    free_record->pin_released = 0u;
     ++g_rinfs_mmap_source_reference_count;
     source->reference_generation = generation;
     source->reference_cookie = cookie;
@@ -3243,21 +3246,35 @@ static void rinfs_mmap_source_end_operation(
 }
 
 static int rinfs_mmap_source_begin_retire(
-    RinFS_MmapSource* source, uint64_t generation, uint64_t cookie) {
+    RinFS_MmapSource* source, uint64_t generation, uint64_t cookie,
+    int* pin_released_out) {
     RinFS_MmapSourceReference* record;
+    if (pin_released_out) *pin_released_out = 0;
+    if (!pin_released_out) return RINFS_ERR_INVAL;
     rinfs_spin_lock(&g_rinfs_mmap_source_lock);
     if (!rinfs_mmap_source_audit_locked()) {
         rinfs_spin_unlock(&g_rinfs_mmap_source_lock);
         return RINFS_ERR_CORRUPT;
     }
     record = rinfs_mmap_source_find_locked(source, generation, cookie);
-    if (!record || record->state != RINFS_MMAP_SOURCE_ACTIVE ||
-        __atomic_load_n(&source->magic, __ATOMIC_ACQUIRE) !=
-            RINFS_MMAP_SOURCE_MAGIC ||
-        source->reference_generation != generation ||
+    if (!record || source->reference_generation != generation ||
         source->reference_cookie != cookie) {
         rinfs_spin_unlock(&g_rinfs_mmap_source_lock);
         return RINFS_ERR_STALE;
+    }
+    if (record->state == RINFS_MMAP_SOURCE_RELEASED &&
+        record->pin_released == 1u && record->active_operations == 0u &&
+        __atomic_load_n(&source->magic, __ATOMIC_ACQUIRE) == 0u) {
+        *pin_released_out = 1;
+        rinfs_spin_unlock(&g_rinfs_mmap_source_lock);
+        return RINFS_OK;
+    }
+    if (record->state != RINFS_MMAP_SOURCE_ACTIVE ||
+        record->pin_released != 0u ||
+        __atomic_load_n(&source->magic, __ATOMIC_ACQUIRE) !=
+            RINFS_MMAP_SOURCE_MAGIC) {
+        rinfs_spin_unlock(&g_rinfs_mmap_source_lock);
+        return RINFS_ERR_PENDING;
     }
     if (record->active_operations != 0u) {
         rinfs_spin_unlock(&g_rinfs_mmap_source_lock);
@@ -3278,13 +3295,38 @@ static void rinfs_mmap_source_cancel_retire(
         return;
     }
     record = rinfs_mmap_source_find_locked(source, generation, cookie);
-    if (record && record->state == RINFS_MMAP_SOURCE_RETIRING) {
+    if (record && record->state == RINFS_MMAP_SOURCE_RETIRING &&
+        record->pin_released == 0u) {
         record->state = RINFS_MMAP_SOURCE_ACTIVE;
         __atomic_store_n(&source->magic, RINFS_MMAP_SOURCE_MAGIC,
                          __ATOMIC_RELEASE);
         rinfs_mmap_source_integrity_update();
     }
     rinfs_spin_unlock(&g_rinfs_mmap_source_lock);
+}
+
+static int rinfs_mmap_source_mark_pin_released(
+    RinFS_MmapSource* source, uint64_t generation, uint64_t cookie) {
+    RinFS_MmapSourceReference* record;
+    rinfs_spin_lock(&g_rinfs_mmap_source_lock);
+    if (!rinfs_mmap_source_audit_locked()) {
+        rinfs_spin_unlock(&g_rinfs_mmap_source_lock);
+        return RINFS_ERR_CORRUPT;
+    }
+    record = rinfs_mmap_source_find_locked(source, generation, cookie);
+    if (!record || record->state != RINFS_MMAP_SOURCE_RETIRING ||
+        record->pin_released != 0u || record->active_operations != 0u ||
+        __atomic_load_n(&source->magic, __ATOMIC_ACQUIRE) !=
+            RINFS_MMAP_SOURCE_MAGIC) {
+        rinfs_spin_unlock(&g_rinfs_mmap_source_lock);
+        return RINFS_ERR_CORRUPT;
+    }
+    record->state = RINFS_MMAP_SOURCE_RELEASED;
+    record->pin_released = 1u;
+    __atomic_store_n(&source->magic, 0u, __ATOMIC_RELEASE);
+    rinfs_mmap_source_integrity_update();
+    rinfs_spin_unlock(&g_rinfs_mmap_source_lock);
+    return RINFS_OK;
 }
 
 static int rinfs_mmap_source_finish_retire(
@@ -3296,7 +3338,9 @@ static int rinfs_mmap_source_finish_retire(
         return RINFS_ERR_CORRUPT;
     }
     record = rinfs_mmap_source_find_locked(source, generation, cookie);
-    if (record && record->state == RINFS_MMAP_SOURCE_RETIRING) {
+    if (record && record->state == RINFS_MMAP_SOURCE_RELEASED &&
+        record->pin_released == 1u && record->active_operations == 0u &&
+        __atomic_load_n(&source->magic, __ATOMIC_ACQUIRE) == 0u) {
         rinfs_memset(record, 0, sizeof(*record));
         if (g_rinfs_mmap_source_reference_count != 0u)
             --g_rinfs_mmap_source_reference_count;
@@ -3359,6 +3403,8 @@ static uint64_t rinfs_mmap_source_integrity_value(void) {
         hash = rinfs_close_ref_hash_u64(hash, record->state, 4u);
         hash = rinfs_close_ref_hash_u64(
             hash, record->active_operations, 4u);
+        hash = rinfs_close_ref_hash_u64(
+            hash, record->pin_released, 4u);
     }
     return hash != 0u ? hash : UINT64_C(1);
 }
@@ -3407,7 +3453,8 @@ static int rinfs_mmap_source_audit_locked(void) {
         if (record->source == NULL) {
             if (record->mount != NULL || record->generation != 0u ||
                 record->cookie != 0u || record->state != 0u ||
-                record->active_operations != 0u)
+                record->active_operations != 0u ||
+                record->pin_released != 0u)
                 return 0;
             continue;
         }
@@ -3416,9 +3463,17 @@ static int rinfs_mmap_source_audit_locked(void) {
             record->cookie != rinfs_mmap_source_cookie_value(
                 record->source, record->generation) ||
             (record->state != RINFS_MMAP_SOURCE_ACTIVE &&
-             record->state != RINFS_MMAP_SOURCE_RETIRING) ||
+             record->state != RINFS_MMAP_SOURCE_RETIRING &&
+             record->state != RINFS_MMAP_SOURCE_RELEASED) ||
+            ((record->state == RINFS_MMAP_SOURCE_RETIRING ||
+              record->state == RINFS_MMAP_SOURCE_RELEASED) &&
+             record->active_operations != 0u) ||
+            (record->state == RINFS_MMAP_SOURCE_ACTIVE &&
+             record->pin_released != 0u) ||
             (record->state == RINFS_MMAP_SOURCE_RETIRING &&
-             record->active_operations != 0u)) return 0;
+             record->pin_released != 0u) ||
+            (record->state == RINFS_MMAP_SOURCE_RELEASED &&
+             record->pin_released != 1u)) return 0;
         ++active_count;
     }
     return active_count == g_rinfs_mmap_source_reference_count;
@@ -19002,36 +19057,46 @@ invalidate_range_finish:
     return rinfs_content_unlock_status((err), content_unlock_error);
 }
 
-int rinfs_mmap_source_release(RinFS_MmapSource* source,
-                              uint64_t reference_generation,
-                              uint64_t reference_cookie) {
+int rinfs_mmap_source_release_ex(RinFS_MmapSource* source,
+                                uint64_t reference_generation,
+                                uint64_t reference_cookie,
+                                int* source_consumed_out) {
     RinFS_Mount* mount;
     uint64_t inode_num;
     uint64_t pin_token;
     uint32_t inode_generation;
     int reclaim;
+    int pin_released = 0;
     int retire_result;
     int err = RINFS_OK;
 
+    if (source_consumed_out) *source_consumed_out = 0;
+    if (!source_consumed_out) return RINFS_ERR_INVAL;
     if (!source) return RINFS_ERR_STALE;
     err = rinfs_mmap_source_begin_retire(
-        source, reference_generation, reference_cookie);
+        source, reference_generation, reference_cookie, &pin_released);
     if (err != RINFS_OK) return err;
     mount = source->mount;
     inode_num = source->inode_num;
     pin_token = source->pin_token;
     inode_generation = source->inode_generation;
-    err = rinfs_content_pin_release(
-        mount, inode_num, inode_generation, pin_token, &reclaim,
-        0u, 0u, 0u, 0u, source->shared_owner_row,
-        source->shared_owner_row != 0u ? reference_generation : 0u,
-        source->shared_owner_row != 0u ? reference_cookie : 0u);
-    if (err != RINFS_OK) {
-        rinfs_mmap_source_cancel_retire(
+    if (!pin_released) {
+        err = rinfs_content_pin_release(
+            mount, inode_num, inode_generation, pin_token, &reclaim,
+            0u, 0u, 0u, 0u, source->shared_owner_row,
+            source->shared_owner_row != 0u ? reference_generation : 0u,
+            source->shared_owner_row != 0u ? reference_cookie : 0u);
+        if (err != RINFS_OK) {
+            rinfs_mmap_source_cancel_retire(
+                source, reference_generation, reference_cookie);
+            return err;
+        }
+        err = rinfs_mmap_source_mark_pin_released(
             source, reference_generation, reference_cookie);
-        return err;
+        if (err != RINFS_OK) return err;
+    } else {
+        reclaim = 0;
     }
-    __atomic_store_n(&source->magic, 0u, __ATOMIC_RELEASE);
     if (err == RINFS_OK && reclaim)
         err = rinfs_reclaim_deferred_inode(
             mount, inode_num, inode_generation);
@@ -19039,7 +19104,16 @@ int rinfs_mmap_source_release(RinFS_MmapSource* source,
         source, reference_generation, reference_cookie);
     if (retire_result != RINFS_OK) return retire_result;
     rinfs_free(source);
+    *source_consumed_out = 1;
     return err;
+}
+
+int rinfs_mmap_source_release(RinFS_MmapSource* source,
+                              uint64_t reference_generation,
+                              uint64_t reference_cookie) {
+    int source_consumed = 0;
+    return rinfs_mmap_source_release_ex(
+        source, reference_generation, reference_cookie, &source_consumed);
 }
 
 /* ═══════════════════════════════════════════════════════════════
