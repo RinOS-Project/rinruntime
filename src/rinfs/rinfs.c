@@ -22398,11 +22398,13 @@ static int rinfs_rename_impl(RinFS_Mount* mount, uint64_t old_dir,
             rollback_err = rinfs_dirent_add(mount, new_dir, new_name, new_existing_ino, t);
         }
         if (rollback_err == RINFS_OK)
-            (void)rinfs_journal_finish(mount);
-        else
+            rollback_err = rinfs_journal_finish(mount);
+        if (rollback_err != RINFS_OK) {
             rinfs_mount_recovery_fence(
                 mount, RINFS_READONLY_RECOVERY_NAMESPACE_JOURNAL,
                 rollback_err);
+            return rollback_err;
+        }
         return err;
     }
 
@@ -22426,11 +22428,13 @@ static int rinfs_rename_impl(RinFS_Mount* mount, uint64_t old_dir,
             if (rollback_err == RINFS_OK) rollback_err = restore_err;
         }
         if (rollback_err == RINFS_OK)
-            (void)rinfs_journal_finish(mount);
-        else
+            rollback_err = rinfs_journal_finish(mount);
+        if (rollback_err != RINFS_OK) {
             rinfs_mount_recovery_fence(
                 mount, RINFS_READONLY_RECOVERY_NAMESPACE_JOURNAL,
                 rollback_err);
+            return rollback_err;
+        }
         return err;
     }
 
@@ -22451,11 +22455,13 @@ static int rinfs_rename_impl(RinFS_Mount* mount, uint64_t old_dir,
                 if (rollback_err == RINFS_OK) rollback_err = restore_err;
             }
             if (rollback_err == RINFS_OK)
-                (void)rinfs_journal_finish(mount);
-            else
+                rollback_err = rinfs_journal_finish(mount);
+            if (rollback_err != RINFS_OK) {
                 rinfs_mount_recovery_fence(
                     mount, RINFS_READONLY_RECOVERY_NAMESPACE_JOURNAL,
                     rollback_err);
+                return rollback_err;
+            }
             return err;
         }
     }
@@ -22985,7 +22991,11 @@ int rinfs_link(RinFS_Mount* mount, uint64_t dir_ino, const char* name, uint64_t 
         /* The directory entry and inode count are one namespace mutation.
          * If the inode publication fails, remove the just-created entry so
          * a retry cannot observe a name whose link count was never committed. */
-        (void)rinfs_dirent_remove(mount, dir_ino, name);
+        int rollback_error = rinfs_dirent_remove(mount, dir_ino, name);
+        if (rollback_error != RINFS_OK) {
+            rinfs_mount_force_readonly(mount);
+            return rollback_error;
+        }
     }
 
     return err;
