@@ -711,7 +711,10 @@ typedef struct {
 } RinFS_Dir;
 
 /* Opaque inode-scoped read lease for an exact, atime-free content snapshot.
- * The captured inode and immutable identity remain stable until end(). */
+ * The captured inode and immutable identity remain stable until end(). If end
+ * returns an error before the lease is consumed, active remains set and the
+ * caller must retain the object and retry cleanup. Errors after consumption
+ * still clear the object, so callers must not retry a cleared snapshot. */
 typedef struct {
     RinFS_Mount* mount;
     void* lease_cookie;
