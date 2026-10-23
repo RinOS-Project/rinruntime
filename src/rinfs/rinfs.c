@@ -6413,7 +6413,6 @@ static int rinfs_shared_owner_reap_locked(RinFS_Mount* mount) {
 static int rinfs_shared_owner_reap(RinFS_Mount* mount) {
     int content_unlock_error = RINFS_OK;
     int free_error = RINFS_OK;
-    RinFS_ContentLeaseNode* free_list = NULL;
     int result;
     if (!mount) return rinfs_content_unlock_status((RINFS_ERR_INVAL), content_unlock_error);
     {
@@ -6436,21 +6435,30 @@ static int rinfs_shared_owner_reap(RinFS_Mount* mount) {
                 node->delete_pending == 0u &&
                 node->delete_on_close_count == 0u) {
                 *link = node->next;
-                node->next = free_list;
-                free_list = node;
+                node->next = NULL;
+                {
+                    int released = 0;
+                    int node_free_error =
+                        rinfs_mount_runtime_free(mount, node, &released);
+                    if (!released) {
+                        /* Keep an unreleased node reachable so a later owner
+                         * can retry after a transient allocator failure. The
+                         * content lock remains held until the node is either
+                         * restored or the allocator confirms its release. */
+                        node->next = *link;
+                        *link = node;
+                    }
+                    if (node_free_error != RINFS_OK) {
+                        free_error = node_free_error;
+                        break;
+                    }
+                }
             } else {
                 link = &node->next;
             }
         }
     }
     rinfs_keep_first_error(&content_unlock_error, rinfs_shared_content_unlock(mount));
-    while (free_list) {
-        RinFS_ContentLeaseNode* next = free_list->next;
-        rinfs_keep_first_error(
-            &free_error,
-            rinfs_mount_runtime_free(mount, free_list, NULL));
-        free_list = next;
-    }
     return rinfs_content_unlock_status(
         rinfs_content_unlock_status(result, content_unlock_error),
         free_error);
