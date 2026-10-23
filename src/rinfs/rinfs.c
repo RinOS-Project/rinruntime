@@ -8465,11 +8465,16 @@ static int rinfs_xattr_load(RinFS_Mount* mount, const RinFS_Inode* inode,
                                                   : RINFS_ERR_CORRUPT;
 }
 
+static int rinfs_rollback_allocated_block(RinFS_Mount* mount,
+                                          uint64_t block);
+
 static int rinfs_xattr_commit_block(RinFS_Mount* mount, uint64_t ino,
-                                    RinFS_Inode* inode, uint64_t new_block) {
+                                    RinFS_Inode* inode, uint64_t new_block,
+                                    int* publication_started_out) {
     RinFS_Inode original = *inode;
     uint64_t old_block = original.i_xattr_block;
     int result;
+    if (publication_started_out) *publication_started_out = 0;
     inode->i_xattr_block = new_block;
     rinfs_touch_changed(inode);
     result = rinfs_inode_recount_blocks(mount, inode);
@@ -8477,14 +8482,22 @@ static int rinfs_xattr_commit_block(RinFS_Mount* mount, uint64_t ino,
         *inode = original;
         return result;
     }
+    /* From this point an I/O error cannot prove whether the inode update
+     * reached stable storage. Keep the new block allocated and fence writes
+     * if publication or retirement is uncertain. */
+    if (publication_started_out) *publication_started_out = 1;
     result = rinfs_inode_write(mount, ino, inode);
     if (result != RINFS_OK) {
+        rinfs_mount_force_readonly(mount);
         *inode = original;
         return result;
     }
     if (old_block != 0u && old_block != new_block) {
         result = rinfs_block_free(mount, old_block);
-        if (result != RINFS_OK) return result;
+        if (result != RINFS_OK) {
+            rinfs_mount_force_readonly(mount);
+            return result;
+        }
     }
     return RINFS_OK;
 }
@@ -8493,16 +8506,20 @@ static int rinfs_xattr_publish_buffer(RinFS_Mount* mount, uint64_t ino,
                                       RinFS_Inode* inode,
                                       const uint8_t* block) {
     uint64_t new_block;
+    int publication_started = 0;
     int result = rinfs_block_alloc(mount, &new_block);
     if (result != RINFS_OK) return result;
     result = rinfs_block_write_unprepared(mount, new_block, block);
     if (result != RINFS_OK) {
-        (void)rinfs_block_free(mount, new_block);
-        return result;
+        int rollback_error = rinfs_rollback_allocated_block(mount, new_block);
+        return rollback_error != RINFS_OK ? rollback_error : result;
     }
-    result = rinfs_xattr_commit_block(mount, ino, inode, new_block);
-    if (result != RINFS_OK && inode->i_xattr_block != new_block)
-        (void)rinfs_block_free(mount, new_block);
+    result = rinfs_xattr_commit_block(mount, ino, inode, new_block,
+                                      &publication_started);
+    if (result != RINFS_OK && !publication_started) {
+        int rollback_error = rinfs_rollback_allocated_block(mount, new_block);
+        if (rollback_error != RINFS_OK) return rollback_error;
+    }
     return result;
 }
 
@@ -8709,7 +8726,7 @@ int rinfs_xattr_remove(RinFS_Mount* mount, uint64_t ino, const char* name,
     rinfs_xattr_write_u32(block + 8u, bytes_used);
     rinfs_memset(block + bytes_used, 0, block_size - bytes_used);
     if (entry_count == 1u) {
-        result = rinfs_xattr_commit_block(mount, ino, &inode, 0u);
+        result = rinfs_xattr_commit_block(mount, ino, &inode, 0u, NULL);
     } else {
         result = rinfs_xattr_publish_buffer(mount, ino, &inode, block);
     }
@@ -8738,7 +8755,7 @@ int rinfs_xattr_copy(RinFS_Mount* source_mount, uint64_t source_ino,
     if (result != RINFS_OK) return result;
     if (source.i_xattr_block == 0u)
         return rinfs_xattr_commit_block(destination_mount, destination_ino,
-                                        &destination, 0u);
+                                        &destination, 0u, NULL);
     /* A malformed legacy image can alias an xattr block between two inodes.
      * Cloning must not free the source's still-referenced block while making
      * the destination independent. The full checker will still report the
@@ -15403,13 +15420,17 @@ static int rinfs_mount_sized_io_unleased(
     {
         int delete_recovery = rinfs_delete_on_close_recover(mount);
         if (delete_recovery != RINFS_OK) {
-            (void)rinfs_delete_on_close_discard_recovered(mount);
+            int cleanup_error =
+                rinfs_delete_on_close_discard_recovered(mount);
+            if (cleanup_error != RINFS_OK) delete_recovery = cleanup_error;
             return rinfs_mount_abort_with_cleanup(mount, delete_recovery);
         }
         if (!mount->readonly && (flags & RINFS_MNT_RESCUE) == 0u) {
             int delete_result = rinfs_delete_on_close_reap(mount);
             if (delete_result == RINFS_ERR_CORRUPT) {
-                (void)rinfs_delete_on_close_discard_recovered(mount);
+                int cleanup_error =
+                    rinfs_delete_on_close_discard_recovered(mount);
+                if (cleanup_error != RINFS_OK) delete_result = cleanup_error;
                 return rinfs_mount_abort_with_cleanup(mount, delete_result);
             }
         }
@@ -20809,11 +20830,12 @@ int rinfs_closedir(RinFS_Dir* dir) {
 }
 
 /* Rewind directory to start */
-void rinfs_rewinddir(RinFS_Dir* dir) {
+int rinfs_rewinddir(RinFS_Dir* dir) {
     RinFS_CloseReferenceOperationLease operation;
-    if (rinfs_directory_operation_begin(dir, &operation) != RINFS_OK) return;
+    int result = rinfs_directory_operation_begin(dir, &operation);
+    if (result != RINFS_OK) return result;
     dir->position = 0;
-    (void)rinfs_close_ref_end_operation(&operation);
+    return rinfs_close_ref_end_operation(&operation);
 }
 
 /* ═══════════════════════════════════════════════════════════════
@@ -22714,7 +22736,10 @@ static int rinfs_unlink_internal(RinFS_Mount* mount, uint64_t dir_ino,
     err = rinfs_dirent_remove_identity(mount, dir_ino, name,
                                        expected_inode);
     if (err != RINFS_OK) {
-        (void)rinfs_inode_orphan_commit(mount, file_ino, &file_inode, 0);
+        /* Removal may have reached storage despite its reported error. Keep
+         * ORPHAN_INTENT so the next mount can recount names and repair or
+         * reclaim the inode, and stop mutations until that recovery runs. */
+        rinfs_mount_force_readonly(mount);
         rinfs_keep_first_error(&content_unlock_error, rinfs_content_lease_release(mount, file_ino, inode_generation,
                                     lease_token, 1));
         return rinfs_content_unlock_status((err), content_unlock_error);

@@ -1357,7 +1357,9 @@ int rinfs_closedir(RinFS_Dir* dir);
 /* Uses the same exact, mutually exclusive disposition contract as file close. */
 int rinfs_closedir_with_disposition(RinFS_Dir* dir, int* consumed_out,
                                     int* retryable_out);
-void rinfs_rewinddir(RinFS_Dir* dir);
+/* Returns the operation-admission or release error; the position is reset
+ * before a release error is reported. */
+int rinfs_rewinddir(RinFS_Dir* dir);
 int rinfs_seekdir(RinFS_Dir* dir, uint64_t position);
 
 /* Path operations */
