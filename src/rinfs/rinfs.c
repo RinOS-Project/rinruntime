@@ -16899,23 +16899,23 @@ static int rinfs_content_inode_equal(const RinFS_Mount* mount,
 
 int rinfs_content_snapshot_begin(RinFS_Mount* mount, uint64_t ino,
                                  RinFS_ContentSnapshot* snapshot) {
-    int content_unlock_error = RINFS_OK;
     RinFS_Inode observed;
     RinFS_ContentLeaseNode* lease;
     uint64_t lease_generation;
     int err;
     if (!mount || !snapshot || !mount->mounted || ino == 0u ||
-        ino > mount->sb.s_inode_count) return rinfs_content_unlock_status((RINFS_ERR_INVAL), content_unlock_error);
+        ino > mount->sb.s_inode_count)
+        return RINFS_ERR_INVAL;
     rinfs_memset(snapshot, 0, sizeof(*snapshot));
     for (;;) {
         err = rinfs_inode_read(mount, ino, &observed);
-        if (err != RINFS_OK) return rinfs_content_unlock_status((err), content_unlock_error);
+        if (err != RINFS_OK) return err;
         if ((observed.i_mode >> 12u) != RINFS_FT_REG)
-            return rinfs_content_unlock_status((RINFS_ERR_INVAL), content_unlock_error);
+            return RINFS_ERR_INVAL;
         err = rinfs_content_lease_acquire(
             mount, ino, observed.i_generation, 0, &lease,
             &lease_generation);
-        if (err != RINFS_OK) return rinfs_content_unlock_status((err), content_unlock_error);
+        if (err != RINFS_OK) return err;
         err = rinfs_inode_read(mount, ino, &snapshot->inode);
         if (err == RINFS_OK &&
             snapshot->inode.i_generation == observed.i_generation &&
@@ -16925,12 +16925,33 @@ int rinfs_content_snapshot_begin(RinFS_Mount* mount, uint64_t ino,
             snapshot->inode_num = ino;
             snapshot->inode_generation = observed.i_generation;
             snapshot->lease_generation = lease_generation;
-            snapshot->active = 1;
-            return rinfs_content_unlock_status((RINFS_OK), content_unlock_error);
+            snapshot->active = RINFS_CONTENT_SNAPSHOT_ACTIVE;
+            return RINFS_OK;
         }
-        rinfs_keep_first_error(&content_unlock_error, rinfs_content_lease_release(mount, ino, observed.i_generation,
-                                    lease_generation, 0));
-        if (err != RINFS_OK) return rinfs_content_unlock_status((err), content_unlock_error);
+        {
+            int released = 0;
+            int release_error = rinfs_content_lease_release_ex(
+                mount, ino, observed.i_generation, lease_generation, 0,
+                &released);
+            if (release_error != RINFS_OK) {
+                if (!released) {
+                    /* Return the acquired token in a cleanup-only state so
+                     * the caller can retry release instead of leaking the
+                     * reader lease behind a failed begin(). */
+                    snapshot->mount = mount;
+                    snapshot->lease_cookie = lease;
+                    snapshot->inode_num = ino;
+                    snapshot->inode_generation = observed.i_generation;
+                    snapshot->lease_generation = lease_generation;
+                    snapshot->inode = observed;
+                    snapshot->active =
+                        RINFS_CONTENT_SNAPSHOT_CLEANUP_PENDING;
+                    return RINFS_ERR_PENDING;
+                }
+                return rinfs_content_unlock_status(err, release_error);
+            }
+        }
+        if (err != RINFS_OK) return err;
     }
 }
 
@@ -16941,7 +16962,8 @@ int rinfs_content_snapshot_read_exact(RinFS_ContentSnapshot* snapshot,
     uint64_t position = 0u;
     uint32_t block_size;
     int err = RINFS_OK;
-    if (!snapshot || !snapshot->active || !snapshot->mount ||
+    if (!snapshot || snapshot->active != RINFS_CONTENT_SNAPSHOT_ACTIVE ||
+        !snapshot->mount ||
         (size != 0u && !output)) return RINFS_ERR_INVAL;
     if (size != snapshot->inode.i_size) return RINFS_ERR_INVAL;
     block_size = snapshot->mount->sb.s_block_size;
@@ -17018,7 +17040,8 @@ int rinfs_content_snapshot_read_exact(RinFS_ContentSnapshot* snapshot,
 int rinfs_content_snapshot_revalidate(RinFS_ContentSnapshot* snapshot) {
     RinFS_Inode current;
     int err;
-    if (!snapshot || !snapshot->active || !snapshot->mount)
+    if (!snapshot || snapshot->active != RINFS_CONTENT_SNAPSHOT_ACTIVE ||
+        !snapshot->mount)
         return RINFS_ERR_INVAL;
     err = rinfs_inode_read(snapshot->mount, snapshot->inode_num, &current);
     if (err != RINFS_OK) return err;
@@ -17031,6 +17054,9 @@ int rinfs_content_snapshot_end(RinFS_ContentSnapshot* snapshot) {
     int released = 0;
     int err;
     if (!snapshot || !snapshot->active) return RINFS_OK;
+    if (snapshot->active != RINFS_CONTENT_SNAPSHOT_ACTIVE &&
+        snapshot->active != RINFS_CONTENT_SNAPSHOT_CLEANUP_PENDING)
+        return RINFS_ERR_CORRUPT;
     err = rinfs_content_lease_release_ex(
         snapshot->mount, snapshot->inode_num, snapshot->inode_generation,
         snapshot->lease_generation, 0, &released);

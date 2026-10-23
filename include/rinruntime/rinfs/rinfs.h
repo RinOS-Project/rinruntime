@@ -711,10 +711,15 @@ typedef struct {
 } RinFS_Dir;
 
 /* Opaque inode-scoped read lease for an exact, atime-free content snapshot.
- * The captured inode and immutable identity remain stable until end(). If end
+ * The captured inode and immutable identity remain stable until end(). Begin
+ * may return RINFS_ERR_PENDING with active ==
+ * RINFS_CONTENT_SNAPSHOT_CLEANUP_PENDING when a lease was acquired but
+ * cleanup could not release it; in that state only end() is valid. If end
  * returns an error before the lease is consumed, active remains set and the
  * caller must retain the object and retry cleanup. Errors after consumption
  * still clear the object, so callers must not retry a cleared snapshot. */
+#define RINFS_CONTENT_SNAPSHOT_ACTIVE 1
+#define RINFS_CONTENT_SNAPSHOT_CLEANUP_PENDING 2
 typedef struct {
     RinFS_Mount* mount;
     void* lease_cookie;
