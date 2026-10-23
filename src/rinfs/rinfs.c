@@ -20160,7 +20160,12 @@ static int64_t rinfs_write_core(RinFS_File* file, const void* buf,
     }
     mutation_err = rinfs_content_mutation_prepare(&mutation);
     if (mutation_err != RINFS_OK) {
-        (void)rinfs_inode_read(mount, file->inode_num, &file->inode);
+        int refresh_error = rinfs_inode_read(
+            mount, file->inode_num, &file->inode);
+        if (refresh_error != RINFS_OK) {
+            rinfs_mount_force_readonly(mount);
+            mutation_err = refresh_error;
+        }
         rinfs_keep_first_error(&content_unlock_error, rinfs_content_mutation_end(&mutation));
         rinfs_free(block_buf);
         return rinfs_content_unlock_status((mutation_err), content_unlock_error);
@@ -20298,7 +20303,12 @@ static int64_t rinfs_write_core(RinFS_File* file, const void* buf,
     
     if (bytes_written == 0 && write_error != RINFS_OK) {
         rinfs_content_mutation_poison(&mutation);
-        (void)rinfs_inode_read(mount, file->inode_num, &file->inode);
+        int refresh_error = rinfs_inode_read(
+            mount, file->inode_num, &file->inode);
+        if (refresh_error != RINFS_OK) {
+            rinfs_mount_force_readonly(mount);
+            write_error = refresh_error;
+        }
         rinfs_keep_first_error(&content_unlock_error, rinfs_content_mutation_end(&mutation));
         rinfs_free(block_buf);
         return rinfs_content_unlock_status((write_error), content_unlock_error);
@@ -20333,7 +20343,12 @@ static int64_t rinfs_write_core(RinFS_File* file, const void* buf,
     rinfs_keep_first_error(&content_unlock_error, rinfs_content_mutation_end(&mutation));
     rinfs_free(block_buf);
     if (inode_err != RINFS_OK) {
-        (void)rinfs_inode_read(mount, file->inode_num, &file->inode);
+        int refresh_error = rinfs_inode_read(
+            mount, file->inode_num, &file->inode);
+        if (refresh_error != RINFS_OK) {
+            rinfs_mount_force_readonly(mount);
+            inode_err = refresh_error;
+        }
         return rinfs_content_unlock_status((inode_err), content_unlock_error);
     }
     /* A short write may have completed before a later block operation
