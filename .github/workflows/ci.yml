@@ -34,6 +34,42 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y meson ninja-build pkg-config python3
+      - name: Resolve all dependencies from the standalone checkout cache
+        run: |
+          test "$(git rev-parse --show-toplevel)" = "$(realpath "$GITHUB_WORKSPACE")"
+          resolved_output="$(python3 scripts/resolve_dependencies.py \
+            --source-root "$GITHUB_WORKSPACE" \
+            --build-root "$RUNNER_TEMP/rinruntime-standalone-resolution" \
+            --dependency rinpath \
+            --dependency libunicode \
+            --dependency libc \
+            --dependency libcxx \
+            --dependency libi18n \
+            --dependency rinresource \
+            --dependency rinjson \
+            --dependency rinos-sdk \
+            --dependency rinuri \
+            --dependency rinhttp \
+            --dependency rinwire \
+            --dependency aquamarine \
+            --dependency ringpu)"
+          mapfile -t resolved <<< "$resolved_output"
+          if [[ "${#resolved[@]}" -ne 13 ]]; then
+            echo "expected 13 locked dependencies, got ${#resolved[@]}" >&2
+            exit 1
+          fi
+          cache_root="$(realpath "$RINRUNTIME_DEPENDENCY_CACHE_ROOT")"
+          for dependency in "${resolved[@]}"; do
+            dependency="$(realpath "$dependency")"
+            case "$dependency" in
+              "$cache_root"/*) ;;
+              *)
+                echo "dependency escaped the isolated cache: $dependency" >&2
+                exit 1
+                ;;
+            esac
+          done
+          echo "all 13 dependencies resolved from $cache_root"
       - name: Configure CMake
         if: matrix.build_system == 'cmake'
         run: >-
@@ -107,6 +143,42 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y meson ninja-build pkg-config python3
+      - name: Resolve all dependencies from the standalone checkout cache
+        run: |
+          test "$(git rev-parse --show-toplevel)" = "$(realpath "$GITHUB_WORKSPACE")"
+          resolved_output="$(python3 scripts/resolve_dependencies.py \
+            --source-root "$GITHUB_WORKSPACE" \
+            --build-root "$RUNNER_TEMP/rinruntime-sanitizer-resolution" \
+            --dependency rinpath \
+            --dependency libunicode \
+            --dependency libc \
+            --dependency libcxx \
+            --dependency libi18n \
+            --dependency rinresource \
+            --dependency rinjson \
+            --dependency rinos-sdk \
+            --dependency rinuri \
+            --dependency rinhttp \
+            --dependency rinwire \
+            --dependency aquamarine \
+            --dependency ringpu)"
+          mapfile -t resolved <<< "$resolved_output"
+          if [[ "${#resolved[@]}" -ne 13 ]]; then
+            echo "expected 13 locked dependencies, got ${#resolved[@]}" >&2
+            exit 1
+          fi
+          cache_root="$(realpath "$RINRUNTIME_DEPENDENCY_CACHE_ROOT")"
+          for dependency in "${resolved[@]}"; do
+            dependency="$(realpath "$dependency")"
+            case "$dependency" in
+              "$cache_root"/*) ;;
+              *)
+                echo "dependency escaped the isolated cache: $dependency" >&2
+                exit 1
+                ;;
+            esac
+          done
+          echo "all 13 dependencies resolved from $cache_root"
       - name: Configure AddressSanitizer and UndefinedBehaviorSanitizer
         run: >-
           cmake -S . -B build-sanitized
