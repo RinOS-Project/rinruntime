@@ -631,6 +631,7 @@ typedef struct {
 #define RINFS_READONLY_RECOVERY_BLOCK_ALLOC UINT32_C(0x00000002)
 #define RINFS_READONLY_RECOVERY_INODE_ALLOC UINT32_C(0x00000004)
 #define RINFS_READONLY_RECOVERY_INODE_TABLE UINT32_C(0x00000008)
+#define RINFS_READONLY_RECOVERY_SUPERBLOCK UINT32_C(0x00000010)
 
 static uint32_t rinfs_mount_readonly_state(const RinFS_Mount* mount) {
     if (!mount) return RINFS_READONLY_STICKY;
@@ -677,6 +678,9 @@ static int rinfs_mount_recovery_only(const RinFS_Mount* mount) {
 
 static int rinfs_inode_table_retry_pending(RinFS_Mount* mount);
 static int rinfs_mount_prepare_write(RinFS_Mount* mount);
+static int rinfs_superblock_lock(RinFS_Mount* mount);
+static int rinfs_superblock_unlock_status(RinFS_Mount* mount,
+                                           int operation_error);
 
 static uint32_t rinfs_allocator_recovery_fence(int inode_bitmap) {
     return inode_bitmap ? RINFS_READONLY_RECOVERY_INODE_ALLOC
@@ -689,6 +693,9 @@ static int rinfs_shared_owner_ledger_valid(const RinFS_Mount* mount);
 static int rinfs_journal_recover(RinFS_Mount* mount);
 static int rinfs_shared_owner_reap_locked(RinFS_Mount* mount);
 static int disk_flush(RinFS_Mount* mount);
+static int disk_write_internal(RinFS_Mount* mount, uint64_t sector,
+                               uint32_t count, const void* buf,
+                               int recovery_write);
 static int rinfs_inode_is_cleared(const RinFS_Inode* inode);
 static uint64_t block_to_sector(RinFS_Mount* mount, uint64_t block);
 static int rinfs_recovery_block_write(RinFS_Mount* mount, uint64_t block,
@@ -1816,6 +1823,13 @@ static int rinfs_mount_prepare_write(RinFS_Mount* mount) {
     state = rinfs_mount_readonly_state(mount);
     if ((state & RINFS_READONLY_RECOVERY_INODE_TABLE) != 0u) {
         err = rinfs_inode_table_retry_pending(mount);
+        if (err != RINFS_OK) return err;
+    }
+    state = rinfs_mount_readonly_state(mount);
+    if ((state & RINFS_READONLY_RECOVERY_SUPERBLOCK) != 0u) {
+        err = rinfs_superblock_lock(mount);
+        if (err != RINFS_OK) return err;
+        err = rinfs_superblock_unlock_status(mount, RINFS_OK);
         if (err != RINFS_OK) return err;
     }
     state = rinfs_mount_readonly_state(mount);
@@ -16677,7 +16691,8 @@ int rinfs_mount_set_epoch(RinFS_Mount* mount, uint64_t mount_epoch) {
 #define RINFS_SUPERBLOCK_RECOVERY_READY 1u
 
 static int rinfs_superblock_recovery_fail(RinFS_Mount* mount, int error) {
-    if (mount) rinfs_mount_force_readonly(mount);
+    rinfs_mount_recovery_fence(
+        mount, RINFS_READONLY_RECOVERY_SUPERBLOCK, error);
     return error == RINFS_OK ? RINFS_ERR_CORRUPT : error;
 }
 
@@ -16688,16 +16703,19 @@ static int rinfs_superblock_recover_locked(RinFS_Mount* mount,
     uint8_t sb_buf[RINFS_SECTOR_SIZE * 2u];
     uint32_t state;
     uint32_t stored_checksum;
-    uint32_t owner_row;
-    uint32_t owner_lock_generation;
+    uint32_t log_owner_token;
     int err;
     if (!mount || !mount->mounted)
         return rinfs_superblock_recovery_fail(
             mount, mount ? RINFS_ERR_CORRUPT : RINFS_ERR_INVAL);
     state = __atomic_load_n(&mount->shared_superblock_recovery_state,
                             __ATOMIC_ACQUIRE);
-    if (state == RINFS_SUPERBLOCK_RECOVERY_IDLE) return RINFS_OK;
-    if (mount->readonly)
+    if (state == RINFS_SUPERBLOCK_RECOVERY_IDLE) {
+        rinfs_mount_recovery_clear(
+            mount, RINFS_READONLY_RECOVERY_SUPERBLOCK);
+        return RINFS_OK;
+    }
+    if (rinfs_mount_sticky_readonly(mount))
         return rinfs_superblock_recovery_fail(mount, RINFS_ERR_ROFS);
     if (state != RINFS_SUPERBLOCK_RECOVERY_READY ||
         mount->shared_superblock_recovery_owner_row == 0u ||
@@ -16708,17 +16726,13 @@ static int rinfs_superblock_recover_locked(RinFS_Mount* mount,
         mount->shared_superblock_recovery_owner_lock_generation >
             RINFS_SHARED_LOCK_OWNER_GENERATION_MASK)
         return rinfs_superblock_recovery_fail(mount, RINFS_ERR_CORRUPT);
-    owner_row = owner_token & RINFS_SHARED_LOCK_OWNER_ROW_MASK;
-    owner_lock_generation =
-        (owner_token >> RINFS_SHARED_LOCK_OWNER_GENERATION_SHIFT) &
-        RINFS_SHARED_LOCK_OWNER_GENERATION_MASK;
-    if ((owner_token & RINFS_SHARED_LOCK_OWNER_TAG) == 0u ||
-        owner_row != mount->shared_superblock_recovery_owner_row ||
-        owner_lock_generation !=
-            mount->shared_superblock_recovery_owner_lock_generation ||
-        !rinfs_shared_owner_ledger_valid(mount) ||
-        mount->shared_superblock_recovery_owner_cookie !=
-            mount->shared_owner_ledger->owners[owner_row - 1u].owner_cookie)
+    if (rinfs_recovery_log_owner_token(
+            mount, mount->shared_superblock_recovery_owner_row,
+            mount->shared_superblock_recovery_owner_lock_generation,
+            mount->shared_superblock_recovery_owner_cookie,
+            &log_owner_token) != RINFS_OK ||
+        (owner_token != log_owner_token &&
+         owner_token != rinfs_shared_lock_token(mount)))
         return rinfs_superblock_recovery_fail(mount, RINFS_ERR_CORRUPT);
     candidate = mount->shared_superblock_recovery_candidate;
     if (rinfs_checksum(&candidate, sizeof(candidate)) !=
@@ -16734,7 +16748,7 @@ static int rinfs_superblock_recover_locked(RinFS_Mount* mount,
         return rinfs_superblock_recovery_fail(mount, RINFS_ERR_CORRUPT);
     rinfs_memset(sb_buf, 0, sizeof(sb_buf));
     rinfs_memcpy(sb_buf, &candidate, sizeof(candidate));
-    err = disk_write(mount, 0u, 2u, sb_buf);
+    err = disk_write_internal(mount, 0u, 2u, sb_buf, 1);
     if (err == RINFS_OK) err = disk_flush(mount);
     if (err == RINFS_OK) err = disk_read(mount, 0u, 2u, sb_buf);
     if (err != RINFS_OK)
@@ -16744,6 +16758,8 @@ static int rinfs_superblock_recover_locked(RinFS_Mount* mount,
     mount->sb = candidate;
     __atomic_store_n(&mount->shared_superblock_recovery_state,
                      RINFS_SUPERBLOCK_RECOVERY_IDLE, __ATOMIC_RELEASE);
+    rinfs_mount_recovery_clear(
+        mount, RINFS_READONLY_RECOVERY_SUPERBLOCK);
     return RINFS_OK;
 }
 
