@@ -1317,7 +1317,10 @@ int rinfs_open_ino(RinFS_Mount* mount, uint64_t ino, int flags,
                    RinFS_File* file);
 int rinfs_close(RinFS_File* file);
 /* Exact close owners report only (consumed=1,retryable=0) or
- * (consumed=0,retryable=1); (0,0) leaves the caller's owner quarantined. */
+ * (consumed=0,retryable=1); (0,0) leaves the caller's owner quarantined.
+ * A post-close deferred-delete error may accompany consumed=1: the close
+ * reference is finalized, but the caller must still observe the cleanup
+ * failure and must not retry the handle close. */
 int rinfs_close_with_disposition(RinFS_File* file, int* consumed_out,
                                  int* retryable_out);
 int64_t rinfs_read(RinFS_File* file, void* buf, uint64_t size);

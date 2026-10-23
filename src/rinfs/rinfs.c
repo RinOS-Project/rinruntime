@@ -17705,9 +17705,11 @@ int rinfs_open(RinFS_Mount* mount, const char* path, int flags, RinFS_File* file
     uint32_t shared_owner_row = 0u;
     if (!mount || !mount->mounted || !path || !file) return RINFS_ERR_INVAL;
 
-    (void)rinfs_delete_on_close_reap(mount);
-
     rinfs_memset(file, 0, sizeof(RinFS_File));
+    {
+        int reap_error = rinfs_delete_on_close_reap(mount);
+        if (reap_error != RINFS_OK) return reap_error;
+    }
 
     uint64_t ino;
     int err = rinfs_path_lookup(mount, path, &ino, &file->inode);
@@ -17759,8 +17761,9 @@ int rinfs_open_ino(RinFS_Mount* mount, uint64_t ino, int flags,
     int err;
 
     if (!mount || !mount->mounted || !file) return RINFS_ERR_INVAL;
-    (void)rinfs_delete_on_close_reap(mount);
     rinfs_memset(file, 0, sizeof(RinFS_File));
+    err = rinfs_delete_on_close_reap(mount);
+    if (err != RINFS_OK) return err;
     err = rinfs_inode_read(mount, ino, &file->inode);
     if (err != RINFS_OK) return err;
     err = rinfs_close_ref_reserve(mount, ino, file->inode.i_generation,
@@ -17806,6 +17809,7 @@ static int rinfs_close_core(RinFS_File* file) {
     uint64_t token;
     uint32_t generation;
     int reclaim;
+    int delete_reap_error;
     int err;
     if (!file || file->in_use != 1 || !file->mount)
         return RINFS_ERR_INVAL;
@@ -17819,7 +17823,7 @@ static int rinfs_close_core(RinFS_File* file) {
         if (retry != RINFS_OK) return retry;
         file->content_reclaim_pending = 0;
         file->in_use = 0;
-        return RINFS_OK;
+        return rinfs_delete_on_close_reap(mount);
     }
     if (file->content_reclaim_pending != 0 ||
         file->content_pin_active != 1) return RINFS_ERR_CORRUPT;
@@ -17831,10 +17835,10 @@ static int rinfs_close_core(RinFS_File* file) {
     if (err != RINFS_OK) return err;
     /* The mount-wide open-reference ledger outlives a process and can finish
      * deferred pathname removal when the final process descriptor closes. */
-    (void)rinfs_delete_on_close_reap(mount);
+    delete_reap_error = rinfs_delete_on_close_reap(mount);
     if (!reclaim) {
         file->in_use = 0;
-        return RINFS_OK;
+        return delete_reap_error;
     }
     reclaim = rinfs_reclaim_deferred_inode(mount, ino, generation);
     if (reclaim != RINFS_OK) {
@@ -17842,7 +17846,7 @@ static int rinfs_close_core(RinFS_File* file) {
         return reclaim;
     }
     file->in_use = 0;
-    return RINFS_OK;
+    return delete_reap_error;
 }
 
 int rinfs_close_with_disposition(RinFS_File* file, int* consumed_out,
@@ -17878,15 +17882,17 @@ int rinfs_close_with_disposition(RinFS_File* file, int* consumed_out,
         return RINFS_OK;
     }
     err = rinfs_close_core(file);
-    if (err == RINFS_OK && file->in_use == 0 &&
+    if (file->in_use == 0 &&
         file->content_pin_active == 0 && file->content_reclaim_pending == 0) {
+        int close_error = err;
         err = rinfs_close_ref_finish(
             file->mount, file->close_reference_mount_epoch, file->inode_num,
             file->content_pin_generation, file->content_pin_token,
             RINFS_CLOSE_REF_FILE, file->close_reference_generation,
             file->close_reference_cookie);
-        if (err == RINFS_OK) *consumed_out = 1;
-        return err;
+        if (err != RINFS_OK) return err;
+        *consumed_out = 1;
+        return close_error;
     }
     if (file->in_use == 1 && file->content_pin_active == 0 &&
         file->content_reclaim_pending == 1) {
@@ -20170,6 +20176,7 @@ static int rinfs_closedir_core(RinFS_Dir* dir) {
     uint64_t token;
     uint32_t generation;
     int reclaim;
+    int delete_reap_error;
     int err;
     if (!dir || dir->in_use != 1 || !dir->mount)
         return RINFS_ERR_INVAL;
@@ -20183,7 +20190,7 @@ static int rinfs_closedir_core(RinFS_Dir* dir) {
         if (retry != RINFS_OK) return retry;
         dir->content_reclaim_pending = 0;
         dir->in_use = 0;
-        return RINFS_OK;
+        return rinfs_delete_on_close_reap(mount);
     }
     if (dir->content_reclaim_pending != 0 ||
         dir->content_pin_active != 1) return RINFS_ERR_CORRUPT;
@@ -20194,9 +20201,10 @@ static int rinfs_closedir_core(RinFS_Dir* dir) {
         dir->close_reference_cookie, dir->close_reference_mount_epoch,
         0u, 0u, 0u);
     if (err != RINFS_OK) return err;
+    delete_reap_error = rinfs_delete_on_close_reap(mount);
     if (!reclaim) {
         dir->in_use = 0;
-        return RINFS_OK;
+        return delete_reap_error;
     }
     reclaim = rinfs_reclaim_deferred_inode(mount, ino, generation);
     if (reclaim != RINFS_OK) {
@@ -20204,7 +20212,7 @@ static int rinfs_closedir_core(RinFS_Dir* dir) {
         return reclaim;
     }
     dir->in_use = 0;
-    return RINFS_OK;
+    return delete_reap_error;
 }
 
 int rinfs_closedir_with_disposition(RinFS_Dir* dir, int* consumed_out,
@@ -20239,15 +20247,17 @@ int rinfs_closedir_with_disposition(RinFS_Dir* dir, int* consumed_out,
         return RINFS_OK;
     }
     err = rinfs_closedir_core(dir);
-    if (err == RINFS_OK && dir->in_use == 0 &&
+    if (dir->in_use == 0 &&
         dir->content_pin_active == 0 && dir->content_reclaim_pending == 0) {
+        int close_error = err;
         err = rinfs_close_ref_finish(
             dir->mount, dir->close_reference_mount_epoch, dir->inode_num,
             dir->content_pin_generation, dir->content_pin_token,
             RINFS_CLOSE_REF_DIRECTORY, dir->close_reference_generation,
             dir->close_reference_cookie);
-        if (err == RINFS_OK) *consumed_out = 1;
-        return err;
+        if (err != RINFS_OK) return err;
+        *consumed_out = 1;
+        return close_error;
     }
     if (dir->in_use == 1 && dir->content_pin_active == 0 &&
         dir->content_reclaim_pending == 1) {
