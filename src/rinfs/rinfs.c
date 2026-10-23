@@ -6629,9 +6629,14 @@ static int rinfs_shared_heap_reap_detached_pending_locked(
                     }
                     lease = lease->next;
                 }
-                if (linked) {
-                    result = RINFS_ERR_CORRUPT;
-                    break;
+                if (!linked) {
+                    block->is_free = 1u;
+                    block->reserved = 0u;
+                    changed = 1;
+                } else {
+                    /* A crash after marker publication but before list unlink
+                     * leaves a valid, still-reachable node. Keep its marker so
+                     * the ordinary zero-reference reaper can finish it. */
                 }
             } else {
                 RinFS_DeleteOnClosePath* pending =
