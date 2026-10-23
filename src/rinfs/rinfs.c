@@ -972,8 +972,13 @@ static int rinfs_shared_heap_recover_locked(RinFS_Mount* mount) {
                 mount->shared_arena_recovery_failed = 1u;
                 return 0;
             }
-            /* Publication clears the provisional state before its token. */
-            block->owner_token = 0u;
+            /* Publication clears the provisional state before its token.
+             * Restore the marker so dead-owner recovery can still distinguish
+             * a detached allocation from a reachable object. */
+            __atomic_store_n(
+                &block->reserved,
+                RINFS_SHARED_HEAP_REAP_PENDING_ALLOCATION,
+                __ATOMIC_RELEASE);
         }
         next_offset = offset + block->total_bytes;
         if (block->is_free && next_offset < arena_end) {
@@ -6826,15 +6831,21 @@ static int rinfs_shared_heap_reap_detached_pending_locked(
                 /* The owner can die after publishing a list pointer and
                  * before clearing the allocation marker. Preserve reachable
                  * objects and normalize that interrupted transition. */
-                block->reserved = 0u;
-                block->owner_token = 0u;
                 if (!linked) {
+                    /* Publish free before clearing the only recovery marker;
+                     * a crash at either following store is idempotent. */
                     block->is_free = 1u;
+                    block->reserved = 0u;
+                    block->owner_token = 0u;
                 } else if (path_owner) {
                     /* Linking and incrementing the aggregate count are
                      * separate stores. Recount before exposing this path to
                      * the ordinary delete-on-close reaper. */
                     path_owner->delete_on_close_count = path_count;
+                }
+                if (linked) {
+                    block->reserved = 0u;
+                    block->owner_token = 0u;
                 }
                 changed = 1;
                 offset = next_offset;
