@@ -953,6 +953,8 @@ static void* rinfs_mount_runtime_alloc(RinFS_Mount* mount, size_t size,
     return NULL;
 }
 
+static void rinfs_keep_first_error(int* first_error, int next_error);
+
 static int rinfs_mount_runtime_free(RinFS_Mount* mount, void* pointer,
                                    int* released_out) {
     size_t header_bytes = rinfs_shared_heap_align(
