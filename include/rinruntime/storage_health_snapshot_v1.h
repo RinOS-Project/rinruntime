@@ -25,11 +25,25 @@
 #define RIN_STORAGE_HEALTH_NVME_AVAILABLE_SPARE_THRESHOLD UINT32_C(4)
 #define RIN_STORAGE_HEALTH_NVME_PERCENTAGE_USED UINT32_C(5)
 #define RIN_STORAGE_HEALTH_NVME_MEDIA_DATA_INTEGRITY_ERRORS UINT32_C(6)
+#define RIN_STORAGE_HEALTH_ATA_SMART_THRESHOLD_STATUS UINT32_C(0x101)
+#define RIN_STORAGE_HEALTH_SCSI_TEMPERATURE_CELSIUS UINT32_C(0x201)
+#define RIN_STORAGE_HEALTH_SCSI_REFERENCE_TEMPERATURE_CELSIUS UINT32_C(0x202)
 
 #define RIN_STORAGE_HEALTH_UNIT_COUNT UINT16_C(1)
 #define RIN_STORAGE_HEALTH_UNIT_PERCENT UINT16_C(2)
 #define RIN_STORAGE_HEALTH_UNIT_KELVIN UINT16_C(3)
 #define RIN_STORAGE_HEALTH_UNIT_BITMASK UINT16_C(4)
+#define RIN_STORAGE_HEALTH_UNIT_CELSIUS UINT16_C(5)
+#define RIN_STORAGE_HEALTH_UNIT_STATUS UINT16_C(6)
+
+#define RIN_STORAGE_HEALTH_ATA_THRESHOLD_NOT_EXCEEDED UINT64_C(0)
+#define RIN_STORAGE_HEALTH_ATA_THRESHOLD_EXCEEDED UINT64_C(1)
+
+#define RIN_STORAGE_HEALTH_SCSI_TEMPERATURE_VALID UINT32_C(0x00000001)
+#define RIN_STORAGE_HEALTH_SCSI_REFERENCE_TEMPERATURE_VALID UINT32_C(0x00000002)
+#define RIN_STORAGE_HEALTH_SCSI_TEMPERATURE_FLAG_KNOWN \
+    (RIN_STORAGE_HEALTH_SCSI_TEMPERATURE_VALID | \
+     RIN_STORAGE_HEALTH_SCSI_REFERENCE_TEMPERATURE_VALID)
 
 /* Only metrics carrying VALID appear in metric_count. A saturated value is a
  * lower bound: NVMe Percentage Used 255 means 255% or more. */
@@ -62,9 +76,8 @@ typedef struct RinStorageHealthSnapshotV1 {
 
 /* Validate the transport-scoped snapshot before interpreting any metric.
  * Empty snapshots are valid for a known device generation and mean that no
- * metrics were collected. ATA/SCSI/SD currently have no published metric
- * schema, so they may publish an empty snapshot but cannot claim NVMe IDs or
- * guessed cross-transport equivalents. */
+ * metrics were collected. Each transport accepts only its documented native
+ * values; unsupported and vendor-specific metrics are not guessed. */
 static inline int rin_storage_health_snapshot_valid_v1(
     const RinStorageHealthSnapshotV1* snapshot)
 {
@@ -102,36 +115,58 @@ static inline int rin_storage_health_snapshot_valid_v1(
             if (snapshot->metrics[previous].metric_id == metric->metric_id)
                 return 0;
 
-        if (snapshot->transport != RIN_STORAGE_HEALTH_TRANSPORT_NVME)
-            return 0;
-        switch (metric->metric_id) {
-            case RIN_STORAGE_HEALTH_NVME_CRITICAL_WARNING:
-                expected_unit = RIN_STORAGE_HEALTH_UNIT_BITMASK;
-                maximum_value = UINT32_C(0x1f);
+        switch (snapshot->transport) {
+            case RIN_STORAGE_HEALTH_TRANSPORT_NVME:
+                switch (metric->metric_id) {
+                    case RIN_STORAGE_HEALTH_NVME_CRITICAL_WARNING:
+                        expected_unit = RIN_STORAGE_HEALTH_UNIT_BITMASK;
+                        maximum_value = UINT32_C(0x1f);
+                        break;
+                    case RIN_STORAGE_HEALTH_NVME_COMPOSITE_TEMPERATURE:
+                        expected_unit = RIN_STORAGE_HEALTH_UNIT_KELVIN;
+                        maximum_value = 1000u;
+                        if (metric->value_low == 0u) return 0;
+                        break;
+                    case RIN_STORAGE_HEALTH_NVME_AVAILABLE_SPARE:
+                    case RIN_STORAGE_HEALTH_NVME_AVAILABLE_SPARE_THRESHOLD:
+                        expected_unit = RIN_STORAGE_HEALTH_UNIT_PERCENT;
+                        maximum_value = 100u;
+                        break;
+                    case RIN_STORAGE_HEALTH_NVME_PERCENTAGE_USED:
+                        expected_unit = RIN_STORAGE_HEALTH_UNIT_PERCENT;
+                        maximum_value = UINT8_MAX;
+                        allows_saturation = 1;
+                        if (((metric->flags &
+                              RIN_STORAGE_HEALTH_METRIC_FLAG_SATURATED) != 0u) !=
+                            (metric->value_low == UINT8_MAX))
+                            return 0;
+                        break;
+                    case RIN_STORAGE_HEALTH_NVME_MEDIA_DATA_INTEGRITY_ERRORS:
+                        expected_unit = RIN_STORAGE_HEALTH_UNIT_COUNT;
+                        allows_high_word = 1;
+                        break;
+                    default:
+                        return 0;
+                }
                 break;
-            case RIN_STORAGE_HEALTH_NVME_COMPOSITE_TEMPERATURE:
-                expected_unit = RIN_STORAGE_HEALTH_UNIT_KELVIN;
-                maximum_value = 1000u;
-                if (metric->value_low == 0u) return 0;
-                break;
-            case RIN_STORAGE_HEALTH_NVME_AVAILABLE_SPARE:
-            case RIN_STORAGE_HEALTH_NVME_AVAILABLE_SPARE_THRESHOLD:
-                expected_unit = RIN_STORAGE_HEALTH_UNIT_PERCENT;
-                maximum_value = 100u;
-                break;
-            case RIN_STORAGE_HEALTH_NVME_PERCENTAGE_USED:
-                expected_unit = RIN_STORAGE_HEALTH_UNIT_PERCENT;
-                maximum_value = UINT8_MAX;
-                allows_saturation = 1;
-                if (((metric->flags &
-                      RIN_STORAGE_HEALTH_METRIC_FLAG_SATURATED) != 0u) !=
-                    (metric->value_low == UINT8_MAX))
+            case RIN_STORAGE_HEALTH_TRANSPORT_ATA:
+                if (metric->metric_id !=
+                        RIN_STORAGE_HEALTH_ATA_SMART_THRESHOLD_STATUS ||
+                    metric->value_low >
+                        RIN_STORAGE_HEALTH_ATA_THRESHOLD_EXCEEDED)
                     return 0;
+                expected_unit = RIN_STORAGE_HEALTH_UNIT_STATUS;
                 break;
-            case RIN_STORAGE_HEALTH_NVME_MEDIA_DATA_INTEGRITY_ERRORS:
-                expected_unit = RIN_STORAGE_HEALTH_UNIT_COUNT;
-                allows_high_word = 1;
+            case RIN_STORAGE_HEALTH_TRANSPORT_SCSI:
+                if ((metric->metric_id !=
+                         RIN_STORAGE_HEALTH_SCSI_TEMPERATURE_CELSIUS &&
+                     metric->metric_id !=
+                         RIN_STORAGE_HEALTH_SCSI_REFERENCE_TEMPERATURE_CELSIUS) ||
+                    metric->value_low > UINT8_MAX - 1u)
+                    return 0;
+                expected_unit = RIN_STORAGE_HEALTH_UNIT_CELSIUS;
                 break;
+            case RIN_STORAGE_HEALTH_TRANSPORT_SD:
             default:
                 return 0;
         }
@@ -143,6 +178,123 @@ static inline int rin_storage_health_snapshot_valid_v1(
             return 0;
     }
     return 1;
+}
+
+static inline void rin_storage_health_snapshot_zero_v1(
+    RinStorageHealthSnapshotV1* output)
+{
+    uint8_t* bytes;
+    uint32_t index;
+    if (output == 0) return;
+    bytes = (uint8_t*)output;
+    for (index = 0u; index < sizeof(*output); ++index) bytes[index] = 0u;
+}
+
+/* An empty snapshot means the provider has no standardized metric to report.
+ * This is the correct SD base-protocol result: life/wear telemetry is exposed
+ * only by vendor-specific extensions and is not guessed here. */
+static inline int rin_storage_health_empty_v1(
+    uint32_t transport, uint64_t device_generation,
+    RinStorageHealthSnapshotV1* output)
+{
+    if (output == 0) return 0;
+    rin_storage_health_snapshot_zero_v1(output);
+    if (transport < RIN_STORAGE_HEALTH_TRANSPORT_NVME ||
+        transport > RIN_STORAGE_HEALTH_TRANSPORT_SD ||
+        device_generation == 0u)
+        return 0;
+    output->struct_size = sizeof(*output);
+    output->version = RIN_STORAGE_HEALTH_SNAPSHOT_V1_VERSION;
+    output->transport = transport;
+    output->device_generation = device_generation;
+    return rin_storage_health_snapshot_valid_v1(output);
+}
+
+/* Map the standardized ATA SMART RETURN STATUS signatures only. Individual
+ * SMART attribute IDs/raw values are vendor-specific and are not normalized. */
+static inline int rin_storage_health_from_ata_smart_return_status_v1(
+    uint64_t device_generation, uint8_t lba_mid, uint8_t lba_high,
+    RinStorageHealthSnapshotV1* output)
+{
+    uint64_t status;
+    if (!rin_storage_health_empty_v1(
+            RIN_STORAGE_HEALTH_TRANSPORT_ATA, device_generation, output))
+        return 0;
+    if (lba_mid == UINT8_C(0x4f) && lba_high == UINT8_C(0xc2))
+        status = RIN_STORAGE_HEALTH_ATA_THRESHOLD_NOT_EXCEEDED;
+    else if (lba_mid == UINT8_C(0xf4) && lba_high == UINT8_C(0x2c))
+        status = RIN_STORAGE_HEALTH_ATA_THRESHOLD_EXCEEDED;
+    else {
+        rin_storage_health_snapshot_zero_v1(output);
+        return 0;
+    }
+    output->metric_count = 1u;
+    output->metrics[0].metric_id =
+        RIN_STORAGE_HEALTH_ATA_SMART_THRESHOLD_STATUS;
+    output->metrics[0].unit = RIN_STORAGE_HEALTH_UNIT_STATUS;
+    output->metrics[0].flags = RIN_STORAGE_HEALTH_METRIC_FLAG_VALID;
+    output->metrics[0].value_low = status;
+    if (!rin_storage_health_snapshot_valid_v1(output)) {
+        rin_storage_health_snapshot_zero_v1(output);
+        return 0;
+    }
+    return 1;
+}
+
+/* Map current/reference parameters parsed from the SCSI Temperature log page
+ * (page 0Dh, parameter codes 0000h/0001h). FFh and absent parameters are
+ * unavailable; the temperature is retained in the source's Celsius unit. */
+static inline int rin_storage_health_from_scsi_temperature_v1(
+    uint64_t device_generation, uint32_t flags,
+    uint8_t temperature_celsius, uint8_t reference_temperature_celsius,
+    RinStorageHealthSnapshotV1* output)
+{
+    if (!rin_storage_health_empty_v1(
+            RIN_STORAGE_HEALTH_TRANSPORT_SCSI, device_generation, output))
+        return 0;
+    if ((flags & ~RIN_STORAGE_HEALTH_SCSI_TEMPERATURE_FLAG_KNOWN) != 0u ||
+        ((flags & RIN_STORAGE_HEALTH_SCSI_TEMPERATURE_VALID) == 0u &&
+         temperature_celsius != 0u) ||
+        ((flags & RIN_STORAGE_HEALTH_SCSI_REFERENCE_TEMPERATURE_VALID) ==
+             0u &&
+         reference_temperature_celsius != 0u) ||
+        ((flags & RIN_STORAGE_HEALTH_SCSI_TEMPERATURE_VALID) != 0u &&
+         temperature_celsius == UINT8_MAX) ||
+        ((flags & RIN_STORAGE_HEALTH_SCSI_REFERENCE_TEMPERATURE_VALID) !=
+             0u &&
+         reference_temperature_celsius == UINT8_MAX)) {
+        rin_storage_health_snapshot_zero_v1(output);
+        return 0;
+    }
+    if ((flags & RIN_STORAGE_HEALTH_SCSI_TEMPERATURE_VALID) != 0u) {
+        RinStorageHealthMetricV1* metric =
+            &output->metrics[output->metric_count++];
+        metric->metric_id = RIN_STORAGE_HEALTH_SCSI_TEMPERATURE_CELSIUS;
+        metric->unit = RIN_STORAGE_HEALTH_UNIT_CELSIUS;
+        metric->flags = RIN_STORAGE_HEALTH_METRIC_FLAG_VALID;
+        metric->value_low = temperature_celsius;
+    }
+    if ((flags & RIN_STORAGE_HEALTH_SCSI_REFERENCE_TEMPERATURE_VALID) != 0u) {
+        RinStorageHealthMetricV1* metric =
+            &output->metrics[output->metric_count++];
+        metric->metric_id =
+            RIN_STORAGE_HEALTH_SCSI_REFERENCE_TEMPERATURE_CELSIUS;
+        metric->unit = RIN_STORAGE_HEALTH_UNIT_CELSIUS;
+        metric->flags = RIN_STORAGE_HEALTH_METRIC_FLAG_VALID;
+        metric->value_low = reference_temperature_celsius;
+    }
+    if (!rin_storage_health_snapshot_valid_v1(output)) {
+        rin_storage_health_snapshot_zero_v1(output);
+        return 0;
+    }
+    return 1;
+}
+
+static inline int rin_storage_health_sd_unavailable_v1(
+    uint64_t device_generation, RinStorageHealthSnapshotV1* output)
+{
+    return rin_storage_health_empty_v1(
+        RIN_STORAGE_HEALTH_TRANSPORT_SD, device_generation, output);
 }
 
 /* Convert one native NVMe SMART/Health snapshot. The output is fully zeroed
