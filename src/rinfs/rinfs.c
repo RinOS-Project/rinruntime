@@ -6,7 +6,7 @@
 
 #include <rinruntime/rinfs/rinfs.h>
 #include <rinruntime/rinfs/vfs_open_flags.h>
-#if !defined(RIN_USERSPACE) && !defined(RIN_KERNEL) && !defined(_WIN32)
+#if !defined(RIN_KERNEL) && !defined(_WIN32)
 #include <unistd.h>
 #endif
 #if defined(RIN_USERSPACE) && !defined(RIN_KERNEL) && \
@@ -25943,6 +25943,19 @@ static int rinfs_restore_page_cache_quiesce(RinFS_Mount* mount,
     return rinfs_page_cache_unlock_status(cache, RINFS_OK);
 }
 
+/* Recovery sync is idempotent while the pending restore record remains
+ * authoritative. Retry transient storage and allocation failures a bounded
+ * number of times before the caller fences the mount read-only. */
+static int rinfs_restore_cache_sync_for_recovery(RinFS_Mount* mount) {
+    int error = RINFS_OK;
+    for (uint32_t attempt = 0u; attempt < 3u; ++attempt) {
+        error = rinfs_sync(mount);
+        if (error != RINFS_ERR_IO && error != RINFS_ERR_NOMEM)
+            return error;
+    }
+    return error;
+}
+
 /* Bind restore admission and ordinary-operation exclusion under the same
  * recoverable content lock. Shared mounts additionally retain the exact
  * kernel-issued owner row/cookie so a reaped process cannot strand or release
@@ -26821,7 +26834,7 @@ static int rinfs_restore_record_store(RinFS_Mount* mount,
     rinfs_memcpy(mount->sb.s_padding, record, sizeof(*record));
     mount->sb.s_incompat_features |=
         RINFS_FEATURE_INCOMPAT_RESTORE_PENDING;
-    error = rinfs_sync(mount);
+    error = rinfs_restore_cache_sync_for_recovery(mount);
     if (error != RINFS_OK) rinfs_mount_force_readonly(mount);
     return error;
 }
