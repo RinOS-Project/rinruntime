@@ -26016,12 +26016,18 @@ int rinfs_link_tmpfile(RinFS_File* file, uint64_t dir_ino,
 static int rinfs_symlink_owned_unscoped(
     RinFS_Mount* mount, uint64_t dir_ino, const char* name,
     const char* target, uint32_t uid, uint32_t gid) {
+    RinFS_Inode link_inode;
     if (!mount || !mount->mounted || !name || !target) return RINFS_ERR_INVAL;
     int prepare_error = rinfs_mount_prepare_write(mount);
     if (prepare_error != RINFS_OK) return prepare_error;
 
     uint32_t target_len = rinfs_strlen(target);
     if (target_len == 0 || target_len >= RINFS_SYMLINK_MAX) {
+        return RINFS_ERR_INVAL;
+    }
+    /* Long symlinks occupy one data block, including their terminator. */
+    if (target_len >= sizeof(link_inode.i_block) &&
+        target_len >= mount->sb.s_block_size) {
         return RINFS_ERR_INVAL;
     }
 
@@ -26037,7 +26043,6 @@ static int rinfs_symlink_owned_unscoped(
     if (err != RINFS_OK) return err;
 
     /* Initialize symlink inode */
-    RinFS_Inode link_inode;
     err = rinfs_prepare_new_inode(mount, link_ino, &link_inode);
     if (err != RINFS_OK) {
         rinfs_inode_free(mount, link_ino);
@@ -26131,6 +26136,7 @@ static int rinfs_readlink_unscoped(RinFS_Mount* mount, uint64_t ino,
 
     uint32_t link_len = (uint32_t)inode.i_size;
     if (link_len == 0) return 0;
+    if (link_len >= RINFS_SYMLINK_MAX) return RINFS_ERR_IO;
 
     /* Determine where target is stored */
     if (link_len < sizeof(inode.i_block)) {
@@ -26145,6 +26151,9 @@ static int rinfs_readlink_unscoped(RinFS_Mount* mount, uint64_t ino,
         }
 
         uint32_t block_size = mount->sb.s_block_size;
+        if (block_size < RINFS_MIN_BLOCK_SIZE ||
+            block_size > RINFS_MAX_BLOCK_SIZE || link_len >= block_size)
+            return RINFS_ERR_IO;
         uint8_t* data = (uint8_t*)rinfs_malloc(block_size);
         if (!data) return RINFS_ERR_NOMEM;
 
@@ -29177,9 +29186,28 @@ int rinfs_stat(RinFS_Mount* mount, const char* path, RinFS_Inode* inode) {
 RINFS_MOUNT_SCOPE_WRAPPER(
     rinfs_delete_on_close_reap, rinfs_delete_on_close_reap_unscoped,
     (RinFS_Mount* mount), (mount))
-RINFS_MOUNT_SCOPE_WRAPPER(
-    rinfs_readlink, rinfs_readlink_unscoped,
-    (RinFS_Mount* mount, uint64_t ino, char* buf, uint32_t size),
-    (mount, ino, buf, size))
+static void rinfs_readlink_output_clear(char* buf, uint32_t size) {
+    uint32_t clear_size = size < RINFS_SYMLINK_MAX
+        ? size : RINFS_SYMLINK_MAX;
+    if (buf && clear_size != 0u) rinfs_memset(buf, 0, clear_size);
+}
+
+int rinfs_readlink(RinFS_Mount* mount, uint64_t ino, char* buf,
+                   uint32_t size) {
+    RinFS_MountOperationScope operation = {0};
+    int error;
+    rinfs_readlink_output_clear(buf, size);
+    if (!mount || !mount->mounted) {
+        error = rinfs_readlink_unscoped(mount, ino, buf, size);
+        if (error < 0) rinfs_readlink_output_clear(buf, size);
+        return error;
+    }
+    error = rinfs_mount_operation_scope_begin(mount, &operation);
+    if (error != RINFS_OK) return error;
+    error = rinfs_readlink_unscoped(mount, ino, buf, size);
+    error = rinfs_mount_operation_scope_finish(&operation, error);
+    if (error < 0) rinfs_readlink_output_clear(buf, size);
+    return error;
+}
 
 #undef RINFS_MOUNT_SCOPE_WRAPPER

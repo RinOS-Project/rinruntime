@@ -838,3 +838,10 @@ or scope-release failure. Unmounted calls retain their existing behavior while
 still clearing partial outputs on error. This source integration does not
 replace the race, fault/reboot, product, QEMU, or physical-media acceptance
 tracked by the RinOS Core ISO-BLOCK-07 item.
+
+`rinfs_readlink()` now keeps the restore scope through the complete read and
+clears its bounded output region on failures, including scope-release errors.
+Long symlink storage is constrained to one data block including its NUL byte;
+reads reject oversized on-disk lengths before copying from that block. This is
+source-only and does not replace restore race, corruption/fault, product, QEMU,
+or physical-media acceptance.
