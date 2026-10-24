@@ -5333,8 +5333,8 @@ static int rinfs_page_cache_ensure_storage(RinFS_PageCacheEntry* entry) {
 #endif
 }
 
-int rinfs_page_cache_release_view(RinFS_Mount* mount,
-                                  uintptr_t cache_token) {
+static int rinfs_page_cache_release_view_unscoped(
+    RinFS_Mount* mount, uintptr_t cache_token) {
     RinFS_PageCache* cache;
     RinFS_PageCacheEntry* entry;
     uintptr_t first;
@@ -5365,8 +5365,8 @@ int rinfs_page_cache_release_view(RinFS_Mount* mount,
     return rinfs_page_cache_unlock_status(cache, RINFS_OK);
 }
 
-int rinfs_page_cache_release_mapped_page(RinFS_Mount* mount,
-                                         uint64_t physical_address) {
+static int rinfs_page_cache_release_mapped_page_unscoped(
+    RinFS_Mount* mount, uint64_t physical_address) {
     RinFS_PageCache* cache;
     uint32_t index;
     if (!mount || !mount->page_cache || physical_address == 0u)
@@ -5391,6 +5391,29 @@ int rinfs_page_cache_release_mapped_page(RinFS_Mount* mount,
         return rinfs_page_cache_unlock_status(cache, RINFS_OK);
     }
     return rinfs_page_cache_unlock_status(cache, RINFS_ERR_NOENT);
+}
+
+int rinfs_page_cache_release_view(RinFS_Mount* mount,
+                                  uintptr_t cache_token) {
+    RinFS_MountOperationScope operation = {0};
+    int error;
+    if (!mount) return RINFS_ERR_INVAL;
+    error = rinfs_mount_operation_scope_begin(mount, &operation);
+    if (error != RINFS_OK) return error;
+    error = rinfs_page_cache_release_view_unscoped(mount, cache_token);
+    return rinfs_mount_operation_scope_finish(&operation, error);
+}
+
+int rinfs_page_cache_release_mapped_page(RinFS_Mount* mount,
+                                         uint64_t physical_address) {
+    RinFS_MountOperationScope operation = {0};
+    int error;
+    if (!mount) return RINFS_ERR_NOENT;
+    error = rinfs_mount_operation_scope_begin(mount, &operation);
+    if (error != RINFS_OK) return error;
+    error = rinfs_page_cache_release_mapped_page_unscoped(
+        mount, physical_address);
+    return rinfs_mount_operation_scope_finish(&operation, error);
 }
 
 static int rinfs_page_cache_mark_mapped_page_dirty_unscoped(
