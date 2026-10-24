@@ -24,6 +24,7 @@
 #include "../platform.h"
 int rinfs_fork_prepare(void);
 int rinfs_fork_complete(int fork_succeeded);
+int rinfs_exec_status_to_errno(int status);
 static int rinfs_exec_mount_lifecycle_begin(RinFS_Mount* mount);
 static int rinfs_exec_mount_lifecycle_admit(void);
 static void rinfs_exec_mount_lifecycle_end(RinFS_Mount* mount,
@@ -18642,7 +18643,7 @@ static int rinfs_exec_mounts_rollback_locked(void) {
 
 /* Flush and suspend all process-local RinFS owners before exec. The locks are
  * intentionally retained on success; exec failure must call abort to resume. */
-static int rinfs_exec_prepare_all_status(void) {
+int rinfs_exec_prepare_all(void) {
     uint32_t expected_state = RINFS_EXEC_STATE_IDLE;
     int result = RINFS_ERR_BUSY;
     int rollback_error;
@@ -18816,7 +18817,7 @@ rollback:
 /* libc exposes exec failures through POSIX errno. Keep the RinFS status codes
  * private to this runtime instead of leaking negative filesystem results into
  * the errno namespace. */
-static int rinfs_exec_status_to_errno(int status) {
+int rinfs_exec_status_to_errno(int status) {
     switch (status) {
         case RINFS_OK: return 0;
         case RINFS_ERR_BUSY: return EBUSY;
@@ -18840,15 +18841,10 @@ static int rinfs_exec_status_to_errno(int status) {
     }
 }
 
-/* Private libc hook: success is zero; failure is a positive POSIX errno. */
-int rinfs_exec_prepare_all(void) {
-    return rinfs_exec_status_to_errno(rinfs_exec_prepare_all_status());
-}
-
 /* Called only after SYS_EXEC returned, which means the current address space
  * is still alive. On exec success the syscall never returns and these locks,
  * records, and owner gates disappear with the process image. */
-static int rinfs_exec_abort_all_status(void) {
+int rinfs_exec_abort_all(void) {
     int result;
     if (__atomic_load_n(&g_rinfs_exec_transaction_state,
                         __ATOMIC_ACQUIRE) != RINFS_EXEC_STATE_PREPARED)
@@ -18865,10 +18861,6 @@ static int rinfs_exec_abort_all_status(void) {
     return result;
 }
 
-/* Abort errors use the same errno-returning hook contract as prepare. */
-int rinfs_exec_abort_all(void) {
-    return rinfs_exec_status_to_errno(rinfs_exec_abort_all_status());
-}
 #else
 static int rinfs_shared_owner_query_row(RinFS_Mount* mount,
                                         uint32_t* row_out) {
