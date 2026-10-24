@@ -11,6 +11,7 @@
 #define RIN_PERFORMANCE_TRACE_SNAPSHOT_VERSION 1u
 #define RIN_PERFORMANCE_TRACE_SCHEDULER_METRICS_VERSION 1u
 #define RIN_PERFORMANCE_TRACE_SCHEDULER_HISTOGRAM_BINS 16u
+#define RIN_PERFORMANCE_TRACE_COMPOSITOR_HANDSHAKE_STAGE 8u
 
 typedef enum RinPerformanceTraceEvent {
     RIN_TRACE_SCHED_PICK_START = 1,
@@ -64,6 +65,15 @@ typedef enum RinPerformanceTraceEvent {
     RIN_TRACE_PAGE_CACHE_WRITEBACK,
     /* arg0=lock wait cycles, arg1=spin iterations. */
     RIN_TRACE_PAGE_CACHE_LOCK_WAIT,
+    /* arg0=connect-to-accept wait ns, arg1=accept API processing ns. */
+    RIN_TRACE_UNIX_ACCEPT,
+    /* arg0=(capacity << 32) | high-water, arg1=full-rejection count. */
+    RIN_TRACE_UNIX_QUEUE_STATE,
+    /* arg0=allocated/freed bytes, arg1=queue capacity entries. */
+    RIN_TRACE_UNIX_QUEUE_ALLOC,
+    RIN_TRACE_UNIX_QUEUE_FREE,
+    /* arg0=successful HELLO duration ns, arg1=compositor client owner id. */
+    RIN_TRACE_COMPOSITOR_HANDSHAKE,
     RIN_TRACE_EVENT_COUNT
 } RinPerformanceTraceEvent;
 
@@ -136,6 +146,12 @@ extern "C" {
  * own timestamp is the RDTSC time at submission. */
 int rinruntime_performance_trace_submit_latency(
     const RinLatencyTraceV1* trace);
+
+/* Submit one successful compositor HELLO duration in monotonic nanoseconds.
+ * The owner id correlates the sample with compositor diagnostics. Available
+ * only in builds with RIN_PERFORMANCE_TRACE enabled. */
+int rinruntime_performance_trace_submit_compositor_handshake(
+    uint64_t duration_ns, uint32_t owner_id);
 
 /* Copy up to MAX_READ_RECORDS events from one CPU ring. Pass the previous
  * info.next_sequence - 1 as after_sequence for the next read. A capacity of

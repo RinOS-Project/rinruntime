@@ -53,6 +53,34 @@ int rinruntime_performance_trace_submit_latency(
     return 0;
 }
 
+int rinruntime_performance_trace_submit_compositor_handshake(
+    uint64_t duration_ns, uint32_t owner_id)
+{
+    intptr_t result;
+
+    if (duration_ns == 0u || owner_id == 0u) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    result = _syscall5(
+        (uintptr_t)RIN_SYS_PERFORMANCE_TRACE_MARK_V1,
+        (uintptr_t)RIN_PERFORMANCE_TRACE_COMPOSITOR_HANDSHAKE_STAGE,
+        (uintptr_t)(uint32_t)duration_ns,
+        (uintptr_t)(uint32_t)(duration_ns >> 32u),
+        (uintptr_t)owner_id,
+        (uintptr_t)0u);
+    if (result < 0) {
+        errno = result >= -4095 ? (int)(-result) : EIO;
+        return -1;
+    }
+    if (result != 0) {
+        errno = EIO;
+        return -1;
+    }
+    return 0;
+}
+
 int rinruntime_performance_trace_read_cpu(
     uint32_t cpu, uint64_t after_sequence,
     RinPerformanceTraceRecord* records, uint32_t capacity,
