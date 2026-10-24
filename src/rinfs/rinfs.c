@@ -61,6 +61,8 @@ static int rinfs_mount_operation_scope_begin(
     RinFS_Mount* mount, RinFS_MountOperationScope* scope);
 static int rinfs_mount_operation_scope_end(
     RinFS_MountOperationScope* scope);
+static int rinfs_mount_operation_scope_finish(
+    RinFS_MountOperationScope* scope, int operation_error);
 static int rinfs_mount_operation_pair_scope_begin(
     RinFS_Mount* first_mount, RinFS_Mount* second_mount,
     RinFS_MountOperationPairScope* scope);
@@ -2822,6 +2824,12 @@ static int rinfs_mount_operation_pair_scope_end(
         result = release_error;
     rinfs_memset(scope, 0, sizeof(*scope));
     return result;
+}
+
+static int rinfs_mount_operation_scope_finish(
+    RinFS_MountOperationScope* scope, int operation_error) {
+    int release_error = rinfs_mount_operation_scope_end(scope);
+    return release_error == RINFS_OK ? operation_error : release_error;
 }
 
 #if defined(RINFS_USERLAND_MOUNT_LEASES) && !defined(RIN_KERNEL)
@@ -21756,9 +21764,11 @@ static int rinfs_publish_orphan_intent_inode(
     return RINFS_OK;
 }
 
-int rinfs_createat_owned(RinFS_Mount* mount, uint64_t parent_ino,
-                         const char* name, uint16_t mode, uint32_t uid,
-                         uint32_t gid, uint64_t* created_ino) {
+static int rinfs_createat_owned_unscoped(RinFS_Mount* mount,
+                                         uint64_t parent_ino,
+                                         const char* name, uint16_t mode,
+                                         uint32_t uid, uint32_t gid,
+                                         uint64_t* created_ino) {
     RinFS_Inode parent_inode;
     RinFS_Inode inode;
     uint64_t existing_ino;
@@ -21817,10 +21827,10 @@ int rinfs_createat_owned(RinFS_Mount* mount, uint64_t parent_ino,
         created_ino);
 }
 
-int rinfs_mknodat_owned(RinFS_Mount* mount, uint64_t parent_ino,
-                        const char* name, uint16_t mode,
-                        uint32_t device_number, uint32_t uid, uint32_t gid,
-                        uint64_t* created_ino) {
+static int rinfs_mknodat_owned_unscoped(
+    RinFS_Mount* mount, uint64_t parent_ino, const char* name,
+    uint16_t mode, uint32_t device_number, uint32_t uid, uint32_t gid,
+    uint64_t* created_ino) {
     RinFS_Inode parent_inode;
     RinFS_Inode inode;
     uint64_t existing_ino;
@@ -21897,9 +21907,9 @@ int rinfs_mknodat_owned(RinFS_Mount* mount, uint64_t parent_ino,
 /* O_TMPFILE has no dentry to publish. Store its zero link count together with
  * ORPHAN_INTENT before opening it so mount recovery can reclaim it after a
  * power loss at any point before linkat(AT_EMPTY_PATH) commits a name. */
-int rinfs_create_tmpfile_owned(RinFS_Mount* mount, uint64_t parent_ino,
-                               uint16_t mode, uint32_t uid, uint32_t gid,
-                               int open_flags, RinFS_File* file) {
+static int rinfs_create_tmpfile_owned_unscoped(
+    RinFS_Mount* mount, uint64_t parent_ino, uint16_t mode, uint32_t uid,
+    uint32_t gid, int open_flags, RinFS_File* file) {
     RinFS_Inode parent_inode;
     RinFS_Inode inode;
     uint64_t new_ino = 0u;
@@ -22024,9 +22034,9 @@ int rinfs_create(RinFS_Mount* mount, const char* path, uint16_t mode) {
     return rinfs_create_owned(mount, path, mode, 0, 0);
 }
 
-int rinfs_mkdirat_owned(RinFS_Mount* mount, uint64_t parent_ino,
-                        const char* name, uint16_t mode, uint32_t uid,
-                        uint32_t gid, uint64_t* created_ino) {
+static int rinfs_mkdirat_owned_unscoped(
+    RinFS_Mount* mount, uint64_t parent_ino, const char* name,
+    uint16_t mode, uint32_t uid, uint32_t gid, uint64_t* created_ino) {
     RinFS_Inode parent_inode;
     uint64_t existing_ino;
     uint32_t name_length;
@@ -22155,9 +22165,9 @@ int rinfs_mkdirat_owned(RinFS_Mount* mount, uint64_t parent_ino,
     return RINFS_OK;
 }
 
-int rinfs_mkdirat_open_owned(RinFS_Mount* mount, uint64_t parent_ino,
-                             const char* name, uint16_t mode, uint32_t uid,
-                             uint32_t gid, RinFS_Dir* opened_dir) {
+static int rinfs_mkdirat_open_owned_unscoped(
+    RinFS_Mount* mount, uint64_t parent_ino, const char* name,
+    uint16_t mode, uint32_t uid, uint32_t gid, RinFS_Dir* opened_dir) {
     RinFS_Inode created_inode;
     uint64_t created_ino = 0u;
     int result;
@@ -24946,7 +24956,7 @@ int rinfs_rename_no_replace(RinFS_Mount* mount, uint64_t old_dir,
     return rinfs_journal_transaction_unlock_status(mount, result);
 }
 
-int rinfs_rename_no_replace_expected(
+static int rinfs_rename_no_replace_expected_unscoped(
     RinFS_Mount* mount, uint64_t old_dir, const char* old_name,
     uint64_t new_dir, const char* new_name, uint64_t expected_source_inode,
     uint32_t expected_source_generation) {
@@ -24962,7 +24972,7 @@ int rinfs_rename_no_replace_expected(
     return rinfs_journal_transaction_unlock_status(mount, result);
 }
 
-int rinfs_rename_expected(
+static int rinfs_rename_expected_unscoped(
     RinFS_Mount* mount, uint64_t old_dir, const char* old_name,
     uint64_t new_dir, const char* new_name, uint64_t expected_source_inode,
     uint32_t expected_source_generation) {
@@ -25105,10 +25115,10 @@ int rinfs_unlink_expected(RinFS_Mount* mount, uint64_t dir_ino,
                                   expected_generation);
 }
 
-int rinfs_unlink_entry_expected(RinFS_Mount* mount, uint64_t parent_ino,
-                                uint32_t parent_generation, const char* name,
-                                uint64_t expected_inode,
-                                uint32_t expected_generation) {
+static int rinfs_unlink_entry_expected_unscoped(
+    RinFS_Mount* mount, uint64_t parent_ino, uint32_t parent_generation,
+    const char* name, uint64_t expected_inode,
+    uint32_t expected_generation) {
     RinFS_Inode parent_inode;
     int result;
     if (!mount || !name || parent_ino == 0u || parent_generation == 0u ||
@@ -25337,10 +25347,10 @@ int rinfs_rmdir_expected(RinFS_Mount* mount, uint64_t parent_ino,
     }
 }
 
-int rinfs_rmdir_entry_expected(RinFS_Mount* mount, uint64_t parent_ino,
-                               uint32_t parent_generation, const char* name,
-                               uint64_t expected_inode,
-                               uint32_t expected_generation) {
+static int rinfs_rmdir_entry_expected_unscoped(
+    RinFS_Mount* mount, uint64_t parent_ino, uint32_t parent_generation,
+    const char* name, uint64_t expected_inode,
+    uint32_t expected_generation) {
     RinFS_Inode parent_inode;
     int result;
     if (!mount || !name || parent_ino == 0u || parent_generation == 0u ||
@@ -25364,7 +25374,8 @@ int rinfs_rmdir_entry_expected(RinFS_Mount* mount, uint64_t parent_ino,
  * ═══════════════════════════════════════════════════════════════*/
 
 /* Create a hard link */
-int rinfs_link(RinFS_Mount* mount, uint64_t dir_ino, const char* name, uint64_t target_ino) {
+static int rinfs_link_unscoped(RinFS_Mount* mount, uint64_t dir_ino,
+                               const char* name, uint64_t target_ino) {
     if (!mount || !mount->mounted || !name) return RINFS_ERR_INVAL;
     int err = rinfs_mount_prepare_write(mount);
     if (err != RINFS_OK) return err;
@@ -25544,8 +25555,9 @@ int rinfs_link_tmpfile(RinFS_File* file, uint64_t dir_ino,
 }
 
 /* Create a symbolic link */
-int rinfs_symlink_owned(RinFS_Mount* mount, uint64_t dir_ino, const char* name,
-                        const char* target, uint32_t uid, uint32_t gid) {
+static int rinfs_symlink_owned_unscoped(
+    RinFS_Mount* mount, uint64_t dir_ino, const char* name,
+    const char* target, uint32_t uid, uint32_t gid) {
     if (!mount || !mount->mounted || !name || !target) return RINFS_ERR_INVAL;
     int prepare_error = rinfs_mount_prepare_write(mount);
     if (prepare_error != RINFS_OK) return prepare_error;
@@ -28173,4 +28185,178 @@ int rinfs_restore_transaction_set_directory_metadata(
     return rinfs_restore_transaction_set_inode_metadata(
         transaction, inode_number, mode, persistent_flags, uid, gid,
         times, change_time_seconds);
+}
+
+int rinfs_createat_owned(RinFS_Mount* mount, uint64_t parent_ino,
+                         const char* name, uint16_t mode, uint32_t uid,
+                         uint32_t gid, uint64_t* created_ino) {
+    RinFS_MountOperationScope operation = {0};
+    int error;
+    if (created_ino) *created_ino = 0u;
+    if (!mount || !mount->mounted || !name || parent_ino == 0u ||
+        parent_ino > mount->sb.s_inode_count)
+        return RINFS_ERR_INVAL;
+    error = rinfs_mount_operation_scope_begin(mount, &operation);
+    if (error != RINFS_OK) return error;
+    error = rinfs_createat_owned_unscoped(
+        mount, parent_ino, name, mode, uid, gid, created_ino);
+    return rinfs_mount_operation_scope_finish(&operation, error);
+}
+
+int rinfs_mknodat_owned(RinFS_Mount* mount, uint64_t parent_ino,
+                        const char* name, uint16_t mode,
+                        uint32_t device_number, uint32_t uid, uint32_t gid,
+                        uint64_t* created_ino) {
+    RinFS_MountOperationScope operation = {0};
+    int error;
+    if (created_ino) *created_ino = 0u;
+    if (!mount || !mount->mounted || !name || parent_ino == 0u ||
+        parent_ino > mount->sb.s_inode_count ||
+        (mode & (uint16_t)~0177777u) != 0u)
+        return RINFS_ERR_INVAL;
+    error = rinfs_mount_operation_scope_begin(mount, &operation);
+    if (error != RINFS_OK) return error;
+    error = rinfs_mknodat_owned_unscoped(
+        mount, parent_ino, name, mode, device_number, uid, gid, created_ino);
+    return rinfs_mount_operation_scope_finish(&operation, error);
+}
+
+int rinfs_create_tmpfile_owned(RinFS_Mount* mount, uint64_t parent_ino,
+                               uint16_t mode, uint32_t uid, uint32_t gid,
+                               int open_flags, RinFS_File* file) {
+    RinFS_MountOperationScope operation = {0};
+    int error;
+    if (!mount || !mount->mounted || !file || parent_ino == 0u ||
+        parent_ino > mount->sb.s_inode_count)
+        return RINFS_ERR_INVAL;
+    error = rinfs_mount_operation_scope_begin(mount, &operation);
+    if (error != RINFS_OK) return error;
+    error = rinfs_create_tmpfile_owned_unscoped(
+        mount, parent_ino, mode, uid, gid, open_flags, file);
+    return rinfs_mount_operation_scope_finish(&operation, error);
+}
+
+int rinfs_mkdirat_owned(RinFS_Mount* mount, uint64_t parent_ino,
+                        const char* name, uint16_t mode, uint32_t uid,
+                        uint32_t gid, uint64_t* created_ino) {
+    RinFS_MountOperationScope operation = {0};
+    int error;
+    if (created_ino) *created_ino = 0u;
+    if (!mount || !mount->mounted || !name || !created_ino ||
+        parent_ino == 0u || parent_ino > mount->sb.s_inode_count)
+        return RINFS_ERR_INVAL;
+    error = rinfs_mount_operation_scope_begin(mount, &operation);
+    if (error != RINFS_OK) return error;
+    error = rinfs_mkdirat_owned_unscoped(
+        mount, parent_ino, name, mode, uid, gid, created_ino);
+    return rinfs_mount_operation_scope_finish(&operation, error);
+}
+
+int rinfs_mkdirat_open_owned(RinFS_Mount* mount, uint64_t parent_ino,
+                             const char* name, uint16_t mode, uint32_t uid,
+                             uint32_t gid, RinFS_Dir* opened_dir) {
+    RinFS_MountOperationScope operation = {0};
+    int error;
+    if (opened_dir == NULL) return RINFS_ERR_INVAL;
+    rinfs_memset(opened_dir, 0, sizeof(*opened_dir));
+    if (mount == NULL || !mount->mounted || !name)
+        return RINFS_ERR_INVAL;
+    error = rinfs_mount_operation_scope_begin(mount, &operation);
+    if (error != RINFS_OK) return error;
+    error = rinfs_mkdirat_open_owned_unscoped(
+        mount, parent_ino, name, mode, uid, gid, opened_dir);
+    return rinfs_mount_operation_scope_finish(&operation, error);
+}
+
+int rinfs_rename_no_replace_expected(
+    RinFS_Mount* mount, uint64_t old_dir, const char* old_name,
+    uint64_t new_dir, const char* new_name, uint64_t expected_source_inode,
+    uint32_t expected_source_generation) {
+    RinFS_MountOperationScope operation = {0};
+    int error;
+    if (!mount || expected_source_inode == 0u ||
+        expected_source_generation == 0u)
+        return RINFS_ERR_INVAL;
+    error = rinfs_mount_operation_scope_begin(mount, &operation);
+    if (error != RINFS_OK) return error;
+    error = rinfs_rename_no_replace_expected_unscoped(
+        mount, old_dir, old_name, new_dir, new_name, expected_source_inode,
+        expected_source_generation);
+    return rinfs_mount_operation_scope_finish(&operation, error);
+}
+
+int rinfs_rename_expected(
+    RinFS_Mount* mount, uint64_t old_dir, const char* old_name,
+    uint64_t new_dir, const char* new_name, uint64_t expected_source_inode,
+    uint32_t expected_source_generation) {
+    RinFS_MountOperationScope operation = {0};
+    int error;
+    if (!mount || expected_source_inode == 0u ||
+        expected_source_generation == 0u)
+        return RINFS_ERR_INVAL;
+    error = rinfs_mount_operation_scope_begin(mount, &operation);
+    if (error != RINFS_OK) return error;
+    error = rinfs_rename_expected_unscoped(
+        mount, old_dir, old_name, new_dir, new_name, expected_source_inode,
+        expected_source_generation);
+    return rinfs_mount_operation_scope_finish(&operation, error);
+}
+
+int rinfs_unlink_entry_expected(RinFS_Mount* mount, uint64_t parent_ino,
+                                uint32_t parent_generation, const char* name,
+                                uint64_t expected_inode,
+                                uint32_t expected_generation) {
+    RinFS_MountOperationScope operation = {0};
+    int error;
+    if (!mount || !name || parent_ino == 0u || parent_generation == 0u ||
+        expected_inode == 0u || expected_generation == 0u)
+        return RINFS_ERR_INVAL;
+    error = rinfs_mount_operation_scope_begin(mount, &operation);
+    if (error != RINFS_OK) return error;
+    error = rinfs_unlink_entry_expected_unscoped(
+        mount, parent_ino, parent_generation, name, expected_inode,
+        expected_generation);
+    return rinfs_mount_operation_scope_finish(&operation, error);
+}
+
+int rinfs_rmdir_entry_expected(RinFS_Mount* mount, uint64_t parent_ino,
+                               uint32_t parent_generation, const char* name,
+                               uint64_t expected_inode,
+                               uint32_t expected_generation) {
+    RinFS_MountOperationScope operation = {0};
+    int error;
+    if (!mount || !name || parent_ino == 0u || parent_generation == 0u ||
+        expected_inode == 0u || expected_generation == 0u)
+        return RINFS_ERR_INVAL;
+    error = rinfs_mount_operation_scope_begin(mount, &operation);
+    if (error != RINFS_OK) return error;
+    error = rinfs_rmdir_entry_expected_unscoped(
+        mount, parent_ino, parent_generation, name, expected_inode,
+        expected_generation);
+    return rinfs_mount_operation_scope_finish(&operation, error);
+}
+
+int rinfs_link(RinFS_Mount* mount, uint64_t dir_ino, const char* name,
+               uint64_t target_ino) {
+    RinFS_MountOperationScope operation = {0};
+    int error;
+    if (!mount || !mount->mounted || !name) return RINFS_ERR_INVAL;
+    error = rinfs_mount_operation_scope_begin(mount, &operation);
+    if (error != RINFS_OK) return error;
+    error = rinfs_link_unscoped(mount, dir_ino, name, target_ino);
+    return rinfs_mount_operation_scope_finish(&operation, error);
+}
+
+int rinfs_symlink_owned(RinFS_Mount* mount, uint64_t dir_ino,
+                        const char* name, const char* target,
+                        uint32_t uid, uint32_t gid) {
+    RinFS_MountOperationScope operation = {0};
+    int error;
+    if (!mount || !mount->mounted || !name || !target)
+        return RINFS_ERR_INVAL;
+    error = rinfs_mount_operation_scope_begin(mount, &operation);
+    if (error != RINFS_OK) return error;
+    error = rinfs_symlink_owned_unscoped(
+        mount, dir_ino, name, target, uid, gid);
+    return rinfs_mount_operation_scope_finish(&operation, error);
 }
