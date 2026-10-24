@@ -10578,10 +10578,9 @@ static int rinfs_inode_write_content(RinFS_Mount* mount, uint64_t ino,
     return rinfs_inode_write_internal(mount, ino, inode, 4);
 }
 
-int rinfs_inode_content_tracking(const RinFS_Mount* mount,
-                                 const RinFS_Inode* inode,
-                                 uint64_t* version_out,
-                                 uint32_t* state_out) {
+static int rinfs_inode_content_tracking_unscoped(
+    const RinFS_Mount* mount, const RinFS_Inode* inode,
+    uint64_t* version_out, uint32_t* state_out) {
     if (!mount || !inode || !version_out || !state_out)
         return RINFS_ERR_INVAL;
     *version_out = 0u;
@@ -10597,6 +10596,32 @@ int rinfs_inode_content_tracking(const RinFS_Mount* mount,
         *state_out |= RINFS_CONTENT_TRACKING_RUNTIME_DISABLED;
     }
     return RINFS_OK;
+}
+
+int rinfs_inode_content_tracking(const RinFS_Mount* mount,
+                                 const RinFS_Inode* inode,
+                                 uint64_t* version_out,
+                                 uint32_t* state_out) {
+    RinFS_MountOperationScope operation = {0};
+    int error;
+    if (!mount || !inode || !version_out || !state_out)
+        return RINFS_ERR_INVAL;
+    *version_out = 0u;
+    *state_out = 0u;
+    if (!mount->mounted)
+        return rinfs_inode_content_tracking_unscoped(
+            mount, inode, version_out, state_out);
+    error = rinfs_mount_operation_scope_begin(
+        (RinFS_Mount*)mount, &operation);
+    if (error != RINFS_OK) return error;
+    error = rinfs_inode_content_tracking_unscoped(
+        mount, inode, version_out, state_out);
+    error = rinfs_mount_operation_scope_finish(&operation, error);
+    if (error != RINFS_OK) {
+        *version_out = 0u;
+        *state_out = 0u;
+    }
+    return error;
 }
 
 typedef struct {
@@ -10812,9 +10837,9 @@ static int rinfs_inode_time_value_valid(const RinFS_InodeTimestamp* value) {
            value->reserved == 0u;
 }
 
-int rinfs_inode_get_times_precise(const RinFS_Mount* mount,
-                                  const RinFS_Inode* inode,
-                                  RinFS_InodeTimes* times_out) {
+static int rinfs_inode_get_times_precise_unscoped(
+    const RinFS_Mount* mount, const RinFS_Inode* inode,
+    RinFS_InodeTimes* times_out) {
     uint32_t valid_mask;
     if (mount == NULL || inode == NULL || times_out == NULL) {
         return RINFS_ERR_INVAL;
@@ -10854,6 +10879,27 @@ int rinfs_inode_get_times_precise(const RinFS_Mount* mount,
     times_out->write.nanoseconds = rinfs_inode_time_read_u32(
         inode->i_reserved + RINFS_INODE_NANOTIME_WRITE_OFFSET);
     return RINFS_OK;
+}
+
+int rinfs_inode_get_times_precise(const RinFS_Mount* mount,
+                                  const RinFS_Inode* inode,
+                                  RinFS_InodeTimes* times_out) {
+    RinFS_MountOperationScope operation = {0};
+    int error;
+    if (mount == NULL || inode == NULL || times_out == NULL)
+        return RINFS_ERR_INVAL;
+    rinfs_memset(times_out, 0, sizeof(*times_out));
+    if (!mount->mounted)
+        return rinfs_inode_get_times_precise_unscoped(
+            mount, inode, times_out);
+    error = rinfs_mount_operation_scope_begin(
+        (RinFS_Mount*)mount, &operation);
+    if (error != RINFS_OK) return error;
+    error = rinfs_inode_get_times_precise_unscoped(
+        mount, inode, times_out);
+    error = rinfs_mount_operation_scope_finish(&operation, error);
+    if (error != RINFS_OK) rinfs_memset(times_out, 0, sizeof(*times_out));
+    return error;
 }
 
 static int rinfs_inode_set_times_internal(
