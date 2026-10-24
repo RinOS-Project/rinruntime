@@ -6592,8 +6592,8 @@ int rinfs_page_cache_reclaim(RinFS_Mount* mount, uint32_t max_entries,
     return RINFS_OK;
 }
 
-int rinfs_page_cache_writeback_step(RinFS_Mount* mount, uint32_t max_entries,
-                                    uint32_t* written_out) {
+static int rinfs_page_cache_writeback_step_unscoped(
+    RinFS_Mount* mount, uint32_t max_entries, uint32_t* written_out) {
     uint32_t before = 0u;
     uint32_t effective_budget = max_entries;
     uint32_t after = 0u;
@@ -6647,8 +6647,22 @@ int rinfs_page_cache_writeback_step(RinFS_Mount* mount, uint32_t max_entries,
     return err;
 }
 
-int rinfs_page_cache_set_pressure(RinFS_Mount* mount,
-                                  RinFS_PageCachePressure pressure) {
+int rinfs_page_cache_writeback_step(RinFS_Mount* mount, uint32_t max_entries,
+                                    uint32_t* written_out) {
+    RinFS_MountOperationScope operation = {0};
+    int error;
+    if (written_out) *written_out = 0u;
+    if (!mount || !mount->mounted || max_entries == 0u)
+        return RINFS_ERR_INVAL;
+    error = rinfs_mount_operation_scope_begin(mount, &operation);
+    if (error != RINFS_OK) return error;
+    error = rinfs_page_cache_writeback_step_unscoped(
+        mount, max_entries, written_out);
+    return rinfs_mount_operation_scope_finish(&operation, error);
+}
+
+static int rinfs_page_cache_set_pressure_unscoped(
+    RinFS_Mount* mount, RinFS_PageCachePressure pressure) {
     RinFS_PageCache* cache;
     uint32_t limit = RINFS_READAHEAD_MAX_PAGES;
     uint32_t writeback_budget = 0u;
@@ -6694,6 +6708,19 @@ int rinfs_page_cache_set_pressure(RinFS_Mount* mount,
         mount, writeback_budget, &written);
     if (writeback_error != RINFS_OK) return writeback_error;
     return RINFS_OK;
+}
+
+int rinfs_page_cache_set_pressure(RinFS_Mount* mount,
+                                  RinFS_PageCachePressure pressure) {
+    RinFS_MountOperationScope operation = {0};
+    int error;
+    if (!mount || !mount->mounted || !mount->page_cache ||
+        pressure > RINFS_PAGE_CACHE_PRESSURE_OOM)
+        return RINFS_ERR_INVAL;
+    error = rinfs_mount_operation_scope_begin(mount, &operation);
+    if (error != RINFS_OK) return error;
+    error = rinfs_page_cache_set_pressure_unscoped(mount, pressure);
+    return rinfs_mount_operation_scope_finish(&operation, error);
 }
 
 static RinFS_ContentLeaseNode* rinfs_content_lease_find(
