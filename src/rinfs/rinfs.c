@@ -25898,11 +25898,10 @@ static int rinfs_restore_mount_has_live_content(RinFS_Mount* mount) {
 }
 
 /* A restore replaces namespace and inode contents while it owns the mount.
- * A new transaction may retain validated dirty pages only long enough for its
- * gated begin path to sync them. Recovery admission does not accept dirty
- * pages. Referenced or transitional entries are never admitted, and clean
- * unreferenced entries are discarded so old cache contents cannot survive the
- * restore boundary. */
+ * New transactions and recovery may retain validated dirty pages only long
+ * enough to sync them under the gate. Referenced or transitional entries are
+ * never admitted, and clean unreferenced entries are discarded so old cache
+ * contents cannot survive the restore boundary. */
 static int rinfs_restore_page_cache_quiesce(RinFS_Mount* mount,
                                            int allow_dirty_pages) {
     RinFS_PageCache* cache;
@@ -26670,7 +26669,7 @@ static int rinfs_restore_mount_recovery_begin(
         return RINFS_ERR_NOSPC;
     }
     error = rinfs_restore_shared_gate_claim(
-        mount, mount_epoch, &owner_row, &owner_cookie, 0);
+        mount, mount_epoch, &owner_row, &owner_cookie, 1);
     if (error != RINFS_OK) {
         rinfs_spin_unlock(&g_rinfs_restore_transaction_lock);
         return error;
@@ -27554,6 +27553,20 @@ static int rinfs_restore_transaction_mount_recover_core(RinFS_Mount* mount) {
     error = rinfs_restore_record_load(mount, &record, &present);
     if (error != RINFS_OK || !present) return error;
     if (mount->readonly) return RINFS_ERR_ROFS;
+    /* A published mount may enter recovery with dirty pages left by work
+     * completed before the restore marker became visible. Persist that state
+     * while ordinary operations are excluded, then discard every clean cache
+     * entry before replay can replace inode and namespace contents. */
+    error = rinfs_sync(mount);
+    if (error != RINFS_OK) {
+        rinfs_mount_force_readonly(mount);
+        return error;
+    }
+    error = rinfs_restore_page_cache_quiesce(mount, 0);
+    if (error != RINFS_OK) {
+        rinfs_mount_force_readonly(mount);
+        return error;
+    }
     if (record.phase == RINFS_RESTORE_PHASE_RECEIVING ||
         record.phase == RINFS_RESTORE_PHASE_ABORTING)
         error = rinfs_restore_abort_record(mount, &record);
@@ -27572,8 +27585,13 @@ int rinfs_restore_transaction_mount_recover(RinFS_Mount* mount) {
     /* The first shared mount performs recovery before publishing its owner
      * row. Its provisional VFS range lease excludes another mount of these
      * sectors until shared_mount_ready is published. */
-    if (mount->shared_mapping_base && mount->shared_mount_ready == 0u)
-        return rinfs_restore_transaction_mount_recover_core(mount);
+    if (mount->shared_mapping_base && mount->shared_mount_ready == 0u) {
+        error = rinfs_restore_internal_scope_enter(&internal_scope);
+        if (error != RINFS_OK) return error;
+        error = rinfs_restore_transaction_mount_recover_core(mount);
+        rinfs_restore_internal_scope_leave(&internal_scope);
+        return error;
+    }
     mount_epoch = mount->mount_epoch;
     if (mount_epoch == 0u) return RINFS_ERR_STALE;
     error = rinfs_restore_mount_recovery_begin(mount, mount_epoch);
