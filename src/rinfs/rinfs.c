@@ -19576,8 +19576,8 @@ static int rinfs_content_inode_equal(const RinFS_Mount* mount,
     return 1;
 }
 
-int rinfs_content_snapshot_begin(RinFS_Mount* mount, uint64_t ino,
-                                 RinFS_ContentSnapshot* snapshot) {
+static int rinfs_content_snapshot_begin_unscoped(
+    RinFS_Mount* mount, uint64_t ino, RinFS_ContentSnapshot* snapshot) {
     RinFS_Inode observed;
     RinFS_ContentLeaseNode* lease;
     uint64_t lease_generation;
@@ -19632,6 +19632,20 @@ int rinfs_content_snapshot_begin(RinFS_Mount* mount, uint64_t ino,
         }
         if (err != RINFS_OK) return err;
     }
+}
+
+int rinfs_content_snapshot_begin(RinFS_Mount* mount, uint64_t ino,
+                                 RinFS_ContentSnapshot* snapshot) {
+    RinFS_MountOperationScope operation = {0};
+    int error;
+    if (!mount || !snapshot || !mount->mounted || ino == 0u ||
+        ino > mount->sb.s_inode_count)
+        return RINFS_ERR_INVAL;
+    rinfs_memset(snapshot, 0, sizeof(*snapshot));
+    error = rinfs_mount_operation_scope_begin(mount, &operation);
+    if (error != RINFS_OK) return error;
+    error = rinfs_content_snapshot_begin_unscoped(mount, ino, snapshot);
+    return rinfs_mount_operation_scope_finish(&operation, error);
 }
 
 int rinfs_content_snapshot_read_exact(RinFS_ContentSnapshot* snapshot,
@@ -22142,8 +22156,9 @@ static int rinfs_create_tmpfile_owned_unscoped(
 }
 
 /* Create a file */
-int rinfs_create_owned(RinFS_Mount* mount, const char* path, uint16_t mode,
-                       uint32_t uid, uint32_t gid) {
+static int rinfs_create_owned_unscoped(
+    RinFS_Mount* mount, const char* path, uint16_t mode,
+    uint32_t uid, uint32_t gid) {
     char parent_path[RINFS_PATH_MAX];
     char name[RINFS_NAME_MAX + 1];
     uint64_t parent_ino;
@@ -22179,6 +22194,17 @@ int rinfs_create_owned(RinFS_Mount* mount, const char* path, uint16_t mode,
     err = rinfs_path_lookup(mount, parent_path, &parent_ino, NULL);
     if (err != RINFS_OK) return err;
     return rinfs_createat_owned(mount, parent_ino, name, mode, uid, gid, NULL);
+}
+
+int rinfs_create_owned(RinFS_Mount* mount, const char* path, uint16_t mode,
+                       uint32_t uid, uint32_t gid) {
+    RinFS_MountOperationScope operation = {0};
+    int error;
+    if (!mount || !mount->mounted || !path) return RINFS_ERR_INVAL;
+    error = rinfs_mount_operation_scope_begin(mount, &operation);
+    if (error != RINFS_OK) return error;
+    error = rinfs_create_owned_unscoped(mount, path, mode, uid, gid);
+    return rinfs_mount_operation_scope_finish(&operation, error);
 }
 
 int rinfs_create(RinFS_Mount* mount, const char* path, uint16_t mode) {
@@ -22353,8 +22379,9 @@ static int rinfs_mkdirat_open_owned_unscoped(
 }
 
 /* Create a directory */
-int rinfs_mkdir_owned(RinFS_Mount* mount, const char* path, uint16_t mode,
-                      uint32_t uid, uint32_t gid) {
+static int rinfs_mkdir_owned_unscoped(
+    RinFS_Mount* mount, const char* path, uint16_t mode,
+    uint32_t uid, uint32_t gid) {
     char parent_path[RINFS_PATH_MAX];
     char name[RINFS_NAME_MAX + 1];
     uint64_t parent_ino;
@@ -22400,6 +22427,17 @@ int rinfs_mkdir_owned(RinFS_Mount* mount, const char* path, uint16_t mode,
     if (err != RINFS_OK) return err;
     return rinfs_mkdirat_owned(mount, parent_ino, name, mode, uid, gid,
                                &created_ino);
+}
+
+int rinfs_mkdir_owned(RinFS_Mount* mount, const char* path, uint16_t mode,
+                      uint32_t uid, uint32_t gid) {
+    RinFS_MountOperationScope operation = {0};
+    int error;
+    if (!mount || !mount->mounted || !path) return RINFS_ERR_INVAL;
+    error = rinfs_mount_operation_scope_begin(mount, &operation);
+    if (error != RINFS_OK) return error;
+    error = rinfs_mkdir_owned_unscoped(mount, path, mode, uid, gid);
+    return rinfs_mount_operation_scope_finish(&operation, error);
 }
 
 int rinfs_mount(int dev_id, uint64_t offset, uint32_t flags, RinFS_Mount* mount) {
