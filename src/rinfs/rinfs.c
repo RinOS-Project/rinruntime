@@ -2896,6 +2896,13 @@ static int rinfs_page_cache_lock(RinFS_PageCache* cache) {
                 mount, &cache->lock, &recovered, NULL);
             if (lock_err != RINFS_OK) return lock_err;
         }
+        {
+            int gate_err = rinfs_restore_operation_gate_check(mount);
+            if (gate_err != RINFS_OK)
+                return rinfs_shared_lock_error_after_release(
+                    gate_err,
+                    rinfs_shared_lock_release(mount, &cache->lock));
+        }
         if (cache->recovery_failed != 0u) {
             return rinfs_shared_lock_error_after_release(
                 RINFS_ERR_CORRUPT,
@@ -2945,6 +2952,13 @@ static int rinfs_page_cache_lock(RinFS_PageCache* cache) {
 #else
     rinfs_spin_lock(&cache->lock);
 #endif
+    if (mount) {
+        int gate_err = rinfs_restore_operation_gate_check(mount);
+        if (gate_err != RINFS_OK) {
+            rinfs_spin_unlock(&cache->lock);
+            return gate_err;
+        }
+    }
     return RINFS_OK;
 }
 
@@ -25883,6 +25897,38 @@ static int rinfs_restore_mount_has_live_content(RinFS_Mount* mount) {
     return RINFS_OK;
 }
 
+/* A restore replaces namespace and inode contents while it owns the mount.
+ * Dirty, referenced, or transitional cache pages cannot be carried across that
+ * boundary: a later writeback could publish pre-restore bytes. Once the gate
+ * is active, discard only unreferenced clean pages; leave the cache untouched
+ * and refuse admission if any page still needs I/O or an owner reference. */
+static int rinfs_restore_page_cache_quiesce(RinFS_Mount* mount) {
+    RinFS_PageCache* cache;
+    int result;
+    if (!mount) return RINFS_ERR_INVAL;
+    if (mount->buffer_dirty) return RINFS_ERR_BUSY;
+    cache = mount->page_cache;
+    if (!cache) return RINFS_OK;
+    result = rinfs_page_cache_lock(cache);
+    if (result != RINFS_OK) return result;
+    if (cache->dirty_pages != 0u || cache->dirty_bytes != 0u)
+        return rinfs_page_cache_unlock_status(cache, RINFS_ERR_BUSY);
+    for (uint32_t index = 0u; index < RINFS_PAGE_CACHE_CAPACITY; ++index) {
+        const RinFS_PageCacheEntry* entry = &cache->entries[index];
+        if (entry->references != 0u ||
+            (entry->valid && entry->state != RINFS_PAGE_CACHE_CLEAN))
+            return rinfs_page_cache_unlock_status(cache, RINFS_ERR_BUSY);
+    }
+    for (uint32_t index = 0u; index < RINFS_PAGE_CACHE_CAPACITY; ++index) {
+        RinFS_PageCacheEntry* entry = &cache->entries[index];
+        if (entry->valid) {
+            rinfs_page_cache_discard_locked(cache, entry);
+            ++cache->evictions;
+        }
+    }
+    return rinfs_page_cache_unlock_status(cache, RINFS_OK);
+}
+
 /* Bind restore admission and ordinary-operation exclusion under the same
  * recoverable content lock. Shared mounts additionally retain the exact
  * kernel-issued owner row/cookie so a reaped process cannot strand or release
@@ -25895,6 +25941,7 @@ static int rinfs_restore_shared_gate_claim(
     uint32_t gate_row;
     uint64_t owner_cookie;
     uint64_t process_id;
+    RinFS_RestoreInternalScope cache_scope = {0u};
     int shared_mount;
     int result = RINFS_OK;
     int unlock_error;
@@ -26038,6 +26085,23 @@ static int rinfs_restore_shared_gate_claim(
                      __ATOMIC_RELAXED);
     __atomic_store_n(&mount->restore_operation_gate_active, 1u,
                      __ATOMIC_RELEASE);
+    result = rinfs_restore_internal_scope_enter(&cache_scope);
+    if (result == RINFS_OK)
+        result = rinfs_restore_page_cache_quiesce(mount);
+    rinfs_restore_internal_scope_leave(&cache_scope);
+    if (result != RINFS_OK) {
+        if (shared_mount) {
+            mount->restore_transaction_owner_cookie = 0u;
+            mount->restore_transaction_mount_epoch = 0u;
+            __atomic_store_n(&mount->restore_transaction_owner_row, 0u,
+                             __ATOMIC_RELEASE);
+        }
+        __atomic_store_n(&mount->restore_operation_gate_active, 0u,
+                         __ATOMIC_RELEASE);
+        __atomic_store_n(&mount->restore_operation_owner_process_id, 0u,
+                         __ATOMIC_RELEASE);
+        goto done;
+    }
     *owner_row_out = owner_row;
     *owner_cookie_out = owner_cookie;
 done:
