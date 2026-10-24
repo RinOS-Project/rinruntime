@@ -19996,7 +19996,7 @@ static int rinfs_mmap_source_acquire_inode(
     return rinfs_content_unlock_status((RINFS_OK), content_unlock_error);
 }
 
-int rinfs_mmap_source_get_page(RinFS_MmapSource* source,
+static int rinfs_mmap_source_get_page_impl(RinFS_MmapSource* source,
                                uint64_t expected_inode,
                                uint64_t reference_generation,
                                uint64_t reference_cookie,
@@ -20051,7 +20051,27 @@ int rinfs_mmap_source_get_page(RinFS_MmapSource* source,
     return rinfs_content_unlock_status((err), content_unlock_error);
 }
 
-int rinfs_mmap_source_get_page_view(RinFS_MmapSource* source,
+int rinfs_mmap_source_get_page(RinFS_MmapSource* source,
+                               uint64_t expected_inode,
+                               uint64_t reference_generation,
+                               uint64_t reference_cookie,
+                               uint64_t page_index,
+                               uint64_t* physical_out) {
+    int err;
+    if (physical_out) *physical_out = 0u;
+    if (!physical_out) return RINFS_ERR_INVAL;
+    err = rinfs_mmap_source_begin_operation(
+        source, reference_generation, reference_cookie);
+    if (err != RINFS_OK) return err;
+    err = rinfs_mmap_source_get_page_impl(
+        source, expected_inode, reference_generation, reference_cookie,
+        page_index, physical_out);
+    rinfs_mmap_source_end_operation(
+        source, reference_generation, reference_cookie);
+    return err;
+}
+
+static int rinfs_mmap_source_get_page_view_impl(RinFS_MmapSource* source,
                                     uint64_t expected_inode,
                                     uint64_t reference_generation,
                                     uint64_t reference_cookie,
@@ -20103,7 +20123,31 @@ int rinfs_mmap_source_get_page_view(RinFS_MmapSource* source,
     return rinfs_content_unlock_status((err), content_unlock_error);
 }
 
-int rinfs_mmap_source_retain_page(RinFS_MmapSource* source,
+int rinfs_mmap_source_get_page_view(RinFS_MmapSource* source,
+                                    uint64_t expected_inode,
+                                    uint64_t reference_generation,
+                                    uint64_t reference_cookie,
+                                    uint64_t page_index,
+                                    RinFS_PageCacheView* view_out) {
+    int err;
+    if (view_out) {
+        view_out->data = NULL;
+        view_out->physical_address = 0u;
+        view_out->cache_token = 0u;
+    }
+    if (!view_out) return RINFS_ERR_INVAL;
+    err = rinfs_mmap_source_begin_operation(
+        source, reference_generation, reference_cookie);
+    if (err != RINFS_OK) return err;
+    err = rinfs_mmap_source_get_page_view_impl(
+        source, expected_inode, reference_generation, reference_cookie,
+        page_index, view_out);
+    rinfs_mmap_source_end_operation(
+        source, reference_generation, reference_cookie);
+    return err;
+}
+
+static int rinfs_mmap_source_retain_page_impl(RinFS_MmapSource* source,
                                   uint64_t expected_inode,
                                   uint64_t reference_generation,
                                   uint64_t reference_cookie,
@@ -20142,12 +20186,31 @@ int rinfs_mmap_source_retain_page(RinFS_MmapSource* source,
     return rinfs_content_unlock_status((err), content_unlock_error);
 }
 
+int rinfs_mmap_source_retain_page(RinFS_MmapSource* source,
+                                  uint64_t expected_inode,
+                                  uint64_t reference_generation,
+                                  uint64_t reference_cookie,
+                                  uint64_t page_index,
+                                  uint64_t physical_address) {
+    int err;
+    if (physical_address == 0u) return RINFS_ERR_NOENT;
+    err = rinfs_mmap_source_begin_operation(
+        source, reference_generation, reference_cookie);
+    if (err != RINFS_OK) return err;
+    err = rinfs_mmap_source_retain_page_impl(
+        source, expected_inode, reference_generation, reference_cookie,
+        page_index, physical_address);
+    rinfs_mmap_source_end_operation(
+        source, reference_generation, reference_cookie);
+    return err;
+}
+
 /* mmap-source reads use a synthetic RinFS_File protected by the mmap source's
- * own identity operation and content lease, rather than an open descriptor
- * close-reference record. */
+ * full-call lifetime operation and content lease, rather than an open
+ * descriptor close-reference record. */
 static int64_t rinfs_read_unleased(RinFS_File* file, void* buf, uint64_t size);
 
-int64_t rinfs_mmap_source_read(RinFS_MmapSource* source,
+static int64_t rinfs_mmap_source_read_impl(RinFS_MmapSource* source,
                                uint64_t expected_inode,
                                uint64_t reference_generation,
                                uint64_t reference_cookie,
@@ -20203,7 +20266,26 @@ int64_t rinfs_mmap_source_read(RinFS_MmapSource* source,
     return rinfs_content_unlock_status((result), content_unlock_error);
 }
 
-int rinfs_mmap_source_sync_range(RinFS_MmapSource* source,
+int64_t rinfs_mmap_source_read(RinFS_MmapSource* source,
+                               uint64_t expected_inode,
+                               uint64_t reference_generation,
+                               uint64_t reference_cookie,
+                               uint64_t offset, void* output,
+                               uint32_t size) {
+    int err;
+    int64_t result;
+    err = rinfs_mmap_source_begin_operation(
+        source, reference_generation, reference_cookie);
+    if (err != RINFS_OK) return err;
+    result = rinfs_mmap_source_read_impl(
+        source, expected_inode, reference_generation, reference_cookie,
+        offset, output, size);
+    rinfs_mmap_source_end_operation(
+        source, reference_generation, reference_cookie);
+    return result;
+}
+
+static int rinfs_mmap_source_sync_range_impl(RinFS_MmapSource* source,
                                 uint64_t expected_inode,
                                 uint64_t reference_generation,
                                 uint64_t reference_cookie,
@@ -20260,7 +20342,28 @@ sync_range_finish:
     return rinfs_content_unlock_status((err), content_unlock_error);
 }
 
-int rinfs_mmap_source_invalidate_range(
+int rinfs_mmap_source_sync_range(RinFS_MmapSource* source,
+                                uint64_t expected_inode,
+                                uint64_t reference_generation,
+                                uint64_t reference_cookie,
+                                uint64_t first_page,
+                                uint64_t page_count) {
+    int err;
+    if (!source || expected_inode == 0u || page_count == 0u ||
+        first_page > UINT64_MAX - page_count)
+        return RINFS_ERR_INVAL;
+    err = rinfs_mmap_source_begin_operation(
+        source, reference_generation, reference_cookie);
+    if (err != RINFS_OK) return err;
+    err = rinfs_mmap_source_sync_range_impl(
+        source, expected_inode, reference_generation, reference_cookie,
+        first_page, page_count);
+    rinfs_mmap_source_end_operation(
+        source, reference_generation, reference_cookie);
+    return err;
+}
+
+static int rinfs_mmap_source_invalidate_range_impl(
     RinFS_MmapSource* source, uint64_t expected_inode,
     uint64_t reference_generation, uint64_t reference_cookie,
     uint64_t first_page, uint64_t page_count) {
@@ -20358,6 +20461,25 @@ invalidate_range_finish:
         identity.mount, identity.inode_num, identity.inode_generation,
         lease_token, 0));
     return rinfs_content_unlock_status((err), content_unlock_error);
+}
+
+int rinfs_mmap_source_invalidate_range(
+    RinFS_MmapSource* source, uint64_t expected_inode,
+    uint64_t reference_generation, uint64_t reference_cookie,
+    uint64_t first_page, uint64_t page_count) {
+    int err;
+    if (!source || expected_inode == 0u || page_count == 0u ||
+        first_page > UINT64_MAX - page_count)
+        return RINFS_ERR_INVAL;
+    err = rinfs_mmap_source_begin_operation(
+        source, reference_generation, reference_cookie);
+    if (err != RINFS_OK) return err;
+    err = rinfs_mmap_source_invalidate_range_impl(
+        source, expected_inode, reference_generation, reference_cookie,
+        first_page, page_count);
+    rinfs_mmap_source_end_operation(
+        source, reference_generation, reference_cookie);
+    return err;
 }
 
 int rinfs_mmap_source_release_ex(RinFS_MmapSource* source,
