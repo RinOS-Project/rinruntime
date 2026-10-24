@@ -20473,8 +20473,8 @@ static int rinfs_close_core(RinFS_File* file) {
     return delete_reap_error;
 }
 
-int rinfs_close_with_disposition(RinFS_File* file, int* consumed_out,
-                                 int* retryable_out) {
+static int rinfs_close_with_disposition_unscoped(
+    RinFS_File* file, int* consumed_out, int* retryable_out) {
     int consumed = 0;
     int active_shape;
     int consumed_shape;
@@ -22962,8 +22962,8 @@ static int rinfs_closedir_core(RinFS_Dir* dir) {
     return delete_reap_error;
 }
 
-int rinfs_closedir_with_disposition(RinFS_Dir* dir, int* consumed_out,
-                                    int* retryable_out) {
+static int rinfs_closedir_with_disposition_unscoped(
+    RinFS_Dir* dir, int* consumed_out, int* retryable_out) {
     int consumed = 0;
     int active_shape;
     int consumed_shape;
@@ -25672,7 +25672,8 @@ int rinfs_symlink(RinFS_Mount* mount, uint64_t dir_ino, const char* name, const 
 }
 
 /* Read symbolic link target */
-int rinfs_readlink(RinFS_Mount* mount, uint64_t ino, char* buf, uint32_t size) {
+static int rinfs_readlink_unscoped(RinFS_Mount* mount, uint64_t ino,
+                                   char* buf, uint32_t size) {
     if (!mount || !mount->mounted || !buf || size == 0) return RINFS_ERR_INVAL;
 
     /* Read inode */
@@ -28384,6 +28385,48 @@ int rinfs_symlink_owned(RinFS_Mount* mount, uint64_t dir_ino,
     return rinfs_mount_operation_scope_finish(&operation, error);
 }
 
+int rinfs_close_with_disposition(RinFS_File* file, int* consumed_out,
+                                 int* retryable_out) {
+    RinFS_MountOperationScope operation = {0};
+    RinFS_Mount* mount;
+    int error;
+    if (!file || !consumed_out || !retryable_out)
+        return rinfs_close_with_disposition_unscoped(
+            file, consumed_out, retryable_out);
+    *consumed_out = 0;
+    *retryable_out = 0;
+    mount = file->mount;
+    if (!mount || !mount->mounted)
+        return rinfs_close_with_disposition_unscoped(
+            file, consumed_out, retryable_out);
+    error = rinfs_mount_operation_scope_begin(mount, &operation);
+    if (error != RINFS_OK) return error;
+    error = rinfs_close_with_disposition_unscoped(
+        file, consumed_out, retryable_out);
+    return rinfs_mount_operation_scope_finish(&operation, error);
+}
+
+int rinfs_closedir_with_disposition(RinFS_Dir* dir, int* consumed_out,
+                                    int* retryable_out) {
+    RinFS_MountOperationScope operation = {0};
+    RinFS_Mount* mount;
+    int error;
+    if (!dir || !consumed_out || !retryable_out)
+        return rinfs_closedir_with_disposition_unscoped(
+            dir, consumed_out, retryable_out);
+    *consumed_out = 0;
+    *retryable_out = 0;
+    mount = dir->mount;
+    if (!mount || !mount->mounted)
+        return rinfs_closedir_with_disposition_unscoped(
+            dir, consumed_out, retryable_out);
+    error = rinfs_mount_operation_scope_begin(mount, &operation);
+    if (error != RINFS_OK) return error;
+    error = rinfs_closedir_with_disposition_unscoped(
+        dir, consumed_out, retryable_out);
+    return rinfs_mount_operation_scope_finish(&operation, error);
+}
+
 /* Gate direct mount APIs for their complete call, not only at their first
  * block/cache access. A restore claim uses the same content lock and waits
  * for these scopes to drain before it may replace inode or namespace state. */
@@ -28472,5 +28515,9 @@ RINFS_MOUNT_SCOPE_WRAPPER(
 RINFS_MOUNT_SCOPE_WRAPPER(
     rinfs_delete_on_close_reap, rinfs_delete_on_close_reap_unscoped,
     (RinFS_Mount* mount), (mount))
+RINFS_MOUNT_SCOPE_WRAPPER(
+    rinfs_readlink, rinfs_readlink_unscoped,
+    (RinFS_Mount* mount, uint64_t ino, char* buf, uint32_t size),
+    (mount, ino, buf, size))
 
 #undef RINFS_MOUNT_SCOPE_WRAPPER
