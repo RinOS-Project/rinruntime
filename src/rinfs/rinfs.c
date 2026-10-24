@@ -26134,9 +26134,9 @@ static int rinfs_readlink_unscoped(RinFS_Mount* mount, uint64_t ino,
         return RINFS_ERR_INVAL;
     }
 
+    if (inode.i_size >= RINFS_SYMLINK_MAX) return RINFS_ERR_IO;
     uint32_t link_len = (uint32_t)inode.i_size;
     if (link_len == 0) return 0;
-    if (link_len >= RINFS_SYMLINK_MAX) return RINFS_ERR_IO;
 
     /* Determine where target is stored */
     if (link_len < sizeof(inode.i_block)) {
