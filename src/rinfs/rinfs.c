@@ -4228,6 +4228,9 @@ static int rinfs_close_ref_audit_locked(void) {
     return 1;
 }
 
+static RinFS_CloseReferenceRecord* rinfs_close_ref_find_locked(
+    uint64_t generation);
+
 /* Retry only acquisition leases owned by this shared-mount owner row. The
  * close-reference ledger is the persistent in-process owner: claiming a row
  * prevents a concurrent opener from releasing the same token. */
@@ -4280,8 +4283,10 @@ static int rinfs_close_ref_retry_acquisition_quarantines(
         record->reserved = RINFS_CLOSE_REF_ACQUISITION_RELEASING;
         snapshot = *record;
         rinfs_close_ref_integrity_update();
-        rinfs_spin_unlock(&g_rinfs_close_reference_lock);
 
+        /* Keep the global ledger lock across the release attempt. It follows
+         * the documented close-reference -> content-lock order and prevents a
+         * second retry from decrementing a different reader on the same node. */
         release_error = rinfs_content_lease_release_ex(
             snapshot.mount, snapshot.inode_num, snapshot.inode_generation,
             snapshot.content_pin_token, 0, &released,
@@ -4300,7 +4305,6 @@ static int rinfs_close_ref_retry_acquisition_quarantines(
             }
         }
 
-        rinfs_spin_lock(&g_rinfs_close_reference_lock);
         if (!rinfs_close_ref_audit_locked()) {
             rinfs_spin_unlock(&g_rinfs_close_reference_lock);
             rinfs_mount_force_readonly(mount);
@@ -8177,8 +8181,9 @@ static int rinfs_content_lease_release_acquisition(
     __atomic_add_fetch(&g_rinfs_close_reference_quarantine_count, 1u,
                        __ATOMIC_RELEASE);
     rinfs_close_ref_integrity_update();
-    rinfs_spin_unlock(&g_rinfs_close_reference_lock);
 
+    /* Keep the ledger lock until the token is consumed or durably returned to
+     * QUARANTINED. This serializes duplicate release attempts. */
     err = rinfs_content_lease_release_ex(
         mount, ino, inode_generation, token, writer, &released,
         shared_owner_row, 1);
@@ -8197,7 +8202,6 @@ static int rinfs_content_lease_release_acquisition(
         }
     }
 
-    rinfs_spin_lock(&g_rinfs_close_reference_lock);
     if (!rinfs_close_ref_audit_locked()) {
         rinfs_spin_unlock(&g_rinfs_close_reference_lock);
         rinfs_mount_force_readonly(mount);
