@@ -18778,47 +18778,66 @@ int rinfs_unmount(RinFS_Mount* mount) {
 }
 
 int rinfs_mount_set_device_flags(RinFS_Mount* mount, uint32_t device_flags) {
+    RinFS_MountOperationScope operation = {0};
     uint32_t index;
     const uint32_t supported = RINFS_DEVICE_FLAG_REMOVABLE |
                                RINFS_DEVICE_FLAG_SLOW |
                                RINFS_DEVICE_FLAG_OFFLINE;
+    int error;
     if (!mount || !mount->mounted || (device_flags & ~supported) != 0u)
         return RINFS_ERR_INVAL;
-    mount->device_flags = device_flags;
-    if (mount->has_device_ops) mount->device_ops.flags = device_flags;
-    if (!mount->page_cache) return RINFS_OK;
+    error = rinfs_mount_operation_scope_begin(mount, &operation);
+    if (error != RINFS_OK) return error;
 
-    {
-        int lock_error = rinfs_page_cache_lock(mount->page_cache);
-        if (lock_error != RINFS_OK) return lock_error;
-    }
-    mount->page_cache->device_flags = (uint8_t)(device_flags & 0xffu);
-    if ((device_flags & RINFS_DEVICE_FLAG_OFFLINE) != 0u) {
-        /* Clean pages can be discarded immediately. Dirty pages are retained
-         * as an observable failed-writeback record, but eligibility is closed
-         * above so no caller can read them after media removal. */
-        for (index = 0u; index < RINFS_PAGE_CACHE_CAPACITY; ++index) {
-            RinFS_PageCacheEntry* entry =
-                &mount->page_cache->entries[index];
-            if (entry->valid && entry->state == RINFS_PAGE_CACHE_CLEAN &&
-                entry->references == 0u)
-                rinfs_page_cache_discard_locked(mount->page_cache, entry);
+    if (mount->page_cache) {
+        error = rinfs_page_cache_lock(mount->page_cache);
+        if (error != RINFS_OK) {
+            int release_error = rinfs_mount_operation_scope_end(&operation);
+            return release_error == RINFS_OK ? error : release_error;
         }
     }
-    if ((device_flags & (RINFS_DEVICE_FLAG_REMOVABLE |
-                         RINFS_DEVICE_FLAG_SLOW)) != 0u &&
-        mount->page_cache->readahead_limit_pages > 2u)
-        mount->page_cache->readahead_limit_pages = 2u;
-    return rinfs_page_cache_unlock_status(mount->page_cache, RINFS_OK);
+    mount->device_flags = device_flags;
+    if (mount->has_device_ops) mount->device_ops.flags = device_flags;
+    if (mount->page_cache) {
+        mount->page_cache->device_flags = (uint8_t)(device_flags & 0xffu);
+        if ((device_flags & RINFS_DEVICE_FLAG_OFFLINE) != 0u) {
+            /* Clean pages can be discarded immediately. Dirty pages are
+             * retained as an observable failed-writeback record, but
+             * eligibility is closed above so no caller can read them after
+             * media removal. */
+            for (index = 0u; index < RINFS_PAGE_CACHE_CAPACITY; ++index) {
+                RinFS_PageCacheEntry* entry =
+                    &mount->page_cache->entries[index];
+                if (entry->valid &&
+                    entry->state == RINFS_PAGE_CACHE_CLEAN &&
+                    entry->references == 0u)
+                    rinfs_page_cache_discard_locked(mount->page_cache, entry);
+            }
+        }
+        if ((device_flags & (RINFS_DEVICE_FLAG_REMOVABLE |
+                             RINFS_DEVICE_FLAG_SLOW)) != 0u &&
+            mount->page_cache->readahead_limit_pages > 2u)
+            mount->page_cache->readahead_limit_pages = 2u;
+        error = rinfs_page_cache_unlock_status(mount->page_cache, RINFS_OK);
+    }
+    {
+        int release_error = rinfs_mount_operation_scope_end(&operation);
+        return release_error == RINFS_OK ? error : release_error;
+    }
 }
 
 int rinfs_mount_set_epoch(RinFS_Mount* mount, uint64_t mount_epoch) {
+    RinFS_MountOperationScope operation = {0};
     int err;
     if (!mount) return RINFS_ERR_INVAL;
-    err = rinfs_inode_cache_invalidate(mount, 0u);
+    err = rinfs_mount_operation_scope_begin(mount, &operation);
     if (err != RINFS_OK) return err;
-    mount->mount_epoch = mount_epoch;
-    return RINFS_OK;
+    err = rinfs_inode_cache_invalidate(mount, 0u);
+    if (err == RINFS_OK) mount->mount_epoch = mount_epoch;
+    {
+        int release_error = rinfs_mount_operation_scope_end(&operation);
+        return release_error == RINFS_OK ? err : release_error;
+    }
 }
 
 #define RINFS_SUPERBLOCK_RECOVERY_IDLE 0u
