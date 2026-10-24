@@ -20754,6 +20754,38 @@ static int rinfs_open_unscoped(
     return RINFS_OK;
 }
 
+static int rinfs_open_file_scope_finish(
+    RinFS_MountOperationScope* operation, int operation_error,
+    RinFS_File* file) {
+    int release_error = rinfs_mount_operation_scope_end(operation);
+    int result = release_error == RINFS_OK ? operation_error : release_error;
+    if (result == RINFS_OK) return RINFS_OK;
+    /* The unscoped acquisition path owns its own rollback contract. Only a
+     * successful acquisition can be safely unwound here; an error may leave
+     * intermediate state that is not yet a closeable public owner. */
+    if (operation_error != RINFS_OK) return result;
+    if (!file || file->in_use == 0u) {
+        if (file) rinfs_memset(file, 0, sizeof(*file));
+        return result;
+    }
+
+    /* A failed scope release can follow successful close-reference
+     * publication. Roll it back when possible; otherwise preserve the exact
+     * owner state, including quarantine, for disposition-aware retry. */
+    {
+        int consumed = 0;
+        int retryable = 0;
+        int cleanup_error = rinfs_close_with_disposition(
+            file, &consumed, &retryable);
+        if (consumed) {
+            rinfs_memset(file, 0, sizeof(*file));
+            return cleanup_error == RINFS_OK ? result : cleanup_error;
+        }
+        (void)retryable;
+        return cleanup_error == RINFS_OK ? result : cleanup_error;
+    }
+}
+
 int rinfs_open(RinFS_Mount* mount, const char* path, int flags,
                RinFS_File* file) {
     RinFS_MountOperationScope operation = {0};
@@ -20764,7 +20796,7 @@ int rinfs_open(RinFS_Mount* mount, const char* path, int flags,
     error = rinfs_mount_operation_scope_begin(mount, &operation);
     if (error != RINFS_OK) return error;
     error = rinfs_open_unscoped(mount, path, flags, file);
-    return rinfs_mount_operation_scope_finish(&operation, error);
+    return rinfs_open_file_scope_finish(&operation, error, file);
 }
 
 static int rinfs_open_ino_unscoped(
@@ -20827,7 +20859,7 @@ int rinfs_open_ino(RinFS_Mount* mount, uint64_t ino, int flags,
     error = rinfs_mount_operation_scope_begin(mount, &operation);
     if (error != RINFS_OK) return error;
     error = rinfs_open_ino_unscoped(mount, ino, flags, file);
-    return rinfs_mount_operation_scope_finish(&operation, error);
+    return rinfs_open_file_scope_finish(&operation, error, file);
 }
 
 static int rinfs_close_core(RinFS_File* file) {
@@ -23308,6 +23340,34 @@ static int rinfs_opendir_unscoped(
     return RINFS_OK;
 }
 
+static int rinfs_open_directory_scope_finish(
+    RinFS_MountOperationScope* operation, int operation_error,
+    RinFS_Dir* dir) {
+    int release_error = rinfs_mount_operation_scope_end(operation);
+    int result = release_error == RINFS_OK ? operation_error : release_error;
+    if (result == RINFS_OK) return RINFS_OK;
+    /* Keep failed unscoped acquisitions on their own rollback path. */
+    if (operation_error != RINFS_OK) return result;
+    if (!dir || dir->in_use == 0u) {
+        if (dir) rinfs_memset(dir, 0, sizeof(*dir));
+        return result;
+    }
+
+    /* Do not erase a directory owner until disposition reports consumption. */
+    {
+        int consumed = 0;
+        int retryable = 0;
+        int cleanup_error = rinfs_closedir_with_disposition(
+            dir, &consumed, &retryable);
+        if (consumed) {
+            rinfs_memset(dir, 0, sizeof(*dir));
+            return cleanup_error == RINFS_OK ? result : cleanup_error;
+        }
+        (void)retryable;
+        return cleanup_error == RINFS_OK ? result : cleanup_error;
+    }
+}
+
 int rinfs_opendir(RinFS_Mount* mount, const char* path, RinFS_Dir* dir) {
     RinFS_MountOperationScope operation = {0};
     int error;
@@ -23317,7 +23377,7 @@ int rinfs_opendir(RinFS_Mount* mount, const char* path, RinFS_Dir* dir) {
     error = rinfs_mount_operation_scope_begin(mount, &operation);
     if (error != RINFS_OK) return error;
     error = rinfs_opendir_unscoped(mount, path, dir);
-    return rinfs_mount_operation_scope_finish(&operation, error);
+    return rinfs_open_directory_scope_finish(&operation, error, dir);
 }
 
 static int rinfs_opendir_ino_unscoped(
@@ -23378,7 +23438,7 @@ int rinfs_opendir_ino(RinFS_Mount* mount, uint64_t ino, RinFS_Dir* dir) {
     error = rinfs_mount_operation_scope_begin(mount, &operation);
     if (error != RINFS_OK) return error;
     error = rinfs_opendir_ino_unscoped(mount, ino, dir);
-    return rinfs_mount_operation_scope_finish(&operation, error);
+    return rinfs_open_directory_scope_finish(&operation, error, dir);
 }
 
 /* Close directory */
@@ -28784,7 +28844,7 @@ int rinfs_create_tmpfile_owned(RinFS_Mount* mount, uint64_t parent_ino,
     if (error != RINFS_OK) return error;
     error = rinfs_create_tmpfile_owned_unscoped(
         mount, parent_ino, mode, uid, gid, open_flags, file);
-    return rinfs_mount_operation_scope_finish(&operation, error);
+    return rinfs_open_file_scope_finish(&operation, error, file);
 }
 
 int rinfs_mkdirat_owned(RinFS_Mount* mount, uint64_t parent_ino,
@@ -28816,7 +28876,8 @@ int rinfs_mkdirat_open_owned(RinFS_Mount* mount, uint64_t parent_ino,
     if (error != RINFS_OK) return error;
     error = rinfs_mkdirat_open_owned_unscoped(
         mount, parent_ino, name, mode, uid, gid, opened_dir);
-    return rinfs_mount_operation_scope_finish(&operation, error);
+    return rinfs_open_directory_scope_finish(
+        &operation, error, opened_dir);
 }
 
 int rinfs_rename_no_replace_expected(

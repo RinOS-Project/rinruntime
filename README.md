@@ -852,3 +852,9 @@ the caller's sizing retry while clearing any value or partial name list.
 The inode timestamp setters also clear `committed_inode` before validation and
 on write or scope-release failure, publishing it only after a successful
 commit.
+
+Open, open-by-inode, opendir, temporary-file creation, and mkdir-with-open now
+attempt disposition-aware rollback if their outer restore scope cannot be
+released after publishing a close reference. Outputs are cleared only when the
+owner is consumed; otherwise the exact retryable/quarantined handle state stays
+in the caller's output for a later disposition-aware close.
