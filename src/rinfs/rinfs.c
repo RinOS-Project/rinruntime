@@ -46,6 +46,12 @@ typedef struct {
     uint32_t restore_internal_io;
 } RinFS_MountOperationScope;
 
+typedef struct {
+    RinFS_MountOperationScope first;
+    RinFS_MountOperationScope second;
+    uint32_t second_active;
+} RinFS_MountOperationPairScope;
+
 static int rinfs_restore_internal_scope_enter(
     RinFS_RestoreInternalScope* scope);
 static void rinfs_restore_internal_scope_leave(
@@ -55,6 +61,11 @@ static int rinfs_mount_operation_scope_begin(
     RinFS_Mount* mount, RinFS_MountOperationScope* scope);
 static int rinfs_mount_operation_scope_end(
     RinFS_MountOperationScope* scope);
+static int rinfs_mount_operation_pair_scope_begin(
+    RinFS_Mount* first_mount, RinFS_Mount* second_mount,
+    RinFS_MountOperationPairScope* scope);
+static int rinfs_mount_operation_pair_scope_end(
+    RinFS_MountOperationPairScope* scope);
 
 typedef struct {
     RinFS_ForkPrepareCallback prepare;
@@ -2773,6 +2784,42 @@ static int rinfs_mount_operation_scope_end(
         rinfs_mount_force_readonly(mount);
         mount->content_lease_closing = UINT32_MAX;
     }
+    rinfs_memset(scope, 0, sizeof(*scope));
+    return result;
+}
+
+static int rinfs_mount_operation_pair_scope_begin(
+    RinFS_Mount* first_mount, RinFS_Mount* second_mount,
+    RinFS_MountOperationPairScope* scope) {
+    int result;
+    if (scope) rinfs_memset(scope, 0, sizeof(*scope));
+    if (!first_mount || !second_mount || !scope) return RINFS_ERR_INVAL;
+    result = rinfs_mount_operation_scope_begin(first_mount, &scope->first);
+    if (result != RINFS_OK) return result;
+    if (first_mount == second_mount) return RINFS_OK;
+    result = rinfs_mount_operation_scope_begin(second_mount, &scope->second);
+    if (result != RINFS_OK) {
+        int release_error =
+            rinfs_mount_operation_scope_end(&scope->first);
+        return release_error == RINFS_OK ? result : release_error;
+    }
+    scope->second_active = 1u;
+    return RINFS_OK;
+}
+
+static int rinfs_mount_operation_pair_scope_end(
+    RinFS_MountOperationPairScope* scope) {
+    int result = RINFS_OK;
+    int release_error;
+    if (!scope) return RINFS_ERR_INVAL;
+    if (scope->second_active > 1u) result = RINFS_ERR_CORRUPT;
+    if (scope->second_active != 0u) {
+        release_error = rinfs_mount_operation_scope_end(&scope->second);
+        if (release_error != RINFS_OK) result = release_error;
+    }
+    release_error = rinfs_mount_operation_scope_end(&scope->first);
+    if (result == RINFS_OK && release_error != RINFS_OK)
+        result = release_error;
     rinfs_memset(scope, 0, sizeof(*scope));
     return result;
 }
@@ -9756,8 +9803,9 @@ static int rinfs_xattr_publish_buffer(RinFS_Mount* mount, uint64_t ino,
 int rinfs_xattr_set(RinFS_Mount* mount, uint64_t ino, const char* name,
                     uint32_t name_length, const void* value,
                     uint32_t value_length) {
+    RinFS_MountOperationScope operation = {0};
     RinFS_Inode inode;
-    uint8_t* block;
+    uint8_t* block = NULL;
     uint32_t block_size;
     uint32_t bytes_used;
     uint32_t record_start = 0u;
@@ -9773,16 +9821,23 @@ int rinfs_xattr_set(RinFS_Mount* mount, uint64_t ino, const char* name,
         (value_length != 0u && value == NULL)) {
         return RINFS_ERR_INVAL;
     }
+    result = rinfs_mount_operation_scope_begin(mount, &operation);
+    if (result != RINFS_OK) return result;
     result = rinfs_mount_prepare_write(mount);
-    if (result != RINFS_OK) return result;
+    if (result != RINFS_OK) goto done;
     result = rinfs_inode_read(mount, ino, &inode);
-    if (result != RINFS_OK) return result;
+    if (result != RINFS_OK) goto done;
     block_size = mount->sb.s_block_size;
     if (value_length > block_size - RINFS_XATTR_HEADER_BYTES -
-                       RINFS_XATTR_RECORD_BYTES - name_length)
-        return RINFS_ERR_NOSPC;
+                       RINFS_XATTR_RECORD_BYTES - name_length) {
+        result = RINFS_ERR_NOSPC;
+        goto done;
+    }
     block = (uint8_t*)rinfs_malloc(block_size);
-    if (block == NULL) return RINFS_ERR_NOMEM;
+    if (block == NULL) {
+        result = RINFS_ERR_NOMEM;
+        goto done;
+    }
     result = rinfs_xattr_load(mount, &inode, block);
     if (result != RINFS_OK) goto out;
     bytes_used = rinfs_xattr_read_u32(block + 8u);
@@ -9840,25 +9895,38 @@ int rinfs_xattr_set(RinFS_Mount* mount, uint64_t ino, const char* name,
     result = rinfs_xattr_publish_buffer(mount, ino, &inode, block);
 out:
     rinfs_free(block);
-    return result;
+done:
+    {
+        int release_error = rinfs_mount_operation_scope_end(&operation);
+        return release_error == RINFS_OK ? result : release_error;
+    }
 }
 
 int rinfs_xattr_get(RinFS_Mount* mount, uint64_t ino, const char* name,
                     uint32_t name_length, void* value,
                     uint32_t value_capacity, uint32_t* value_length_out) {
+    RinFS_MountOperationScope operation = {0};
     RinFS_Inode inode;
-    uint8_t* block;
+    uint8_t* block = NULL;
     uint32_t value_start;
     uint32_t value_length;
     int result;
     if (value_length_out) *value_length_out = 0u;
     if (mount == NULL || !mount->mounted ||
         !rinfs_xattr_name_valid(name, name_length)) return RINFS_ERR_INVAL;
-    result = rinfs_inode_read(mount, ino, &inode);
+    result = rinfs_mount_operation_scope_begin(mount, &operation);
     if (result != RINFS_OK) return result;
-    if (inode.i_xattr_block == 0u) return RINFS_ERR_NOENT;
+    result = rinfs_inode_read(mount, ino, &inode);
+    if (result != RINFS_OK) goto done;
+    if (inode.i_xattr_block == 0u) {
+        result = RINFS_ERR_NOENT;
+        goto done;
+    }
     block = (uint8_t*)rinfs_malloc(mount->sb.s_block_size);
-    if (block == NULL) return RINFS_ERR_NOMEM;
+    if (block == NULL) {
+        result = RINFS_ERR_NOMEM;
+        goto done;
+    }
     result = rinfs_xattr_load(mount, &inode, block);
     if (result == RINFS_OK)
         result = rinfs_xattr_find(block, name, name_length, NULL, NULL,
@@ -9871,14 +9939,19 @@ int rinfs_xattr_get(RinFS_Mount* mount, uint64_t ino, const char* name,
             rinfs_memcpy(value, block + value_start, value_length);
         }
     }
-    rinfs_free(block);
-    return result;
+done:
+    if (block) rinfs_free(block);
+    {
+        int release_error = rinfs_mount_operation_scope_end(&operation);
+        return release_error == RINFS_OK ? result : release_error;
+    }
 }
 
 int rinfs_xattr_list(RinFS_Mount* mount, uint64_t ino, char* output,
                      uint32_t output_capacity, uint32_t* output_length_out) {
+    RinFS_MountOperationScope operation = {0};
     RinFS_Inode inode;
-    uint8_t* block;
+    uint8_t* block = NULL;
     uint16_t entry_count;
     uint32_t cursor;
     uint32_t required = 0u;
@@ -9886,11 +9959,19 @@ int rinfs_xattr_list(RinFS_Mount* mount, uint64_t ino, char* output,
     int result;
     if (output_length_out) *output_length_out = 0u;
     if (mount == NULL || !mount->mounted) return RINFS_ERR_INVAL;
-    result = rinfs_inode_read(mount, ino, &inode);
+    result = rinfs_mount_operation_scope_begin(mount, &operation);
     if (result != RINFS_OK) return result;
-    if (inode.i_xattr_block == 0u) return RINFS_OK;
+    result = rinfs_inode_read(mount, ino, &inode);
+    if (result != RINFS_OK) goto done;
+    if (inode.i_xattr_block == 0u) {
+        result = RINFS_OK;
+        goto done;
+    }
     block = (uint8_t*)rinfs_malloc(mount->sb.s_block_size);
-    if (block == NULL) return RINFS_ERR_NOMEM;
+    if (block == NULL) {
+        result = RINFS_ERR_NOMEM;
+        goto done;
+    }
     result = rinfs_xattr_load(mount, &inode, block);
     if (result != RINFS_OK) goto out;
     entry_count = rinfs_xattr_read_u16(block + 6u);
@@ -9913,14 +9994,19 @@ int rinfs_xattr_list(RinFS_Mount* mount, uint64_t ino, char* output,
     if (output_length_out) *output_length_out = required;
     if (output == NULL || output_capacity < required) result = RINFS_ERR_NOSPC;
 out:
-    rinfs_free(block);
-    return result;
+    if (block) rinfs_free(block);
+done:
+    {
+        int release_error = rinfs_mount_operation_scope_end(&operation);
+        return release_error == RINFS_OK ? result : release_error;
+    }
 }
 
 int rinfs_xattr_remove(RinFS_Mount* mount, uint64_t ino, const char* name,
                        uint32_t name_length) {
+    RinFS_MountOperationScope operation = {0};
     RinFS_Inode inode;
-    uint8_t* block;
+    uint8_t* block = NULL;
     uint32_t block_size;
     uint32_t bytes_used;
     uint32_t record_start;
@@ -9930,14 +10016,22 @@ int rinfs_xattr_remove(RinFS_Mount* mount, uint64_t ino, const char* name,
     int result;
     if (mount == NULL || !mount->mounted ||
         !rinfs_xattr_name_valid(name, name_length)) return RINFS_ERR_INVAL;
+    result = rinfs_mount_operation_scope_begin(mount, &operation);
+    if (result != RINFS_OK) return result;
     result = rinfs_mount_prepare_write(mount);
-    if (result != RINFS_OK) return result;
+    if (result != RINFS_OK) goto done;
     result = rinfs_inode_read(mount, ino, &inode);
-    if (result != RINFS_OK) return result;
-    if (inode.i_xattr_block == 0u) return RINFS_ERR_NOENT;
+    if (result != RINFS_OK) goto done;
+    if (inode.i_xattr_block == 0u) {
+        result = RINFS_ERR_NOENT;
+        goto done;
+    }
     block_size = mount->sb.s_block_size;
     block = (uint8_t*)rinfs_malloc(block_size);
-    if (block == NULL) return RINFS_ERR_NOMEM;
+    if (block == NULL) {
+        result = RINFS_ERR_NOMEM;
+        goto done;
+    }
     result = rinfs_xattr_load(mount, &inode, block);
     if (result != RINFS_OK) goto out;
     result = rinfs_xattr_find(block, name, name_length, &record_start,
@@ -9961,17 +10055,22 @@ int rinfs_xattr_remove(RinFS_Mount* mount, uint64_t ino, const char* name,
         result = rinfs_xattr_publish_buffer(mount, ino, &inode, block);
     }
 out:
-    rinfs_free(block);
-    return result;
+    if (block) rinfs_free(block);
+done:
+    {
+        int release_error = rinfs_mount_operation_scope_end(&operation);
+        return release_error == RINFS_OK ? result : release_error;
+    }
 }
 
 int rinfs_xattr_copy(RinFS_Mount* source_mount, uint64_t source_ino,
                      RinFS_Mount* destination_mount,
                      uint64_t destination_ino) {
+    RinFS_MountOperationPairScope operation = {0};
     RinFS_Inode source;
     RinFS_Inode destination;
-    uint8_t* source_block;
-    uint8_t* destination_block;
+    uint8_t* source_block = NULL;
+    uint8_t* destination_block = NULL;
     uint32_t bytes_used;
     int result;
     if (source_mount == NULL || destination_mount == NULL ||
@@ -9979,13 +10078,18 @@ int rinfs_xattr_copy(RinFS_Mount* source_mount, uint64_t source_ino,
         destination_mount->readonly) return RINFS_ERR_INVAL;
     if (source_mount == destination_mount && source_ino == destination_ino)
         return RINFS_OK;
+    result = rinfs_mount_operation_pair_scope_begin(
+        source_mount, destination_mount, &operation);
+    if (result != RINFS_OK) return result;
     result = rinfs_inode_read(source_mount, source_ino, &source);
-    if (result != RINFS_OK) return result;
+    if (result != RINFS_OK) goto done;
     result = rinfs_inode_read(destination_mount, destination_ino, &destination);
-    if (result != RINFS_OK) return result;
-    if (source.i_xattr_block == 0u)
-        return rinfs_xattr_commit_block(destination_mount, destination_ino,
-                                        &destination, 0u, NULL);
+    if (result != RINFS_OK) goto done;
+    if (source.i_xattr_block == 0u) {
+        result = rinfs_xattr_commit_block(
+            destination_mount, destination_ino, &destination, 0u, NULL);
+        goto done;
+    }
     /* A malformed legacy image can alias an xattr block between two inodes.
      * Cloning must not free the source's still-referenced block while making
      * the destination independent. The full checker will still report the
@@ -9995,7 +10099,10 @@ int rinfs_xattr_copy(RinFS_Mount* source_mount, uint64_t source_ino,
         destination.i_xattr_block = 0u;
     }
     source_block = (uint8_t*)rinfs_malloc(source_mount->sb.s_block_size);
-    if (source_block == NULL) return RINFS_ERR_NOMEM;
+    if (source_block == NULL) {
+        result = RINFS_ERR_NOMEM;
+        goto done;
+    }
     result = rinfs_xattr_load(source_mount, &source, source_block);
     if (result == RINFS_OK) {
         if (source_mount->sb.s_block_size > destination_mount->sb.s_block_size) {
@@ -10019,18 +10126,23 @@ int rinfs_xattr_copy(RinFS_Mount* source_mount, uint64_t source_ino,
                                                         &destination,
                                                         destination_block);
                 }
-                rinfs_free(destination_block);
             }
         }
     }
-    rinfs_free(source_block);
-    return result;
+done:
+    if (destination_block) rinfs_free(destination_block);
+    if (source_block) rinfs_free(source_block);
+    {
+        int release_error = rinfs_mount_operation_pair_scope_end(&operation);
+        return release_error == RINFS_OK ? result : release_error;
+    }
 }
 
 int rinfs_inode_copy_persistent_flags(RinFS_Mount* source_mount,
                                       uint64_t source_ino,
                                       RinFS_Mount* destination_mount,
                                       uint64_t destination_ino) {
+    RinFS_MountOperationPairScope operation = {0};
     RinFS_Inode source;
     RinFS_Inode destination;
     int result;
@@ -10039,16 +10151,24 @@ int rinfs_inode_copy_persistent_flags(RinFS_Mount* source_mount,
         destination_mount->readonly) return RINFS_ERR_INVAL;
     if (source_mount == destination_mount && source_ino == destination_ino)
         return RINFS_OK;
+    result = rinfs_mount_operation_pair_scope_begin(
+        source_mount, destination_mount, &operation);
+    if (result != RINFS_OK) return result;
     result = rinfs_inode_read(source_mount, source_ino, &source);
-    if (result != RINFS_OK) return result;
+    if (result != RINFS_OK) goto done;
     result = rinfs_inode_read(destination_mount, destination_ino, &destination);
-    if (result != RINFS_OK) return result;
+    if (result != RINFS_OK) goto done;
     destination.i_flags = (uint16_t)((destination.i_flags &
                                       ~RINFS_XATTR_FLAG_COPY_MASK) |
                                      (source.i_flags &
                                       RINFS_XATTR_FLAG_COPY_MASK));
     rinfs_touch_changed(&destination);
-    return rinfs_inode_write(destination_mount, destination_ino, &destination);
+    result = rinfs_inode_write(destination_mount, destination_ino, &destination);
+done:
+    {
+        int release_error = rinfs_mount_operation_pair_scope_end(&operation);
+        return release_error == RINFS_OK ? result : release_error;
+    }
 }
 
 /* ═══════════════════════════════════════════════════════════════
@@ -10619,6 +10739,7 @@ static int rinfs_inode_set_times_internal(
     const RinFS_InodeTimestamp* access,
     const RinFS_InodeTimestamp* write,
     int exact_precision, RinFS_Inode* committed_inode) {
+    RinFS_MountOperationScope operation = {0};
     RinFS_Inode candidate;
     int result;
     if (!mount || !mount->mounted || !committed_inode ||
@@ -10641,13 +10762,17 @@ static int rinfs_inode_set_times_internal(
     if (exact_precision && !rinfs_mount_has_nanotimes(mount)) {
         return RINFS_ERR_NOT_SUPPORTED;
     }
+    result = rinfs_mount_operation_scope_begin(mount, &operation);
+    if (result != RINFS_OK) return result;
     result = rinfs_mount_prepare_write(mount);
-    if (result != RINFS_OK) return result;
+    if (result != RINFS_OK) goto done;
     result = rinfs_inode_read(mount, ino, &candidate);
-    if (result != RINFS_OK) return result;
+    if (result != RINFS_OK) goto done;
     if (rinfs_mount_has_nanotimes(mount) &&
-        !rinfs_inode_time_metadata_valid(mount, &candidate))
-        return RINFS_ERR_CORRUPT;
+        !rinfs_inode_time_metadata_valid(mount, &candidate)) {
+        result = RINFS_ERR_CORRUPT;
+        goto done;
+    }
     if ((valid_mask & RINFS_INODE_TIME_BIRTH) != 0u)
         candidate.i_btime = (uint64_t)birth->seconds;
     if ((valid_mask & RINFS_INODE_TIME_ACCESS) != 0u)
@@ -10674,9 +10799,12 @@ static int rinfs_inode_set_times_internal(
     }
     rinfs_touch_changed(&candidate);
     result = rinfs_inode_write(mount, ino, &candidate);
-    if (result != RINFS_OK) return result;
-    *committed_inode = candidate;
-    return RINFS_OK;
+    if (result == RINFS_OK) *committed_inode = candidate;
+done:
+    {
+        int release_error = rinfs_mount_operation_scope_end(&operation);
+        return release_error == RINFS_OK ? result : release_error;
+    }
 }
 
 int rinfs_inode_set_times(RinFS_Mount* mount, uint64_t ino,
