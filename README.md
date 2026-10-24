@@ -849,3 +849,6 @@ or physical-media acceptance.
 RinFS xattr get/list now clear their bounded output region on errors and on
 scope-release failure. `NOSPC` keeps the required output length available for
 the caller's sizing retry while clearing any value or partial name list.
+The inode timestamp setters also clear `committed_inode` before validation and
+on write or scope-release failure, publishing it only after a successful
+commit.

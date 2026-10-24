@@ -10961,6 +10961,8 @@ static int rinfs_inode_set_times_internal(
     RinFS_MountOperationScope operation = {0};
     RinFS_Inode candidate;
     int result;
+    if (committed_inode)
+        rinfs_memset(committed_inode, 0, sizeof(*committed_inode));
     if (!mount || !mount->mounted || !committed_inode ||
         valid_mask == 0u || (valid_mask & ~RINFS_INODE_TIME_MASK) != 0u ||
         ((valid_mask & RINFS_INODE_TIME_BIRTH) != 0u &&
@@ -11022,7 +11024,10 @@ static int rinfs_inode_set_times_internal(
 done:
     {
         int release_error = rinfs_mount_operation_scope_end(&operation);
-        return release_error == RINFS_OK ? result : release_error;
+        if (release_error != RINFS_OK) result = release_error;
+        if (result != RINFS_OK)
+            rinfs_memset(committed_inode, 0, sizeof(*committed_inode));
+        return result;
     }
 }
 
@@ -11033,6 +11038,8 @@ int rinfs_inode_set_times(RinFS_Mount* mount, uint64_t ino,
     RinFS_InodeTimestamp birth = {(int64_t)birth_time, 0u, 0u};
     RinFS_InodeTimestamp access = {(int64_t)access_time, 0u, 0u};
     RinFS_InodeTimestamp write = {(int64_t)write_time, 0u, 0u};
+    if (committed_inode)
+        rinfs_memset(committed_inode, 0, sizeof(*committed_inode));
     if (((valid_mask & RINFS_INODE_TIME_BIRTH) != 0u &&
          birth_time > (uint64_t)INT64_MAX) ||
         ((valid_mask & RINFS_INODE_TIME_ACCESS) != 0u &&
@@ -11052,6 +11059,8 @@ int rinfs_inode_set_times_precise(
     const RinFS_InodeTimestamp* access,
     const RinFS_InodeTimestamp* write,
     RinFS_Inode* committed_inode) {
+    if (committed_inode)
+        rinfs_memset(committed_inode, 0, sizeof(*committed_inode));
     if (mount == NULL || !mount->mounted) return RINFS_ERR_INVAL;
     if (!rinfs_mount_has_nanotimes(mount)) {
         return RINFS_ERR_NOT_SUPPORTED;
