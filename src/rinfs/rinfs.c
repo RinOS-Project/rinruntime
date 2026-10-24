@@ -6,6 +6,14 @@
 
 #include <rinruntime/rinfs/rinfs.h>
 #include <rinruntime/rinfs/vfs_open_flags.h>
+#if defined(RIN_USERSPACE) && !defined(RIN_KERNEL) && \
+    !defined(RINFS_USERLAND_MOUNT_LEASES_DISABLED)
+/* A RinOS userland build must retain the kernel cache-lifetime lease for
+ * every direct RinFS mount. Installer64 opts out because its target-session
+ * capability acquires the equivalent lease under destructive maintenance. */
+#undef RINFS_USERLAND_MOUNT_LEASES
+#define RINFS_USERLAND_MOUNT_LEASES 1
+#endif
 #if defined(RINFS_USERLAND_MOUNT_LEASES) && !defined(RIN_KERNEL)
 #include <rinruntime/rin_installer_runtime.h>
 #include <rin/ipc/shm_abi.h>
