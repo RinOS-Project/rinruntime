@@ -42,6 +42,17 @@ def _git(repository: Path, *arguments: str, check: bool = True) -> str:
     return result.stdout.strip()
 
 
+def _has_worktree_artifacts(path: Path) -> bool:
+    """Reject tracked edits, untracked files, and ignored cache injections."""
+    if _git(path, "status", "--porcelain", "--untracked-files=all"):
+        return True
+    # `git status` intentionally hides ignored files. An ignored file can still
+    # shadow a tracked include or source selected by a broad build include path,
+    # so pinned dependency roots must not contain ignored working-tree data.
+    return bool(_git(path, "ls-files", "--others", "--ignored",
+                     "--exclude-standard", "--directory"))
+
+
 def _is_clean_pinned_checkout(path: Path, dependency: dict[str, object]) -> bool:
     if not path.is_dir():
         return False
@@ -51,7 +62,7 @@ def _is_clean_pinned_checkout(path: Path, dependency: dict[str, object]) -> bool
             return False
         if _git(path, "rev-parse", "HEAD") != dependency["revision"]:
             return False
-        return not _git(path, "status", "--porcelain", "--untracked-files=all")
+        return not _has_worktree_artifacts(path)
     except (OSError, RuntimeError):
         return False
 
@@ -120,17 +131,18 @@ def _ensure_cache_checkout_locked(path: Path,
             # initialization.  Never adopt a populated repository without a
             # verifiable origin.
             current = _git(path, "rev-parse", "--verify", "HEAD", check=False)
-            status = _git(path, "status", "--porcelain", "--untracked-files=all",
-                          check=False)
-            if current or status:
+            if current or _has_worktree_artifacts(path):
                 raise RuntimeError(
-                    f"dependency cache has no verifiable origin; preserve it manually: {path}")
+                    "dependency cache has no verifiable origin or contains "
+                    f"working-tree artifacts; preserve it manually: {path}")
             _git(path, "remote", "add", "origin", url)
             origin = url
         if normalize(origin) != normalize(url):
             raise RuntimeError(f"dependency cache has unexpected origin: {path}")
-        if _git(path, "status", "--porcelain", "--untracked-files=all"):
-            raise RuntimeError(f"dependency cache has local changes; preserve and clear it manually: {path}")
+        if _has_worktree_artifacts(path):
+            raise RuntimeError(
+                "dependency cache contains tracked changes, untracked files, "
+                f"or ignored artifacts; preserve and clear it manually: {path}")
     else:
         path.mkdir()
         _git(path, "init")
@@ -142,8 +154,9 @@ def _ensure_cache_checkout_locked(path: Path,
         _git(path, "checkout", "--detach", revision)
     if _git(path, "rev-parse", "HEAD") != revision:
         raise RuntimeError(f"resolved dependency revision does not match lock: {path}")
-    if _git(path, "status", "--porcelain", "--untracked-files=all"):
-        raise RuntimeError(f"resolved dependency checkout is not clean: {path}")
+    if _has_worktree_artifacts(path):
+        raise RuntimeError(
+            f"resolved dependency checkout contains working-tree artifacts: {path}")
     return path.resolve()
 
 

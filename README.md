@@ -15,6 +15,11 @@ with different pins therefore cannot move a checkout while the first build is
 using it. Set `RINRUNTIME_DEPENDENCY_CACHE_ROOT` to share that cache between
 separate CMake and Meson build directories.
 
+The resolver also rejects ignored files in local and cached dependency roots.
+Ignored build output can still shadow a tracked header or source through an
+include path, so a pinned revision alone is not treated as proof that the
+compiler sees only pinned content.
+
 For example:
 
 ```sh
