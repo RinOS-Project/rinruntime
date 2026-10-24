@@ -4323,13 +4323,11 @@ static int rinfs_wincompat_share_counts_change_locked(
     return RINFS_OK;
 }
 
-int rinfs_wincompat_share_register(RinFS_Mount* mount, uint64_t inode_num,
-                                   uint32_t inode_generation,
-                                   uint64_t content_pin_token,
-                                   uint64_t close_generation,
-                                   uint64_t close_cookie,
-                                   uint64_t mount_epoch,
-                                   uint32_t access, uint32_t share_mode) {
+static int rinfs_wincompat_share_register_unscoped(
+    RinFS_Mount* mount, uint64_t inode_num, uint32_t inode_generation,
+    uint64_t content_pin_token, uint64_t close_generation,
+    uint64_t close_cookie, uint64_t mount_epoch, uint32_t access,
+    uint32_t share_mode) {
     int content_unlock_error = RINFS_OK;
     RinFS_CloseReferenceRecord* owner;
     RinFS_ContentLeaseNode* node;
@@ -4439,6 +4437,26 @@ int rinfs_wincompat_share_register(RinFS_Mount* mount, uint64_t inode_num,
     rinfs_keep_first_error(&content_unlock_error, rinfs_shared_content_unlock(mount));
     rinfs_spin_unlock(&g_rinfs_close_reference_lock);
     return rinfs_content_unlock_status((result), content_unlock_error);
+}
+
+int rinfs_wincompat_share_register(RinFS_Mount* mount, uint64_t inode_num,
+                                   uint32_t inode_generation,
+                                   uint64_t content_pin_token,
+                                   uint64_t close_generation,
+                                   uint64_t close_cookie,
+                                   uint64_t mount_epoch,
+                                   uint32_t access, uint32_t share_mode) {
+    RinFS_MountOperationScope operation = {0};
+    int result;
+    int release_error;
+    if (!mount) return RINFS_ERR_INVAL;
+    result = rinfs_mount_operation_scope_begin(mount, &operation);
+    if (result != RINFS_OK) return result;
+    result = rinfs_wincompat_share_register_unscoped(
+        mount, inode_num, inode_generation, content_pin_token,
+        close_generation, close_cookie, mount_epoch, access, share_mode);
+    release_error = rinfs_mount_operation_scope_end(&operation);
+    return release_error == RINFS_OK ? result : release_error;
 }
 
 static int rinfs_close_ref_reserve(RinFS_Mount* mount, uint64_t inode_num,
@@ -28907,52 +28925,176 @@ int rinfs_closedir_with_disposition(RinFS_Dir* dir, int* consumed_out,
         return rinfs_mount_operation_scope_finish(&operation, error);      \
     }
 
-RINFS_MOUNT_SCOPE_WRAPPER(
-    rinfs_block_read, rinfs_block_read_unscoped,
-    (RinFS_Mount* mount, uint64_t block, void* buf),
-    (mount, block, buf))
+static void rinfs_block_read_output_clear(RinFS_Mount* mount, void* buf) {
+    if (mount && buf && mount->sb.s_block_size != 0u &&
+        mount->sb.s_block_size <= RINFS_MAX_BLOCK_SIZE)
+        rinfs_memset(buf, 0, mount->sb.s_block_size);
+}
+
+int rinfs_block_read(RinFS_Mount* mount, uint64_t block, void* buf) {
+    RinFS_MountOperationScope operation = {0};
+    int error;
+    rinfs_block_read_output_clear(mount, buf);
+    if (!mount || !mount->mounted) {
+        error = rinfs_block_read_unscoped(mount, block, buf);
+        if (error != RINFS_OK) rinfs_block_read_output_clear(mount, buf);
+        return error;
+    }
+    error = rinfs_mount_operation_scope_begin(mount, &operation);
+    if (error != RINFS_OK) {
+        rinfs_block_read_output_clear(mount, buf);
+        return error;
+    }
+    error = rinfs_block_read_unscoped(mount, block, buf);
+    error = rinfs_mount_operation_scope_finish(&operation, error);
+    if (error != RINFS_OK) rinfs_block_read_output_clear(mount, buf);
+    return error;
+}
+
 RINFS_MOUNT_SCOPE_WRAPPER(
     rinfs_block_write, rinfs_block_write_unscoped,
     (RinFS_Mount* mount, uint64_t block, const void* buf),
     (mount, block, buf))
-RINFS_MOUNT_SCOPE_WRAPPER(
-    rinfs_block_alloc, rinfs_block_alloc_unscoped,
-    (RinFS_Mount* mount, uint64_t* block), (mount, block))
+int rinfs_block_alloc(RinFS_Mount* mount, uint64_t* block) {
+    RinFS_MountOperationScope operation = {0};
+    int error;
+    if (block) *block = 0u;
+    if (!mount || !mount->mounted) {
+        error = rinfs_block_alloc_unscoped(mount, block);
+        if (error != RINFS_OK && block) *block = 0u;
+        return error;
+    }
+    error = rinfs_mount_operation_scope_begin(mount, &operation);
+    if (error != RINFS_OK) return error;
+    error = rinfs_block_alloc_unscoped(mount, block);
+    error = rinfs_mount_operation_scope_finish(&operation, error);
+    if (error != RINFS_OK && block) *block = 0u;
+    return error;
+}
+
 RINFS_MOUNT_SCOPE_WRAPPER(
     rinfs_block_free, rinfs_block_free_unscoped,
     (RinFS_Mount* mount, uint64_t block), (mount, block))
-RINFS_MOUNT_SCOPE_WRAPPER(
-    rinfs_inode_read, rinfs_inode_read_unscoped,
-    (RinFS_Mount* mount, uint64_t ino, RinFS_Inode* inode),
-    (mount, ino, inode))
+int rinfs_inode_read(RinFS_Mount* mount, uint64_t ino, RinFS_Inode* inode) {
+    RinFS_MountOperationScope operation = {0};
+    int error;
+    if (inode) rinfs_memset(inode, 0, sizeof(*inode));
+    if (!mount || !mount->mounted) {
+        error = rinfs_inode_read_unscoped(mount, ino, inode);
+        if (error != RINFS_OK && inode)
+            rinfs_memset(inode, 0, sizeof(*inode));
+        return error;
+    }
+    error = rinfs_mount_operation_scope_begin(mount, &operation);
+    if (error != RINFS_OK) return error;
+    error = rinfs_inode_read_unscoped(mount, ino, inode);
+    error = rinfs_mount_operation_scope_finish(&operation, error);
+    if (error != RINFS_OK && inode)
+        rinfs_memset(inode, 0, sizeof(*inode));
+    return error;
+}
+
 RINFS_MOUNT_SCOPE_WRAPPER(
     rinfs_inode_write, rinfs_inode_write_unscoped,
     (RinFS_Mount* mount, uint64_t ino, const RinFS_Inode* inode),
     (mount, ino, inode))
-RINFS_MOUNT_SCOPE_WRAPPER(
-    rinfs_inode_alloc, rinfs_inode_alloc_unscoped,
-    (RinFS_Mount* mount, uint64_t* ino), (mount, ino))
+int rinfs_inode_alloc(RinFS_Mount* mount, uint64_t* ino) {
+    RinFS_MountOperationScope operation = {0};
+    int error;
+    if (ino) *ino = 0u;
+    if (!mount || !mount->mounted) {
+        error = rinfs_inode_alloc_unscoped(mount, ino);
+        if (error != RINFS_OK && ino) *ino = 0u;
+        return error;
+    }
+    error = rinfs_mount_operation_scope_begin(mount, &operation);
+    if (error != RINFS_OK) return error;
+    error = rinfs_inode_alloc_unscoped(mount, ino);
+    error = rinfs_mount_operation_scope_finish(&operation, error);
+    if (error != RINFS_OK && ino) *ino = 0u;
+    return error;
+}
+
 RINFS_MOUNT_SCOPE_WRAPPER(
     rinfs_inode_free, rinfs_inode_free_unscoped,
     (RinFS_Mount* mount, uint64_t ino), (mount, ino))
-RINFS_MOUNT_SCOPE_WRAPPER(
-    rinfs_lookup, rinfs_lookup_unscoped,
-    (RinFS_Mount* mount, uint64_t dir_ino, const char* name,
-     uint64_t* ino),
-    (mount, dir_ino, name, ino))
-RINFS_MOUNT_SCOPE_WRAPPER(
-    rinfs_check_allocation_metadata,
-    rinfs_check_allocation_metadata_unscoped,
-    (RinFS_Mount* mount, uint32_t flags, RinFS_CheckReport* report),
-    (mount, flags, report))
-RINFS_MOUNT_SCOPE_WRAPPER(
-    rinfs_check_full, rinfs_check_full_unscoped,
-    (RinFS_Mount* mount, RinFS_FullCheckReport* report),
-    (mount, report))
-RINFS_MOUNT_SCOPE_WRAPPER(
-    rinfs_repair_full, rinfs_repair_full_unscoped,
-    (RinFS_Mount* mount, uint32_t flags, RinFS_FullCheckReport* report),
-    (mount, flags, report))
+int rinfs_lookup(RinFS_Mount* mount, uint64_t dir_ino, const char* name,
+                 uint64_t* ino) {
+    RinFS_MountOperationScope operation = {0};
+    int error;
+    if (ino) *ino = 0u;
+    if (!mount || !mount->mounted) {
+        error = rinfs_lookup_unscoped(mount, dir_ino, name, ino);
+        if (error != RINFS_OK && ino) *ino = 0u;
+        return error;
+    }
+    error = rinfs_mount_operation_scope_begin(mount, &operation);
+    if (error != RINFS_OK) return error;
+    error = rinfs_lookup_unscoped(mount, dir_ino, name, ino);
+    error = rinfs_mount_operation_scope_finish(&operation, error);
+    if (error != RINFS_OK && ino) *ino = 0u;
+    return error;
+}
+
+int rinfs_check_allocation_metadata(RinFS_Mount* mount, uint32_t flags,
+                                    RinFS_CheckReport* report) {
+    RinFS_MountOperationScope operation = {0};
+    int error;
+    if (report) rinfs_memset(report, 0, sizeof(*report));
+    if (!mount || !mount->mounted) {
+        error = rinfs_check_allocation_metadata_unscoped(
+            mount, flags, report);
+        if (error != RINFS_OK && report)
+            rinfs_memset(report, 0, sizeof(*report));
+        return error;
+    }
+    error = rinfs_mount_operation_scope_begin(mount, &operation);
+    if (error != RINFS_OK) return error;
+    error = rinfs_check_allocation_metadata_unscoped(mount, flags, report);
+    error = rinfs_mount_operation_scope_finish(&operation, error);
+    if (error != RINFS_OK && report)
+        rinfs_memset(report, 0, sizeof(*report));
+    return error;
+}
+
+int rinfs_check_full(RinFS_Mount* mount, RinFS_FullCheckReport* report) {
+    RinFS_MountOperationScope operation = {0};
+    int error;
+    if (report) rinfs_memset(report, 0, sizeof(*report));
+    if (!mount || !mount->mounted) {
+        error = rinfs_check_full_unscoped(mount, report);
+        if (error != RINFS_OK && report)
+            rinfs_memset(report, 0, sizeof(*report));
+        return error;
+    }
+    error = rinfs_mount_operation_scope_begin(mount, &operation);
+    if (error != RINFS_OK) return error;
+    error = rinfs_check_full_unscoped(mount, report);
+    error = rinfs_mount_operation_scope_finish(&operation, error);
+    if (error != RINFS_OK && report)
+        rinfs_memset(report, 0, sizeof(*report));
+    return error;
+}
+
+int rinfs_repair_full(RinFS_Mount* mount, uint32_t flags,
+                      RinFS_FullCheckReport* report) {
+    RinFS_MountOperationScope operation = {0};
+    int error;
+    if (report) rinfs_memset(report, 0, sizeof(*report));
+    if (!mount || !mount->mounted) {
+        error = rinfs_repair_full_unscoped(mount, flags, report);
+        if (error != RINFS_OK && report)
+            rinfs_memset(report, 0, sizeof(*report));
+        return error;
+    }
+    error = rinfs_mount_operation_scope_begin(mount, &operation);
+    if (error != RINFS_OK) return error;
+    error = rinfs_repair_full_unscoped(mount, flags, report);
+    error = rinfs_mount_operation_scope_finish(&operation, error);
+    if (error != RINFS_OK && report)
+        rinfs_memset(report, 0, sizeof(*report));
+    return error;
+}
 RINFS_MOUNT_SCOPE_WRAPPER(
     rinfs_resize, rinfs_resize_unscoped,
     (RinFS_Mount* mount, uint64_t target_blocks),
@@ -28963,20 +29105,75 @@ RINFS_MOUNT_SCOPE_WRAPPER(
     rinfs_set_volume_name, rinfs_set_volume_name_unscoped,
     (RinFS_Mount* mount, const char* name, uint32_t name_length),
     (mount, name, name_length))
-RINFS_MOUNT_SCOPE_WRAPPER(
-    rinfs_path_lookup, rinfs_path_lookup_unscoped,
-    (RinFS_Mount* mount, const char* path, uint64_t* ino,
-     RinFS_Inode* inode),
-    (mount, path, ino, inode))
-RINFS_MOUNT_SCOPE_WRAPPER(
-    rinfs_path_lookup_nofollow, rinfs_path_lookup_nofollow_unscoped,
-    (RinFS_Mount* mount, const char* path, uint64_t* ino,
-     RinFS_Inode* inode),
-    (mount, path, ino, inode))
-RINFS_MOUNT_SCOPE_WRAPPER(
-    rinfs_stat, rinfs_stat_unscoped,
-    (RinFS_Mount* mount, const char* path, RinFS_Inode* inode),
-    (mount, path, inode))
+int rinfs_path_lookup(RinFS_Mount* mount, const char* path, uint64_t* ino,
+                      RinFS_Inode* inode) {
+    RinFS_MountOperationScope operation = {0};
+    int error;
+    if (ino) *ino = 0u;
+    if (inode) rinfs_memset(inode, 0, sizeof(*inode));
+    if (!mount || !mount->mounted) {
+        error = rinfs_path_lookup_unscoped(mount, path, ino, inode);
+        if (error != RINFS_OK) {
+            if (ino) *ino = 0u;
+            if (inode) rinfs_memset(inode, 0, sizeof(*inode));
+        }
+        return error;
+    }
+    error = rinfs_mount_operation_scope_begin(mount, &operation);
+    if (error != RINFS_OK) return error;
+    error = rinfs_path_lookup_unscoped(mount, path, ino, inode);
+    error = rinfs_mount_operation_scope_finish(&operation, error);
+    if (error != RINFS_OK) {
+        if (ino) *ino = 0u;
+        if (inode) rinfs_memset(inode, 0, sizeof(*inode));
+    }
+    return error;
+}
+
+int rinfs_path_lookup_nofollow(RinFS_Mount* mount, const char* path,
+                               uint64_t* ino, RinFS_Inode* inode) {
+    RinFS_MountOperationScope operation = {0};
+    int error;
+    if (ino) *ino = 0u;
+    if (inode) rinfs_memset(inode, 0, sizeof(*inode));
+    if (!mount || !mount->mounted) {
+        error = rinfs_path_lookup_nofollow_unscoped(
+            mount, path, ino, inode);
+        if (error != RINFS_OK) {
+            if (ino) *ino = 0u;
+            if (inode) rinfs_memset(inode, 0, sizeof(*inode));
+        }
+        return error;
+    }
+    error = rinfs_mount_operation_scope_begin(mount, &operation);
+    if (error != RINFS_OK) return error;
+    error = rinfs_path_lookup_nofollow_unscoped(mount, path, ino, inode);
+    error = rinfs_mount_operation_scope_finish(&operation, error);
+    if (error != RINFS_OK) {
+        if (ino) *ino = 0u;
+        if (inode) rinfs_memset(inode, 0, sizeof(*inode));
+    }
+    return error;
+}
+
+int rinfs_stat(RinFS_Mount* mount, const char* path, RinFS_Inode* inode) {
+    RinFS_MountOperationScope operation = {0};
+    int error;
+    if (inode) rinfs_memset(inode, 0, sizeof(*inode));
+    if (!mount || !mount->mounted) {
+        error = rinfs_stat_unscoped(mount, path, inode);
+        if (error != RINFS_OK && inode)
+            rinfs_memset(inode, 0, sizeof(*inode));
+        return error;
+    }
+    error = rinfs_mount_operation_scope_begin(mount, &operation);
+    if (error != RINFS_OK) return error;
+    error = rinfs_stat_unscoped(mount, path, inode);
+    error = rinfs_mount_operation_scope_finish(&operation, error);
+    if (error != RINFS_OK && inode)
+        rinfs_memset(inode, 0, sizeof(*inode));
+    return error;
+}
 RINFS_MOUNT_SCOPE_WRAPPER(
     rinfs_delete_on_close_reap, rinfs_delete_on_close_reap_unscoped,
     (RinFS_Mount* mount), (mount))

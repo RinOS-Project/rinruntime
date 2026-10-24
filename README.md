@@ -824,3 +824,17 @@ unmounted `RinFS_Mount` and can call `rinfs_unmount()` to retry releasing the
 remaining buffers and external mount lease before reusing or discarding the
 object. This retry only finishes local cleanup; a later `rinfs_mount()` must
 replay any unfinished on-disk recovery.
+
+## RinFS restore operation admission
+
+The public `rinfs_wincompat_share_register()` call holds the mount's
+restore-operation scope while it validates and publishes share state for an
+open-file owner. The close-reference and shared-owner checks remain in the
+private implementation helper.
+
+The block/inode read and allocation, lookup, check/repair, path lookup, and
+stat wrappers also clear their output values before work and after operation
+or scope-release failure. Unmounted calls retain their existing behavior while
+still clearing partial outputs on error. This source integration does not
+replace the race, fault/reboot, product, QEMU, or physical-media acceptance
+tracked by the RinOS Core ISO-BLOCK-07 item.
