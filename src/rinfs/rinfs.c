@@ -25341,11 +25341,17 @@ typedef struct {
     uint64_t mount_epoch;
     uint32_t transaction_references;
     uint32_t teardown_active;
+    uint32_t shared_owner_row;
+    uint32_t reserved;
+    uint64_t shared_owner_cookie;
 } RinFS_RestoreMountGateRecord;
 
 typedef struct {
     uint32_t slot;
     uint32_t token;
+    uint32_t shared_owner_row;
+    uint32_t reserved;
+    uint64_t shared_owner_cookie;
     RinFS_RestoreTransactionV1* handle;
     RinFS_RestoreTransactionInternal* internal;
     uint32_t active;
@@ -25426,17 +25432,226 @@ static int rinfs_restore_transaction_registry_audit_locked(void) {
         if (!gate->mount) {
             if (gate->mount_epoch != 0u ||
                 gate->transaction_references != 0u ||
-                gate->teardown_active != 0u || handle_count[index] != 0u)
+                gate->teardown_active != 0u ||
+                gate->shared_owner_row != 0u || gate->reserved != 0u ||
+                gate->shared_owner_cookie != 0u ||
+                handle_count[index] != 0u)
                 return 0;
             continue;
         }
         if (gate->mount_epoch == 0u || gate->teardown_active > 1u ||
+            gate->reserved != 0u ||
+            ((gate->shared_owner_row == 0u) !=
+             (gate->shared_owner_cookie == 0u)) ||
+            gate->shared_owner_row > RINFS_SHARED_OWNER_CAPACITY ||
+            (gate->transaction_references == 0u &&
+             (gate->shared_owner_row != 0u ||
+              gate->shared_owner_cookie != 0u)) ||
+            (gate->transaction_references != 0u &&
+             gate->mount->shared_mapping_base &&
+             (gate->shared_owner_row == 0u ||
+              gate->shared_owner_cookie == 0u)) ||
             gate->transaction_references != handle_count[index] ||
             (gate->transaction_references == 0u &&
              gate->teardown_active == 0u))
             return 0;
     }
     return 1;
+}
+
+/* A process-local restore registry cannot serialize two processes which use
+ * the same fork-shared RinFS mapping. Bind the one active transaction to the
+ * kernel-issued shared-owner row while holding the mapping's recoverable
+ * content lock. The owner cookie distinguishes a reaped row from a later
+ * process which reused that slot. */
+static int rinfs_restore_shared_gate_claim(
+    RinFS_Mount* mount, uint64_t mount_epoch, uint32_t* owner_row_out,
+    uint64_t* owner_cookie_out) {
+    RinFS_SharedOwnerV1* owner;
+    uint32_t owner_row = 0u;
+    uint32_t gate_row;
+    uint64_t owner_cookie;
+    int result = RINFS_OK;
+    int unlock_error;
+    if (owner_row_out) *owner_row_out = 0u;
+    if (owner_cookie_out) *owner_cookie_out = 0u;
+    if (!mount || mount_epoch == 0u || !owner_row_out ||
+        !owner_cookie_out)
+        return RINFS_ERR_INVAL;
+    if (!mount->shared_mapping_base) return RINFS_OK;
+    if (mount->shared_mount_ready == 0u ||
+        !rinfs_shared_owner_ledger_valid(mount) ||
+        rinfs_shared_owner_query_row(mount, &owner_row) != RINFS_OK ||
+        owner_row == 0u || owner_row > RINFS_SHARED_OWNER_CAPACITY)
+        return RINFS_ERR_BUSY;
+    result = rinfs_shared_content_lock(mount);
+    if (result != RINFS_OK) return result;
+    owner = &mount->shared_owner_ledger->owners[owner_row - 1u];
+    owner_cookie = owner->owner_cookie;
+    if (!mount->mounted || mount->mount_epoch != mount_epoch ||
+        __atomic_load_n(&owner->state, __ATOMIC_ACQUIRE) !=
+            RINFS_SHARED_OWNER_ACTIVE || owner_cookie == 0u) {
+        result = RINFS_ERR_STALE;
+        goto done;
+    }
+    if (mount->readonly) {
+        result = RINFS_ERR_ROFS;
+        goto done;
+    }
+    gate_row = __atomic_load_n(&mount->restore_transaction_owner_row,
+                               __ATOMIC_ACQUIRE);
+    if (mount->restore_transaction_reserved != 0u ||
+        ((gate_row == 0u) !=
+         (mount->restore_transaction_owner_cookie == 0u)) ||
+        ((gate_row == 0u) !=
+         (mount->restore_transaction_mount_epoch == 0u)) ||
+        gate_row > RINFS_SHARED_OWNER_CAPACITY) {
+        result = RINFS_ERR_CORRUPT;
+        goto done;
+    }
+    if (gate_row != 0u) {
+        RinFS_SharedOwnerV1* gate_owner =
+            &mount->shared_owner_ledger->owners[gate_row - 1u];
+        uint32_t gate_owner_state = __atomic_load_n(
+            &gate_owner->state, __ATOMIC_ACQUIRE);
+        uint64_t stale_cookie =
+            mount->restore_transaction_owner_cookie;
+        uint64_t stale_epoch =
+            mount->restore_transaction_mount_epoch;
+        if (stale_cookie == 0u || stale_epoch == 0u) {
+            result = RINFS_ERR_CORRUPT;
+            goto done;
+        }
+        if (gate_owner_state == RINFS_SHARED_OWNER_ACTIVE) {
+            if (gate_owner->owner_cookie == stale_cookie) {
+                result = stale_epoch == mount_epoch
+                             ? RINFS_ERR_PENDING : RINFS_ERR_CORRUPT;
+                goto done;
+            }
+            /* The kernel reuses a row only after publishing the previous
+             * owner as REAPED. A new active cookie therefore proves that the
+             * transaction owner which installed this gate has exited. */
+            if (gate_owner->owner_cookie == 0u) {
+                result = RINFS_ERR_CORRUPT;
+                goto done;
+            }
+        } else if (gate_owner_state == RINFS_SHARED_OWNER_DEAD) {
+            if (gate_owner->owner_cookie != stale_cookie) {
+                result = RINFS_ERR_CORRUPT;
+                goto done;
+            }
+        } else if (gate_owner_state == RINFS_SHARED_OWNER_REAPED) {
+            /* REAPED rows can be in the middle of kernel reassignment, so a
+             * different nonzero cookie is also safe to retire here. */
+            if (gate_owner->owner_cookie == 0u) {
+                result = RINFS_ERR_CORRUPT;
+                goto done;
+            }
+        } else {
+            /* FREE has no owner-death proof and must never release a gate. */
+            result = RINFS_ERR_CORRUPT;
+            goto done;
+        }
+        mount->restore_transaction_owner_cookie = 0u;
+        mount->restore_transaction_mount_epoch = 0u;
+        __atomic_store_n(&mount->restore_transaction_owner_row, 0u,
+                         __ATOMIC_RELEASE);
+    }
+    mount->restore_transaction_owner_cookie = owner_cookie;
+    mount->restore_transaction_mount_epoch = mount_epoch;
+    __atomic_store_n(&mount->restore_transaction_owner_row, owner_row,
+                     __ATOMIC_RELEASE);
+    *owner_row_out = owner_row;
+    *owner_cookie_out = owner_cookie;
+done:
+    unlock_error = rinfs_shared_content_unlock(mount);
+    if (unlock_error != RINFS_OK) {
+        rinfs_mount_force_readonly(mount);
+        result = unlock_error;
+        *owner_row_out = 0u;
+        *owner_cookie_out = 0u;
+    }
+    if (result == RINFS_ERR_CORRUPT) {
+        rinfs_mount_force_readonly(mount);
+        mount->content_lease_closing = UINT32_MAX;
+    }
+    return result;
+}
+
+static int rinfs_restore_shared_gate_owner_check(
+    RinFS_Mount* mount, uint32_t expected_row, uint64_t expected_cookie) {
+    RinFS_SharedOwnerV1* owner;
+    uint32_t current_row = 0u;
+    if (!mount) return RINFS_ERR_INVAL;
+    if (!mount->shared_mapping_base)
+        return expected_row == 0u && expected_cookie == 0u
+                   ? RINFS_OK : RINFS_ERR_CORRUPT;
+    if (expected_row == 0u ||
+        expected_row > RINFS_SHARED_OWNER_CAPACITY ||
+        expected_cookie == 0u ||
+        !rinfs_shared_owner_ledger_valid(mount))
+        return RINFS_ERR_CORRUPT;
+    if (mount->shared_mount_ready == 0u) return RINFS_ERR_BUSY;
+    if (rinfs_shared_owner_query_row(mount, &current_row) != RINFS_OK)
+        return RINFS_ERR_BUSY;
+    if (current_row != expected_row) return RINFS_ERR_STALE;
+    owner = &mount->shared_owner_ledger->owners[current_row - 1u];
+    if (__atomic_load_n(&owner->state, __ATOMIC_ACQUIRE) !=
+            RINFS_SHARED_OWNER_ACTIVE ||
+        owner->owner_cookie != expected_cookie)
+        return RINFS_ERR_STALE;
+    return RINFS_OK;
+}
+
+static int rinfs_restore_shared_gate_release(
+    RinFS_Mount* mount, uint64_t mount_epoch, uint32_t owner_row,
+    uint64_t owner_cookie) {
+    uint32_t gate_row;
+    int result;
+    int unlock_error;
+    if (!mount) return RINFS_ERR_INVAL;
+    if (!mount->shared_mapping_base)
+        return owner_row == 0u && owner_cookie == 0u
+                   ? RINFS_OK : RINFS_ERR_CORRUPT;
+    if (mount_epoch == 0u || owner_row == 0u ||
+        owner_row > RINFS_SHARED_OWNER_CAPACITY || owner_cookie == 0u)
+        return RINFS_ERR_INVAL;
+    result = rinfs_shared_content_lock(mount);
+    if (result != RINFS_OK) return result;
+    result = rinfs_restore_shared_gate_owner_check(
+        mount, owner_row, owner_cookie);
+    if (result != RINFS_OK) {
+        unlock_error = rinfs_shared_content_unlock(mount);
+        if (unlock_error != RINFS_OK) {
+            rinfs_mount_force_readonly(mount);
+            return unlock_error;
+        }
+        return result;
+    }
+    gate_row = __atomic_load_n(&mount->restore_transaction_owner_row,
+                               __ATOMIC_ACQUIRE);
+    if (gate_row != owner_row ||
+        mount->restore_transaction_owner_cookie != owner_cookie ||
+        mount->restore_transaction_mount_epoch != mount_epoch ||
+        mount->restore_transaction_reserved != 0u) {
+        result = RINFS_ERR_CORRUPT;
+    } else {
+        mount->restore_transaction_owner_cookie = 0u;
+        mount->restore_transaction_mount_epoch = 0u;
+        __atomic_store_n(&mount->restore_transaction_owner_row, 0u,
+                         __ATOMIC_RELEASE);
+        result = RINFS_OK;
+    }
+    unlock_error = rinfs_shared_content_unlock(mount);
+    if (unlock_error != RINFS_OK) {
+        rinfs_mount_force_readonly(mount);
+        result = unlock_error;
+    }
+    if (result == RINFS_ERR_CORRUPT) {
+        rinfs_mount_force_readonly(mount);
+        mount->content_lease_closing = UINT32_MAX;
+    }
+    return result;
 }
 
 static int rinfs_restore_transaction_reserve(
@@ -25446,6 +25661,9 @@ static int rinfs_restore_transaction_reserve(
     RinFS_RestoreTransactionHandleRecord* free_record = NULL;
     uint32_t free_gate = RINFS_MAX_RESTORE_MOUNT_GATES;
     uint32_t token;
+    uint32_t shared_owner_row = 0u;
+    uint64_t shared_owner_cookie = 0u;
+    int shared_gate_error;
     if (token_out) *token_out = 0u;
     if (!mount || mount_epoch == 0u || !handle || !token_out)
         return RINFS_ERR_INVAL;
@@ -25504,10 +25722,18 @@ static int rinfs_restore_transaction_reserve(
         rinfs_spin_unlock(&g_rinfs_restore_transaction_lock);
         return RINFS_ERR_NOSPC;
     }
+    shared_gate_error = rinfs_restore_shared_gate_claim(
+        mount, mount_epoch, &shared_owner_row, &shared_owner_cookie);
+    if (shared_gate_error != RINFS_OK) {
+        rinfs_spin_unlock(&g_rinfs_restore_transaction_lock);
+        return shared_gate_error;
+    }
     if (!gate) {
         gate = &g_rinfs_restore_mount_gates[free_gate];
         gate->mount = mount;
         gate->mount_epoch = mount_epoch;
+        gate->shared_owner_row = shared_owner_row;
+        gate->shared_owner_cookie = shared_owner_cookie;
     }
     token = g_rinfs_restore_transaction_next_token++;
     free_record->state = RINFS_RESTORE_HANDLE_RESERVED;
@@ -25570,6 +25796,15 @@ static int rinfs_restore_transaction_reservation_abort(
         rinfs_spin_unlock(&g_rinfs_restore_transaction_lock);
         return RINFS_ERR_CORRUPT;
     }
+    {
+        int release_error = rinfs_restore_shared_gate_release(
+            record->mount, record->mount_epoch, gate->shared_owner_row,
+            gate->shared_owner_cookie);
+        if (release_error != RINFS_OK) {
+            rinfs_spin_unlock(&g_rinfs_restore_transaction_lock);
+            return release_error;
+        }
+    }
     --gate->transaction_references;
     rinfs_memset(record, 0, sizeof(*record));
     if (gate->transaction_references == 0u && gate->teardown_active == 0u)
@@ -25583,6 +25818,7 @@ static int rinfs_restore_transaction_operation_begin(
     RinFS_RestoreTransactionOperation* operation,
     RinFS_RestoreTransactionInternal** internal_out) {
     RinFS_RestoreTransactionHandleRecord* record;
+    RinFS_RestoreMountGateRecord* gate;
     RinFS_RestoreTransactionInternal* internal;
     uint32_t token;
     void* public_internal;
@@ -25621,10 +25857,18 @@ static int rinfs_restore_transaction_operation_begin(
         rinfs_spin_unlock(&g_rinfs_restore_transaction_lock);
         return RINFS_ERR_STALE;
     }
+    gate = rinfs_restore_mount_gate_find_locked(record->mount);
+    if (!gate || gate->mount_epoch != record->mount_epoch ||
+        gate->transaction_references == 0u) {
+        rinfs_spin_unlock(&g_rinfs_restore_transaction_lock);
+        return RINFS_ERR_CORRUPT;
+    }
     record->operation_active = 1u;
     operation->slot = (uint32_t)(record -
         g_rinfs_restore_transaction_handles);
     operation->token = token;
+    operation->shared_owner_row = gate->shared_owner_row;
+    operation->shared_owner_cookie = gate->shared_owner_cookie;
     operation->handle = handle;
     operation->internal =
         (RinFS_RestoreTransactionInternal*)record->internal;
@@ -25638,6 +25882,16 @@ static int rinfs_restore_transaction_operation_begin(
             operation, 0);
         return release_error == RINFS_OK ? RINFS_ERR_CORRUPT
                                          : release_error;
+    }
+    {
+        int owner_error = rinfs_restore_shared_gate_owner_check(
+            internal->mount, operation->shared_owner_row,
+            operation->shared_owner_cookie);
+        if (owner_error != RINFS_OK) {
+            int release_error = rinfs_restore_transaction_operation_end(
+                operation, 0);
+            return release_error == RINFS_OK ? owner_error : release_error;
+        }
     }
     if (!allow_stale_mount &&
         (internal->mount->mount_epoch != internal->mount_epoch ||
@@ -25683,15 +25937,27 @@ static int rinfs_restore_transaction_operation_end(
                     gate->transaction_references == 0u) {
                     result = RINFS_ERR_CORRUPT;
                 } else {
-                    --gate->transaction_references;
-                    retired_internal = operation->internal;
-                    rinfs_memset(record->handle, 0,
-                                 sizeof(*record->handle));
-                    rinfs_memset(record, 0, sizeof(*record));
-                    if (gate->transaction_references == 0u &&
-                        gate->teardown_active == 0u)
-                        rinfs_memset(gate, 0, sizeof(*gate));
-                    result = RINFS_OK;
+                    int release_error = rinfs_restore_shared_gate_release(
+                        record->mount, record->mount_epoch,
+                        gate->shared_owner_row,
+                        gate->shared_owner_cookie);
+                    if (release_error != RINFS_OK) {
+                        /* Keep the public handle and internal object alive so
+                         * the caller can retry retirement after a transient
+                         * shared-lock failure. */
+                        record->operation_active = 0u;
+                        result = release_error;
+                    } else {
+                        --gate->transaction_references;
+                        retired_internal = operation->internal;
+                        rinfs_memset(record->handle, 0,
+                                     sizeof(*record->handle));
+                        rinfs_memset(record, 0, sizeof(*record));
+                        if (gate->transaction_references == 0u &&
+                            gate->teardown_active == 0u)
+                            rinfs_memset(gate, 0, sizeof(*gate));
+                        result = RINFS_OK;
+                    }
                 }
             } else {
                 record->operation_active = 0u;
