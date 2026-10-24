@@ -695,6 +695,10 @@ typedef struct {
 #define RINFS_READONLY_RECOVERY_SUPERBLOCK UINT32_C(0x00000010)
 #define RINFS_READONLY_RECOVERY_NAMESPACE_JOURNAL UINT32_C(0x00000020)
 #define RINFS_READONLY_RECOVERY_RESTORE_SYNC UINT32_C(0x00000040)
+#define RINFS_READONLY_RECOVERY_RESTORE_CACHE UINT32_C(0x00000080)
+#define RINFS_READONLY_RECOVERY_RESTORE_MASK \
+    (RINFS_READONLY_RECOVERY_RESTORE_SYNC | \
+     RINFS_READONLY_RECOVERY_RESTORE_CACHE)
 
 static uint32_t rinfs_mount_readonly_state(const RinFS_Mount* mount) {
     if (!mount) return RINFS_READONLY_STICKY;
@@ -717,7 +721,9 @@ static int rinfs_mount_sticky_readonly(const RinFS_Mount* mount) {
 static void rinfs_mount_recovery_fence(RinFS_Mount* mount, uint32_t reason,
                                        int error) {
     if (!mount) return;
-    if ((error == RINFS_ERR_IO || error == RINFS_ERR_NOMEM) &&
+    if ((error == RINFS_ERR_IO || error == RINFS_ERR_NOMEM ||
+         (error == RINFS_ERR_BUSY &&
+          reason == RINFS_READONLY_RECOVERY_RESTORE_CACHE)) &&
         !rinfs_mount_sticky_readonly(mount)) {
         (void)__atomic_fetch_or(&mount->readonly, (int)reason,
                                 __ATOMIC_ACQ_REL);
@@ -26164,7 +26170,7 @@ static int rinfs_restore_shared_gate_claim(
     if (mount->readonly &&
         (!allow_recovery_readonly || !rinfs_mount_recovery_only(mount) ||
          (rinfs_mount_readonly_state(mount) &
-          RINFS_READONLY_RECOVERY_RESTORE_SYNC) == 0u)) {
+          RINFS_READONLY_RECOVERY_RESTORE_MASK) == 0u)) {
         result = RINFS_ERR_ROFS;
         goto done;
     }
@@ -27723,16 +27729,16 @@ static int rinfs_restore_transaction_mount_recover_core(RinFS_Mount* mount) {
     RinFS_RestoreRecord record;
     int present = 0;
     int recovery_only;
-    int restore_sync_retry;
+    int restore_retry;
     int error;
     if (!mount || !mount->mounted) return RINFS_ERR_INVAL;
     recovery_only = rinfs_mount_recovery_only(mount);
-    restore_sync_retry =
+    restore_retry =
         (rinfs_mount_readonly_state(mount) &
-         RINFS_READONLY_RECOVERY_RESTORE_SYNC) != 0u;
-    /* Read the durable marker before clearing the retry fence. A failed
-     * pre-replay sync never changes this record, so its presence identifies
-     * precisely the recovery that is safe to retry on this mount. */
+         RINFS_READONLY_RECOVERY_RESTORE_MASK) != 0u;
+    /* Read the durable marker before clearing a retry fence. A failed
+     * pre-replay sync or transient cache-quiescence check never changes this
+     * record, so its presence identifies recovery that is safe to retry. */
     error = rinfs_restore_record_load(mount, &record, &present);
     if (error != RINFS_OK) {
         if (recovery_only && error == RINFS_ERR_CORRUPT)
@@ -27740,7 +27746,7 @@ static int rinfs_restore_transaction_mount_recover_core(RinFS_Mount* mount) {
         return error;
     }
     if (!present) {
-        if (restore_sync_retry) {
+        if (restore_retry) {
             rinfs_mount_force_readonly(mount);
             return RINFS_ERR_CORRUPT;
         }
@@ -27748,9 +27754,9 @@ static int rinfs_restore_transaction_mount_recover_core(RinFS_Mount* mount) {
         return RINFS_OK;
     }
     if (recovery_only) {
-        if (restore_sync_retry)
+        if (restore_retry)
             rinfs_mount_recovery_clear(
-                mount, RINFS_READONLY_RECOVERY_RESTORE_SYNC);
+                mount, RINFS_READONLY_RECOVERY_RESTORE_MASK);
         error = rinfs_mount_prepare_write(mount);
         if (error != RINFS_OK) return error;
     } else if (mount->readonly) {
@@ -27767,6 +27773,14 @@ static int rinfs_restore_transaction_mount_recover_core(RinFS_Mount* mount) {
         return error;
     }
     error = rinfs_restore_page_cache_quiesce(mount, 0);
+    if (error == RINFS_ERR_BUSY) {
+        /* Outstanding references may drain after this recovery admission is
+         * released. The durable marker remains authoritative, so permit an
+         * explicit retry once those references have gone away. */
+        rinfs_mount_recovery_fence(
+            mount, RINFS_READONLY_RECOVERY_RESTORE_CACHE, error);
+        return error;
+    }
     if (error != RINFS_OK) {
         rinfs_mount_force_readonly(mount);
         return error;
