@@ -4528,105 +4528,6 @@ static int rinfs_close_ref_reserve(RinFS_Mount* mount, uint64_t inode_num,
     return rinfs_content_unlock_status((RINFS_OK), content_unlock_error);
 }
 
-static int rinfs_close_ref_publish(RinFS_Mount* mount, uint64_t inode_num,
-                                   uint32_t inode_generation,
-                                   uint64_t content_pin_token,
-                                   uint32_t kind, uint64_t generation,
-                                   uint64_t mount_epoch,
-                                   uint64_t* cookie_out) {
-    int content_unlock_error = RINFS_OK;
-    RinFS_CloseReferenceRecord* record;
-    RinFS_ContentLeaseNode* node;
-    RinFS_SharedOwnerReferenceV1* shared_reference = NULL;
-    uint32_t tracked_count;
-    uint32_t active_count;
-    uint32_t shared_owner_row = 0u;
-    int result;
-    if (cookie_out) *cookie_out = 0u;
-    if (!mount || !cookie_out || inode_num == 0u ||
-        inode_generation == 0u || content_pin_token == 0u ||
-        generation == 0u || mount_epoch == 0u) return rinfs_content_unlock_status((RINFS_ERR_INVAL), content_unlock_error);
-    result = rinfs_shared_owner_query_row(mount, &shared_owner_row);
-    if (result != RINFS_OK) return rinfs_content_unlock_status((result), content_unlock_error);
-    rinfs_spin_lock(&g_rinfs_close_reference_lock);
-    if (!rinfs_close_ref_audit_locked()) {
-        rinfs_spin_unlock(&g_rinfs_close_reference_lock);
-        return rinfs_content_unlock_status((RINFS_ERR_CORRUPT), content_unlock_error);
-    }
-    record = rinfs_close_ref_find_locked(generation);
-    if (!record || record->state != RINFS_CLOSE_REF_RESERVED ||
-        record->mount != mount || record->mount_epoch != mount_epoch ||
-        record->inode_num != inode_num ||
-        record->inode_generation != inode_generation || record->kind != kind) {
-        rinfs_spin_unlock(&g_rinfs_close_reference_lock);
-        return rinfs_content_unlock_status((RINFS_ERR_STALE), content_unlock_error);
-    }
-    {
-        int content_lock_error = rinfs_shared_content_lock(mount);
-        if (content_lock_error != RINFS_OK) {
-            rinfs_spin_unlock(&g_rinfs_close_reference_lock);
-            return rinfs_content_unlock_status((content_lock_error), content_unlock_error);
-        }
-    }
-    if (rinfs_shared_owner_reap_locked(mount) != RINFS_OK) {
-        rinfs_keep_first_error(&content_unlock_error, rinfs_shared_content_unlock(mount));
-        rinfs_spin_unlock(&g_rinfs_close_reference_lock);
-        return rinfs_content_unlock_status((RINFS_ERR_CORRUPT), content_unlock_error);
-    }
-    node = rinfs_content_lease_find(mount, inode_num, inode_generation);
-    tracked_count = 0u;
-    active_count = 0u;
-    if (node != NULL && !rinfs_close_ref_counts_for_inode_locked(
-            mount, mount_epoch, inode_num, inode_generation,
-            node->token_generation, &tracked_count, &active_count)) {
-        rinfs_keep_first_error(&content_unlock_error, rinfs_shared_content_unlock(mount));
-        rinfs_spin_unlock(&g_rinfs_close_reference_lock);
-        return rinfs_content_unlock_status((RINFS_ERR_CORRUPT), content_unlock_error);
-    }
-    if (!node || node->token_generation != content_pin_token ||
-        node->open_references <= active_count ||
-        !rinfs_close_ref_tracking_matches(mount, node, tracked_count) ||
-        node->tracked_open_references == UINT32_MAX) {
-        rinfs_keep_first_error(&content_unlock_error, rinfs_shared_content_unlock(mount));
-        rinfs_spin_unlock(&g_rinfs_close_reference_lock);
-        return rinfs_content_unlock_status((RINFS_ERR_CORRUPT), content_unlock_error);
-    }
-    {
-        RinFS_CloseReferenceRecord identity = *record;
-        identity.shared_owner_row = shared_owner_row;
-        identity.content_pin_token = content_pin_token;
-        identity.cookie = rinfs_close_ref_cookie_value(&identity);
-        if (mount->shared_mapping_base) {
-            shared_reference = rinfs_shared_owner_reference_find_locked(
-                mount, shared_owner_row, generation, identity.cookie);
-            if (!shared_reference ||
-                shared_reference->mount_epoch != mount_epoch ||
-                shared_reference->inode_num != inode_num ||
-                shared_reference->inode_generation != inode_generation ||
-                shared_reference->content_pin_token != content_pin_token ||
-                shared_reference->kind != kind ||
-                shared_reference->open_reference != 1u ||
-                shared_reference->tracked_reference != 0u ||
-                shared_reference->wincompat_share_registered != 0u) {
-                rinfs_keep_first_error(&content_unlock_error, rinfs_shared_content_unlock(mount));
-                rinfs_spin_unlock(&g_rinfs_close_reference_lock);
-                return rinfs_content_unlock_status((RINFS_ERR_CORRUPT), content_unlock_error);
-            }
-        }
-        record->shared_owner_row = shared_owner_row;
-        record->content_pin_token = content_pin_token;
-        record->cookie = identity.cookie;
-    }
-    record->state = RINFS_CLOSE_REF_ACTIVE;
-    ++node->tracked_open_references;
-    if (shared_reference) shared_reference->tracked_reference = 1u;
-    *cookie_out = record->cookie;
-    rinfs_close_ref_integrity_update();
-    rinfs_keep_first_error(&content_unlock_error, rinfs_shared_content_unlock(mount));
-    rinfs_spin_unlock(&g_rinfs_close_reference_lock);
-    return rinfs_content_unlock_status((RINFS_OK), content_unlock_error);
-}
-
 static void rinfs_close_ref_abort_reservation(uint64_t generation) {
     RinFS_CloseReferenceRecord* record;
     rinfs_spin_lock(&g_rinfs_close_reference_lock);
@@ -7792,6 +7693,8 @@ static int rinfs_content_lease_acquire(RinFS_Mount* mount, uint64_t ino,
     uint32_t shared_owner_row = 0u;
     int reap_result;
     int allocation_error = RINFS_OK;
+    if (node_out) *node_out = NULL;
+    if (token_out) *token_out = 0u;
     if (!mount || !node_out || !token_out)
         return rinfs_content_unlock_status((RINFS_ERR_INVAL), content_unlock_error);
     if (mount->shared_mapping_base && mount->shared_mount_ready != 0u &&
@@ -8036,29 +7939,50 @@ static int rinfs_content_lease_release(RinFS_Mount* mount, uint64_t ino,
         mount, ino, inode_generation, token, writer, NULL);
 }
 
+/* Failed open acquisition has no caller-owned handle yet. Use the explicit
+ * consumed result and one bounded retry so a transient lock refusal cannot
+ * strand its temporary reader lease. Persistent refusal can still leave an
+ * unowned lease and remains an explicit acquisition-quarantine TODO. */
+static int rinfs_content_lease_release_acquisition(
+    RinFS_Mount* mount, uint64_t ino, uint32_t inode_generation,
+    uint64_t token, int writer) {
+    int released = 0;
+    int err = rinfs_content_lease_release_ex(
+        mount, ino, inode_generation, token, writer, &released);
+    if (released) return err;
+    {
+        int retry_released = 0;
+        int retry_error = rinfs_content_lease_release_ex(
+            mount, ino, inode_generation, token, writer, &retry_released);
+        if (retry_released) return retry_error != RINFS_OK ? retry_error : err;
+        if (retry_error != RINFS_OK) return retry_error;
+    }
+    return err != RINFS_OK ? err : RINFS_ERR_CORRUPT;
+}
+
 static int rinfs_content_pin_acquire(RinFS_Mount* mount, uint64_t ino,
                                      RinFS_Inode* inode_out,
                                      uint64_t close_generation,
                                      uint64_t close_mount_epoch,
                                      uint32_t close_kind,
                                      uint64_t* token_out,
-                                     uint32_t* shared_owner_row_out,
                                      uint64_t* close_cookie_out) {
     int content_unlock_error = RINFS_OK;
     RinFS_Inode observed;
     RinFS_ContentLeaseNode* node;
     RinFS_CloseReferenceRecord* close_record;
-    uint64_t lease_token;
+    uint64_t lease_token = 0u;
     uint32_t shared_owner_row = 0u;
+    uint32_t tracked_count = 0u;
+    uint32_t active_count = 0u;
     int err;
     if (token_out) *token_out = 0u;
-    if (shared_owner_row_out) *shared_owner_row_out = 0u;
     if (close_cookie_out) *close_cookie_out = 0u;
     if (!mount || !inode_out || close_generation == 0u ||
         close_mount_epoch == 0u ||
         (close_kind != RINFS_CLOSE_REF_FILE &&
          close_kind != RINFS_CLOSE_REF_DIRECTORY) || !token_out ||
-        !shared_owner_row_out || !close_cookie_out)
+        !close_cookie_out)
         return rinfs_content_unlock_status((RINFS_ERR_INVAL), content_unlock_error);
     err = rinfs_shared_owner_query_row(mount, &shared_owner_row);
     if (err != RINFS_OK) return rinfs_content_unlock_status((err), content_unlock_error);
@@ -8069,12 +7993,19 @@ static int rinfs_content_pin_acquire(RinFS_Mount* mount, uint64_t ino,
             return rinfs_content_unlock_status((RINFS_ERR_CORRUPT), content_unlock_error);
         err = rinfs_content_lease_acquire(
             mount, ino, observed.i_generation, 0, &node, &lease_token);
-        if (err != RINFS_OK) return rinfs_content_unlock_status((err), content_unlock_error);
+        if (err != RINFS_OK) {
+            if (lease_token != 0u)
+                rinfs_keep_first_error(
+                    &content_unlock_error,
+                    rinfs_content_lease_release_acquisition(
+                        mount, ino, observed.i_generation, lease_token, 0));
+            return rinfs_content_unlock_status((err), content_unlock_error);
+        }
         err = rinfs_inode_read(mount, ino, inode_out);
         if (err != RINFS_OK ||
             inode_out->i_generation != observed.i_generation ||
             !rinfs_check_inode_type(inode_out->i_mode)) {
-            rinfs_keep_first_error(&content_unlock_error, rinfs_content_lease_release(mount, ino,
+            rinfs_keep_first_error(&content_unlock_error, rinfs_content_lease_release_acquisition(mount, ino,
                                         observed.i_generation,
                                         lease_token, 0));
             if (err != RINFS_OK) return rinfs_content_unlock_status((err), content_unlock_error);
@@ -8083,7 +8014,7 @@ static int rinfs_content_pin_acquire(RinFS_Mount* mount, uint64_t ino,
         rinfs_spin_lock(&g_rinfs_close_reference_lock);
         if (!rinfs_close_ref_audit_locked()) {
             rinfs_spin_unlock(&g_rinfs_close_reference_lock);
-            rinfs_keep_first_error(&content_unlock_error, rinfs_content_lease_release(mount, ino,
+            rinfs_keep_first_error(&content_unlock_error, rinfs_content_lease_release_acquisition(mount, ino,
                                         observed.i_generation,
                                         lease_token, 0));
             return rinfs_content_unlock_status((RINFS_ERR_CORRUPT), content_unlock_error);
@@ -8096,7 +8027,7 @@ static int rinfs_content_pin_acquire(RinFS_Mount* mount, uint64_t ino,
             close_record->inode_generation != observed.i_generation ||
             close_record->kind != close_kind) {
             rinfs_spin_unlock(&g_rinfs_close_reference_lock);
-            rinfs_keep_first_error(&content_unlock_error, rinfs_content_lease_release(mount, ino,
+            rinfs_keep_first_error(&content_unlock_error, rinfs_content_lease_release_acquisition(mount, ino,
                                         observed.i_generation,
                                         lease_token, 0));
             return rinfs_content_unlock_status((RINFS_ERR_STALE), content_unlock_error);
@@ -8105,7 +8036,7 @@ static int rinfs_content_pin_acquire(RinFS_Mount* mount, uint64_t ino,
             int content_lock_error = rinfs_shared_content_lock(mount);
             if (content_lock_error != RINFS_OK) {
                 rinfs_spin_unlock(&g_rinfs_close_reference_lock);
-                rinfs_keep_first_error(&content_unlock_error, rinfs_content_lease_release(mount, ino, observed.i_generation,
+                rinfs_keep_first_error(&content_unlock_error, rinfs_content_lease_release_acquisition(mount, ino, observed.i_generation,
                                             lease_token, 0));
                 return rinfs_content_unlock_status((content_lock_error), content_unlock_error);
             }
@@ -8113,7 +8044,7 @@ static int rinfs_content_pin_acquire(RinFS_Mount* mount, uint64_t ino,
         if (rinfs_shared_owner_reap_locked(mount) != RINFS_OK) {
             rinfs_keep_first_error(&content_unlock_error, rinfs_shared_content_unlock(mount));
             rinfs_spin_unlock(&g_rinfs_close_reference_lock);
-            rinfs_keep_first_error(&content_unlock_error, rinfs_content_lease_release(mount, ino, observed.i_generation,
+            rinfs_keep_first_error(&content_unlock_error, rinfs_content_lease_release_acquisition(mount, ino, observed.i_generation,
                                         lease_token, 0));
             return rinfs_content_unlock_status((RINFS_ERR_CORRUPT), content_unlock_error);
         }
@@ -8123,7 +8054,7 @@ static int rinfs_content_pin_acquire(RinFS_Mount* mount, uint64_t ino,
             !mount->mounted || mount->content_lease_closing != 0u) {
             rinfs_keep_first_error(&content_unlock_error, rinfs_shared_content_unlock(mount));
             rinfs_spin_unlock(&g_rinfs_close_reference_lock);
-            rinfs_keep_first_error(&content_unlock_error, rinfs_content_lease_release(mount, ino,
+            rinfs_keep_first_error(&content_unlock_error, rinfs_content_lease_release_acquisition(mount, ino,
                                         observed.i_generation,
                                         lease_token, 0));
             return rinfs_content_unlock_status((RINFS_ERR_STALE), content_unlock_error);
@@ -8132,7 +8063,7 @@ static int rinfs_content_pin_acquire(RinFS_Mount* mount, uint64_t ino,
             node->delete_on_close_count != 0u) {
             rinfs_keep_first_error(&content_unlock_error, rinfs_shared_content_unlock(mount));
             rinfs_spin_unlock(&g_rinfs_close_reference_lock);
-            rinfs_keep_first_error(&content_unlock_error, rinfs_content_lease_release(mount, ino,
+            rinfs_keep_first_error(&content_unlock_error, rinfs_content_lease_release_acquisition(mount, ino,
                                         observed.i_generation,
                                         lease_token, 0));
             return rinfs_content_unlock_status((RINFS_ERR_BUSY), content_unlock_error);
@@ -8140,10 +8071,29 @@ static int rinfs_content_pin_acquire(RinFS_Mount* mount, uint64_t ino,
         if (node->open_references == UINT32_MAX) {
             rinfs_keep_first_error(&content_unlock_error, rinfs_shared_content_unlock(mount));
             rinfs_spin_unlock(&g_rinfs_close_reference_lock);
-            rinfs_keep_first_error(&content_unlock_error, rinfs_content_lease_release(mount, ino,
+            rinfs_keep_first_error(&content_unlock_error, rinfs_content_lease_release_acquisition(mount, ino,
                                         observed.i_generation,
                                         lease_token, 0));
             return rinfs_content_unlock_status((RINFS_ERR_OVERFLOW), content_unlock_error);
+        }
+        if (node->references == 0u || node->readers == 0u ||
+            node->writer != 0u ||
+            (shared_owner_row != 0u &&
+             (shared_owner_row > RINFS_SHARED_OWNER_CAPACITY ||
+              node->shared_readers[shared_owner_row - 1u] == 0u)) ||
+            !rinfs_wincompat_share_counts_consistent(node) ||
+            !rinfs_close_ref_counts_for_inode_locked(
+                mount, close_mount_epoch, ino, observed.i_generation,
+                node->token_generation, &tracked_count, &active_count) ||
+            !rinfs_close_ref_tracking_matches(mount, node, tracked_count) ||
+            node->open_references < active_count ||
+            node->tracked_open_references == UINT32_MAX) {
+            rinfs_keep_first_error(&content_unlock_error, rinfs_shared_content_unlock(mount));
+            rinfs_spin_unlock(&g_rinfs_close_reference_lock);
+            rinfs_keep_first_error(&content_unlock_error, rinfs_content_lease_release_acquisition(mount, ino,
+                                        observed.i_generation,
+                                        lease_token, 0));
+            return rinfs_content_unlock_status((RINFS_ERR_CORRUPT), content_unlock_error);
         }
         {
             RinFS_CloseReferenceRecord identity = *close_record;
@@ -8152,25 +8102,35 @@ static int rinfs_content_pin_acquire(RinFS_Mount* mount, uint64_t ino,
             identity.cookie = rinfs_close_ref_cookie_value(&identity);
             if (mount->shared_mapping_base) {
                 err = rinfs_shared_owner_reference_publish_locked(
-                    mount, &identity, 0u);
+                    mount, &identity, 1u);
                 if (err != RINFS_OK) {
                     rinfs_keep_first_error(&content_unlock_error, rinfs_shared_content_unlock(mount));
                     rinfs_spin_unlock(&g_rinfs_close_reference_lock);
-                    rinfs_keep_first_error(&content_unlock_error, rinfs_content_lease_release(mount, ino,
+                    rinfs_keep_first_error(&content_unlock_error, rinfs_content_lease_release_acquisition(mount, ino,
                                                 observed.i_generation,
                                                 lease_token, 0));
                     return rinfs_content_unlock_status((err), content_unlock_error);
                 }
             }
+            close_record->shared_owner_row = shared_owner_row;
+            close_record->content_pin_token = identity.content_pin_token;
+            close_record->cookie = identity.cookie;
+            close_record->state = RINFS_CLOSE_REF_ACTIVE;
+            /* Convert this temporary reader lease into the tracked open pin
+             * while both ledgers are locked. There is no fallible release
+             * between pin ownership and its retryable close tuple. */
+            node->readers--;
+            node->references--;
+            if (shared_owner_row != 0u)
+                node->shared_readers[shared_owner_row - 1u]--;
+            node->open_references++;
+            node->tracked_open_references++;
             *close_cookie_out = identity.cookie;
+            *token_out = node->token_generation;
+            rinfs_close_ref_integrity_update();
         }
-        node->open_references++;
-        *token_out = node->token_generation;
-        *shared_owner_row_out = shared_owner_row;
         rinfs_keep_first_error(&content_unlock_error, rinfs_shared_content_unlock(mount));
         rinfs_spin_unlock(&g_rinfs_close_reference_lock);
-        rinfs_keep_first_error(&content_unlock_error, rinfs_content_lease_release(mount, ino, observed.i_generation,
-                                    lease_token, 0));
         return rinfs_content_unlock_status((RINFS_OK), content_unlock_error);
     }
 }
@@ -8335,25 +8295,6 @@ static int rinfs_content_pin_release(RinFS_Mount* mount, uint64_t ino,
 
 static int rinfs_reclaim_deferred_inode(RinFS_Mount* mount, uint64_t ino,
                                         uint32_t inode_generation);
-
-static int rinfs_content_pin_rollback(RinFS_Mount* mount, uint64_t ino,
-                                      uint32_t inode_generation,
-                                      uint64_t token,
-                                      uint64_t close_generation,
-                                      uint32_t shared_owner_row,
-                                      uint64_t close_cookie) {
-    int reclaim = 0;
-    int err = rinfs_content_pin_release(mount, ino, inode_generation, token,
-                                        &reclaim, 0u, 0u, 0u, 0u,
-                                        shared_owner_row,
-                                        shared_owner_row != 0u
-                                            ? close_generation : 0u,
-                                        shared_owner_row != 0u
-                                            ? close_cookie : 0u);
-    if (err == RINFS_OK && reclaim)
-        err = rinfs_reclaim_deferred_inode(mount, ino, inode_generation);
-    return err;
-}
 
 static int rinfs_close_ref_fields_match(
     const RinFS_CloseReferenceRecord* record, RinFS_Mount* mount,
@@ -20699,12 +20640,27 @@ int rinfs_mmap_source_release(RinFS_MmapSource* source,
  * File I/O
  * ═══════════════════════════════════════════════════════════════*/
 
+static void rinfs_open_file_owner_initialize(
+    RinFS_File* file, RinFS_Mount* mount, uint64_t inode_num, int flags,
+    uint64_t close_generation, uint64_t close_mount_epoch,
+    uint64_t close_cookie) {
+    file->in_use = 1;
+    file->inode_num = inode_num;
+    file->position = 0;
+    file->flags = flags;
+    file->mount = mount;
+    file->content_pin_generation = file->inode.i_generation;
+    file->content_pin_active = 1;
+    file->close_reference_generation = close_generation;
+    file->close_reference_cookie = close_cookie;
+    file->close_reference_mount_epoch = close_mount_epoch;
+}
+
 static int rinfs_open_unscoped(
     RinFS_Mount* mount, const char* path, int flags, RinFS_File* file) {
     uint64_t close_generation = 0u;
     uint64_t close_mount_epoch = 0u;
     uint64_t close_cookie = 0u;
-    uint32_t shared_owner_row = 0u;
     if (!mount || !mount->mounted || !path || !file) return RINFS_ERR_INVAL;
 
     rinfs_memset(file, 0, sizeof(RinFS_File));
@@ -20723,35 +20679,16 @@ static int rinfs_open_unscoped(
     err = rinfs_content_pin_acquire(
         mount, ino, &file->inode, close_generation, close_mount_epoch,
         RINFS_CLOSE_REF_FILE, &file->content_pin_token,
-        &shared_owner_row, &close_cookie);
-    if (err != RINFS_OK) {
+        &close_cookie);
+    if (file->content_pin_token == 0u) {
         rinfs_close_ref_abort_reservation(close_generation);
-        return err;
+        rinfs_memset(file, 0, sizeof(*file));
+        return err == RINFS_OK ? RINFS_ERR_CORRUPT : err;
     }
-    err = rinfs_close_ref_publish(mount, ino, file->inode.i_generation,
-                                  file->content_pin_token,
-                                  RINFS_CLOSE_REF_FILE, close_generation,
-                                  close_mount_epoch, &close_cookie);
-    if (err != RINFS_OK) {
-        int rollback = rinfs_content_pin_rollback(
-            mount, ino, file->inode.i_generation, file->content_pin_token,
-            close_generation, shared_owner_row, close_cookie);
-        rinfs_close_ref_abort_reservation(close_generation);
-        return rollback == RINFS_OK ? err : rollback;
-    }
-    
-    file->in_use = 1;
-    file->inode_num = ino;
-    file->position = 0;
-    file->flags = flags;
-    file->mount = mount;
-    file->content_pin_generation = file->inode.i_generation;
-    file->content_pin_active = 1;
-    file->close_reference_generation = close_generation;
-    file->close_reference_cookie = close_cookie;
-    file->close_reference_mount_epoch = close_mount_epoch;
-    
-    return RINFS_OK;
+    rinfs_open_file_owner_initialize(
+        file, mount, ino, flags, close_generation, close_mount_epoch,
+        close_cookie);
+    return err;
 }
 
 static int rinfs_open_file_scope_finish(
@@ -20760,18 +20697,16 @@ static int rinfs_open_file_scope_finish(
     int release_error = rinfs_mount_operation_scope_end(operation);
     int result = release_error == RINFS_OK ? operation_error : release_error;
     if (result == RINFS_OK) return RINFS_OK;
-    /* The unscoped acquisition path owns its own rollback contract. Only a
-     * successful acquisition can be safely unwound here; an error may leave
-     * intermediate state that is not yet a closeable public owner. */
+    /* Acquisition publishes a complete closeable handle atomically. Preserve
+     * it on post-publication errors so the caller can retry close. */
     if (operation_error != RINFS_OK) return result;
     if (!file || file->in_use == 0u) {
         if (file) rinfs_memset(file, 0, sizeof(*file));
         return result;
     }
 
-    /* A failed scope release can follow successful close-reference
-     * publication. Roll it back when possible; otherwise preserve the exact
-     * owner state, including quarantine, for disposition-aware retry. */
+    /* A failed scope release can follow successful owner publication. Close
+     * by disposition and preserve the exact owner if cleanup is retryable. */
     {
         int consumed = 0;
         int retryable = 0;
@@ -20804,7 +20739,6 @@ static int rinfs_open_ino_unscoped(
     uint64_t close_generation = 0u;
     uint64_t close_mount_epoch = 0u;
     uint64_t close_cookie = 0u;
-    uint32_t shared_owner_row = 0u;
     int err;
 
     if (!mount || !mount->mounted || !file) return RINFS_ERR_INVAL;
@@ -20820,34 +20754,16 @@ static int rinfs_open_ino_unscoped(
     err = rinfs_content_pin_acquire(
         mount, ino, &file->inode, close_generation, close_mount_epoch,
         RINFS_CLOSE_REF_FILE, &file->content_pin_token,
-        &shared_owner_row, &close_cookie);
-    if (err != RINFS_OK) {
+        &close_cookie);
+    if (file->content_pin_token == 0u) {
         rinfs_close_ref_abort_reservation(close_generation);
-        return err;
+        rinfs_memset(file, 0, sizeof(*file));
+        return err == RINFS_OK ? RINFS_ERR_CORRUPT : err;
     }
-    err = rinfs_close_ref_publish(mount, ino, file->inode.i_generation,
-                                  file->content_pin_token,
-                                  RINFS_CLOSE_REF_FILE, close_generation,
-                                  close_mount_epoch, &close_cookie);
-    if (err != RINFS_OK) {
-        int rollback = rinfs_content_pin_rollback(
-            mount, ino, file->inode.i_generation, file->content_pin_token,
-            close_generation, shared_owner_row, close_cookie);
-        rinfs_close_ref_abort_reservation(close_generation);
-        return rollback == RINFS_OK ? err : rollback;
-    }
-
-    file->in_use = 1;
-    file->inode_num = ino;
-    file->position = 0;
-    file->flags = flags;
-    file->mount = mount;
-    file->content_pin_generation = file->inode.i_generation;
-    file->content_pin_active = 1;
-    file->close_reference_generation = close_generation;
-    file->close_reference_cookie = close_cookie;
-    file->close_reference_mount_epoch = close_mount_epoch;
-    return RINFS_OK;
+    rinfs_open_file_owner_initialize(
+        file, mount, ino, flags, close_generation, close_mount_epoch,
+        close_cookie);
+    return err;
 }
 
 int rinfs_open_ino(RinFS_Mount* mount, uint64_t ino, int flags,
@@ -22424,6 +22340,22 @@ static int rinfs_create_tmpfile_owned_unscoped(
 
     err = rinfs_open_ino(mount, new_ino, open_flags, file);
     if (err != RINFS_OK) {
+        int marked_for_reclaim = 0;
+        if (file->in_use == 1u && file->content_pin_active == 1u)
+            marked_for_reclaim = rinfs_content_delete_mark(
+                mount, new_ino, file->content_pin_generation);
+        if (file->in_use == 1u) {
+            int consumed = 0;
+            int retryable = 0;
+            int close_error = rinfs_close_with_disposition(
+                file, &consumed, &retryable);
+            if (!consumed)
+                return close_error != RINFS_OK
+                    ? close_error
+                    : (retryable ? RINFS_ERR_PENDING : RINFS_ERR_CORRUPT);
+            if (close_error != RINFS_OK) return close_error;
+        }
+        if (marked_for_reclaim) return err;
         int cleanup_error = rinfs_reclaim_deferred_inode(
             mount, new_ino, inode.i_generation);
         if (cleanup_error != RINFS_OK) {
@@ -22666,6 +22598,20 @@ static int rinfs_mkdirat_open_owned_unscoped(
         result = rinfs_inode_read(mount, created_ino, &created_inode);
         if (result == RINFS_OK)
             result = rinfs_opendir_ino(mount, created_ino, opened_dir);
+        if (result != RINFS_OK && opened_dir->in_use == 1u) {
+            int consumed = 0;
+            int retryable = 0;
+            int close_error = rinfs_closedir_with_disposition(
+                opened_dir, &consumed, &retryable);
+            if (!consumed) {
+                int unlock_error = close_error != RINFS_OK
+                    ? close_error
+                    : (retryable ? RINFS_ERR_PENDING : RINFS_ERR_CORRUPT);
+                return rinfs_journal_transaction_unlock_status(
+                    mount, unlock_error);
+            }
+            if (close_error != RINFS_OK) result = close_error;
+        }
         if (result != RINFS_OK && created_inode.i_generation != 0u) {
             int rollback = rinfs_rmdir_internal(
                 mount, parent_ino, name, created_ino,
@@ -23285,12 +23231,26 @@ int rinfs_seekdir(RinFS_Dir* dir, uint64_t position) {
 }
 
 /* Open directory */
+static void rinfs_open_directory_owner_initialize(
+    RinFS_Dir* dir, RinFS_Mount* mount, uint64_t inode_num,
+    uint64_t close_generation, uint64_t close_mount_epoch,
+    uint64_t close_cookie) {
+    dir->in_use = 1;
+    dir->inode_num = inode_num;
+    dir->position = 0;
+    dir->mount = mount;
+    dir->content_pin_generation = dir->inode.i_generation;
+    dir->content_pin_active = 1;
+    dir->close_reference_generation = close_generation;
+    dir->close_reference_cookie = close_cookie;
+    dir->close_reference_mount_epoch = close_mount_epoch;
+}
+
 static int rinfs_opendir_unscoped(
     RinFS_Mount* mount, const char* path, RinFS_Dir* dir) {
     uint64_t close_generation = 0u;
     uint64_t close_mount_epoch = 0u;
     uint64_t close_cookie = 0u;
-    uint32_t shared_owner_row = 0u;
     if (!mount || !mount->mounted || !path || !dir) return RINFS_ERR_INVAL;
     
     rinfs_memset(dir, 0, sizeof(RinFS_Dir));
@@ -23309,35 +23269,15 @@ static int rinfs_opendir_unscoped(
     err = rinfs_content_pin_acquire(
         mount, ino, &dir->inode, close_generation, close_mount_epoch,
         RINFS_CLOSE_REF_DIRECTORY, &dir->content_pin_token,
-        &shared_owner_row, &close_cookie);
-    if (err != RINFS_OK) {
+        &close_cookie);
+    if (dir->content_pin_token == 0u) {
         rinfs_close_ref_abort_reservation(close_generation);
-        return err;
+        rinfs_memset(dir, 0, sizeof(*dir));
+        return err == RINFS_OK ? RINFS_ERR_CORRUPT : err;
     }
-    err = rinfs_close_ref_publish(mount, ino, dir->inode.i_generation,
-                                  dir->content_pin_token,
-                                  RINFS_CLOSE_REF_DIRECTORY,
-                                  close_generation, close_mount_epoch,
-                                  &close_cookie);
-    if (err != RINFS_OK) {
-        int rollback = rinfs_content_pin_rollback(
-            mount, ino, dir->inode.i_generation, dir->content_pin_token,
-            close_generation, shared_owner_row, close_cookie);
-        rinfs_close_ref_abort_reservation(close_generation);
-        return rollback == RINFS_OK ? err : rollback;
-    }
-    
-    dir->in_use = 1;
-    dir->inode_num = ino;
-    dir->position = 0;
-    dir->mount = mount;
-    dir->content_pin_generation = dir->inode.i_generation;
-    dir->content_pin_active = 1;
-    dir->close_reference_generation = close_generation;
-    dir->close_reference_cookie = close_cookie;
-    dir->close_reference_mount_epoch = close_mount_epoch;
-    
-    return RINFS_OK;
+    rinfs_open_directory_owner_initialize(
+        dir, mount, ino, close_generation, close_mount_epoch, close_cookie);
+    return err;
 }
 
 static int rinfs_open_directory_scope_finish(
@@ -23346,7 +23286,7 @@ static int rinfs_open_directory_scope_finish(
     int release_error = rinfs_mount_operation_scope_end(operation);
     int result = release_error == RINFS_OK ? operation_error : release_error;
     if (result == RINFS_OK) return RINFS_OK;
-    /* Keep failed unscoped acquisitions on their own rollback path. */
+    /* Preserve a complete owner returned with a post-publication error. */
     if (operation_error != RINFS_OK) return result;
     if (!dir || dir->in_use == 0u) {
         if (dir) rinfs_memset(dir, 0, sizeof(*dir));
@@ -23385,7 +23325,6 @@ static int rinfs_opendir_ino_unscoped(
     uint64_t close_generation = 0u;
     uint64_t close_mount_epoch = 0u;
     uint64_t close_cookie = 0u;
-    uint32_t shared_owner_row = 0u;
     int err;
 
     if (!mount || !mount->mounted || !dir) return RINFS_ERR_INVAL;
@@ -23400,34 +23339,15 @@ static int rinfs_opendir_ino_unscoped(
     err = rinfs_content_pin_acquire(
         mount, ino, &dir->inode, close_generation, close_mount_epoch,
         RINFS_CLOSE_REF_DIRECTORY, &dir->content_pin_token,
-        &shared_owner_row, &close_cookie);
-    if (err != RINFS_OK) {
+        &close_cookie);
+    if (dir->content_pin_token == 0u) {
         rinfs_close_ref_abort_reservation(close_generation);
-        return err;
+        rinfs_memset(dir, 0, sizeof(*dir));
+        return err == RINFS_OK ? RINFS_ERR_CORRUPT : err;
     }
-    err = rinfs_close_ref_publish(mount, ino, dir->inode.i_generation,
-                                  dir->content_pin_token,
-                                  RINFS_CLOSE_REF_DIRECTORY,
-                                  close_generation, close_mount_epoch,
-                                  &close_cookie);
-    if (err != RINFS_OK) {
-        int rollback = rinfs_content_pin_rollback(
-            mount, ino, dir->inode.i_generation, dir->content_pin_token,
-            close_generation, shared_owner_row, close_cookie);
-        rinfs_close_ref_abort_reservation(close_generation);
-        return rollback == RINFS_OK ? err : rollback;
-    }
-
-    dir->in_use = 1;
-    dir->inode_num = ino;
-    dir->position = 0;
-    dir->mount = mount;
-    dir->content_pin_generation = dir->inode.i_generation;
-    dir->content_pin_active = 1;
-    dir->close_reference_generation = close_generation;
-    dir->close_reference_cookie = close_cookie;
-    dir->close_reference_mount_epoch = close_mount_epoch;
-    return RINFS_OK;
+    rinfs_open_directory_owner_initialize(
+        dir, mount, ino, close_generation, close_mount_epoch, close_cookie);
+    return err;
 }
 
 int rinfs_opendir_ino(RinFS_Mount* mount, uint64_t ino, RinFS_Dir* dir) {
@@ -28837,6 +28757,7 @@ int rinfs_create_tmpfile_owned(RinFS_Mount* mount, uint64_t parent_ino,
                                int open_flags, RinFS_File* file) {
     RinFS_MountOperationScope operation = {0};
     int error;
+    if (file) rinfs_memset(file, 0, sizeof(*file));
     if (!mount || !mount->mounted || !file || parent_ino == 0u ||
         parent_ino > mount->sb.s_inode_count)
         return RINFS_ERR_INVAL;

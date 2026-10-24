@@ -1253,10 +1253,10 @@ uint32_t rinfs_inode_device_number(const RinFS_Inode* inode);
  * returned open lifetime owns deferred reclamation until a durable link is
  * published or the last descriptor closes. If failure cleanup cannot consume
  * an internally opened handle, file remains live and must be closed/retried
- * with the disposition API. If this operation acquired an owner but returns
- * an outer-scope release error, a nonzero close-reference generation/cookie
- * means the populated file must be retained and retried with the disposition
- * API, even when in_use is zero. */
+ * with the disposition API. If an error follows atomic owner publication, a
+ * nonzero close-reference generation/cookie means the populated file must be
+ * retained and retried with the disposition API when close reports it was not
+ * consumed, even when in_use is zero. */
 int rinfs_create_tmpfile_owned(RinFS_Mount* mount, uint64_t parent_ino,
                                uint16_t mode, uint32_t uid, uint32_t gid,
                                int open_flags, RinFS_File* file);
@@ -1269,10 +1269,11 @@ int rinfs_mkdirat_owned(RinFS_Mount* mount, uint64_t parent_ino,
                         const char* name, uint16_t mode, uint32_t uid,
                         uint32_t gid, uint64_t* created_ino);
 /* Create one directory and return an open lifetime pinned to that exact
- * inode before releasing namespace mutation serialization. If this operation
- * acquired an owner but returns an outer-scope release error, a nonzero
- * close-reference generation/cookie means opened_dir must be retained and
- * retried with rinfs_closedir_with_disposition(), even when in_use is zero. */
+ * inode before releasing namespace mutation serialization. If an error
+ * follows atomic owner publication, a nonzero close-reference
+ * generation/cookie means opened_dir must be retained and retried with
+ * rinfs_closedir_with_disposition() when close reports it was not consumed,
+ * even when in_use is zero. */
 int rinfs_mkdirat_open_owned(RinFS_Mount* mount, uint64_t parent_ino,
                              const char* name, uint16_t mode, uint32_t uid,
                              uint32_t gid, RinFS_Dir* opened_dir);
@@ -1346,11 +1347,11 @@ int rinfs_readlink(RinFS_Mount* mount, uint64_t ino, char* buf, uint32_t size);
 int rinfs_truncate_ino(RinFS_Mount* mount, uint64_t ino, uint64_t size);
 
 /* File I/O */
-/* If this operation acquires an owner but returns an outer-scope release
- * error, it attempts disposition-aware cleanup. A nonzero close-reference
- * generation/cookie in the output means the owner was not consumed; retain
- * the exact state and retry rinfs_close_with_disposition(), even when in_use
- * is zero. */
+/* Pin and close-reference publication is one transaction. If an error is
+ * reported after publication (including lock-release or outer-scope-release
+ * errors), a populated file with a nonzero close-reference generation/cookie
+ * is still an owned handle. Retain it and retry rinfs_close_with_disposition()
+ * when cleanup reports that it was not consumed, even when in_use is zero. */
 int rinfs_open(RinFS_Mount* mount, const char* path, int flags, RinFS_File* file);
 /* Open a previously validated inode without performing another pathname
  * traversal.  Kernel owners that walk a directory by inode use this to avoid
@@ -1386,10 +1387,12 @@ int rinfs_truncate(RinFS_File* file, uint64_t size);
 int rinfs_fsync(RinFS_File* file);
 
 /* Directory operations */
-/* On an outer-scope release error following successful owner acquisition, a
- * nonzero close-reference generation/cookie means the owner was not consumed;
- * retain it and retry rinfs_closedir_with_disposition(), even when in_use is
- * zero. */
+/* Pin and close-reference publication is one transaction. If an error is
+ * reported after publication (including lock-release or outer-scope-release
+ * errors), a populated directory with a nonzero close-reference
+ * generation/cookie is still an owned handle. Retain it and retry
+ * rinfs_closedir_with_disposition() when cleanup reports that it was not
+ * consumed, even when in_use is zero. */
 int rinfs_opendir(RinFS_Mount* mount, const char* path, RinFS_Dir* dir);
 /* Directory counterpart to rinfs_open_ino(); no pathname components are
  * resolved by this operation. */
