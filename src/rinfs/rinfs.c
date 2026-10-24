@@ -20027,6 +20027,7 @@ static int64_t rinfs_read_unleased(RinFS_File* file, void* buf, uint64_t size) {
     if (!file || !file->in_use || !buf) return RINFS_ERR_INVAL;
     
     RinFS_Mount* mount = file->mount;
+    uint64_t initial_position = file->position;
     uint32_t block_size = mount->sb.s_block_size;
     uint8_t* dst = (uint8_t*)buf;
     uint64_t bytes_read = 0;
@@ -20197,7 +20198,13 @@ static int64_t rinfs_read_unleased(RinFS_File* file, void* buf, uint64_t size) {
             if (atime_err == RINFS_OK &&
                 (((mount->mount_flags & RINFS_MNT_SYNC) != 0) ||
                  ((file->inode.i_flags & RINFS_IFLG_SYNC) != 0))) {
-                (void)rinfs_sync(mount);
+                atime_err = rinfs_sync(mount);
+            }
+            if (atime_err != RINFS_OK &&
+                (((mount->mount_flags & RINFS_MNT_SYNC) != 0) ||
+                 ((file->inode.i_flags & RINFS_IFLG_SYNC) != 0))) {
+                file->position = initial_position;
+                return atime_err;
             }
         }
     }

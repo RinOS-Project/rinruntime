@@ -138,7 +138,7 @@ enum {
 /* Mount flags */
 #define RINFS_MNT_RDONLY    0x0001
 #define RINFS_MNT_NOATIME   0x0002
-#define RINFS_MNT_SYNC      0x0004
+#define RINFS_MNT_SYNC      0x0004  /* Require durable data/metadata before success */
 #define RINFS_MNT_JOURNAL   0x0008
 #define RINFS_MNT_REPAIR    0x0010  /* Explicit allocation/structural recovery */
 #define RINFS_MNT_RESCUE    0x0020  /* Explicit read-only best-effort salvage */
