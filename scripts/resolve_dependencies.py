@@ -49,7 +49,7 @@ def _has_worktree_artifacts(path: Path) -> bool:
     # `git status` intentionally hides ignored files. An ignored file can still
     # shadow a tracked include or source selected by a broad build include path,
     # so pinned dependency roots must not contain ignored working-tree data.
-    return bool(_git(path, "ls-files", "--others", "--ignored",
+    return bool(_git(path, "ls-files", "-z", "--others", "--ignored",
                      "--exclude-standard", "--directory"))
 
 
