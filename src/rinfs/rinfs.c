@@ -6,6 +6,7 @@
 
 #include <rinruntime/rinfs/rinfs.h>
 #include <rinruntime/rinfs/vfs_open_flags.h>
+#include <errno.h>
 #if !defined(RIN_KERNEL) && !defined(_WIN32)
 #include <unistd.h>
 #endif
@@ -18641,7 +18642,7 @@ static int rinfs_exec_mounts_rollback_locked(void) {
 
 /* Flush and suspend all process-local RinFS owners before exec. The locks are
  * intentionally retained on success; exec failure must call abort to resume. */
-int rinfs_exec_prepare_all(void) {
+static int rinfs_exec_prepare_all_status(void) {
     uint32_t expected_state = RINFS_EXEC_STATE_IDLE;
     int result = RINFS_ERR_BUSY;
     int rollback_error;
@@ -18812,10 +18813,42 @@ rollback:
     return result;
 }
 
+/* libc exposes exec failures through POSIX errno. Keep the RinFS status codes
+ * private to this runtime instead of leaking negative filesystem results into
+ * the errno namespace. */
+static int rinfs_exec_status_to_errno(int status) {
+    switch (status) {
+        case RINFS_OK: return 0;
+        case RINFS_ERR_BUSY: return EBUSY;
+        case RINFS_ERR_NOMEM: return ENOMEM;
+        case RINFS_ERR_NOSPC: return ENOSPC;
+        case RINFS_ERR_NOENT: return ENOENT;
+        case RINFS_ERR_EXIST: return EEXIST;
+        case RINFS_ERR_NOTDIR: return ENOTDIR;
+        case RINFS_ERR_ISDIR: return EISDIR;
+        case RINFS_ERR_NOTEMPTY: return ENOTEMPTY;
+        case RINFS_ERR_NAMETOOLONG: return ENAMETOOLONG;
+        case RINFS_ERR_INVAL: return EINVAL;
+        case RINFS_ERR_ROFS: return EROFS;
+        case RINFS_ERR_LOOP: return ELOOP;
+        case RINFS_ERR_NOT_SUPPORTED: return ENOSYS;
+        case RINFS_ERR_EMLINK: return EMLINK;
+#ifdef EOVERFLOW
+        case RINFS_ERR_OVERFLOW: return EOVERFLOW;
+#endif
+        default: return EIO;
+    }
+}
+
+/* Private libc hook: success is zero; failure is a positive POSIX errno. */
+int rinfs_exec_prepare_all(void) {
+    return rinfs_exec_status_to_errno(rinfs_exec_prepare_all_status());
+}
+
 /* Called only after SYS_EXEC returned, which means the current address space
  * is still alive. On exec success the syscall never returns and these locks,
  * records, and owner gates disappear with the process image. */
-int rinfs_exec_abort_all(void) {
+static int rinfs_exec_abort_all_status(void) {
     int result;
     if (__atomic_load_n(&g_rinfs_exec_transaction_state,
                         __ATOMIC_ACQUIRE) != RINFS_EXEC_STATE_PREPARED)
@@ -18830,6 +18863,11 @@ int rinfs_exec_abort_all(void) {
     __atomic_store_n(&g_rinfs_exec_transaction_state,
                      RINFS_EXEC_STATE_IDLE, __ATOMIC_RELEASE);
     return result;
+}
+
+/* Abort errors use the same errno-returning hook contract as prepare. */
+int rinfs_exec_abort_all(void) {
+    return rinfs_exec_status_to_errno(rinfs_exec_abort_all_status());
 }
 #else
 static int rinfs_shared_owner_query_row(RinFS_Mount* mount,
