@@ -20419,7 +20419,8 @@ int rinfs_mmap_source_release(RinFS_MmapSource* source,
  * File I/O
  * ═══════════════════════════════════════════════════════════════*/
 
-int rinfs_open(RinFS_Mount* mount, const char* path, int flags, RinFS_File* file) {
+static int rinfs_open_unscoped(
+    RinFS_Mount* mount, const char* path, int flags, RinFS_File* file) {
     uint64_t close_generation = 0u;
     uint64_t close_mount_epoch = 0u;
     uint64_t close_cookie = 0u;
@@ -20473,8 +20474,21 @@ int rinfs_open(RinFS_Mount* mount, const char* path, int flags, RinFS_File* file
     return RINFS_OK;
 }
 
-int rinfs_open_ino(RinFS_Mount* mount, uint64_t ino, int flags,
-                   RinFS_File* file) {
+int rinfs_open(RinFS_Mount* mount, const char* path, int flags,
+               RinFS_File* file) {
+    RinFS_MountOperationScope operation = {0};
+    int error;
+    if (!mount || !mount->mounted || !path || !file)
+        return RINFS_ERR_INVAL;
+    rinfs_memset(file, 0, sizeof(*file));
+    error = rinfs_mount_operation_scope_begin(mount, &operation);
+    if (error != RINFS_OK) return error;
+    error = rinfs_open_unscoped(mount, path, flags, file);
+    return rinfs_mount_operation_scope_finish(&operation, error);
+}
+
+static int rinfs_open_ino_unscoped(
+    RinFS_Mount* mount, uint64_t ino, int flags, RinFS_File* file) {
     uint64_t close_generation = 0u;
     uint64_t close_mount_epoch = 0u;
     uint64_t close_cookie = 0u;
@@ -20522,6 +20536,18 @@ int rinfs_open_ino(RinFS_Mount* mount, uint64_t ino, int flags,
     file->close_reference_cookie = close_cookie;
     file->close_reference_mount_epoch = close_mount_epoch;
     return RINFS_OK;
+}
+
+int rinfs_open_ino(RinFS_Mount* mount, uint64_t ino, int flags,
+                   RinFS_File* file) {
+    RinFS_MountOperationScope operation = {0};
+    int error;
+    if (!mount || !mount->mounted || !file) return RINFS_ERR_INVAL;
+    rinfs_memset(file, 0, sizeof(*file));
+    error = rinfs_mount_operation_scope_begin(mount, &operation);
+    if (error != RINFS_OK) return error;
+    error = rinfs_open_ino_unscoped(mount, ino, flags, file);
+    return rinfs_mount_operation_scope_finish(&operation, error);
 }
 
 static int rinfs_close_core(RinFS_File* file) {
@@ -22910,7 +22936,8 @@ int rinfs_seekdir(RinFS_Dir* dir, uint64_t position) {
 }
 
 /* Open directory */
-int rinfs_opendir(RinFS_Mount* mount, const char* path, RinFS_Dir* dir) {
+static int rinfs_opendir_unscoped(
+    RinFS_Mount* mount, const char* path, RinFS_Dir* dir) {
     uint64_t close_generation = 0u;
     uint64_t close_mount_epoch = 0u;
     uint64_t close_cookie = 0u;
@@ -22964,7 +22991,20 @@ int rinfs_opendir(RinFS_Mount* mount, const char* path, RinFS_Dir* dir) {
     return RINFS_OK;
 }
 
-int rinfs_opendir_ino(RinFS_Mount* mount, uint64_t ino, RinFS_Dir* dir) {
+int rinfs_opendir(RinFS_Mount* mount, const char* path, RinFS_Dir* dir) {
+    RinFS_MountOperationScope operation = {0};
+    int error;
+    if (!mount || !mount->mounted || !path || !dir)
+        return RINFS_ERR_INVAL;
+    rinfs_memset(dir, 0, sizeof(*dir));
+    error = rinfs_mount_operation_scope_begin(mount, &operation);
+    if (error != RINFS_OK) return error;
+    error = rinfs_opendir_unscoped(mount, path, dir);
+    return rinfs_mount_operation_scope_finish(&operation, error);
+}
+
+static int rinfs_opendir_ino_unscoped(
+    RinFS_Mount* mount, uint64_t ino, RinFS_Dir* dir) {
     uint64_t close_generation = 0u;
     uint64_t close_mount_epoch = 0u;
     uint64_t close_cookie = 0u;
@@ -23011,6 +23051,17 @@ int rinfs_opendir_ino(RinFS_Mount* mount, uint64_t ino, RinFS_Dir* dir) {
     dir->close_reference_cookie = close_cookie;
     dir->close_reference_mount_epoch = close_mount_epoch;
     return RINFS_OK;
+}
+
+int rinfs_opendir_ino(RinFS_Mount* mount, uint64_t ino, RinFS_Dir* dir) {
+    RinFS_MountOperationScope operation = {0};
+    int error;
+    if (!mount || !mount->mounted || !dir) return RINFS_ERR_INVAL;
+    rinfs_memset(dir, 0, sizeof(*dir));
+    error = rinfs_mount_operation_scope_begin(mount, &operation);
+    if (error != RINFS_OK) return error;
+    error = rinfs_opendir_ino_unscoped(mount, ino, dir);
+    return rinfs_mount_operation_scope_finish(&operation, error);
 }
 
 /* Close directory */
