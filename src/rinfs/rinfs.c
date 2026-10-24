@@ -10044,6 +10044,13 @@ done:
     }
 }
 
+static void rinfs_xattr_output_clear(void* output, uint32_t capacity) {
+    uint32_t clear_size = capacity < RINFS_MAX_BLOCK_SIZE
+        ? capacity : RINFS_MAX_BLOCK_SIZE;
+    if (output && clear_size != 0u)
+        rinfs_memset(output, 0, clear_size);
+}
+
 int rinfs_xattr_get(RinFS_Mount* mount, uint64_t ino, const char* name,
                     uint32_t name_length, void* value,
                     uint32_t value_capacity, uint32_t* value_length_out) {
@@ -10053,6 +10060,7 @@ int rinfs_xattr_get(RinFS_Mount* mount, uint64_t ino, const char* name,
     uint32_t value_start;
     uint32_t value_length;
     int result;
+    rinfs_xattr_output_clear(value, value_capacity);
     if (value_length_out) *value_length_out = 0u;
     if (mount == NULL || !mount->mounted ||
         !rinfs_xattr_name_valid(name, name_length)) return RINFS_ERR_INVAL;
@@ -10085,7 +10093,17 @@ done:
     if (block) rinfs_free(block);
     {
         int release_error = rinfs_mount_operation_scope_end(&operation);
-        return release_error == RINFS_OK ? result : release_error;
+        if (release_error != RINFS_OK) {
+            rinfs_xattr_output_clear(value, value_capacity);
+            if (value_length_out) *value_length_out = 0u;
+            return release_error;
+        }
+        if (result != RINFS_OK) {
+            rinfs_xattr_output_clear(value, value_capacity);
+            if (result != RINFS_ERR_NOSPC && value_length_out)
+                *value_length_out = 0u;
+        }
+        return result;
     }
 }
 
@@ -10099,6 +10117,7 @@ int rinfs_xattr_list(RinFS_Mount* mount, uint64_t ino, char* output,
     uint32_t required = 0u;
     uint32_t index;
     int result;
+    rinfs_xattr_output_clear(output, output_capacity);
     if (output_length_out) *output_length_out = 0u;
     if (mount == NULL || !mount->mounted) return RINFS_ERR_INVAL;
     result = rinfs_mount_operation_scope_begin(mount, &operation);
@@ -10140,7 +10159,14 @@ out:
 done:
     {
         int release_error = rinfs_mount_operation_scope_end(&operation);
-        return release_error == RINFS_OK ? result : release_error;
+        if (release_error != RINFS_OK) {
+            rinfs_xattr_output_clear(output, output_capacity);
+            if (output_length_out) *output_length_out = 0u;
+            return release_error;
+        }
+        if (result != RINFS_OK)
+            rinfs_xattr_output_clear(output, output_capacity);
+        return result;
     }
 }
 

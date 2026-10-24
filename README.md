@@ -845,3 +845,7 @@ Long symlink storage is constrained to one data block including its NUL byte;
 reads reject oversized on-disk lengths before copying from that block. This is
 source-only and does not replace restore race, corruption/fault, product, QEMU,
 or physical-media acceptance.
+
+RinFS xattr get/list now clear their bounded output region on errors and on
+scope-release failure. `NOSPC` keeps the required output length available for
+the caller's sizing retry while clearing any value or partial name list.
