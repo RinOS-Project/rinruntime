@@ -26834,7 +26834,7 @@ static int rinfs_restore_record_store(RinFS_Mount* mount,
     rinfs_memcpy(mount->sb.s_padding, record, sizeof(*record));
     mount->sb.s_incompat_features |=
         RINFS_FEATURE_INCOMPAT_RESTORE_PENDING;
-    error = rinfs_restore_cache_sync_for_recovery(mount);
+    error = rinfs_sync(mount);
     if (error != RINFS_OK) rinfs_mount_force_readonly(mount);
     return error;
 }
@@ -27570,7 +27570,7 @@ static int rinfs_restore_transaction_mount_recover_core(RinFS_Mount* mount) {
      * completed before the restore marker became visible. Persist that state
      * while ordinary operations are excluded, then discard every clean cache
      * entry before replay can replace inode and namespace contents. */
-    error = rinfs_sync(mount);
+    error = rinfs_restore_cache_sync_for_recovery(mount);
     if (error != RINFS_OK) {
         rinfs_mount_force_readonly(mount);
         return error;
