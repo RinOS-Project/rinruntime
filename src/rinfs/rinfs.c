@@ -21856,10 +21856,23 @@ static int dir_add_entry(RinFS_Mount* mount, uint64_t dir_ino,
 /* Low-level repair/test wrapper. Unlike ordinary namespace mutations this can
  * materialize an already-detected duplicate so full-check recovery can inspect
  * and quarantine corrupt directory states. */
-int rinfs_dirent_add(RinFS_Mount* mount, uint64_t dir_ino, const char* name,
-                     uint64_t child_ino, uint8_t file_type) {
+static int rinfs_dirent_add_unscoped(
+    RinFS_Mount* mount, uint64_t dir_ino, const char* name,
+    uint64_t child_ino, uint8_t file_type) {
     return dir_add_entry_internal(mount, dir_ino, name, child_ino,
                                   file_type, 0);
+}
+
+int rinfs_dirent_add(RinFS_Mount* mount, uint64_t dir_ino, const char* name,
+                     uint64_t child_ino, uint8_t file_type) {
+    RinFS_MountOperationScope operation = {0};
+    int error;
+    if (!mount || !mount->mounted) return RINFS_ERR_INVAL;
+    error = rinfs_mount_operation_scope_begin(mount, &operation);
+    if (error != RINFS_OK) return error;
+    error = rinfs_dirent_add_unscoped(
+        mount, dir_ino, name, child_ino, file_type);
+    return rinfs_mount_operation_scope_finish(&operation, error);
 }
 
 /* Create a file below an already-resolved directory inode. This is the
@@ -23534,12 +23547,10 @@ static int rinfs_dir_is_effectively_empty(RinFS_Mount* mount, uint64_t dir_ino,
     return RINFS_OK;
 }
 
-int rinfs_delete_on_close_register(RinFS_Mount* mount,
-                                   uint64_t parent_ino,
-                                   uint32_t parent_generation,
-                                   const char* name, uint64_t target_ino,
-                                   uint32_t target_generation,
-                                   int directory, const char* path) {
+static int rinfs_delete_on_close_register_unscoped(
+    RinFS_Mount* mount, uint64_t parent_ino, uint32_t parent_generation,
+    const char* name, uint64_t target_ino, uint32_t target_generation,
+    int directory, const char* path) {
     int content_unlock_error = RINFS_OK;
     RinFS_DeleteOnClosePath* pending;
     RinFS_DeleteOnClosePath* existing;
@@ -23699,6 +23710,21 @@ done:
             &content_unlock_error,
             rinfs_mount_runtime_free(mount, pending, NULL));
     return rinfs_content_unlock_status((rinfs_journal_transaction_unlock_status(mount, result)), content_unlock_error);
+}
+
+int rinfs_delete_on_close_register(
+    RinFS_Mount* mount, uint64_t parent_ino, uint32_t parent_generation,
+    const char* name, uint64_t target_ino, uint32_t target_generation,
+    int directory, const char* path) {
+    RinFS_MountOperationScope operation = {0};
+    int error;
+    if (!mount) return RINFS_ERR_INVAL;
+    error = rinfs_mount_operation_scope_begin(mount, &operation);
+    if (error != RINFS_OK) return error;
+    error = rinfs_delete_on_close_register_unscoped(
+        mount, parent_ino, parent_generation, name, target_ino,
+        target_generation, directory, path);
+    return rinfs_mount_operation_scope_finish(&operation, error);
 }
 
 static int rinfs_delete_on_close_find_directory_name(
@@ -25868,7 +25894,8 @@ static int rinfs_readlink_unscoped(RinFS_Mount* mount, uint64_t ino,
 }
 
 /* Truncate file to specified size (by inode number) */
-int rinfs_truncate_ino(RinFS_Mount* mount, uint64_t ino, uint64_t size) {
+static int rinfs_truncate_ino_unscoped(
+    RinFS_Mount* mount, uint64_t ino, uint64_t size) {
     int content_unlock_error = RINFS_OK;
     RinFS_ContentMutation mutation;
     RinFS_Inode* inode;
@@ -25994,6 +26021,16 @@ failed:
     rinfs_content_mutation_poison(&mutation);
     rinfs_keep_first_error(&content_unlock_error, rinfs_content_mutation_end(&mutation));
     return rinfs_content_unlock_status((err), content_unlock_error);
+}
+
+int rinfs_truncate_ino(RinFS_Mount* mount, uint64_t ino, uint64_t size) {
+    RinFS_MountOperationScope operation = {0};
+    int error;
+    if (!mount || !mount->mounted) return RINFS_ERR_INVAL;
+    error = rinfs_mount_operation_scope_begin(mount, &operation);
+    if (error != RINFS_OK) return error;
+    error = rinfs_truncate_ino_unscoped(mount, ino, size);
+    return rinfs_mount_operation_scope_finish(&operation, error);
 }
 
 /* The restore record lives in the checksummed superblock padding. The
