@@ -20264,6 +20264,7 @@ int rinfs_mmap_source_release_ex(RinFS_MmapSource* source,
                                 uint64_t reference_cookie,
                                 int* source_consumed_out) {
     RinFS_Mount* mount;
+    RinFS_MountOperationScope operation = {0};
     uint64_t inode_num;
     uint64_t pin_token;
     uint32_t inode_generation;
@@ -20282,6 +20283,17 @@ int rinfs_mmap_source_release_ex(RinFS_MmapSource* source,
     inode_num = source->inode_num;
     pin_token = source->pin_token;
     inode_generation = source->inode_generation;
+    /* The source pin can be the last live-content reference. Keep restore
+     * admission closed until deferred inode reclaim and source retirement
+     * finish after that pin is dropped. */
+    err = rinfs_mount_operation_scope_begin(mount, &operation);
+    if (err != RINFS_OK) {
+        if (!pin_released) {
+            rinfs_mmap_source_cancel_retire(
+                source, reference_generation, reference_cookie);
+        }
+        return err;
+    }
     if (!pin_released) {
         err = rinfs_content_pin_release(
             mount, inode_num, inode_generation, pin_token, &reclaim,
@@ -20291,11 +20303,15 @@ int rinfs_mmap_source_release_ex(RinFS_MmapSource* source,
         if (err != RINFS_OK) {
             rinfs_mmap_source_cancel_retire(
                 source, reference_generation, reference_cookie);
-            return err;
+            retire_result = rinfs_mount_operation_scope_end(&operation);
+            return retire_result == RINFS_OK ? err : retire_result;
         }
         err = rinfs_mmap_source_mark_pin_released(
             source, reference_generation, reference_cookie);
-        if (err != RINFS_OK) return err;
+        if (err != RINFS_OK) {
+            retire_result = rinfs_mount_operation_scope_end(&operation);
+            return retire_result == RINFS_OK ? err : retire_result;
+        }
     } else {
         reclaim = 0;
     }
@@ -20304,10 +20320,14 @@ int rinfs_mmap_source_release_ex(RinFS_MmapSource* source,
             mount, inode_num, inode_generation);
     retire_result = rinfs_mmap_source_finish_retire(
         source, reference_generation, reference_cookie);
-    if (retire_result != RINFS_OK) return retire_result;
+    if (retire_result != RINFS_OK) {
+        int scope_error = rinfs_mount_operation_scope_end(&operation);
+        return scope_error == RINFS_OK ? retire_result : scope_error;
+    }
     rinfs_free(source);
     *source_consumed_out = 1;
-    return err;
+    retire_result = rinfs_mount_operation_scope_end(&operation);
+    return retire_result == RINFS_OK ? err : retire_result;
 }
 
 int rinfs_mmap_source_release(RinFS_MmapSource* source,
