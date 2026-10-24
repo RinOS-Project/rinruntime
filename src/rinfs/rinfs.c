@@ -681,6 +681,7 @@ typedef struct {
 #define RINFS_READONLY_RECOVERY_INODE_TABLE UINT32_C(0x00000008)
 #define RINFS_READONLY_RECOVERY_SUPERBLOCK UINT32_C(0x00000010)
 #define RINFS_READONLY_RECOVERY_NAMESPACE_JOURNAL UINT32_C(0x00000020)
+#define RINFS_READONLY_RECOVERY_RESTORE_SYNC UINT32_C(0x00000040)
 
 static uint32_t rinfs_mount_readonly_state(const RinFS_Mount* mount) {
     if (!mount) return RINFS_READONLY_STICKY;
@@ -25962,7 +25963,8 @@ static int rinfs_restore_cache_sync_for_recovery(RinFS_Mount* mount) {
  * a later owner's transaction gate. */
 static int rinfs_restore_shared_gate_claim(
     RinFS_Mount* mount, uint64_t mount_epoch, uint32_t* owner_row_out,
-    uint64_t* owner_cookie_out, int allow_dirty_pages) {
+    uint64_t* owner_cookie_out, int allow_dirty_pages,
+    int allow_recovery_readonly) {
     RinFS_SharedOwnerV1* owner;
     uint32_t owner_row = 0u;
     uint32_t gate_row;
@@ -25976,6 +25978,7 @@ static int rinfs_restore_shared_gate_claim(
     if (owner_cookie_out) *owner_cookie_out = 0u;
     if (!mount || mount_epoch == 0u || !owner_row_out ||
         (allow_dirty_pages != 0 && allow_dirty_pages != 1) ||
+        (allow_recovery_readonly != 0 && allow_recovery_readonly != 1) ||
         !owner_cookie_out)
         return RINFS_ERR_INVAL;
     shared_mount = mount->shared_mapping_base != NULL;
@@ -25999,7 +26002,8 @@ static int rinfs_restore_shared_gate_claim(
         result = RINFS_ERR_STALE;
         goto done;
     }
-    if (mount->readonly) {
+    if (mount->readonly &&
+        (!allow_recovery_readonly || !rinfs_mount_recovery_only(mount))) {
         result = RINFS_ERR_ROFS;
         goto done;
     }
@@ -26328,7 +26332,7 @@ static int rinfs_restore_transaction_reserve(
         return RINFS_ERR_NOSPC;
     }
     shared_gate_error = rinfs_restore_shared_gate_claim(
-        mount, mount_epoch, &shared_owner_row, &shared_owner_cookie, 1);
+        mount, mount_epoch, &shared_owner_row, &shared_owner_cookie, 1, 0);
     if (shared_gate_error != RINFS_OK) {
         rinfs_spin_unlock(&g_rinfs_restore_transaction_lock);
         return shared_gate_error;
@@ -26682,7 +26686,7 @@ static int rinfs_restore_mount_recovery_begin(
         return RINFS_ERR_NOSPC;
     }
     error = rinfs_restore_shared_gate_claim(
-        mount, mount_epoch, &owner_row, &owner_cookie, 1);
+        mount, mount_epoch, &owner_row, &owner_cookie, 1, 1);
     if (error != RINFS_OK) {
         rinfs_spin_unlock(&g_rinfs_restore_transaction_lock);
         return error;
@@ -27557,22 +27561,48 @@ int rinfs_restore_transaction_forget(
 static int rinfs_restore_transaction_mount_recover_core(RinFS_Mount* mount) {
     RinFS_RestoreRecord record;
     int present = 0;
+    int recovery_only;
+    int restore_sync_retry;
     int error;
     if (!mount || !mount->mounted) return RINFS_ERR_INVAL;
-    if (rinfs_mount_recovery_only(mount)) {
+    recovery_only = rinfs_mount_recovery_only(mount);
+    restore_sync_retry =
+        (rinfs_mount_readonly_state(mount) &
+         RINFS_READONLY_RECOVERY_RESTORE_SYNC) != 0u;
+    /* Read the durable marker before clearing the retry fence. A failed
+     * pre-replay sync never changes this record, so its presence identifies
+     * precisely the recovery that is safe to retry on this mount. */
+    error = rinfs_restore_record_load(mount, &record, &present);
+    if (error != RINFS_OK) {
+        if (recovery_only && error == RINFS_ERR_CORRUPT)
+            rinfs_mount_force_readonly(mount);
+        return error;
+    }
+    if (!present) {
+        if (restore_sync_retry) {
+            rinfs_mount_force_readonly(mount);
+            return RINFS_ERR_CORRUPT;
+        }
+        if (recovery_only) return rinfs_mount_prepare_write(mount);
+        return RINFS_OK;
+    }
+    if (recovery_only) {
+        if (restore_sync_retry)
+            rinfs_mount_recovery_clear(
+                mount, RINFS_READONLY_RECOVERY_RESTORE_SYNC);
         error = rinfs_mount_prepare_write(mount);
         if (error != RINFS_OK) return error;
+    } else if (mount->readonly) {
+        return RINFS_ERR_ROFS;
     }
-    error = rinfs_restore_record_load(mount, &record, &present);
-    if (error != RINFS_OK || !present) return error;
-    if (mount->readonly) return RINFS_ERR_ROFS;
     /* A published mount may enter recovery with dirty pages left by work
      * completed before the restore marker became visible. Persist that state
      * while ordinary operations are excluded, then discard every clean cache
      * entry before replay can replace inode and namespace contents. */
     error = rinfs_restore_cache_sync_for_recovery(mount);
     if (error != RINFS_OK) {
-        rinfs_mount_force_readonly(mount);
+        rinfs_mount_recovery_fence(
+            mount, RINFS_READONLY_RECOVERY_RESTORE_SYNC, error);
         return error;
     }
     error = rinfs_restore_page_cache_quiesce(mount, 0);
