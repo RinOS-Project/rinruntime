@@ -10889,9 +10889,13 @@ int rinfs_inode_get_times_precise(const RinFS_Mount* mount,
     if (mount == NULL || inode == NULL || times_out == NULL)
         return RINFS_ERR_INVAL;
     rinfs_memset(times_out, 0, sizeof(*times_out));
-    if (!mount->mounted)
-        return rinfs_inode_get_times_precise_unscoped(
+    if (!mount->mounted) {
+        error = rinfs_inode_get_times_precise_unscoped(
             mount, inode, times_out);
+        if (error != RINFS_OK)
+            rinfs_memset(times_out, 0, sizeof(*times_out));
+        return error;
+    }
     error = rinfs_mount_operation_scope_begin(
         (RinFS_Mount*)mount, &operation);
     if (error != RINFS_OK) return error;
