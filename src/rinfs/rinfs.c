@@ -25445,6 +25445,7 @@ static int rinfs_restore_transaction_registry_audit_locked(void) {
              (gate->shared_owner_cookie == 0u)) ||
             gate->shared_owner_row > RINFS_SHARED_OWNER_CAPACITY ||
             (gate->transaction_references == 0u &&
+             gate->teardown_active == 0u &&
              (gate->shared_owner_row != 0u ||
               gate->shared_owner_cookie != 0u)) ||
             (gate->transaction_references != 0u &&
@@ -26032,6 +26033,89 @@ static void rinfs_restore_mount_teardown_end(RinFS_Mount* mount,
             rinfs_memset(gate, 0, sizeof(*gate));
     }
     rinfs_spin_unlock(&g_rinfs_restore_transaction_lock);
+}
+
+/* Recovery can rewrite the root while replaying a pending restore record.
+ * Once a shared mount has been published, give that work the same owner-ledger
+ * exclusion as a live restore transaction. A teardown-shaped local record
+ * prevents another thread in this process from entering while disk I/O runs. */
+static int rinfs_restore_mount_recovery_begin(
+    RinFS_Mount* mount, uint64_t mount_epoch) {
+    RinFS_RestoreMountGateRecord* gate;
+    uint32_t free_gate = RINFS_MAX_RESTORE_MOUNT_GATES;
+    uint32_t owner_row = 0u;
+    uint64_t owner_cookie = 0u;
+    int error;
+    if (!mount || mount_epoch == 0u) return RINFS_ERR_INVAL;
+    rinfs_spin_lock(&g_rinfs_restore_transaction_lock);
+    if (!rinfs_restore_transaction_registry_audit_locked()) {
+        rinfs_spin_unlock(&g_rinfs_restore_transaction_lock);
+        return RINFS_ERR_CORRUPT;
+    }
+    if (rinfs_restore_mount_gate_find_locked(mount)) {
+        rinfs_spin_unlock(&g_rinfs_restore_transaction_lock);
+        return RINFS_ERR_PENDING;
+    }
+    for (uint32_t index = 0u;
+         index < RINFS_MAX_RESTORE_MOUNT_GATES; ++index) {
+        if (!g_rinfs_restore_mount_gates[index].mount) {
+            free_gate = index;
+            break;
+        }
+    }
+    if (free_gate == RINFS_MAX_RESTORE_MOUNT_GATES) {
+        rinfs_spin_unlock(&g_rinfs_restore_transaction_lock);
+        return RINFS_ERR_NOSPC;
+    }
+    error = rinfs_restore_shared_gate_claim(
+        mount, mount_epoch, &owner_row, &owner_cookie);
+    if (error != RINFS_OK) {
+        rinfs_spin_unlock(&g_rinfs_restore_transaction_lock);
+        return error;
+    }
+    gate = &g_rinfs_restore_mount_gates[free_gate];
+    rinfs_memset(gate, 0, sizeof(*gate));
+    gate->mount = mount;
+    gate->mount_epoch = mount_epoch;
+    gate->teardown_active = 1u;
+    gate->shared_owner_row = owner_row;
+    gate->shared_owner_cookie = owner_cookie;
+    if (!rinfs_restore_transaction_registry_audit_locked()) {
+        int release_error = rinfs_restore_shared_gate_release(
+            mount, mount_epoch, owner_row, owner_cookie);
+        if (release_error == RINFS_OK)
+            rinfs_memset(gate, 0, sizeof(*gate));
+        rinfs_spin_unlock(&g_rinfs_restore_transaction_lock);
+        return release_error != RINFS_OK ? release_error
+                                         : RINFS_ERR_CORRUPT;
+    }
+    rinfs_spin_unlock(&g_rinfs_restore_transaction_lock);
+    return RINFS_OK;
+}
+
+static int rinfs_restore_mount_recovery_end(
+    RinFS_Mount* mount, uint64_t mount_epoch) {
+    RinFS_RestoreMountGateRecord* gate;
+    int error;
+    if (!mount || mount_epoch == 0u) return RINFS_ERR_INVAL;
+    rinfs_spin_lock(&g_rinfs_restore_transaction_lock);
+    if (!rinfs_restore_transaction_registry_audit_locked()) {
+        rinfs_spin_unlock(&g_rinfs_restore_transaction_lock);
+        return RINFS_ERR_CORRUPT;
+    }
+    gate = rinfs_restore_mount_gate_find_locked(mount);
+    if (!gate || gate->mount_epoch != mount_epoch ||
+        gate->transaction_references != 0u ||
+        gate->teardown_active == 0u) {
+        rinfs_spin_unlock(&g_rinfs_restore_transaction_lock);
+        return RINFS_ERR_CORRUPT;
+    }
+    error = rinfs_restore_shared_gate_release(
+        mount, mount_epoch, gate->shared_owner_row,
+        gate->shared_owner_cookie);
+    if (error == RINFS_OK) rinfs_memset(gate, 0, sizeof(*gate));
+    rinfs_spin_unlock(&g_rinfs_restore_transaction_lock);
+    return error;
 }
 
 typedef struct {
@@ -26856,7 +26940,7 @@ int rinfs_restore_transaction_forget(
     return release_error == RINFS_OK ? error : release_error;
 }
 
-int rinfs_restore_transaction_mount_recover(RinFS_Mount* mount) {
+static int rinfs_restore_transaction_mount_recover_core(RinFS_Mount* mount) {
     RinFS_RestoreRecord record;
     int present = 0;
     int error;
@@ -26874,6 +26958,29 @@ int rinfs_restore_transaction_mount_recover(RinFS_Mount* mount) {
     else
         error = rinfs_restore_commit_record(mount, &record, 1);
     if (error != RINFS_OK) rinfs_mount_force_readonly(mount);
+    return error;
+}
+
+int rinfs_restore_transaction_mount_recover(RinFS_Mount* mount) {
+    uint64_t mount_epoch;
+    int error;
+    int release_error;
+    if (!mount || !mount->mounted) return RINFS_ERR_INVAL;
+    /* The first shared mount performs recovery before publishing its owner
+     * row. Its provisional VFS range lease excludes another mount of these
+     * sectors until shared_mount_ready is published. */
+    if (mount->shared_mapping_base && mount->shared_mount_ready == 0u)
+        return rinfs_restore_transaction_mount_recover_core(mount);
+    mount_epoch = mount->mount_epoch;
+    if (mount_epoch == 0u) return RINFS_ERR_STALE;
+    error = rinfs_restore_mount_recovery_begin(mount, mount_epoch);
+    if (error != RINFS_OK) return error;
+    error = rinfs_restore_transaction_mount_recover_core(mount);
+    release_error = rinfs_restore_mount_recovery_end(mount, mount_epoch);
+    if (release_error != RINFS_OK) {
+        rinfs_mount_force_readonly(mount);
+        return release_error;
+    }
     return error;
 }
 
@@ -26982,7 +27089,8 @@ failed:
             internal->record.transaction_inode == 0u)
             cleanup_error = rinfs_restore_record_clear(mount);
         else
-            cleanup_error = rinfs_restore_transaction_mount_recover(mount);
+            cleanup_error =
+                rinfs_restore_transaction_mount_recover_core(mount);
         if (cleanup_error != RINFS_OK) {
             rinfs_mount_force_readonly(mount);
             error = cleanup_error;
