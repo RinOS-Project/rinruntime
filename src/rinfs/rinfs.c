@@ -5062,7 +5062,8 @@ static void rinfs_keep_first_error(int* first_error, int next_error) {
         *first_error = next_error;
 }
 
-int rinfs_read_stats(const RinFS_Mount* mount, RinFS_ReadStats* stats_out) {
+static int rinfs_read_stats_unscoped(const RinFS_Mount* mount,
+                                     RinFS_ReadStats* stats_out) {
     int err;
     if (!stats_out) return RINFS_ERR_INVAL;
     rinfs_memset(stats_out, 0, sizeof(*stats_out));
@@ -5131,7 +5132,7 @@ failed:
     return err;
 }
 
-int rinfs_read_stats_reset(RinFS_Mount* mount) {
+static int rinfs_read_stats_reset_unscoped(RinFS_Mount* mount) {
     int err;
     if (!mount) return RINFS_ERR_INVAL;
     rinfs_spin_lock(&g_rinfs_coalesced_stats_lock);
@@ -5180,6 +5181,34 @@ int rinfs_read_stats_reset(RinFS_Mount* mount) {
         if (err != RINFS_OK) return err;
     }
     return RINFS_OK;
+}
+
+int rinfs_read_stats(const RinFS_Mount* mount, RinFS_ReadStats* stats_out) {
+    RinFS_MountOperationScope operation = {0};
+    int error;
+    if (!stats_out) return RINFS_ERR_INVAL;
+    rinfs_memset(stats_out, 0, sizeof(*stats_out));
+    if (!mount) return RINFS_ERR_INVAL;
+    if (!mount->mounted)
+        return rinfs_read_stats_unscoped(mount, stats_out);
+    error = rinfs_mount_operation_scope_begin(
+        (RinFS_Mount*)mount, &operation);
+    if (error != RINFS_OK) return error;
+    error = rinfs_read_stats_unscoped(mount, stats_out);
+    error = rinfs_mount_operation_scope_finish(&operation, error);
+    if (error != RINFS_OK) rinfs_memset(stats_out, 0, sizeof(*stats_out));
+    return error;
+}
+
+int rinfs_read_stats_reset(RinFS_Mount* mount) {
+    RinFS_MountOperationScope operation = {0};
+    int error;
+    if (!mount) return RINFS_ERR_INVAL;
+    if (!mount->mounted) return rinfs_read_stats_reset_unscoped(mount);
+    error = rinfs_mount_operation_scope_begin(mount, &operation);
+    if (error != RINFS_OK) return error;
+    error = rinfs_read_stats_reset_unscoped(mount);
+    return rinfs_mount_operation_scope_finish(&operation, error);
 }
 
 /* -------------------------------------------------------------------------
