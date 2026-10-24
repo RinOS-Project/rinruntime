@@ -25898,30 +25898,45 @@ static int rinfs_restore_mount_has_live_content(RinFS_Mount* mount) {
 }
 
 /* A restore replaces namespace and inode contents while it owns the mount.
- * Dirty, referenced, or transitional cache pages cannot be carried across that
- * boundary: a later writeback could publish pre-restore bytes. Once the gate
- * is active, discard only unreferenced clean pages; leave the cache untouched
- * and refuse admission if any page still needs I/O or an owner reference. */
-static int rinfs_restore_page_cache_quiesce(RinFS_Mount* mount) {
+ * A new transaction may retain validated dirty pages only long enough for its
+ * gated begin path to sync them. Recovery admission does not accept dirty
+ * pages. Referenced or transitional entries are never admitted, and clean
+ * unreferenced entries are discarded so old cache contents cannot survive the
+ * restore boundary. */
+static int rinfs_restore_page_cache_quiesce(RinFS_Mount* mount,
+                                           int allow_dirty_pages) {
     RinFS_PageCache* cache;
+    uint64_t dirty_pages = 0u;
+    uint64_t dirty_bytes = 0u;
     int result;
-    if (!mount) return RINFS_ERR_INVAL;
-    if (mount->buffer_dirty) return RINFS_ERR_BUSY;
+    if (!mount || (allow_dirty_pages != 0 && allow_dirty_pages != 1))
+        return RINFS_ERR_INVAL;
+    if (!allow_dirty_pages && mount->buffer_dirty) return RINFS_ERR_BUSY;
     cache = mount->page_cache;
     if (!cache) return RINFS_OK;
     result = rinfs_page_cache_lock(cache);
     if (result != RINFS_OK) return result;
-    if (cache->dirty_pages != 0u || cache->dirty_bytes != 0u)
-        return rinfs_page_cache_unlock_status(cache, RINFS_ERR_BUSY);
     for (uint32_t index = 0u; index < RINFS_PAGE_CACHE_CAPACITY; ++index) {
         const RinFS_PageCacheEntry* entry = &cache->entries[index];
-        if (entry->references != 0u ||
-            (entry->valid && entry->state != RINFS_PAGE_CACHE_CLEAN))
+        if (entry->references != 0u) {
             return rinfs_page_cache_unlock_status(cache, RINFS_ERR_BUSY);
+        }
+        if (!entry->valid || entry->state == RINFS_PAGE_CACHE_CLEAN)
+            continue;
+        if (!allow_dirty_pages || entry->state != RINFS_PAGE_CACHE_DIRTY)
+            return rinfs_page_cache_unlock_status(cache, RINFS_ERR_BUSY);
+        if (entry->dirty_end <= entry->dirty_start ||
+            entry->dirty_end > mount->sb.s_block_size)
+            return rinfs_page_cache_unlock_status(cache, RINFS_ERR_CORRUPT);
+        ++dirty_pages;
+        dirty_bytes += entry->dirty_end - entry->dirty_start;
     }
+    if (cache->dirty_pages != dirty_pages ||
+        cache->dirty_bytes != dirty_bytes)
+        return rinfs_page_cache_unlock_status(cache, RINFS_ERR_CORRUPT);
     for (uint32_t index = 0u; index < RINFS_PAGE_CACHE_CAPACITY; ++index) {
         RinFS_PageCacheEntry* entry = &cache->entries[index];
-        if (entry->valid) {
+        if (entry->valid && entry->state == RINFS_PAGE_CACHE_CLEAN) {
             rinfs_page_cache_discard_locked(cache, entry);
             ++cache->evictions;
         }
@@ -25935,7 +25950,7 @@ static int rinfs_restore_page_cache_quiesce(RinFS_Mount* mount) {
  * a later owner's transaction gate. */
 static int rinfs_restore_shared_gate_claim(
     RinFS_Mount* mount, uint64_t mount_epoch, uint32_t* owner_row_out,
-    uint64_t* owner_cookie_out) {
+    uint64_t* owner_cookie_out, int allow_dirty_pages) {
     RinFS_SharedOwnerV1* owner;
     uint32_t owner_row = 0u;
     uint32_t gate_row;
@@ -25948,6 +25963,7 @@ static int rinfs_restore_shared_gate_claim(
     if (owner_row_out) *owner_row_out = 0u;
     if (owner_cookie_out) *owner_cookie_out = 0u;
     if (!mount || mount_epoch == 0u || !owner_row_out ||
+        (allow_dirty_pages != 0 && allow_dirty_pages != 1) ||
         !owner_cookie_out)
         return RINFS_ERR_INVAL;
     shared_mount = mount->shared_mapping_base != NULL;
@@ -26087,7 +26103,8 @@ static int rinfs_restore_shared_gate_claim(
                      __ATOMIC_RELEASE);
     result = rinfs_restore_internal_scope_enter(&cache_scope);
     if (result == RINFS_OK)
-        result = rinfs_restore_page_cache_quiesce(mount);
+        result = rinfs_restore_page_cache_quiesce(
+            mount, allow_dirty_pages);
     rinfs_restore_internal_scope_leave(&cache_scope);
     if (result != RINFS_OK) {
         if (shared_mount) {
@@ -26299,7 +26316,7 @@ static int rinfs_restore_transaction_reserve(
         return RINFS_ERR_NOSPC;
     }
     shared_gate_error = rinfs_restore_shared_gate_claim(
-        mount, mount_epoch, &shared_owner_row, &shared_owner_cookie);
+        mount, mount_epoch, &shared_owner_row, &shared_owner_cookie, 1);
     if (shared_gate_error != RINFS_OK) {
         rinfs_spin_unlock(&g_rinfs_restore_transaction_lock);
         return shared_gate_error;
@@ -26653,7 +26670,7 @@ static int rinfs_restore_mount_recovery_begin(
         return RINFS_ERR_NOSPC;
     }
     error = rinfs_restore_shared_gate_claim(
-        mount, mount_epoch, &owner_row, &owner_cookie);
+        mount, mount_epoch, &owner_row, &owner_cookie, 0);
     if (error != RINFS_OK) {
         rinfs_spin_unlock(&g_rinfs_restore_transaction_lock);
         return error;
@@ -27605,6 +27622,13 @@ int rinfs_restore_transaction_begin(RinFS_Mount* mount,
         int release_error = rinfs_restore_transaction_reservation_abort(
             transaction, handle_token);
         return release_error == RINFS_OK ? error : release_error;
+    }
+    error = rinfs_sync(mount);
+    if (error != RINFS_OK) goto preflight_failed;
+    error = rinfs_restore_page_cache_quiesce(mount, 0);
+    if (error != RINFS_OK) {
+        if (error == RINFS_ERR_CORRUPT) rinfs_mount_force_readonly(mount);
+        goto preflight_failed;
     }
     error = rinfs_restore_record_load(mount, &record, &present);
     if (error != RINFS_OK) goto preflight_failed;
