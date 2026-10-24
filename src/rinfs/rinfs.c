@@ -19650,6 +19650,7 @@ int rinfs_content_snapshot_begin(RinFS_Mount* mount, uint64_t ino,
 
 int rinfs_content_snapshot_read_exact(RinFS_ContentSnapshot* snapshot,
                                       void* output, uint64_t size) {
+    RinFS_MountOperationScope operation = {0};
     uint8_t* destination = (uint8_t*)output;
     uint8_t* bounce = NULL;
     uint64_t position = 0u;
@@ -19659,6 +19660,8 @@ int rinfs_content_snapshot_read_exact(RinFS_ContentSnapshot* snapshot,
         !snapshot->mount ||
         (size != 0u && !output)) return RINFS_ERR_INVAL;
     if (size != snapshot->inode.i_size) return RINFS_ERR_INVAL;
+    err = rinfs_mount_operation_scope_begin(snapshot->mount, &operation);
+    if (err != RINFS_OK) return err;
     block_size = snapshot->mount->sb.s_block_size;
     while (position < size) {
         uint64_t physical = 0u;
@@ -19727,34 +19730,41 @@ int rinfs_content_snapshot_read_exact(RinFS_ContentSnapshot* snapshot,
         }
         position += chunk;
     }
-    return err;
+    return rinfs_mount_operation_scope_finish(&operation, err);
 }
 
 int rinfs_content_snapshot_revalidate(RinFS_ContentSnapshot* snapshot) {
+    RinFS_MountOperationScope operation = {0};
     RinFS_Inode current;
     int err;
     if (!snapshot || snapshot->active != RINFS_CONTENT_SNAPSHOT_ACTIVE ||
         !snapshot->mount)
         return RINFS_ERR_INVAL;
-    err = rinfs_inode_read(snapshot->mount, snapshot->inode_num, &current);
+    err = rinfs_mount_operation_scope_begin(snapshot->mount, &operation);
     if (err != RINFS_OK) return err;
-    return rinfs_content_inode_equal(snapshot->mount, &snapshot->inode,
-                                     &current)
-               ? RINFS_OK : RINFS_ERR_STALE;
+    err = rinfs_inode_read(snapshot->mount, snapshot->inode_num, &current);
+    if (err == RINFS_OK &&
+        !rinfs_content_inode_equal(snapshot->mount, &snapshot->inode,
+                                   &current))
+        err = RINFS_ERR_STALE;
+    return rinfs_mount_operation_scope_finish(&operation, err);
 }
 
 int rinfs_content_snapshot_end(RinFS_ContentSnapshot* snapshot) {
+    RinFS_MountOperationScope operation = {0};
     int released = 0;
     int err;
     if (!snapshot || !snapshot->active) return RINFS_OK;
     if (snapshot->active != RINFS_CONTENT_SNAPSHOT_ACTIVE &&
         snapshot->active != RINFS_CONTENT_SNAPSHOT_CLEANUP_PENDING)
         return RINFS_ERR_CORRUPT;
+    err = rinfs_mount_operation_scope_begin(snapshot->mount, &operation);
+    if (err != RINFS_OK) return err;
     err = rinfs_content_lease_release_ex(
         snapshot->mount, snapshot->inode_num, snapshot->inode_generation,
         snapshot->lease_generation, 0, &released);
     if (released) rinfs_memset(snapshot, 0, sizeof(*snapshot));
-    return err;
+    return rinfs_mount_operation_scope_finish(&operation, err);
 }
 
 static int rinfs_mmap_source_create_core(
