@@ -786,21 +786,25 @@ separate responsibilities.
 versioned storage health value model. Each metric carries a transport-scoped
 ID, unit, validity flag, and exact 128-bit-capable value; saturation is an
 explicit lower-bound flag. NVMe retains native SMART names and semantics,
-including Percentage Used saturation. Missing, unsupported, or uncollected
-metrics are absent and never imply zero or healthy. NVMe, ATA, SCSI, and SD
-transport identifiers are reserved by the contract, while the current
-conversion adapter publishes NVMe values only; other provider mappings remain
-unfinished.
+including Percentage Used saturation. ATA exposes only standardized SMART
+RETURN STATUS; individual vendor SMART attributes are not normalized. SCSI
+temperature log-page values retain their Celsius units. SD's base protocol
+reports no common wear metric, so its snapshot can remain empty. Missing,
+unsupported, or uncollected metrics are absent and never imply zero or healthy.
 
 `rin_storage_health_snapshot_valid_v1` checks the full fixed-size snapshot
 before consumers inspect metrics: version, transport, generation, reserved and
 unused fields, duplicate IDs, transport-specific units/ranges, value widths,
-and saturation semantics. ATA/SCSI/SD currently accept only empty snapshots;
-this does not claim that those providers collect health data.
+and saturation semantics. ATA and SCSI snapshots accept only their defined
+metrics. The SD provider returns an empty unavailable snapshot until a common
+standard metric exists; this does not claim vendor-specific SD telemetry.
 
-`rin_storage_health_from_nvme_v1` validates and converts a caller-owned NVMe
-snapshot in memory. It performs no device I/O and grants no access. Consumers
-obtain diagnostics through the existing read-only Management
+`rin_storage_health_from_nvme_v1`,
+`rin_storage_health_from_ata_smart_return_status_v1`,
+`rin_storage_health_from_scsi_temperature_v1`, and
+`rin_storage_health_sd_unavailable_v1` validate and convert caller-owned
+values in memory. They perform no device I/O and grant no access. Product
+providers obtain diagnostics through the read-only Management
 `DEVICE_DIAGNOSTIC_GET` operation, which binds the request to the current device
 ID, generation, and revision. The operation has no separate per-call
 capability check today; this API adds no new capability or authority. Device
