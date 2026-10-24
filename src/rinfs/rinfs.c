@@ -696,9 +696,11 @@ typedef struct {
 #define RINFS_READONLY_RECOVERY_NAMESPACE_JOURNAL UINT32_C(0x00000020)
 #define RINFS_READONLY_RECOVERY_RESTORE_SYNC UINT32_C(0x00000040)
 #define RINFS_READONLY_RECOVERY_RESTORE_CACHE UINT32_C(0x00000080)
+#define RINFS_READONLY_RECOVERY_RESTORE_REPLAY UINT32_C(0x00000100)
 #define RINFS_READONLY_RECOVERY_RESTORE_MASK \
     (RINFS_READONLY_RECOVERY_RESTORE_SYNC | \
-     RINFS_READONLY_RECOVERY_RESTORE_CACHE)
+     RINFS_READONLY_RECOVERY_RESTORE_CACHE | \
+     RINFS_READONLY_RECOVERY_RESTORE_REPLAY)
 
 static uint32_t rinfs_mount_readonly_state(const RinFS_Mount* mount) {
     if (!mount) return RINFS_READONLY_STICKY;
@@ -27450,19 +27452,43 @@ static int rinfs_restore_record_store(RinFS_Mount* mount,
     mount->sb.s_incompat_features |=
         RINFS_FEATURE_INCOMPAT_RESTORE_PENDING;
     error = rinfs_sync(mount);
-    if (error != RINFS_OK) rinfs_mount_force_readonly(mount);
+    if (error != RINFS_OK)
+        rinfs_mount_recovery_fence(
+            mount, RINFS_READONLY_RECOVERY_RESTORE_REPLAY, error);
     return error;
 }
 
 static int rinfs_restore_record_clear(RinFS_Mount* mount) {
+    RinFS_RestoreRecord previous_record;
+    int had_pending_record;
     int error;
     if (!mount || !mount->mounted) return RINFS_ERR_INVAL;
     if (mount->readonly) return RINFS_ERR_ROFS;
+    had_pending_record =
+        (mount->sb.s_incompat_features &
+         RINFS_FEATURE_INCOMPAT_RESTORE_PENDING) != 0u;
+    rinfs_memcpy(&previous_record, mount->sb.s_padding,
+                 sizeof(previous_record));
     rinfs_memset(mount->sb.s_padding, 0, sizeof(RinFS_RestoreRecord));
     mount->sb.s_incompat_features &=
         ~RINFS_FEATURE_INCOMPAT_RESTORE_PENDING;
     error = rinfs_sync(mount);
-    if (error != RINFS_OK) rinfs_mount_force_readonly(mount);
+    if (error != RINFS_OK) {
+        /* Keep the last checksummed phase available for an explicit retry.
+         * The clear may have reached storage even when sync reported an
+         * error; replay is idempotent, and retry will first republish this
+         * marker before changing the tree again. */
+        if (had_pending_record) {
+            rinfs_memcpy(mount->sb.s_padding, &previous_record,
+                         sizeof(previous_record));
+            mount->sb.s_incompat_features |=
+                RINFS_FEATURE_INCOMPAT_RESTORE_PENDING;
+            rinfs_mount_recovery_fence(
+                mount, RINFS_READONLY_RECOVERY_RESTORE_REPLAY, error);
+        } else {
+            rinfs_mount_force_readonly(mount);
+        }
+    }
     return error;
 }
 
@@ -28096,7 +28122,8 @@ static int rinfs_restore_transaction_commit_core(
     error = rinfs_restore_commit_record(internal->mount, &internal->record,
                                         0);
     if (error != RINFS_OK) {
-        rinfs_mount_force_readonly(internal->mount);
+        rinfs_mount_recovery_fence(
+            internal->mount, RINFS_READONLY_RECOVERY_RESTORE_REPLAY, error);
         return error;
     }
     return RINFS_OK;
@@ -28124,7 +28151,8 @@ static int rinfs_restore_transaction_abort_core(
         return RINFS_ERR_PENDING;
     error = rinfs_restore_abort_record(internal->mount, &internal->record);
     if (error != RINFS_OK) {
-        rinfs_mount_force_readonly(internal->mount);
+        rinfs_mount_recovery_fence(
+            internal->mount, RINFS_READONLY_RECOVERY_RESTORE_REPLAY, error);
         return error;
     }
     return RINFS_OK;
@@ -28226,7 +28254,8 @@ static int rinfs_restore_transaction_mount_recover_core(RinFS_Mount* mount) {
         return error;
     }
     if (error != RINFS_OK) {
-        rinfs_mount_force_readonly(mount);
+        rinfs_mount_recovery_fence(
+            mount, RINFS_READONLY_RECOVERY_RESTORE_CACHE, error);
         return error;
     }
     if (record.phase == RINFS_RESTORE_PHASE_RECEIVING ||
@@ -28234,7 +28263,9 @@ static int rinfs_restore_transaction_mount_recover_core(RinFS_Mount* mount) {
         error = rinfs_restore_abort_record(mount, &record);
     else
         error = rinfs_restore_commit_record(mount, &record, 1);
-    if (error != RINFS_OK) rinfs_mount_force_readonly(mount);
+    if (error != RINFS_OK)
+        rinfs_mount_recovery_fence(
+            mount, RINFS_READONLY_RECOVERY_RESTORE_REPLAY, error);
     return error;
 }
 
