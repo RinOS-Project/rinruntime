@@ -6542,8 +6542,8 @@ static int rinfs_page_cache_has_inode_references(RinFS_Mount* mount,
     return err;
 }
 
-int rinfs_page_cache_reclaim(RinFS_Mount* mount, uint32_t max_entries,
-                             uint32_t* reclaimed_out) {
+static int rinfs_page_cache_reclaim_unscoped(
+    RinFS_Mount* mount, uint32_t max_entries, uint32_t* reclaimed_out) {
     RinFS_PageCache* cache;
     uint32_t reclaimed = 0u;
     if (reclaimed_out) *reclaimed_out = 0u;
@@ -6590,6 +6590,20 @@ int rinfs_page_cache_reclaim(RinFS_Mount* mount, uint32_t max_entries,
     }
     if (reclaimed_out) *reclaimed_out = reclaimed;
     return RINFS_OK;
+}
+
+int rinfs_page_cache_reclaim(RinFS_Mount* mount, uint32_t max_entries,
+                             uint32_t* reclaimed_out) {
+    RinFS_MountOperationScope operation = {0};
+    int error;
+    if (reclaimed_out) *reclaimed_out = 0u;
+    if (!mount || !mount->mounted || max_entries == 0u)
+        return RINFS_ERR_INVAL;
+    error = rinfs_mount_operation_scope_begin(mount, &operation);
+    if (error != RINFS_OK) return error;
+    error = rinfs_page_cache_reclaim_unscoped(
+        mount, max_entries, reclaimed_out);
+    return rinfs_mount_operation_scope_finish(&operation, error);
 }
 
 static int rinfs_page_cache_writeback_step_unscoped(
