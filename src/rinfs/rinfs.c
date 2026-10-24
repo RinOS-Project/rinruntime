@@ -9167,7 +9167,8 @@ static uint64_t rinfs_reserved_data_end(const RinFS_Mount* mount) {
  * Block Operations
  * ═══════════════════════════════════════════════════════════════*/
 
-int rinfs_block_read(RinFS_Mount* mount, uint64_t block, void* buf) {
+static int rinfs_block_read_unscoped(RinFS_Mount* mount, uint64_t block,
+                                     void* buf) {
     if (!mount || !mount->mounted || !buf) return RINFS_ERR_INVAL;
     {
         int gate_error = rinfs_restore_operation_gate_check(mount);
@@ -9266,7 +9267,8 @@ static int rinfs_block_write_unprepared(RinFS_Mount* mount, uint64_t block,
 /* External low-level writes participate in same-mount recovery. Internal
  * mutation paths use the helper above after their own preflight, avoiding a
  * mount-wide retry while a metadata stripe or allocator lock is held. */
-int rinfs_block_write(RinFS_Mount* mount, uint64_t block, const void* buf) {
+static int rinfs_block_write_unscoped(RinFS_Mount* mount, uint64_t block,
+                                      const void* buf) {
     int write_error;
     if (!mount || !mount->mounted || !buf) return RINFS_ERR_INVAL;
     {
@@ -9303,7 +9305,7 @@ static int rinfs_block_write_durable_verified(RinFS_Mount* mount,
 }
 
 /* Allocate a free block */
-int rinfs_block_alloc(RinFS_Mount* mount, uint64_t* block) {
+static int rinfs_block_alloc_unscoped(RinFS_Mount* mount, uint64_t* block) {
     if (!mount || !mount->mounted || !block) return RINFS_ERR_INVAL;
     {
         int gate_error = rinfs_restore_operation_gate_check(mount);
@@ -9417,7 +9419,7 @@ int rinfs_block_alloc(RinFS_Mount* mount, uint64_t* block) {
 }
 
 /* Free a block */
-int rinfs_block_free(RinFS_Mount* mount, uint64_t block) {
+static int rinfs_block_free_unscoped(RinFS_Mount* mount, uint64_t block) {
     if (!mount || !mount->mounted) return RINFS_ERR_INVAL;
     {
         int gate_error = rinfs_restore_operation_gate_check(mount);
@@ -10189,7 +10191,8 @@ done:
  * Inode Operations
  * ═══════════════════════════════════════════════════════════════*/
 
-int rinfs_inode_read(RinFS_Mount* mount, uint64_t ino, RinFS_Inode* inode) {
+static int rinfs_inode_read_unscoped(RinFS_Mount* mount, uint64_t ino,
+                                     RinFS_Inode* inode) {
     int shared_guard = 0;
     int unlock_error;
     int err;
@@ -10450,8 +10453,8 @@ static int rinfs_inode_write_internal(RinFS_Mount* mount, uint64_t ino,
     return err;
 }
 
-int rinfs_inode_write(RinFS_Mount* mount, uint64_t ino,
-                      const RinFS_Inode* inode) {
+static int rinfs_inode_write_unscoped(RinFS_Mount* mount, uint64_t ino,
+                                      const RinFS_Inode* inode) {
     if (mount) {
         int gate_error = rinfs_restore_operation_gate_check(mount);
         if (gate_error != RINFS_OK) return gate_error;
@@ -11234,7 +11237,7 @@ static int rinfs_inode_bitmap_test(RinFS_Mount* mount, uint64_t ino,
     return err;
 }
 
-int rinfs_inode_alloc(RinFS_Mount* mount, uint64_t* ino) {
+static int rinfs_inode_alloc_unscoped(RinFS_Mount* mount, uint64_t* ino) {
     int final_err = RINFS_ERR_NOSPC;
     if (!mount || !mount->mounted || !ino) return RINFS_ERR_INVAL;
     {
@@ -11495,7 +11498,7 @@ static int rinfs_inode_free_under_lease(RinFS_Mount* mount, uint64_t ino,
     return err;
 }
 
-int rinfs_inode_free(RinFS_Mount* mount, uint64_t ino) {
+static int rinfs_inode_free_unscoped(RinFS_Mount* mount, uint64_t ino) {
     int content_unlock_error = RINFS_OK;
     RinFS_Inode previous_inode;
     RinFS_ContentLeaseNode* lease = NULL;
@@ -12146,7 +12149,8 @@ static int rinfs_prepare_new_inode(RinFS_Mount* mount, uint64_t ino,
 }
 
 /* Lookup entry in directory */
-int rinfs_lookup(RinFS_Mount* mount, uint64_t dir_ino, const char* name, uint64_t* ino) {
+static int rinfs_lookup_unscoped(RinFS_Mount* mount, uint64_t dir_ino,
+                                 const char* name, uint64_t* ino) {
     if (!mount || !mount->mounted || !name || !ino) return RINFS_ERR_INVAL;
     {
         int gate_error = rinfs_restore_operation_gate_check(mount);
@@ -12808,8 +12812,8 @@ int rinfs_mkfs(int dev_id, uint64_t offset, uint64_t size_blocks,
         dev_id, offset, size_blocks, block_size, NULL, NULL);
 }
 
-int rinfs_check_allocation_metadata(RinFS_Mount* mount, uint32_t flags,
-                                    RinFS_CheckReport* report) {
+static int rinfs_check_allocation_metadata_unscoped(
+    RinFS_Mount* mount, uint32_t flags, RinFS_CheckReport* report) {
     RinFS_CheckReport local_report;
     uint64_t reserved_blocks;
     int reserved_block_clear;
@@ -15428,14 +15432,15 @@ out:
     return err;
 }
 
-int rinfs_check_full(RinFS_Mount* mount, RinFS_FullCheckReport* report) {
+static int rinfs_check_full_unscoped(RinFS_Mount* mount,
+                                     RinFS_FullCheckReport* report) {
     int gate_error = rinfs_restore_operation_gate_check(mount);
     if (gate_error != RINFS_OK) return gate_error;
     return rinfs_check_full_internal(mount, 0, report);
 }
 
-int rinfs_repair_full(RinFS_Mount* mount, uint32_t flags,
-                      RinFS_FullCheckReport* report) {
+static int rinfs_repair_full_unscoped(RinFS_Mount* mount, uint32_t flags,
+                                      RinFS_FullCheckReport* report) {
     RinFS_FullCheckReport repair_report;
     RinFS_FullCheckReport pass_report;
     RinFS_FullCheckReport verify_report;
@@ -16097,7 +16102,8 @@ static int rinfs_resize_locked(RinFS_Mount* mount, uint64_t target_blocks) {
     return err;
 }
 
-int rinfs_resize(RinFS_Mount* mount, uint64_t target_blocks) {
+static int rinfs_resize_unscoped(RinFS_Mount* mount,
+                                 uint64_t target_blocks) {
     int err;
     if (!mount || !mount->mounted ||
         (mount->mount_flags & RINFS_MNT_RESIZE) == 0u ||
@@ -19400,7 +19406,7 @@ static int rinfs_enable_special_inodes(RinFS_Mount* mount) {
 
 /* Sync filesystem to stable storage.  A mounted writable filesystem remains
  * dirty: CLEAN is an unmount record, not an fsync record. */
-int rinfs_sync(RinFS_Mount* mount) {
+static int rinfs_sync_unscoped(RinFS_Mount* mount) {
     if (!mount || !mount->mounted) return RINFS_ERR_INVAL;
     {
         int gate_error = rinfs_restore_operation_gate_check(mount);
@@ -19436,8 +19442,9 @@ int rinfs_sync(RinFS_Mount* mount) {
     return disk_flush(mount);
 }
 
-int rinfs_set_volume_name(RinFS_Mount* mount, const char* name,
-                          uint32_t name_length) {
+static int rinfs_set_volume_name_unscoped(RinFS_Mount* mount,
+                                          const char* name,
+                                          uint32_t name_length) {
     char previous[sizeof(mount->sb.s_volume_name)];
     int error;
     uint32_t index;
@@ -20580,15 +20587,16 @@ int rinfs_truncate(RinFS_File* file, uint64_t size) {
 }
 
 /* Path lookup (resolve full path to inode). */
-int rinfs_path_lookup(RinFS_Mount* mount, const char* path, uint64_t* ino,
-                      RinFS_Inode* inode) {
+static int rinfs_path_lookup_unscoped(RinFS_Mount* mount, const char* path,
+                                      uint64_t* ino, RinFS_Inode* inode) {
     int gate_error = rinfs_restore_operation_gate_check(mount);
     if (gate_error != RINFS_OK) return gate_error;
     return rinfs_path_lookup_internal(mount, path, ino, inode, 1);
 }
 
-int rinfs_path_lookup_nofollow(RinFS_Mount* mount, const char* path,
-                               uint64_t* ino, RinFS_Inode* inode) {
+static int rinfs_path_lookup_nofollow_unscoped(
+    RinFS_Mount* mount, const char* path, uint64_t* ino,
+    RinFS_Inode* inode) {
     int gate_error = rinfs_restore_operation_gate_check(mount);
     if (gate_error != RINFS_OK) return gate_error;
     return rinfs_path_lookup_internal(mount, path, ino, inode, 0);
@@ -20942,7 +20950,8 @@ int64_t rinfs_tell(RinFS_File* file) {
 }
 
 /* Stat (get file info) */
-int rinfs_stat(RinFS_Mount* mount, const char* path, RinFS_Inode* inode) {
+static int rinfs_stat_unscoped(RinFS_Mount* mount, const char* path,
+                               RinFS_Inode* inode) {
     uint64_t ino;
     int gate_error = rinfs_restore_operation_gate_check(mount);
     if (gate_error != RINFS_OK) return gate_error;
@@ -23816,7 +23825,7 @@ static int rinfs_delete_on_close_reap_inode(RinFS_Mount* mount,
     }
 }
 
-int rinfs_delete_on_close_reap(RinFS_Mount* mount) {
+static int rinfs_delete_on_close_reap_unscoped(RinFS_Mount* mount) {
     int content_unlock_error = RINFS_OK;
     int first_error = RINFS_OK;
     if (!mount || !mount->mounted) return rinfs_content_unlock_status((RINFS_ERR_INVAL), content_unlock_error);
@@ -28374,3 +28383,94 @@ int rinfs_symlink_owned(RinFS_Mount* mount, uint64_t dir_ino,
         mount, dir_ino, name, target, uid, gid);
     return rinfs_mount_operation_scope_finish(&operation, error);
 }
+
+/* Gate direct mount APIs for their complete call, not only at their first
+ * block/cache access. A restore claim uses the same content lock and waits
+ * for these scopes to drain before it may replace inode or namespace state. */
+#define RINFS_MOUNT_SCOPE_WRAPPER(name, unscoped, parameters, arguments) \
+    int name parameters {                                                   \
+        RinFS_MountOperationScope operation = {0};                         \
+        int error;                                                          \
+        if (!mount || !mount->mounted)                                       \
+            return unscoped arguments;                                     \
+        error = rinfs_mount_operation_scope_begin(mount, &operation);      \
+        if (error != RINFS_OK) return error;                               \
+        error = unscoped arguments;                                         \
+        return rinfs_mount_operation_scope_finish(&operation, error);      \
+    }
+
+RINFS_MOUNT_SCOPE_WRAPPER(
+    rinfs_block_read, rinfs_block_read_unscoped,
+    (RinFS_Mount* mount, uint64_t block, void* buf),
+    (mount, block, buf))
+RINFS_MOUNT_SCOPE_WRAPPER(
+    rinfs_block_write, rinfs_block_write_unscoped,
+    (RinFS_Mount* mount, uint64_t block, const void* buf),
+    (mount, block, buf))
+RINFS_MOUNT_SCOPE_WRAPPER(
+    rinfs_block_alloc, rinfs_block_alloc_unscoped,
+    (RinFS_Mount* mount, uint64_t* block), (mount, block))
+RINFS_MOUNT_SCOPE_WRAPPER(
+    rinfs_block_free, rinfs_block_free_unscoped,
+    (RinFS_Mount* mount, uint64_t block), (mount, block))
+RINFS_MOUNT_SCOPE_WRAPPER(
+    rinfs_inode_read, rinfs_inode_read_unscoped,
+    (RinFS_Mount* mount, uint64_t ino, RinFS_Inode* inode),
+    (mount, ino, inode))
+RINFS_MOUNT_SCOPE_WRAPPER(
+    rinfs_inode_write, rinfs_inode_write_unscoped,
+    (RinFS_Mount* mount, uint64_t ino, const RinFS_Inode* inode),
+    (mount, ino, inode))
+RINFS_MOUNT_SCOPE_WRAPPER(
+    rinfs_inode_alloc, rinfs_inode_alloc_unscoped,
+    (RinFS_Mount* mount, uint64_t* ino), (mount, ino))
+RINFS_MOUNT_SCOPE_WRAPPER(
+    rinfs_inode_free, rinfs_inode_free_unscoped,
+    (RinFS_Mount* mount, uint64_t ino), (mount, ino))
+RINFS_MOUNT_SCOPE_WRAPPER(
+    rinfs_lookup, rinfs_lookup_unscoped,
+    (RinFS_Mount* mount, uint64_t dir_ino, const char* name,
+     uint64_t* ino),
+    (mount, dir_ino, name, ino))
+RINFS_MOUNT_SCOPE_WRAPPER(
+    rinfs_check_allocation_metadata,
+    rinfs_check_allocation_metadata_unscoped,
+    (RinFS_Mount* mount, uint32_t flags, RinFS_CheckReport* report),
+    (mount, flags, report))
+RINFS_MOUNT_SCOPE_WRAPPER(
+    rinfs_check_full, rinfs_check_full_unscoped,
+    (RinFS_Mount* mount, RinFS_FullCheckReport* report),
+    (mount, report))
+RINFS_MOUNT_SCOPE_WRAPPER(
+    rinfs_repair_full, rinfs_repair_full_unscoped,
+    (RinFS_Mount* mount, uint32_t flags, RinFS_FullCheckReport* report),
+    (mount, flags, report))
+RINFS_MOUNT_SCOPE_WRAPPER(
+    rinfs_resize, rinfs_resize_unscoped,
+    (RinFS_Mount* mount, uint64_t target_blocks),
+    (mount, target_blocks))
+RINFS_MOUNT_SCOPE_WRAPPER(
+    rinfs_sync, rinfs_sync_unscoped, (RinFS_Mount* mount), (mount))
+RINFS_MOUNT_SCOPE_WRAPPER(
+    rinfs_set_volume_name, rinfs_set_volume_name_unscoped,
+    (RinFS_Mount* mount, const char* name, uint32_t name_length),
+    (mount, name, name_length))
+RINFS_MOUNT_SCOPE_WRAPPER(
+    rinfs_path_lookup, rinfs_path_lookup_unscoped,
+    (RinFS_Mount* mount, const char* path, uint64_t* ino,
+     RinFS_Inode* inode),
+    (mount, path, ino, inode))
+RINFS_MOUNT_SCOPE_WRAPPER(
+    rinfs_path_lookup_nofollow, rinfs_path_lookup_nofollow_unscoped,
+    (RinFS_Mount* mount, const char* path, uint64_t* ino,
+     RinFS_Inode* inode),
+    (mount, path, ino, inode))
+RINFS_MOUNT_SCOPE_WRAPPER(
+    rinfs_stat, rinfs_stat_unscoped,
+    (RinFS_Mount* mount, const char* path, RinFS_Inode* inode),
+    (mount, path, inode))
+RINFS_MOUNT_SCOPE_WRAPPER(
+    rinfs_delete_on_close_reap, rinfs_delete_on_close_reap_unscoped,
+    (RinFS_Mount* mount), (mount))
+
+#undef RINFS_MOUNT_SCOPE_WRAPPER
