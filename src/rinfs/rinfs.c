@@ -5393,8 +5393,8 @@ int rinfs_page_cache_release_mapped_page(RinFS_Mount* mount,
     return rinfs_page_cache_unlock_status(cache, RINFS_ERR_NOENT);
 }
 
-int rinfs_page_cache_mark_mapped_page_dirty(RinFS_Mount* mount,
-                                            uint64_t physical_address) {
+static int rinfs_page_cache_mark_mapped_page_dirty_unscoped(
+    RinFS_Mount* mount, uint64_t physical_address) {
     RinFS_PageCache* cache;
     uint32_t index;
     if (!mount || !mount->page_cache || physical_address == 0u)
@@ -5461,6 +5461,19 @@ int rinfs_page_cache_mark_mapped_page_dirty(RinFS_Mount* mount,
         return rinfs_page_cache_unlock_status(cache, RINFS_OK);
     }
     return rinfs_page_cache_unlock_status(cache, RINFS_ERR_NOENT);
+}
+
+int rinfs_page_cache_mark_mapped_page_dirty(RinFS_Mount* mount,
+                                            uint64_t physical_address) {
+    RinFS_MountOperationScope operation = {0};
+    int error;
+    if (!mount || !mount->page_cache || physical_address == 0u)
+        return RINFS_ERR_NOENT;
+    error = rinfs_mount_operation_scope_begin(mount, &operation);
+    if (error != RINFS_OK) return error;
+    error = rinfs_page_cache_mark_mapped_page_dirty_unscoped(
+        mount, physical_address);
+    return rinfs_mount_operation_scope_finish(&operation, error);
 }
 
 static int rinfs_page_cache_acquire(RinFS_Mount* mount, uint64_t inode_num,
