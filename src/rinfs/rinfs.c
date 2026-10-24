@@ -26003,7 +26003,9 @@ static int rinfs_restore_shared_gate_claim(
         goto done;
     }
     if (mount->readonly &&
-        (!allow_recovery_readonly || !rinfs_mount_recovery_only(mount))) {
+        (!allow_recovery_readonly || !rinfs_mount_recovery_only(mount) ||
+         (rinfs_mount_readonly_state(mount) &
+          RINFS_READONLY_RECOVERY_RESTORE_SYNC) == 0u)) {
         result = RINFS_ERR_ROFS;
         goto done;
     }
