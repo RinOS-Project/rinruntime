@@ -532,7 +532,7 @@ typedef struct {
  * exact process generation dead without interpreting userland pointers. The
  * runtime reconciles these per-handle deltas under content_lease_lock. */
 #define RINFS_SHARED_OWNER_LEDGER_MAGIC UINT32_C(0x524F574E)
-#define RINFS_SHARED_OWNER_LEDGER_VERSION 6u
+#define RINFS_SHARED_OWNER_LEDGER_VERSION 7u
 #define RINFS_SHARED_OWNER_LOCK_GENERATION_MAX UINT32_C(0x01ffffff)
 #define RINFS_SHARED_OWNER_REFERENCE_CAPACITY 512u
 #define RINFS_SHARED_OWNER_FREE 0u
@@ -668,6 +668,17 @@ struct RinFS_Mount {
     uint32_t           restore_transaction_reserved;
     uint64_t           restore_transaction_owner_cookie;
     uint64_t           restore_transaction_mount_epoch;
+    /* Ordinary mount operations are excluded while a restore transaction
+     * owns the destination. The process ID plus the runtime's thread-local
+     * restore scope distinguishes transaction internals from same-process
+     * aliases and sibling threads. */
+    volatile uint32_t  restore_operation_gate_active;
+    uint32_t           restore_operation_reserved;
+    uint64_t           restore_operation_owner_process_id;
+    uint32_t           restore_operation_active_count;
+    uint32_t           restore_operation_count_reserved;
+    uint32_t           restore_operation_active_by_owner[
+                           RINFS_SHARED_OWNER_CAPACITY];
 };
 
 #define RINFS_SHARED_OWNER_LEDGER_ALIGNMENT 16u
