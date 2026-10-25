@@ -32,13 +32,17 @@ static void rinfs_exec_mount_lifecycle_end(RinFS_Mount* mount,
 #endif
 
 #define RINFS_FORK_HOOK_CAPACITY 8u
-#if !defined(RIN_KERNEL)
-static _Thread_local uint32_t g_rinfs_restore_internal_scope_depth;
-#endif
-
-typedef struct {
+typedef struct RinFS_RestoreInternalScope {
     uint32_t active;
+    RinFS_Mount* mount;
+    uint64_t process_id;
+    struct RinFS_RestoreInternalScope* previous;
 } RinFS_RestoreInternalScope;
+
+#if !defined(RIN_KERNEL)
+static _Thread_local RinFS_RestoreInternalScope*
+    g_rinfs_restore_internal_scope_top;
+#endif
 
 typedef struct {
     RinFS_Mount* mount;
@@ -56,9 +60,11 @@ typedef struct {
 } RinFS_MountOperationPairScope;
 
 static int rinfs_restore_internal_scope_enter(
-    RinFS_RestoreInternalScope* scope);
+    RinFS_Mount* mount, RinFS_RestoreInternalScope* scope);
 static void rinfs_restore_internal_scope_leave(
     RinFS_RestoreInternalScope* scope);
+static int rinfs_restore_internal_scope_allows(const RinFS_Mount* mount);
+static uint64_t rinfs_restore_current_process_id(void);
 static int rinfs_restore_operation_gate_check(RinFS_Mount* mount);
 static int rinfs_mount_operation_scope_begin(
     RinFS_Mount* mount, RinFS_MountOperationScope* scope);
@@ -2596,15 +2602,30 @@ static int rinfs_shared_content_unlock(RinFS_Mount* mount) {
 }
 
 static int rinfs_restore_internal_scope_enter(
-    RinFS_RestoreInternalScope* scope) {
+    RinFS_Mount* mount, RinFS_RestoreInternalScope* scope) {
     if (!scope || scope->active != 0u) return RINFS_ERR_INVAL;
 #if defined(RIN_KERNEL)
+    (void)mount;
     return RINFS_OK;
 #else
-    if (g_rinfs_restore_internal_scope_depth == UINT32_MAX)
-        return RINFS_ERR_OVERFLOW;
-    ++g_rinfs_restore_internal_scope_depth;
+    RinFS_RestoreInternalScope* current;
+    uint64_t process_id;
+    uint32_t nested = 0u;
+    if (!mount) return RINFS_ERR_INVAL;
+    for (current = g_rinfs_restore_internal_scope_top;
+         current && nested < 64u; current = current->previous, ++nested) {
+        if (current->active != 1u || !current->mount ||
+            current->process_id == 0u)
+            return RINFS_ERR_CORRUPT;
+    }
+    if (current != NULL) return RINFS_ERR_OVERFLOW;
+    process_id = rinfs_restore_current_process_id();
+    if (process_id == 0u) return RINFS_ERR_BUSY;
+    scope->mount = mount;
+    scope->process_id = process_id;
+    scope->previous = g_rinfs_restore_internal_scope_top;
     scope->active = 1u;
+    g_rinfs_restore_internal_scope_top = scope;
     return RINFS_OK;
 #endif
 }
@@ -2613,13 +2634,25 @@ static void rinfs_restore_internal_scope_leave(
     RinFS_RestoreInternalScope* scope) {
     if (!scope || scope->active == 0u) return;
 #if !defined(RIN_KERNEL)
-    if (g_rinfs_restore_internal_scope_depth == 0u) {
-        if (scope->active != 0u) scope->active = 0u;
-        return;
+    RinFS_RestoreInternalScope** link =
+        &g_rinfs_restore_internal_scope_top;
+    uint32_t visited = 0u;
+    while (*link && *link != scope && visited < 64u) {
+        link = &(*link)->previous;
+        ++visited;
     }
-    --g_rinfs_restore_internal_scope_depth;
+    if (*link == scope) {
+        *link = scope->previous;
+    } else {
+        /* A damaged TLS chain must not retain pointers into returned stack
+         * frames. Clearing it loses only temporary internal admission. */
+        g_rinfs_restore_internal_scope_top = NULL;
+    }
 #endif
     scope->active = 0u;
+    scope->mount = NULL;
+    scope->process_id = 0u;
+    scope->previous = NULL;
 }
 
 static uint64_t rinfs_restore_current_process_id(void) {
@@ -2633,9 +2666,35 @@ static uint64_t rinfs_restore_current_process_id(void) {
 #endif
 }
 
-/* Restore internals run inside an explicit thread-local scope. A sibling
- * thread, another process attached to the shared mapping, or a forked child
- * cannot borrow that bypass to access the destination during publication. */
+static int rinfs_restore_internal_scope_allows(const RinFS_Mount* mount) {
+#if defined(RIN_KERNEL)
+    (void)mount;
+    return 1;
+#else
+    RinFS_RestoreInternalScope* scope;
+    uint64_t process_id;
+    uint32_t visited = 0u;
+    int allowed = 0;
+    if (!mount) return 0;
+    process_id = rinfs_restore_current_process_id();
+    if (process_id == 0u) return 0;
+    /* Bound the walk so a damaged or accidentally cyclic TLS chain fails
+     * closed. Internal scopes are lexical and should never approach this. */
+    for (scope = g_rinfs_restore_internal_scope_top;
+         scope && visited < 64u; scope = scope->previous, ++visited) {
+        if (scope->active == 1u && scope->mount == mount &&
+            scope->process_id == process_id)
+            allowed = 1;
+    }
+    /* Do not accept an otherwise matching scope if the chain is cyclic or
+     * exceeds the supported nesting bound. */
+    return scope == NULL && allowed;
+#endif
+}
+
+/* Restore internals run inside an explicit mount- and process-bound scope. A
+ * sibling thread, another process attached to the shared mapping, a forked
+ * child, or a nested call on another mount cannot borrow the bypass. */
 static int rinfs_restore_operation_gate_check(RinFS_Mount* mount) {
 #if defined(RIN_KERNEL)
     (void)mount;
@@ -2661,7 +2720,7 @@ static int rinfs_restore_operation_gate_check(RinFS_Mount* mount) {
         mount->restore_operation_count_reserved != 0u ||
         owner_process_id == 0u)
         return RINFS_ERR_CORRUPT;
-    if (g_rinfs_restore_internal_scope_depth == 0u ||
+    if (!rinfs_restore_internal_scope_allows(mount) ||
         rinfs_restore_current_process_id() != owner_process_id)
         return RINFS_ERR_BUSY;
     return RINFS_OK;
@@ -2760,7 +2819,7 @@ static int rinfs_mount_operation_scope_begin(
         goto done;
     }
     if (mount->content_lease_closing != 0u &&
-        g_rinfs_restore_internal_scope_depth == 0u) {
+        !rinfs_restore_internal_scope_allows(mount)) {
         result = RINFS_ERR_BUSY;
         goto done;
     }
@@ -9485,14 +9544,15 @@ static int disk_read(RinFS_Mount* mount, uint64_t sector, uint32_t count,
     int error = rinfs_mount_operation_scope_begin(mount, &operation);
     if (error != RINFS_OK) return error;
 #if !defined(RIN_KERNEL)
-    uint32_t restore_scope_depth = g_rinfs_restore_internal_scope_depth;
+    RinFS_RestoreInternalScope* restore_scope_top =
+        g_rinfs_restore_internal_scope_top;
     if (operation.restore_internal_io)
-        g_rinfs_restore_internal_scope_depth = 0u;
+        g_rinfs_restore_internal_scope_top = NULL;
 #endif
     error = disk_read_core(mount, sector, count, buf);
 #if !defined(RIN_KERNEL)
     if (operation.restore_internal_io)
-        g_rinfs_restore_internal_scope_depth = restore_scope_depth;
+        g_rinfs_restore_internal_scope_top = restore_scope_top;
 #endif
     {
         int release_error = rinfs_mount_operation_scope_end(&operation);
@@ -9544,15 +9604,16 @@ static int disk_write_internal(RinFS_Mount* mount, uint64_t sector,
     int error = rinfs_mount_operation_scope_begin(mount, &operation);
     if (error != RINFS_OK) return error;
 #if !defined(RIN_KERNEL)
-    uint32_t restore_scope_depth = g_rinfs_restore_internal_scope_depth;
+    RinFS_RestoreInternalScope* restore_scope_top =
+        g_rinfs_restore_internal_scope_top;
     if (operation.restore_internal_io)
-        g_rinfs_restore_internal_scope_depth = 0u;
+        g_rinfs_restore_internal_scope_top = NULL;
 #endif
     error = disk_write_internal_core(
         mount, sector, count, buf, recovery_write);
 #if !defined(RIN_KERNEL)
     if (operation.restore_internal_io)
-        g_rinfs_restore_internal_scope_depth = restore_scope_depth;
+        g_rinfs_restore_internal_scope_top = restore_scope_top;
 #endif
     {
         int release_error = rinfs_mount_operation_scope_end(&operation);
@@ -9581,14 +9642,15 @@ static int disk_flush(RinFS_Mount* mount) {
     int error = rinfs_mount_operation_scope_begin(mount, &operation);
     if (error != RINFS_OK) return error;
 #if !defined(RIN_KERNEL)
-    uint32_t restore_scope_depth = g_rinfs_restore_internal_scope_depth;
+    RinFS_RestoreInternalScope* restore_scope_top =
+        g_rinfs_restore_internal_scope_top;
     if (operation.restore_internal_io)
-        g_rinfs_restore_internal_scope_depth = 0u;
+        g_rinfs_restore_internal_scope_top = NULL;
 #endif
     error = disk_flush_core(mount);
 #if !defined(RIN_KERNEL)
     if (operation.restore_internal_io)
-        g_rinfs_restore_internal_scope_depth = restore_scope_depth;
+        g_rinfs_restore_internal_scope_top = restore_scope_top;
 #endif
     {
         int release_error = rinfs_mount_operation_scope_end(&operation);
@@ -18851,7 +18913,7 @@ int rinfs_exec_prepare_all(void) {
          index < g_rinfs_exec_mount_record_count; ++index) {
         RinFS_Mount* mount = g_rinfs_exec_mount_records[index].mount;
         RinFS_RestoreInternalScope sync_scope = {0u};
-        result = rinfs_restore_internal_scope_enter(&sync_scope);
+        result = rinfs_restore_internal_scope_enter(mount, &sync_scope);
         if (result == RINFS_OK) result = rinfs_exec_mount_sync(mount);
         rinfs_restore_internal_scope_leave(&sync_scope);
         if (result != RINFS_OK) goto rollback;
@@ -19213,7 +19275,7 @@ static int rinfs_abandon_dirty_mount_internal(RinFS_Mount* mount) {
         }
     }
 #endif
-    result = rinfs_restore_internal_scope_enter(&lifecycle_scope);
+    result = rinfs_restore_internal_scope_enter(mount, &lifecycle_scope);
     if (result == RINFS_OK)
         result = rinfs_abandon_dirty_mount_core(mount);
     rinfs_restore_internal_scope_leave(&lifecycle_scope);
@@ -19516,7 +19578,7 @@ static int rinfs_unmount_internal(RinFS_Mount* mount) {
         }
     }
 #endif
-    result = rinfs_restore_internal_scope_enter(&lifecycle_scope);
+    result = rinfs_restore_internal_scope_enter(mount, &lifecycle_scope);
     if (result == RINFS_OK) result = rinfs_unmount_core(mount);
     rinfs_restore_internal_scope_leave(&lifecycle_scope);
     rinfs_restore_mount_teardown_end(
@@ -27270,7 +27332,7 @@ static int rinfs_restore_shared_gate_claim(
                      __ATOMIC_RELAXED);
     __atomic_store_n(&mount->restore_operation_gate_active, 1u,
                      __ATOMIC_RELEASE);
-    result = rinfs_restore_internal_scope_enter(&cache_scope);
+    result = rinfs_restore_internal_scope_enter(mount, &cache_scope);
     if (result == RINFS_OK)
         result = rinfs_restore_page_cache_quiesce(
             mount, allow_dirty_pages);
@@ -27664,7 +27726,7 @@ static int rinfs_restore_transaction_operation_begin(
     }
     {
         int scope_error = rinfs_restore_internal_scope_enter(
-            &operation->internal_scope);
+            internal->mount, &operation->internal_scope);
         if (scope_error != RINFS_OK) {
             int release_error = rinfs_restore_transaction_operation_end(
                 operation, 0);
@@ -28819,7 +28881,7 @@ int rinfs_restore_transaction_mount_recover(RinFS_Mount* mount) {
      * row. Its provisional VFS range lease excludes another mount of these
      * sectors until shared_mount_ready is published. */
     if (mount->shared_mapping_base && mount->shared_mount_ready == 0u) {
-        error = rinfs_restore_internal_scope_enter(&internal_scope);
+        error = rinfs_restore_internal_scope_enter(mount, &internal_scope);
         if (error != RINFS_OK) return error;
         error = rinfs_restore_transaction_mount_recover_core(mount);
         rinfs_restore_internal_scope_leave(&internal_scope);
@@ -28829,7 +28891,7 @@ int rinfs_restore_transaction_mount_recover(RinFS_Mount* mount) {
     if (mount_epoch == 0u) return RINFS_ERR_STALE;
     error = rinfs_restore_mount_recovery_begin(mount, mount_epoch);
     if (error != RINFS_OK) return error;
-    error = rinfs_restore_internal_scope_enter(&internal_scope);
+    error = rinfs_restore_internal_scope_enter(mount, &internal_scope);
     if (error != RINFS_OK) {
         int release_error = rinfs_restore_mount_recovery_end(
             mount, mount_epoch);
@@ -28868,7 +28930,7 @@ int rinfs_restore_transaction_begin(RinFS_Mount* mount,
     error = rinfs_restore_transaction_reserve(
         mount, mount->mount_epoch, transaction, &handle_token);
     if (error != RINFS_OK) return error;
-    error = rinfs_restore_internal_scope_enter(&internal_scope);
+    error = rinfs_restore_internal_scope_enter(mount, &internal_scope);
     if (error != RINFS_OK) {
         int release_error = rinfs_restore_transaction_reservation_abort(
             transaction, handle_token);
