@@ -1241,6 +1241,14 @@ int rinfs_create_owned(RinFS_Mount* mount, const char* path, uint16_t mode,
 int rinfs_createat_owned(RinFS_Mount* mount, uint64_t parent_ino,
                          const char* name, uint16_t mode, uint32_t uid,
                          uint32_t gid, uint64_t* created_ino);
+/* Create one regular file and return the exact inode generation together with
+ * its number. The identity outputs are populated once dentry publication
+ * succeeds, even if a later link-count commit or outer operation release
+ * reports an error. */
+int rinfs_createat_owned_identity(
+    RinFS_Mount* mount, uint64_t parent_ino, const char* name,
+    uint16_t mode, uint32_t uid, uint32_t gid, uint64_t* created_ino,
+    uint32_t* created_generation);
 /* Create one device/FIFO inode below a resolved parent. Character/block
  * device numbers use the public 8:8 dev_t encoding; FIFO and regular files
  * require device_number=0. SPECIAL_INODES is committed before publication. */

@@ -22459,7 +22459,7 @@ int rinfs_dirent_add(RinFS_Mount* mount, uint64_t dir_ino, const char* name,
 static int rinfs_publish_orphan_intent_inode(
     RinFS_Mount* mount, uint64_t parent_ino, const char* name,
     uint64_t new_ino, RinFS_Inode* inode, uint8_t file_type,
-    uint64_t* created_ino) {
+    uint64_t* created_ino, uint32_t* created_generation) {
     int err;
     if (!mount || !inode || !rinfs_mount_has_content_versions(mount))
         return RINFS_ERR_INVAL;
@@ -22481,6 +22481,13 @@ static int rinfs_publish_orphan_intent_inode(
         return err;
     }
 
+    /* Identity-aware callers need an exact cleanup token even when the final
+     * link-count commit or outer operation release later fails. */
+    if (created_generation) {
+        if (created_ino) *created_ino = new_ino;
+        *created_generation = inode->i_generation;
+    }
+
     inode->i_links = 1u;
     err = rinfs_inode_orphan_commit(mount, new_ino, inode, 0);
     if (err != RINFS_OK) {
@@ -22490,6 +22497,7 @@ static int rinfs_publish_orphan_intent_inode(
         return err;
     }
     if (created_ino) *created_ino = new_ino;
+    if (created_generation) *created_generation = inode->i_generation;
     return RINFS_OK;
 }
 
@@ -22497,7 +22505,8 @@ static int rinfs_createat_owned_unscoped(RinFS_Mount* mount,
                                          uint64_t parent_ino,
                                          const char* name, uint16_t mode,
                                          uint32_t uid, uint32_t gid,
-                                         uint64_t* created_ino) {
+                                         uint64_t* created_ino,
+                                         uint32_t* created_generation) {
     RinFS_Inode parent_inode;
     RinFS_Inode inode;
     uint64_t existing_ino;
@@ -22506,6 +22515,7 @@ static int rinfs_createat_owned_unscoped(RinFS_Mount* mount,
     int err;
 
     if (created_ino) *created_ino = 0;
+    if (created_generation) *created_generation = 0u;
     if (!mount || !mount->mounted || !name || parent_ino == 0 ||
         parent_ino > mount->sb.s_inode_count) return RINFS_ERR_INVAL;
     err = rinfs_mount_prepare_write(mount);
@@ -22553,7 +22563,7 @@ static int rinfs_createat_owned_unscoped(RinFS_Mount* mount,
     rinfs_touch_created(&inode);
     return rinfs_publish_orphan_intent_inode(
         mount, parent_ino, name, new_ino, &inode, RINFS_FT_REG,
-        created_ino);
+        created_ino, created_generation);
 }
 
 static int rinfs_mknodat_owned_unscoped(
@@ -22630,7 +22640,7 @@ static int rinfs_mknodat_owned_unscoped(
         rinfs_inode_device_number_set(&inode, device_number);
     rinfs_touch_created(&inode);
     return rinfs_publish_orphan_intent_inode(
-        mount, parent_ino, name, new_ino, &inode, type, created_ino);
+        mount, parent_ino, name, new_ino, &inode, type, created_ino, NULL);
 }
 
 /* O_TMPFILE has no dentry to publish. Store its zero link count together with
@@ -29086,7 +29096,27 @@ int rinfs_createat_owned(RinFS_Mount* mount, uint64_t parent_ino,
     error = rinfs_mount_operation_scope_begin(mount, &operation);
     if (error != RINFS_OK) return error;
     error = rinfs_createat_owned_unscoped(
-        mount, parent_ino, name, mode, uid, gid, created_ino);
+        mount, parent_ino, name, mode, uid, gid, created_ino, NULL);
+    return rinfs_mount_operation_scope_finish(&operation, error);
+}
+
+int rinfs_createat_owned_identity(
+    RinFS_Mount* mount, uint64_t parent_ino, const char* name,
+    uint16_t mode, uint32_t uid, uint32_t gid, uint64_t* created_ino,
+    uint32_t* created_generation) {
+    RinFS_MountOperationScope operation = {0};
+    int error;
+    if (created_ino) *created_ino = 0u;
+    if (created_generation) *created_generation = 0u;
+    if (!mount || !mount->mounted || !name || parent_ino == 0u ||
+        parent_ino > mount->sb.s_inode_count || !created_ino ||
+        !created_generation)
+        return RINFS_ERR_INVAL;
+    error = rinfs_mount_operation_scope_begin(mount, &operation);
+    if (error != RINFS_OK) return error;
+    error = rinfs_createat_owned_unscoped(
+        mount, parent_ino, name, mode, uid, gid, created_ino,
+        created_generation);
     return rinfs_mount_operation_scope_finish(&operation, error);
 }
 
