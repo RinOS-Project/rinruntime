@@ -24,6 +24,9 @@ Local dependency reuse is limited to the sibling layout named by each
 dependency's Core gitlink (`../<library>` or the adjacent `../../RinOS-SDK`).
 Other lock-file checkout paths and local symlink/reparse-point aliases are
 rejected; missing or unusable siblings resolve through the isolated build cache.
+The lock's `requiredPaths` must also be normalized relative paths to regular
+files inside the canonical dependency root; traversal, drive/stream syntax, and
+symlink/reparse-point components are rejected.
 
 For example:
 

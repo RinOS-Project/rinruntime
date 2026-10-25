@@ -212,8 +212,43 @@ def _ensure_cache_checkout_locked(path: Path,
 
 def _validate_required_paths(name: str, root: Path,
                              dependency: dict[str, object]) -> None:
-    missing = [str(item) for item in dependency.get("requiredPaths", [])
-               if not (root / str(item)).is_file()]
+    required_paths = dependency.get("requiredPaths")
+    if not isinstance(required_paths, list) or not required_paths:
+        raise RuntimeError(f"{name} has no valid requiredPaths list")
+
+    root_path = Path(os.path.abspath(root))
+    resolved_root = root_path.resolve()
+    if resolved_root != root_path:
+        raise RuntimeError(f"{name} dependency root resolves through a path alias")
+
+    missing = []
+    for item in required_paths:
+        if not isinstance(item, str) or not item or "\\" in item or ":" in item:
+            raise RuntimeError(f"{name} has an invalid required path: {item!r}")
+        parts = item.split("/")
+        if any(part in ("", ".", "..") for part in parts):
+            raise RuntimeError(f"{name} required path is not normalized: {item}")
+
+        candidate = Path(os.path.abspath(root_path.joinpath(*parts)))
+        current = root_path
+        for part in parts:
+            current /= part
+            if _is_reparse_point(current):
+                raise RuntimeError(
+                    f"{name} required path contains a symlink or reparse point: "
+                    f"{item}")
+
+        resolved_candidate = candidate.resolve()
+        try:
+            resolved_candidate.relative_to(resolved_root)
+        except ValueError as error:
+            raise RuntimeError(
+                f"{name} required path escapes its dependency root: {item}") from error
+        if resolved_candidate != candidate:
+            raise RuntimeError(
+                f"{name} required path resolves through an alias: {item}")
+        if not resolved_candidate.is_file():
+            missing.append(item)
     if missing:
         raise RuntimeError(f"{name} at {root} is missing locked paths: " +
                            ", ".join(missing))
