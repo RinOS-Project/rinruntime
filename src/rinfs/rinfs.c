@@ -63,7 +63,9 @@ static int rinfs_restore_internal_scope_enter(
     RinFS_Mount* mount, RinFS_RestoreInternalScope* scope);
 static void rinfs_restore_internal_scope_leave(
     RinFS_RestoreInternalScope* scope);
+#if !defined(RIN_KERNEL)
 static int rinfs_restore_internal_scope_allows(const RinFS_Mount* mount);
+#endif
 static uint64_t rinfs_restore_current_process_id(void);
 static int rinfs_restore_operation_gate_check(RinFS_Mount* mount);
 static int rinfs_mount_operation_scope_begin(
@@ -2666,11 +2668,8 @@ static uint64_t rinfs_restore_current_process_id(void) {
 #endif
 }
 
+#if !defined(RIN_KERNEL)
 static int rinfs_restore_internal_scope_allows(const RinFS_Mount* mount) {
-#if defined(RIN_KERNEL)
-    (void)mount;
-    return 1;
-#else
     RinFS_RestoreInternalScope* scope;
     uint64_t process_id;
     uint32_t visited = 0u;
@@ -2689,8 +2688,8 @@ static int rinfs_restore_internal_scope_allows(const RinFS_Mount* mount) {
     /* Do not accept an otherwise matching scope if the chain is cyclic or
      * exceeds the supported nesting bound. */
     return scope == NULL && allowed;
-#endif
 }
+#endif
 
 /* Restore internals run inside an explicit mount- and process-bound scope. A
  * sibling thread, another process attached to the shared mapping, a forked
@@ -11362,7 +11361,7 @@ static int rinfs_inode_set_times_internal(
     int result;
     if (committed_inode)
         rinfs_memset(committed_inode, 0, sizeof(*committed_inode));
-    if (!mount || !mount->mounted || !committed_inode ||
+    if (!mount || !committed_inode ||
         valid_mask == 0u || (valid_mask & ~RINFS_INODE_TIME_MASK) != 0u ||
         ((valid_mask & RINFS_INODE_TIME_BIRTH) != 0u &&
          !rinfs_inode_time_value_valid(birth)) ||
@@ -11379,11 +11378,16 @@ static int rinfs_inode_set_times_internal(
            write->seconds <= 0)))) {
         return RINFS_ERR_INVAL;
     }
-    if (exact_precision && !rinfs_mount_has_nanotimes(mount)) {
-        return RINFS_ERR_NOT_SUPPORTED;
-    }
     result = rinfs_mount_operation_scope_begin(mount, &operation);
     if (result != RINFS_OK) return result;
+    if (!mount->mounted) {
+        result = RINFS_ERR_INVAL;
+        goto done;
+    }
+    if (exact_precision && !rinfs_mount_has_nanotimes(mount)) {
+        result = RINFS_ERR_NOT_SUPPORTED;
+        goto done;
+    }
     result = rinfs_mount_prepare_write(mount);
     if (result != RINFS_OK) goto done;
     result = rinfs_inode_read(mount, ino, &candidate);
@@ -11460,10 +11464,6 @@ int rinfs_inode_set_times_precise(
     RinFS_Inode* committed_inode) {
     if (committed_inode)
         rinfs_memset(committed_inode, 0, sizeof(*committed_inode));
-    if (mount == NULL || !mount->mounted) return RINFS_ERR_INVAL;
-    if (!rinfs_mount_has_nanotimes(mount)) {
-        return RINFS_ERR_NOT_SUPPORTED;
-    }
     return rinfs_inode_set_times_internal(
         mount, ino, valid_mask, birth, access, write, 1, committed_inode);
 }
@@ -25964,25 +25964,33 @@ static int rinfs_rename_impl(RinFS_Mount* mount, uint64_t old_dir,
 
 int rinfs_rename(RinFS_Mount* mount, uint64_t old_dir, const char* old_name,
                  uint64_t new_dir, const char* new_name) {
+    RinFS_MountOperationScope operation = {0};
     int result;
-    if (!mount) return RINFS_ERR_INVAL;
-    result = rinfs_journal_transaction_lock(mount);
+    result = rinfs_mount_operation_scope_begin(mount, &operation);
     if (result != RINFS_OK) return result;
-    result = rinfs_rename_impl(mount, old_dir, old_name, new_dir, new_name,
-                               0, 0u, 0u);
-    return rinfs_journal_transaction_unlock_status(mount, result);
+    result = rinfs_journal_transaction_lock(mount);
+    if (result == RINFS_OK) {
+        result = rinfs_rename_impl(mount, old_dir, old_name, new_dir, new_name,
+                                   0, 0u, 0u);
+        result = rinfs_journal_transaction_unlock_status(mount, result);
+    }
+    return rinfs_mount_operation_scope_finish(&operation, result);
 }
 
 int rinfs_rename_no_replace(RinFS_Mount* mount, uint64_t old_dir,
                             const char* old_name, uint64_t new_dir,
                             const char* new_name) {
+    RinFS_MountOperationScope operation = {0};
     int result;
-    if (!mount) return RINFS_ERR_INVAL;
-    result = rinfs_journal_transaction_lock(mount);
+    result = rinfs_mount_operation_scope_begin(mount, &operation);
     if (result != RINFS_OK) return result;
-    result = rinfs_rename_impl(mount, old_dir, old_name, new_dir, new_name,
-                               1, 0u, 0u);
-    return rinfs_journal_transaction_unlock_status(mount, result);
+    result = rinfs_journal_transaction_lock(mount);
+    if (result == RINFS_OK) {
+        result = rinfs_rename_impl(mount, old_dir, old_name, new_dir, new_name,
+                                   1, 0u, 0u);
+        result = rinfs_journal_transaction_unlock_status(mount, result);
+    }
+    return rinfs_mount_operation_scope_finish(&operation, result);
 }
 
 static int rinfs_rename_no_replace_expected_unscoped(
@@ -26132,16 +26140,25 @@ static int rinfs_unlink_internal(RinFS_Mount* mount, uint64_t dir_ino,
 }
 
 int rinfs_unlink(RinFS_Mount* mount, uint64_t dir_ino, const char* name) {
-    return rinfs_unlink_internal(mount, dir_ino, name, 0u, 0u);
+    RinFS_MountOperationScope operation = {0};
+    int result = rinfs_mount_operation_scope_begin(mount, &operation);
+    if (result != RINFS_OK) return result;
+    result = rinfs_unlink_internal(mount, dir_ino, name, 0u, 0u);
+    return rinfs_mount_operation_scope_finish(&operation, result);
 }
 
 int rinfs_unlink_expected(RinFS_Mount* mount, uint64_t dir_ino,
                           const char* name, uint64_t expected_inode,
                           uint32_t expected_generation) {
+    RinFS_MountOperationScope operation = {0};
+    int result;
     if (expected_inode == 0u || expected_generation == 0u)
         return RINFS_ERR_INVAL;
-    return rinfs_unlink_internal(mount, dir_ino, name, expected_inode,
-                                  expected_generation);
+    result = rinfs_mount_operation_scope_begin(mount, &operation);
+    if (result != RINFS_OK) return result;
+    result = rinfs_unlink_internal(mount, dir_ino, name, expected_inode,
+                                   expected_generation);
+    return rinfs_mount_operation_scope_finish(&operation, result);
 }
 
 static int rinfs_unlink_entry_expected_unscoped(
@@ -26353,27 +26370,34 @@ static int rinfs_rmdir_internal(RinFS_Mount* mount, uint64_t parent_ino,
 
 /* Remove an empty directory. */
 int rinfs_rmdir(RinFS_Mount* mount, uint64_t parent_ino, const char* name) {
+    RinFS_MountOperationScope operation = {0};
     int result;
-    if (!mount) return RINFS_ERR_INVAL;
-    result = rinfs_journal_transaction_lock(mount);
+    result = rinfs_mount_operation_scope_begin(mount, &operation);
     if (result != RINFS_OK) return result;
-    result = rinfs_rmdir_internal(mount, parent_ino, name, 0u, 0u);
-    return rinfs_journal_transaction_unlock_status(mount, result);
+    result = rinfs_journal_transaction_lock(mount);
+    if (result == RINFS_OK) {
+        result = rinfs_rmdir_internal(mount, parent_ino, name, 0u, 0u);
+        result = rinfs_journal_transaction_unlock_status(mount, result);
+    }
+    return rinfs_mount_operation_scope_finish(&operation, result);
 }
 
 int rinfs_rmdir_expected(RinFS_Mount* mount, uint64_t parent_ino,
                          const char* name, uint64_t expected_inode,
                          uint32_t expected_generation) {
+    RinFS_MountOperationScope operation = {0};
+    int result;
     if (expected_inode == 0u || expected_generation == 0u)
         return RINFS_ERR_INVAL;
-    if (!mount) return RINFS_ERR_INVAL;
-    int lock_err = rinfs_journal_transaction_lock(mount);
-    if (lock_err != RINFS_OK) return lock_err;
-    {
-        int result = rinfs_rmdir_internal(
+    result = rinfs_mount_operation_scope_begin(mount, &operation);
+    if (result != RINFS_OK) return result;
+    result = rinfs_journal_transaction_lock(mount);
+    if (result == RINFS_OK) {
+        result = rinfs_rmdir_internal(
             mount, parent_ino, name, expected_inode, expected_generation);
-        return rinfs_journal_transaction_unlock_status(mount, result);
+        result = rinfs_journal_transaction_unlock_status(mount, result);
     }
+    return rinfs_mount_operation_scope_finish(&operation, result);
 }
 
 static int rinfs_rmdir_entry_expected_unscoped(
