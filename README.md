@@ -20,6 +20,11 @@ Ignored build output can still shadow a tracked header or source through an
 include path, so a pinned revision alone is not treated as proof that the
 compiler sees only pinned content.
 
+Local dependency reuse is limited to the sibling layout named by each
+dependency's Core gitlink (`../<library>` or the adjacent `../../RinOS-SDK`).
+Other lock-file checkout paths and local symlink/reparse-point aliases are
+rejected; missing or unusable siblings resolve through the isolated build cache.
+
 For example:
 
 ```sh

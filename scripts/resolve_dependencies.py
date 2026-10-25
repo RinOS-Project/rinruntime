@@ -15,7 +15,7 @@ import subprocess
 import sys
 import time
 from contextlib import contextmanager
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from prepare_i18n_header import prepare as prepare_i18n_header
 
@@ -257,6 +257,40 @@ def _dependency_cache_namespace(
     return hashlib.sha256(canonical).hexdigest()
 
 
+def _local_checkout_path(source_root: Path, name: str,
+                         dependency: dict[str, object]) -> Path:
+    """Resolve only the sibling checkout described by the Core gitlink path."""
+    checkout = dependency.get("checkout")
+    core_path = dependency.get("corePath")
+    if not isinstance(checkout, str) or not isinstance(core_path, str) or \
+            "\\" in checkout or "\\" in core_path:
+        raise RuntimeError(f"{name} has an invalid checkout or Core gitlink path")
+
+    core_parts = PurePosixPath(core_path).parts
+    if core_parts == ("public-base", "RinOS-SDK"):
+        expected_checkout = "../../RinOS-SDK"
+    elif len(core_parts) == 3 and core_parts[:2] == ("public-base", "libs") and \
+            core_parts[2] not in ("", ".", ".."):
+        expected_checkout = "../" + core_parts[2]
+    else:
+        raise RuntimeError(f"{name} has an unsupported Core gitlink path")
+
+    if checkout != expected_checkout:
+        raise RuntimeError(
+            f"{name} checkout must match its Core gitlink layout: "
+            f"expected {expected_checkout}, got {checkout}")
+
+    candidate = Path(os.path.abspath(source_root / PurePosixPath(checkout)))
+    if _is_reparse_point(candidate):
+        raise RuntimeError(
+            f"{name} local checkout is a symlink or reparse point: {candidate}")
+    resolved = candidate.resolve()
+    if resolved != candidate:
+        raise RuntimeError(
+            f"{name} local checkout resolves through a path alias: {candidate}")
+    return candidate
+
+
 def _resolve(source_root: Path, build_root: Path, names: list[str],
              manifest_path: Path) -> dict[str, Path]:
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -274,7 +308,7 @@ def _resolve(source_root: Path, build_root: Path, names: list[str],
     _verify_core_dependency_pins(source_root, names, entries)
 
     local_roots = {
-        name: (source_root / str(entries[name]["checkout"])).resolve()
+        name: _local_checkout_path(source_root, name, entries[name])
         for name in names
     }
     cache_names = {
