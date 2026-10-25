@@ -13863,6 +13863,30 @@ static int rinfs_check_queue_directory(RinFS_FullCheckContext* context,
 
 static int rinfs_check_directory_tree(RinFS_FullCheckContext* context) {
     RinFS_Mount* mount = context->mount;
+    uint64_t pointers_per_block =
+        mount->sb.s_block_size / sizeof(uint64_t);
+    uint64_t double_capacity;
+    uint64_t triple_capacity;
+    uint64_t maximum_file_blocks;
+
+    if (pointers_per_block == 0u ||
+        pointers_per_block > UINT64_MAX / pointers_per_block)
+        return RINFS_ERR_CORRUPT;
+    double_capacity = pointers_per_block * pointers_per_block;
+    if (double_capacity > UINT64_MAX / pointers_per_block)
+        return RINFS_ERR_CORRUPT;
+    triple_capacity = double_capacity * pointers_per_block;
+    maximum_file_blocks = RINFS_DIRECT_BLOCKS;
+    if (maximum_file_blocks > UINT64_MAX - pointers_per_block)
+        return RINFS_ERR_CORRUPT;
+    maximum_file_blocks += pointers_per_block;
+    if (maximum_file_blocks > UINT64_MAX - double_capacity)
+        return RINFS_ERR_CORRUPT;
+    maximum_file_blocks += double_capacity;
+    if (maximum_file_blocks > UINT64_MAX - triple_capacity)
+        return RINFS_ERR_CORRUPT;
+    maximum_file_blocks += triple_capacity;
+
     if (!rinfs_check_inode_allocated(context, RINFS_INODE_ROOT)) {
         context->report->issues |= RINFS_FULL_ISSUE_DIRECTORY;
         context->report->invalid_directory_entries++;
@@ -13891,10 +13915,27 @@ static int rinfs_check_directory_tree(RinFS_FullCheckContext* context) {
         int saw_dot = 0;
         int saw_dotdot = 0;
         uint64_t file_blocks = dir_inode.i_size / mount->sb.s_block_size;
+        if (file_blocks > maximum_file_blocks) {
+            /* Do not scan a corrupt i_size beyond the inode's representable
+             * direct/indirect address space. Such a scan can be enormous and
+             * cannot produce a complete reachability result for repair. */
+            context->report->issues |= RINFS_FULL_ISSUE_DIRECTORY;
+            context->report->invalid_directory_entries++;
+            continue;
+        }
         for (uint64_t file_block = 0; file_block < file_blocks; file_block++) {
             uint64_t phys_block = 0;
             err = get_file_block(mount, &dir_inode, file_block, &phys_block);
-            if (err != RINFS_OK || phys_block == 0) {
+            if (err == RINFS_ERR_CORRUPT) {
+                context->report->issues |= RINFS_FULL_ISSUE_DIRECTORY;
+                context->report->invalid_directory_entries++;
+                break;
+            }
+            /* I/O, allocation, and synchronization errors make the graph
+             * incomplete. Propagate them so repair never acts on a partial
+             * directory traversal. */
+            if (err != RINFS_OK) return err;
+            if (phys_block == 0) {
                 context->report->issues |= RINFS_FULL_ISSUE_DIRECTORY;
                 context->report->invalid_directory_entries++;
                 continue;
