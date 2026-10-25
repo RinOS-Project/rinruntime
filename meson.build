@@ -117,7 +117,7 @@ if host_machine.system() != 'windows'
   runtime_sources += aq_sources
   runtime_sources += files('src/compositor_gui.c',
                            'src/compositor_gpu_bridge.c', 'src/render.c',
-                           'src/render_context.cpp')
+                           'src/media_render.c', 'src/render_context.cpp')
 endif
 runtime_deps = []
 runtime_link_args = []

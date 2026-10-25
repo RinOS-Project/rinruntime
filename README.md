@@ -795,6 +795,15 @@ green and alpha; it does not blend, premultiply alpha, or convert color space.
 GPU synchronization, compositor ownership, and IPC remain the caller's
 separate responsibilities.
 
+The C `render.h` API also provides
+`rinruntime_video_decode_frame_v1()` and its options variant. They acquire a
+BGRA target from the selected Runtime window, call the authenticated SDK video
+decoder while the mapping is leased, release the exact target on success or
+failure (propagating a release error), and submit a nonempty decoded frame for presentation. End-of-stream
+releases the target without presenting. Window close returns `BUSY` while a CPU
+target lease or GPU readback is active. These helpers do not make the lower
+level SDK caller-buffer API prove compositor provenance.
+
 `storage.hpp` includes `storage_health_snapshot_v1.h`, a pointer-free,
 versioned storage health value model. Each metric carries a transport-scoped
 ID, unit, validity flag, and exact 128-bit-capable value; saturation is an

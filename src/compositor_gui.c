@@ -1946,7 +1946,9 @@ int wnd_close_async(RinRuntimeGuiHandle handle) {
     int result;
     if (!surface || runtime_surface_id(handle, &id) != 0)
         return RIN_RESULT_INVALID_HANDLE;
-    if (surface->gpu_readback_pending != 0u) return RIN_RESULT_BUSY;
+    if (surface->gpu_readback_pending != 0u ||
+        surface->render_target_acquired != 0u)
+        return RIN_RESULT_BUSY;
     result = runtime_async_enqueue(RIN_COMPOSITOR_DESTROY_SURFACE, &id,
             sizeof(id),
             0u, 0, 0u, handle, 0u,

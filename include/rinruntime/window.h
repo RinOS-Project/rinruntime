@@ -159,8 +159,11 @@ RinRuntimeGuiHandle wnd_create_frameless(const char* title, int x, int y,
 /* Surface creation stays synchronous. Live control, resize, input fallback,
  * and present traffic is queued. Int-returning mutation APIs report queue
  * admission; final compositor status is delivered asynchronously. */
-/* On accepted close, wnd_close_async invalidates the local handle immediately;
- * the destroyed handle receives no later completion callback. */
+/* Both close forms refuse an active CPU render-target lease or GPU readback
+ * handoff; release the exact CPU target before closing. On accepted async
+ * close, the local handle is invalidated immediately and receives no later
+ * completion callback. The void form leaves the window open when close is
+ * busy. */
 int wnd_close_async(RinRuntimeGuiHandle handle);
 void wnd_close(RinRuntimeGuiHandle handle);
 int wnd_show_async(RinRuntimeGuiHandle handle, int visible);

@@ -160,6 +160,7 @@ if(RINRUNTIME_BUILD_GUI)
          src/compositor_gui.c
          src/compositor_gpu_bridge.c
          src/render.c
+         src/media_render.c
          src/render_context.cpp)
 endif()
 add_library(RinRuntime ${RINRUNTIME_LIBRARY_TYPE}
