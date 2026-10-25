@@ -103,7 +103,10 @@ def _cache_path_under_root(path: Path, cache_root: Path) -> Path:
     except ValueError as error:
         raise RuntimeError(
             f"dependency cache path resolves outside its configured root: {candidate}") from error
-    return candidate
+    # Pass the verified canonical path to Git and filesystem operations. If we
+    # returned the lexical alias, a symlink replaced after validation could be
+    # followed later by subprocess cwd normalization.
+    return resolved_candidate
 
 
 @contextmanager
