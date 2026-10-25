@@ -532,7 +532,7 @@ typedef struct {
  * exact process generation dead without interpreting userland pointers. The
  * runtime reconciles these per-handle deltas under content_lease_lock. */
 #define RINFS_SHARED_OWNER_LEDGER_MAGIC UINT32_C(0x524F574E)
-#define RINFS_SHARED_OWNER_LEDGER_VERSION 7u
+#define RINFS_SHARED_OWNER_LEDGER_VERSION 8u
 #define RINFS_SHARED_OWNER_LOCK_GENERATION_MAX UINT32_C(0x01ffffff)
 #define RINFS_SHARED_OWNER_REFERENCE_CAPACITY 512u
 #define RINFS_SHARED_OWNER_FREE 0u
@@ -678,6 +678,11 @@ struct RinFS_Mount {
     uint32_t           restore_operation_active_count;
     uint32_t           restore_operation_count_reserved;
     uint32_t           restore_operation_active_by_owner[
+                           RINFS_SHARED_OWNER_CAPACITY];
+    /* A process row can be reused after its prior owner is reaped. Bind each
+     * stranded operation count to the kernel-issued owner cookie so recovery
+     * can distinguish a live owner's count from a stale prior generation. */
+    uint64_t           restore_operation_owner_cookies[
                            RINFS_SHARED_OWNER_CAPACITY];
 };
 

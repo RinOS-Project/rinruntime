@@ -46,6 +46,7 @@ typedef struct {
     uint32_t counted;
     uint32_t owner_counted;
     uint32_t restore_internal_io;
+    uint64_t owner_cookie;
 } RinFS_MountOperationScope;
 
 typedef struct {
@@ -2681,18 +2682,48 @@ static int rinfs_restore_operation_count_reconcile_locked(
             &mount->shared_owner_ledger->owners[index];
         uint32_t state = __atomic_load_n(&owner->state, __ATOMIC_ACQUIRE);
         uint32_t count = mount->restore_operation_active_by_owner[index];
-        if (state == RINFS_SHARED_OWNER_ACTIVE) {
+        uint64_t count_cookie =
+            mount->restore_operation_owner_cookies[index];
+        if (count == 0u) {
+            /* A process may have exited between publishing its row cookie
+             * and incrementing the count, or between decrementing the last
+             * count and clearing the cookie. Zero count is authoritative. */
+            mount->restore_operation_owner_cookies[index] = 0u;
+            continue;
+        }
+        if (count_cookie == 0u) return RINFS_ERR_CORRUPT;
+        if (state == RINFS_SHARED_OWNER_ACTIVE &&
+            owner->owner_cookie == 0u)
+            return RINFS_ERR_BUSY;
+        if (state == RINFS_SHARED_OWNER_ACTIVE &&
+            owner->owner_cookie == count_cookie) {
             total += count;
-        } else if (count != 0u) {
-            if (state != RINFS_SHARED_OWNER_DEAD &&
-                state != RINFS_SHARED_OWNER_REAPED)
-                return RINFS_ERR_CORRUPT;
+        } else if (state == RINFS_SHARED_OWNER_FREE ||
+                   state == RINFS_SHARED_OWNER_DEAD ||
+                   state == RINFS_SHARED_OWNER_REAPED ||
+                   (state == RINFS_SHARED_OWNER_ACTIVE &&
+                    owner->owner_cookie != 0u)) {
+            /* FREE, dead/reaped, or a different active cookie proves the
+             * recorded count belongs to an owner generation that no longer
+             * owns this row. A new active process must never inherit it. */
             mount->restore_operation_active_by_owner[index] = 0u;
+            mount->restore_operation_owner_cookies[index] = 0u;
+        } else {
+            return RINFS_ERR_CORRUPT;
         }
     }
     if (total > UINT32_MAX) return RINFS_ERR_CORRUPT;
     mount->restore_operation_active_count = (uint32_t)total;
     return RINFS_OK;
+}
+
+/* Caller holds content_lease_lock. Rebuild owner counts first so a process
+ * that exited during an operation does not permanently block teardown. */
+static int rinfs_mount_operation_scopes_idle_locked(RinFS_Mount* mount) {
+    int error = rinfs_restore_operation_count_reconcile_locked(mount);
+    if (error != RINFS_OK) return error;
+    return mount->restore_operation_active_count == 0u
+               ? RINFS_OK : RINFS_ERR_BUSY;
 }
 
 static int rinfs_mount_operation_scope_begin(
@@ -2707,6 +2738,7 @@ static int rinfs_mount_operation_scope_begin(
     return RINFS_OK;
 #else
     uint32_t owner_row = 0u;
+    uint64_t owner_cookie = 0u;
     int shared_mount;
     int result;
     int unlock_error;
@@ -2720,6 +2752,20 @@ static int rinfs_mount_operation_scope_begin(
     if (result != RINFS_OK) return result;
     result = rinfs_restore_operation_gate_check(mount);
     if (result != RINFS_OK) goto done;
+    if (mount->content_lease_closing != 0u &&
+        mount->content_lease_closing != 1u &&
+        mount->content_lease_closing != RINFS_CONTENT_LEASE_CLOSING_FORK &&
+        mount->content_lease_closing != RINFS_CONTENT_LEASE_CLOSING_EXEC) {
+        result = RINFS_ERR_CORRUPT;
+        goto done;
+    }
+    if (mount->content_lease_closing != 0u &&
+        g_rinfs_restore_internal_scope_depth == 0u) {
+        result = RINFS_ERR_BUSY;
+        goto done;
+    }
+    if (mount->content_lease_closing != 0u)
+        scope->restore_internal_io = 1u;
     if (__atomic_load_n(&mount->restore_operation_gate_active,
                         __ATOMIC_ACQUIRE) != 0u) {
         /* The restore owner is already admitted through its thread-local
@@ -2730,24 +2776,39 @@ static int rinfs_mount_operation_scope_begin(
         goto done;
     }
     if (shared_mount) {
+        RinFS_SharedOwnerV1* owner;
+        uint32_t owner_index = owner_row - 1u;
         result = rinfs_restore_operation_count_reconcile_locked(mount);
         if (result != RINFS_OK) goto done;
-        if (mount->restore_operation_active_by_owner[owner_row - 1u] ==
-            UINT32_MAX) {
+        owner = &mount->shared_owner_ledger->owners[owner_index];
+        owner_cookie = owner->owner_cookie;
+        if (__atomic_load_n(&owner->state, __ATOMIC_ACQUIRE) !=
+                RINFS_SHARED_OWNER_ACTIVE || owner_cookie == 0u) {
+            result = RINFS_ERR_STALE;
+            goto done;
+        }
+        if (mount->restore_operation_active_count == UINT32_MAX ||
+            mount->restore_operation_active_by_owner[owner_index] ==
+                UINT32_MAX) {
             result = RINFS_ERR_OVERFLOW;
             goto done;
         }
-        ++mount->restore_operation_active_by_owner[owner_row - 1u];
-    }
-    if (mount->restore_operation_active_count == UINT32_MAX) {
-        if (shared_mount)
-            --mount->restore_operation_active_by_owner[owner_row - 1u];
+        if (mount->restore_operation_active_by_owner[owner_index] == 0u)
+            mount->restore_operation_owner_cookies[owner_index] = owner_cookie;
+        else if (mount->restore_operation_owner_cookies[owner_index] !=
+                 owner_cookie) {
+            result = RINFS_ERR_CORRUPT;
+            goto done;
+        }
+        ++mount->restore_operation_active_by_owner[owner_index];
+    } else if (mount->restore_operation_active_count == UINT32_MAX) {
         result = RINFS_ERR_OVERFLOW;
         goto done;
     }
     ++mount->restore_operation_active_count;
     scope->mount = mount;
     scope->owner_row = owner_row;
+    scope->owner_cookie = owner_cookie;
     scope->counted = 1u;
     scope->owner_counted = shared_mount ? 1u : 0u;
     result = RINFS_OK;
@@ -2777,8 +2838,15 @@ static int rinfs_mount_operation_scope_end(
         scope->owner_counted > 1u ||
         (scope->owner_counted != 0u &&
          (scope->owner_row == 0u ||
-          scope->owner_row > RINFS_SHARED_OWNER_CAPACITY)))
+          scope->owner_row > RINFS_SHARED_OWNER_CAPACITY ||
+          scope->owner_cookie == 0u)))
         return RINFS_ERR_CORRUPT;
+    if (scope->owner_counted != 0u) {
+        uint32_t current_row = 0u;
+        int owner_error = rinfs_shared_owner_query_row(mount, &current_row);
+        if (owner_error != RINFS_OK) return RINFS_ERR_BUSY;
+        if (current_row != scope->owner_row) return RINFS_ERR_STALE;
+    }
     result = rinfs_shared_content_lock(mount);
     if (result != RINFS_OK) return result;
     if (mount->restore_operation_active_count == 0u) {
@@ -2787,11 +2855,34 @@ static int rinfs_mount_operation_scope_end(
                mount->restore_operation_active_by_owner[
                    scope->owner_row - 1u] == 0u) {
         result = RINFS_ERR_CORRUPT;
+    } else if (scope->owner_counted != 0u &&
+               (!mount->shared_mapping_base ||
+                !rinfs_shared_owner_ledger_valid(mount))) {
+        result = RINFS_ERR_CORRUPT;
+    } else if (scope->owner_counted != 0u &&
+               (__atomic_load_n(
+                    &mount->shared_owner_ledger->owners[
+                        scope->owner_row - 1u].state,
+                    __ATOMIC_ACQUIRE) !=
+                    RINFS_SHARED_OWNER_ACTIVE ||
+                mount->shared_owner_ledger->owners[
+                    scope->owner_row - 1u].owner_cookie !=
+                    scope->owner_cookie ||
+                mount->restore_operation_owner_cookies[
+                    scope->owner_row - 1u] != scope->owner_cookie)) {
+        /* A stale scope cannot decrement another process generation's
+         * counter after the kernel reuses an owner row. */
+        result = RINFS_ERR_STALE;
     } else {
         --mount->restore_operation_active_count;
-        if (scope->owner_counted != 0u)
+        if (scope->owner_counted != 0u) {
             --mount->restore_operation_active_by_owner[
                 scope->owner_row - 1u];
+            if (mount->restore_operation_active_by_owner[
+                    scope->owner_row - 1u] == 0u)
+                mount->restore_operation_owner_cookies[
+                    scope->owner_row - 1u] = 0u;
+        }
         result = RINFS_OK;
     }
     unlock_error = rinfs_shared_content_unlock(mount);
@@ -17672,8 +17763,17 @@ static int rinfs_shared_mount_fork_idle_locked(RinFS_Mount* mount,
                                                  int* idle_out) {
     RinFS_ContentLeaseNode* node;
     uint64_t remaining;
+    int reconcile_error;
     if (!mount || !idle_out) return RINFS_ERR_INVAL;
     *idle_out = 0;
+    reconcile_error = rinfs_mount_operation_scopes_idle_locked(mount);
+    if (reconcile_error != RINFS_OK) return reconcile_error;
+    if (mount->restore_operation_gate_active != 0u ||
+        mount->restore_operation_owner_process_id != 0u ||
+        mount->restore_transaction_owner_row != 0u ||
+        mount->restore_transaction_owner_cookie != 0u ||
+        mount->restore_transaction_mount_epoch != 0u)
+        return RINFS_OK;
     node = (RinFS_ContentLeaseNode*)mount->content_leases;
     remaining = mount->shared_mapping_size /
                 sizeof(RinFS_ContentLeaseNode);
@@ -18452,8 +18552,17 @@ static int rinfs_exec_mount_has_local_handles_locked(
  * open handles could legitimately keep a content node alive. */
 static int rinfs_exec_mount_private_idle_locked(RinFS_Mount* mount,
                                                  int* idle_out) {
+    int reconcile_error;
     if (!mount || !idle_out) return RINFS_ERR_INVAL;
     *idle_out = 0;
+    reconcile_error = rinfs_mount_operation_scopes_idle_locked(mount);
+    if (reconcile_error != RINFS_OK) return reconcile_error;
+    if (mount->restore_operation_gate_active != 0u ||
+        mount->restore_operation_owner_process_id != 0u ||
+        mount->restore_transaction_owner_row != 0u ||
+        mount->restore_transaction_owner_cookie != 0u ||
+        mount->restore_transaction_mount_epoch != 0u)
+        return RINFS_OK;
     if (mount->content_leases != NULL) return RINFS_OK;
     return rinfs_shared_mount_fork_cache_idle(mount, idle_out);
 }
@@ -18741,7 +18850,10 @@ int rinfs_exec_prepare_all(void) {
     for (uint32_t index = 0u;
          index < g_rinfs_exec_mount_record_count; ++index) {
         RinFS_Mount* mount = g_rinfs_exec_mount_records[index].mount;
-        result = rinfs_exec_mount_sync(mount);
+        RinFS_RestoreInternalScope sync_scope = {0u};
+        result = rinfs_restore_internal_scope_enter(&sync_scope);
+        if (result == RINFS_OK) result = rinfs_exec_mount_sync(mount);
+        rinfs_restore_internal_scope_leave(&sync_scope);
         if (result != RINFS_OK) goto rollback;
     }
 
@@ -18915,6 +19027,7 @@ static int rinfs_shared_mount_release_local_mapping(RinFS_Mount* mount) {
 
 static int rinfs_shared_mount_begin_unmount(RinFS_Mount* mount) {
     int content_unlock_error = RINFS_OK;
+    int operation_error;
     uint32_t final_owner = 0u;
     int delete_result;
     if (!mount || !mount->shared_mapping_base ||
@@ -18930,9 +19043,20 @@ static int rinfs_shared_mount_begin_unmount(RinFS_Mount* mount) {
         if (content_lock_error != RINFS_OK)
             return rinfs_content_unlock_status((content_lock_error), content_unlock_error);
     }
-    if (mount->content_lease_closing != 0u || mount->content_leases != NULL) {
+    operation_error = rinfs_mount_operation_scopes_idle_locked(mount);
+    if (operation_error != RINFS_OK ||
+        mount->restore_operation_gate_active != 0u ||
+        mount->restore_operation_owner_process_id != 0u ||
+        mount->restore_transaction_owner_row != 0u ||
+        mount->restore_transaction_owner_cookie != 0u ||
+        mount->restore_transaction_mount_epoch != 0u ||
+        mount->content_lease_closing != 0u ||
+        mount->content_leases != NULL) {
         rinfs_keep_first_error(&content_unlock_error, rinfs_shared_content_unlock(mount));
-        return rinfs_content_unlock_status((RINFS_ERR_PENDING), content_unlock_error);
+        if (operation_error != RINFS_OK)
+            return rinfs_content_unlock_status(operation_error,
+                                               content_unlock_error);
+        return rinfs_content_unlock_status((RINFS_ERR_BUSY), content_unlock_error);
     }
     /* Stop new content snapshots while the kernel decides whether this is
      * the last process owner. A nonfinal owner reopens admission before it
@@ -18969,6 +19093,7 @@ static int rinfs_shared_mount_begin_unmount(RinFS_Mount* mount) {
 /* Unmount filesystem */
 static int rinfs_abandon_dirty_mount_core(RinFS_Mount* mount) {
     int content_unlock_error = RINFS_OK;
+    int operation_error;
     if (!mount || !mount->mounted) return rinfs_content_unlock_status((RINFS_ERR_INVAL), content_unlock_error);
 
     /* A dirty-mount teardown cannot discard a deferred pathname obligation.
@@ -19014,11 +19139,21 @@ static int rinfs_abandon_dirty_mount_core(RinFS_Mount* mount) {
             return rinfs_content_unlock_status((content_lock_error), content_unlock_error);
         }
     }
-    if (mount->content_leases != NULL) {
+    operation_error = rinfs_mount_operation_scopes_idle_locked(mount);
+    if (operation_error != RINFS_OK ||
+        mount->restore_operation_gate_active != 0u ||
+        mount->restore_operation_owner_process_id != 0u ||
+        mount->restore_transaction_owner_row != 0u ||
+        mount->restore_transaction_owner_cookie != 0u ||
+        mount->restore_transaction_mount_epoch != 0u ||
+        mount->content_leases != NULL) {
         rinfs_keep_first_error(&content_unlock_error, rinfs_shared_content_unlock(mount));
         rinfs_spin_unlock(&g_rinfs_mmap_source_lock);
         rinfs_spin_unlock(&g_rinfs_close_reference_lock);
-        return rinfs_content_unlock_status((RINFS_ERR_PENDING), content_unlock_error);
+        if (operation_error != RINFS_OK)
+            return rinfs_content_unlock_status(operation_error,
+                                               content_unlock_error);
+        return rinfs_content_unlock_status((RINFS_ERR_BUSY), content_unlock_error);
     }
     mount->content_lease_closing = 1u;
     __atomic_store_n(&mount->content_tracking_runtime_disabled, 1u,
@@ -19054,6 +19189,7 @@ static int rinfs_abandon_dirty_mount_core(RinFS_Mount* mount) {
 
 static int rinfs_abandon_dirty_mount_internal(RinFS_Mount* mount) {
     uint64_t mount_epoch;
+    RinFS_RestoreInternalScope lifecycle_scope = {0u};
     int result;
     if (!mount) return RINFS_ERR_INVAL;
 #if defined(RINFS_USERLAND_MOUNT_LEASES) && !defined(RIN_KERNEL)
@@ -19077,7 +19213,10 @@ static int rinfs_abandon_dirty_mount_internal(RinFS_Mount* mount) {
         }
     }
 #endif
-    result = rinfs_abandon_dirty_mount_core(mount);
+    result = rinfs_restore_internal_scope_enter(&lifecycle_scope);
+    if (result == RINFS_OK)
+        result = rinfs_abandon_dirty_mount_core(mount);
+    rinfs_restore_internal_scope_leave(&lifecycle_scope);
     rinfs_restore_mount_teardown_end(
         mount, mount_epoch, result == RINFS_OK);
 #if defined(RINFS_USERLAND_MOUNT_LEASES) && !defined(RIN_KERNEL)
@@ -19105,6 +19244,7 @@ int rinfs_abandon_dirty_mount(RinFS_Mount* mount) {
 
 static int rinfs_unmount_core(RinFS_Mount* mount) {
     int content_unlock_error = RINFS_OK;
+    int operation_error;
     if (!mount) return rinfs_content_unlock_status((RINFS_ERR_INVAL), content_unlock_error);
     if (!mount->mounted) {
         int cleanup_pending =
@@ -19240,11 +19380,23 @@ static int rinfs_unmount_core(RinFS_Mount* mount) {
             return rinfs_content_unlock_status((content_lock_error), content_unlock_error);
         }
     }
-    if (mount->content_leases != NULL) {
+    operation_error = rinfs_mount_operation_scopes_idle_locked(mount);
+    if (operation_error != RINFS_OK ||
+        (mount->content_lease_closing != 0u &&
+         mount->content_lease_closing != 1u) ||
+        mount->restore_operation_gate_active != 0u ||
+        mount->restore_operation_owner_process_id != 0u ||
+        mount->restore_transaction_owner_row != 0u ||
+        mount->restore_transaction_owner_cookie != 0u ||
+        mount->restore_transaction_mount_epoch != 0u ||
+        mount->content_leases != NULL) {
         rinfs_keep_first_error(&content_unlock_error, rinfs_shared_content_unlock(mount));
         rinfs_spin_unlock(&g_rinfs_mmap_source_lock);
         rinfs_spin_unlock(&g_rinfs_close_reference_lock);
-        return rinfs_content_unlock_status((RINFS_ERR_PENDING), content_unlock_error);
+        if (operation_error != RINFS_OK)
+            return rinfs_content_unlock_status(operation_error,
+                                               content_unlock_error);
+        return rinfs_content_unlock_status((RINFS_ERR_BUSY), content_unlock_error);
     }
     mount->content_lease_closing = 1u;
     /* Prevent a new shareable snapshot from being admitted while the mount
@@ -19289,6 +19441,7 @@ static int rinfs_unmount_core(RinFS_Mount* mount) {
 
 static int rinfs_unmount_internal(RinFS_Mount* mount) {
     uint64_t mount_epoch;
+    RinFS_RestoreInternalScope lifecycle_scope = {0u};
     int result;
 #if defined(RINFS_USERLAND_MOUNT_LEASES) && !defined(RIN_KERNEL)
     int registry_unmount_claimed = 0;
@@ -19363,7 +19516,9 @@ static int rinfs_unmount_internal(RinFS_Mount* mount) {
         }
     }
 #endif
-    result = rinfs_unmount_core(mount);
+    result = rinfs_restore_internal_scope_enter(&lifecycle_scope);
+    if (result == RINFS_OK) result = rinfs_unmount_core(mount);
+    rinfs_restore_internal_scope_leave(&lifecycle_scope);
     rinfs_restore_mount_teardown_end(
         mount, mount_epoch, result == RINFS_OK);
 #if defined(RINFS_USERLAND_MOUNT_LEASES) && !defined(RIN_KERNEL)
@@ -26992,6 +27147,10 @@ static int rinfs_restore_shared_gate_claim(
         (owner && (__atomic_load_n(&owner->state, __ATOMIC_ACQUIRE) !=
                        RINFS_SHARED_OWNER_ACTIVE || owner_cookie == 0u))) {
         result = RINFS_ERR_STALE;
+        goto done;
+    }
+    if (mount->content_lease_closing != 0u) {
+        result = RINFS_ERR_BUSY;
         goto done;
     }
     if (mount->readonly &&
