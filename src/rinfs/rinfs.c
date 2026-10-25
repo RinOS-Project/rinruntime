@@ -13507,9 +13507,15 @@ typedef struct {
     uint64_t duplicate_blocks[RINFS_FULL_REPAIR_MAX_DUPLICATE_BLOCKS];
     uint32_t duplicate_block_count;
     int duplicate_block_overflow;
+    int directory_walk_incomplete;
     uint64_t queue_head;
     uint64_t queue_tail;
 } RinFS_FullCheckContext;
+
+static void rinfs_check_mark_directory_walk_incomplete(
+    RinFS_FullCheckContext* context) {
+    if (context) context->directory_walk_incomplete = 1;
+}
 
 static int rinfs_check_bit(const uint8_t* bitmap, uint64_t bit) {
     return (bitmap[bit / 8] & (uint8_t)(1u << (bit % 8))) != 0;
@@ -13851,6 +13857,7 @@ static int rinfs_check_inode_blocks(RinFS_FullCheckContext* context,
 static int rinfs_check_queue_directory(RinFS_FullCheckContext* context,
                                        uint64_t ino, uint64_t parent) {
     if (context->queue_tail >= context->mount->sb.s_inode_count) {
+        rinfs_check_mark_directory_walk_incomplete(context);
         context->report->issues |= RINFS_FULL_ISSUE_DIRECTORY;
         context->report->invalid_directory_entries++;
         return RINFS_OK;
@@ -13888,6 +13895,7 @@ static int rinfs_check_directory_tree(RinFS_FullCheckContext* context) {
     maximum_file_blocks += triple_capacity;
 
     if (!rinfs_check_inode_allocated(context, RINFS_INODE_ROOT)) {
+        rinfs_check_mark_directory_walk_incomplete(context);
         context->report->issues |= RINFS_FULL_ISSUE_DIRECTORY;
         context->report->invalid_directory_entries++;
         return RINFS_OK;
@@ -13907,6 +13915,7 @@ static int rinfs_check_directory_tree(RinFS_FullCheckContext* context) {
         if ((dir_inode.i_mode >> 12) != RINFS_FT_DIR ||
             dir_inode.i_size == 0 ||
             dir_inode.i_size % mount->sb.s_block_size != 0) {
+            rinfs_check_mark_directory_walk_incomplete(context);
             context->report->issues |= RINFS_FULL_ISSUE_DIRECTORY;
             context->report->invalid_directory_entries++;
             continue;
@@ -13919,6 +13928,7 @@ static int rinfs_check_directory_tree(RinFS_FullCheckContext* context) {
             /* Do not scan a corrupt i_size beyond the inode's representable
              * direct/indirect address space. Such a scan can be enormous and
              * cannot produce a complete reachability result for repair. */
+            rinfs_check_mark_directory_walk_incomplete(context);
             context->report->issues |= RINFS_FULL_ISSUE_DIRECTORY;
             context->report->invalid_directory_entries++;
             continue;
@@ -13927,6 +13937,7 @@ static int rinfs_check_directory_tree(RinFS_FullCheckContext* context) {
             uint64_t phys_block = 0;
             err = get_file_block(mount, &dir_inode, file_block, &phys_block);
             if (err == RINFS_ERR_CORRUPT) {
+                rinfs_check_mark_directory_walk_incomplete(context);
                 context->report->issues |= RINFS_FULL_ISSUE_DIRECTORY;
                 context->report->invalid_directory_entries++;
                 break;
@@ -13936,6 +13947,7 @@ static int rinfs_check_directory_tree(RinFS_FullCheckContext* context) {
              * directory traversal. */
             if (err != RINFS_OK) return err;
             if (phys_block == 0) {
+                rinfs_check_mark_directory_walk_incomplete(context);
                 context->report->issues |= RINFS_FULL_ISSUE_DIRECTORY;
                 context->report->invalid_directory_entries++;
                 continue;
@@ -13948,6 +13960,7 @@ static int rinfs_check_directory_tree(RinFS_FullCheckContext* context) {
                 const RinFS_DirEntry* entry =
                     (const RinFS_DirEntry*)(context->block_buffer + offset);
                 if (!rinfs_dirent_valid(mount, entry, offset, dir_ino)) {
+                    rinfs_check_mark_directory_walk_incomplete(context);
                     context->report->issues |= RINFS_FULL_ISSUE_DIRECTORY;
                     context->report->invalid_directory_entries++;
                     break;
@@ -13958,6 +13971,7 @@ static int rinfs_check_directory_tree(RinFS_FullCheckContext* context) {
                                  (entry->d_name_len == 1 && entry->d_name[0] == '.');
                     int is_dotdot = rinfs_dirent_is_dotdot(entry);
                     if (!rinfs_check_inode_allocated(context, entry->d_inode)) {
+                        rinfs_check_mark_directory_walk_incomplete(context);
                         context->report->issues |= RINFS_FULL_ISSUE_DIRECTORY;
                         context->report->invalid_directory_entries++;
                     } else {
@@ -13965,12 +13979,17 @@ static int rinfs_check_directory_tree(RinFS_FullCheckContext* context) {
                         err = rinfs_inode_read(mount, entry->d_inode, &target);
                         if (err != RINFS_OK) return err;
                         uint8_t target_type = (uint8_t)(target.i_mode >> 12);
-                        if (!rinfs_check_inode_type(target.i_mode) ||
-                            rinfs_dirent_type(entry) != target_type) {
+                        if (!rinfs_check_inode_type(target.i_mode)) {
+                            rinfs_check_mark_directory_walk_incomplete(context);
+                            context->report->issues |=
+                                RINFS_FULL_ISSUE_DIRECTORY;
+                            context->report->invalid_directory_entries++;
+                        } else if (rinfs_dirent_type(entry) != target_type) {
                             context->report->issues |= RINFS_FULL_ISSUE_DIRECTORY;
                             context->report->invalid_directory_entries++;
                         }
                         if (context->observed_links[entry->d_inode - 1] == UINT32_MAX) {
+                            rinfs_check_mark_directory_walk_incomplete(context);
                             context->report->issues |= RINFS_FULL_ISSUE_LINK_COUNT;
                         } else {
                             context->observed_links[entry->d_inode - 1]++;
@@ -13979,6 +13998,8 @@ static int rinfs_check_directory_tree(RinFS_FullCheckContext* context) {
                         if (is_dot) {
                             if (saw_dot || entry->d_inode != dir_ino ||
                                 target_type != RINFS_FT_DIR) {
+                                rinfs_check_mark_directory_walk_incomplete(
+                                    context);
                                 context->report->issues |= RINFS_FULL_ISSUE_DIRECTORY;
                                 context->report->invalid_directory_entries++;
                             }
@@ -13986,6 +14007,8 @@ static int rinfs_check_directory_tree(RinFS_FullCheckContext* context) {
                         } else if (is_dotdot) {
                             if (saw_dotdot || entry->d_inode != expected_parent ||
                                 target_type != RINFS_FT_DIR) {
+                                rinfs_check_mark_directory_walk_incomplete(
+                                    context);
                                 context->report->issues |= RINFS_FULL_ISSUE_DIRECTORY;
                                 context->report->invalid_directory_entries++;
                             }
@@ -15910,6 +15933,7 @@ static int rinfs_check_full_internal(RinFS_Mount* mount, uint32_t repair_flags,
             mount, ino, &inode, &duplicate_names, 0, NULL);
         if (name_err == RINFS_ERR_CORRUPT) {
             if (!rinfs_check_bit(context.reachable_inodes, ino - 1)) {
+                context.directory_walk_incomplete = 1;
                 local_report.issues |= RINFS_FULL_ISSUE_DIRECTORY;
                 local_report.invalid_directory_entries++;
             }
@@ -15948,6 +15972,13 @@ static int rinfs_check_full_internal(RinFS_Mount* mount, uint32_t repair_flags,
     }
     err = rinfs_check_block_bitmap(&context);
     if (err != RINFS_OK) goto out;
+    /* A diagnostic scan may continue after structural damage to collect
+     * useful findings. Repair must not act on reachability or link counts
+     * derived from a directory walk that skipped any namespace edges. */
+    if (repair_flags != 0 && context.directory_walk_incomplete) {
+        err = RINFS_ERR_CORRUPT;
+        goto out;
+    }
     if (repair_flags != 0 && local_report.issues != 0) {
         uint32_t repairable_issues = 0;
         uint32_t unsafe_issues;
