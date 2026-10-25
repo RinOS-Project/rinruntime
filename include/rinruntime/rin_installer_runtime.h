@@ -39,6 +39,11 @@ RinResultCode rin_app_block_physical_device_id(
 RinResultCode rin_app_install_target_open(
     uint32_t block_id, uint64_t minimum_blocks,
     RinInstallTargetSessionV1* session_out);
+/* Opens a writable backup-destination lease for fixed or removable
+ * media. Writes remain scoped to a live RinData RinFS transaction. */
+RinResultCode rin_app_install_backup_destination_open(
+    uint32_t block_id, uint64_t minimum_blocks,
+    RinInstallTargetSessionV1* session_out);
 /* Opens a read-only lease that can include removable backup media. The
  * returned handle has no writable transaction path. */
 RinResultCode rin_app_install_backup_source_open(

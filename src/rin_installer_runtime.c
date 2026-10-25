@@ -228,6 +228,15 @@ RinResultCode rin_app_install_target_open(
         session_out);
 }
 
+RinResultCode rin_app_install_backup_destination_open(
+    uint32_t block_id, uint64_t minimum_blocks,
+    RinInstallTargetSessionV1* session_out)
+{
+    return installer_target_open_with_syscall(
+        (uintptr_t)RIN_SYS_INSTALL_BACKUP_DESTINATION_OPEN, block_id,
+        minimum_blocks, session_out);
+}
+
 RinResultCode rin_app_install_backup_source_open(
     uint32_t block_id, uint64_t minimum_blocks,
     RinInstallTargetSessionV1* session_out)
