@@ -202,6 +202,12 @@ int wnd_set_pointer_capture(RinRuntimeGuiHandle handle, int enabled);
 int wnd_set_keyboard_grab(RinRuntimeGuiHandle handle, int enabled);
 int wnd_set_modal(RinRuntimeGuiHandle handle, int enabled);
 int wnd_set_cursor(RinRuntimeGuiHandle handle, uint32_t cursor_type);
+/* Publish an already-presented cursor-role surface. The Runtime orders each
+ * update for this handle and Compositor rejects stale generations. enabled=0
+ * restores the semantic cursor; visible=0 keeps the cursor hidden. */
+int wnd_update_cursor_surface(RinRuntimeGuiHandle handle,
+                              int32_t hotspot_x, int32_t hotspot_y,
+                              int visible, int enabled);
 int wnd_get_frame_info(RinRuntimeGuiHandle handle,
                        RinCompositorFrameInfoV1* info);
 int wnd_get_frame_info_async(RinRuntimeGuiHandle handle, uint64_t cookie);

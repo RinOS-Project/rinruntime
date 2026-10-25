@@ -59,6 +59,11 @@ typedef struct RinRuntimeGuiSurface {
     uint32_t role;
     uint32_t surface_flags;
     uint32_t cursor_type;
+    uint32_t cursor_surface_enabled;
+    uint32_t cursor_surface_visible;
+    int32_t cursor_hotspot_x;
+    int32_t cursor_hotspot_y;
+    uint64_t cursor_generation;
     uint32_t window_state;
     uint32_t workspace;
     uint32_t pointer_capture;
@@ -1595,6 +1600,8 @@ static int runtime_rebind_surface(RinRuntimeGuiSurface* surface) {
         status != 0 || reply_size != sizeof(new_id) || new_id == 0u)
         return -1;
     surface->id = new_id;
+    if ((surface->surface_flags & RIN_COMPOSITOR_SURFACE_FLAG_CURSOR) != 0u)
+        surface->cursor_generation = 0u;
     surface->input_poll_pending = 0u;
     surface->input_event_ready = 0u;
     surface->input_error = 0;
@@ -1728,6 +1735,30 @@ cursor_rebind_done:
         return -1;
     surface->slot_submitted_sequence[commit.buffer_slot] =
         commit.frame_sequence;
+    if ((surface->surface_flags & RIN_COMPOSITOR_SURFACE_FLAG_CURSOR) != 0u &&
+        surface->cursor_surface_enabled != 0u) {
+        RinCompositorUpdateCursorSurfaceV1 update;
+        if (surface->cursor_surface_visible > 1u ||
+            surface->cursor_hotspot_x < 0 ||
+            surface->cursor_hotspot_y < 0 ||
+            (uint32_t)surface->cursor_hotspot_x >= surface->width ||
+            (uint32_t)surface->cursor_hotspot_y >= surface->height)
+            return -1;
+        memset(&update, 0, sizeof(update));
+        update.struct_size = sizeof(update);
+        update.version = RIN_COMPOSITOR_ABI_VERSION;
+        update.surface_id = new_id;
+        update.enabled = 1u;
+        update.visible = surface->cursor_surface_visible;
+        update.hotspot_x = surface->cursor_hotspot_x;
+        update.hotspot_y = surface->cursor_hotspot_y;
+        update.cursor_generation = 1u;
+        if (runtime_request(RIN_COMPOSITOR_UPDATE_CURSOR_SURFACE, &update,
+                            sizeof(update), 0, 0u, &reply_size, &status) != 0 ||
+            status != 0 || reply_size != 0u)
+            return -1;
+        surface->cursor_generation = update.cursor_generation;
+    }
     return 0;
 }
 
@@ -2306,6 +2337,50 @@ int wnd_set_cursor(RinRuntimeGuiHandle handle, uint32_t cursor_type) {
             RIN_RUNTIME_GUI_ASYNC_RESULT_NONE);
     if (result != RIN_RESULT_OK) return result;
     surface->cursor_type = cursor_type;
+    return RIN_RESULT_OK;
+}
+
+int wnd_update_cursor_surface(RinRuntimeGuiHandle handle,
+                              int32_t hotspot_x, int32_t hotspot_y,
+                              int visible, int enabled) {
+    RinRuntimeGuiSurface* surface = runtime_surface(handle);
+    RinCompositorUpdateCursorSurfaceV1 request;
+    uint32_t reply_size = 0u;
+    int32_t status = -1;
+    uint64_t generation;
+    if (!surface ||
+        (surface->surface_flags & RIN_COMPOSITOR_SURFACE_FLAG_CURSOR) == 0u ||
+        surface->role != RIN_COMPOSITOR_ROLE_CURSOR)
+        return RIN_RESULT_INVALID_HANDLE;
+    if (visible < 0 || visible > 1 || enabled < 0 || enabled > 1 ||
+        hotspot_x < 0 || hotspot_y < 0 ||
+        (uint32_t)hotspot_x >= surface->width ||
+        (uint32_t)hotspot_y >= surface->height)
+        return RIN_RESULT_INVALID_ARGUMENT;
+    if (surface->cursor_generation == UINT64_MAX)
+        return RIN_RESULT_LIMIT_EXCEEDED;
+    if (runtime_async_drain() != 0) return RIN_RESULT_IO;
+
+    generation = surface->cursor_generation + 1u;
+    memset(&request, 0, sizeof(request));
+    request.struct_size = sizeof(request);
+    request.version = RIN_COMPOSITOR_ABI_VERSION;
+    request.surface_id = surface->id;
+    request.enabled = (uint32_t)enabled;
+    request.visible = (uint32_t)visible;
+    request.hotspot_x = hotspot_x;
+    request.hotspot_y = hotspot_y;
+    request.cursor_generation = generation;
+    if (runtime_request(RIN_COMPOSITOR_UPDATE_CURSOR_SURFACE, &request,
+                        sizeof(request), 0, 0u, &reply_size, &status) != 0)
+        return RIN_RESULT_IO;
+    if (status != 0 || reply_size != 0u)
+        return status != 0 ? status : RIN_RESULT_CORRUPT_DATA;
+    surface->cursor_generation = generation;
+    surface->cursor_surface_enabled = (uint32_t)enabled;
+    surface->cursor_surface_visible = (uint32_t)visible;
+    surface->cursor_hotspot_x = hotspot_x;
+    surface->cursor_hotspot_y = hotspot_y;
     return RIN_RESULT_OK;
 }
 
