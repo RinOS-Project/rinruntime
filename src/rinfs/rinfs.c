@@ -27180,9 +27180,12 @@ static int rinfs_restore_page_cache_quiesce(RinFS_Mount* mount,
 /* Recovery sync is idempotent while the pending restore record remains
  * authoritative. Retry transient storage and allocation failures a bounded
  * number of times before the caller fences the mount read-only. */
+#define RINFS_RESTORE_RECOVERY_ATTEMPTS 3u
+
 static int rinfs_restore_cache_sync_for_recovery(RinFS_Mount* mount) {
     int error = RINFS_OK;
-    for (uint32_t attempt = 0u; attempt < 3u; ++attempt) {
+    for (uint32_t attempt = 0u;
+         attempt < RINFS_RESTORE_RECOVERY_ATTEMPTS; ++attempt) {
         error = rinfs_sync(mount);
         if (error != RINFS_ERR_IO && error != RINFS_ERR_NOMEM)
             return error;
@@ -28834,9 +28837,11 @@ static int rinfs_restore_transaction_mount_recover_core(RinFS_Mount* mount) {
     restore_retry =
         (rinfs_mount_readonly_state(mount) &
          RINFS_READONLY_RECOVERY_RESTORE_MASK) != 0u;
-    /* Read the durable marker before clearing a retry fence. A failed
-     * pre-replay sync or transient cache-quiescence check never changes this
-     * record, so its presence identifies recovery that is safe to retry. */
+    /* Validate the checksummed marker before clearing a retry fence. A
+     * pre-replay sync or cache-quiescence failure leaves it unchanged. During
+     * replay, each phase's namespace/data work is synced before its next phase
+     * is published, so a valid current phase can safely resume in this mount;
+     * after reboot, the last persisted phase remains replayable as well. */
     error = rinfs_restore_record_load(mount, &record, &present);
     if (error != RINFS_OK) {
         if (recovery_only && error == RINFS_ERR_CORRUPT)
@@ -28895,6 +28900,23 @@ static int rinfs_restore_transaction_mount_recover_core(RinFS_Mount* mount) {
     return error;
 }
 
+/* Replay writes durable phase boundaries before advancing the record, so a
+ * retry can resume from the record currently visible in the mount after a
+ * transient I/O or allocation error. Each retry reloads and validates that
+ * record in the core before it attempts another mutation. Keep the restore
+ * gate held across all attempts; cache-reference BUSY remains an explicit
+ * retry for the caller after references drain. */
+static int rinfs_restore_transaction_mount_recover_retry(RinFS_Mount* mount) {
+    int error = RINFS_OK;
+    for (uint32_t attempt = 0u;
+         attempt < RINFS_RESTORE_RECOVERY_ATTEMPTS; ++attempt) {
+        error = rinfs_restore_transaction_mount_recover_core(mount);
+        if (error != RINFS_ERR_IO && error != RINFS_ERR_NOMEM)
+            return error;
+    }
+    return error;
+}
+
 int rinfs_restore_transaction_mount_recover(RinFS_Mount* mount) {
     uint64_t mount_epoch;
     RinFS_RestoreInternalScope internal_scope = {0u};
@@ -28907,7 +28929,7 @@ int rinfs_restore_transaction_mount_recover(RinFS_Mount* mount) {
     if (mount->shared_mapping_base && mount->shared_mount_ready == 0u) {
         error = rinfs_restore_internal_scope_enter(mount, &internal_scope);
         if (error != RINFS_OK) return error;
-        error = rinfs_restore_transaction_mount_recover_core(mount);
+        error = rinfs_restore_transaction_mount_recover_retry(mount);
         rinfs_restore_internal_scope_leave(&internal_scope);
         return error;
     }
@@ -28921,7 +28943,7 @@ int rinfs_restore_transaction_mount_recover(RinFS_Mount* mount) {
             mount, mount_epoch);
         return release_error == RINFS_OK ? error : release_error;
     }
-    error = rinfs_restore_transaction_mount_recover_core(mount);
+    error = rinfs_restore_transaction_mount_recover_retry(mount);
     release_error = rinfs_restore_mount_recovery_end(mount, mount_epoch);
     rinfs_restore_internal_scope_leave(&internal_scope);
     if (release_error != RINFS_OK) {
