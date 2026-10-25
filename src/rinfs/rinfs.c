@@ -28933,7 +28933,15 @@ static int rinfs_restore_transaction_mount_recover_core(RinFS_Mount* mount) {
             rinfs_mount_recovery_clear(
                 mount, RINFS_READONLY_RECOVERY_RESTORE_MASK);
         error = rinfs_mount_prepare_write(mount);
-        if (error != RINFS_OK) return error;
+        if (error != RINFS_OK) {
+            /* Clearing a retry-only restore fence is provisional. If another
+             * pending write-recovery prerequisite fails, keep this mount
+             * closed until the restore replay can actually proceed. */
+            if (restore_retry)
+                rinfs_mount_recovery_fence(
+                    mount, RINFS_READONLY_RECOVERY_RESTORE_REPLAY, error);
+            return error;
+        }
     } else if (mount->readonly) {
         return RINFS_ERR_ROFS;
     }
