@@ -68,9 +68,11 @@ enum {
     RINFS_SHARED_LEASE_BEGIN_UNMOUNT = 3u,
     RINFS_SHARED_LEASE_FINISH = 4u,
     RINFS_SHARED_LEASE_OWNER_QUERY = 5u,
-    /* Flush, close admission, and release this owner's root pin for exec.
-     * The SHM mapping stays attached so a failed exec can reacquire a lease. */
-    RINFS_SHARED_LEASE_EXEC_SUSPEND = 6u
+    /* Flush and close admission while retaining this exact VFS lease, owner
+     * row, and root pin until exec commits or the syscall returns. */
+    RINFS_SHARED_LEASE_EXEC_SUSPEND = 6u,
+    /* Reopen the same suspended owner lease after a failed exec syscall. */
+    RINFS_SHARED_LEASE_EXEC_RESUME = 7u
 };
 RinResultCode rin_app_rinfs_cache_lease_shared_transition(
     const void* mapping_base, uint64_t mapping_size, uint32_t action,

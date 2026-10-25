@@ -18495,21 +18495,20 @@ static void rinfs_exec_mount_fence(RinFSExecMountRecord* record) {
     mount->mounted = 1;
     __atomic_store_n(&mount->content_lease_closing, UINT32_MAX,
                      __ATOMIC_RELEASE);
-    if (record->shared) {
-        if (mount->external_mount_lease_token == 0u) {
-            mount->shared_lease_released = 1u;
-            if (record->shared_registry_index <
-                RINFS_SHARED_MOUNT_REGISTRY_CAPACITY) {
-                g_rinfs_shared_mount_registry_closing[
-                    record->shared_registry_index] =
-                    RINFS_SHARED_MOUNT_REGISTRY_EXEC_DETACH;
-            }
-        }
+    if (record->shared && record->lease_reacquired == 0u &&
+        record->shared_registry_index <
+            RINFS_SHARED_MOUNT_REGISTRY_CAPACITY) {
+        /* Lease state belongs to this process. Do not publish the missing
+         * owner lease through RinFS_Mount: fork siblings share that object. */
+        g_rinfs_shared_mount_registry_closing[
+            record->shared_registry_index] =
+            RINFS_SHARED_MOUNT_REGISTRY_EXEC_DETACH;
     }
 }
 
-/* Reacquire every lease that was dropped by exec preflight. The caller still
- * owns the lifecycle, mount, close-reference, and mmap-source interlocks. */
+/* Resume every shared lease suspended by exec preflight. Shared VFS owner
+ * rows and block pins remain live until commit; private leases still use the
+ * legacy end/rebegin path. The caller owns every local interlock. */
 static int rinfs_exec_mounts_rollback_locked(void) {
     int first_error = RINFS_OK;
     while (g_rinfs_exec_mount_record_count != 0u) {
@@ -18523,43 +18522,13 @@ static int rinfs_exec_mounts_rollback_locked(void) {
         }
         if (record->lease_suspended && record->had_kernel_lease) {
             if (record->shared) {
-                uint64_t token = 0u;
                 uint32_t ignored_owner = 0u;
-                uint32_t owner_row = 0u;
-                RinResultCode begin_result =
-                    rin_app_rinfs_cache_lease_begin_shared(
-                        (uint32_t)mount->dev_id, mount->dev_offset,
-                        mount->dev_sector_count, mount->shared_mapping_base,
-                        mount->shared_mapping_size, &token);
-                if (begin_result != RIN_RESULT_OK || token == 0u) {
-                    if (token != 0u) {
-                        mount->external_mount_lease_token = token;
-                        mount->shared_lease_released = 0u;
-                    }
+                if (rinfs_shared_lease_transition(
+                        mount, RINFS_SHARED_LEASE_EXEC_RESUME,
+                        &ignored_owner) != RIN_RESULT_OK) {
                     reacquired = 0;
                 } else {
-                    mount->external_mount_lease_token = token;
-                    mount->shared_lease_released = 0u;
-                    if (rinfs_shared_lease_transition(
-                            mount, RINFS_SHARED_LEASE_READY,
-                            &ignored_owner) != RIN_RESULT_OK) {
-                        uint32_t unused_owner = 0u;
-                        if (rinfs_shared_lease_transition(
-                            mount, RINFS_SHARED_LEASE_RELEASE_UNMOUNTED,
-                            &unused_owner) == RIN_RESULT_OK) {
-                            mount->external_mount_lease_token = 0u;
-                            mount->shared_lease_released = 1u;
-                        }
-                        reacquired = 0;
-                    } else if (rinfs_shared_owner_query_row(
-                                   mount, &owner_row) != RINFS_OK ||
-                               owner_row == 0u ||
-                               owner_row > RINFS_SHARED_OWNER_CAPACITY) {
-                        reacquired = 0;
-                    } else {
-                        record->shared_owner_row = owner_row;
-                        record->lease_reacquired = 1u;
-                    }
+                    record->lease_reacquired = 1u;
                 }
             } else {
                 uint64_t token = 0u;
@@ -18593,14 +18562,19 @@ static int rinfs_exec_mounts_rollback_locked(void) {
                     }
                     if (reacquired &&
                         mount->content_lease_closing ==
-                            RINFS_CONTENT_LEASE_CLOSING_EXEC) {
-                        mount->content_lease_fork_owner_row =
-                            record->shared_owner_row;
+                            RINFS_CONTENT_LEASE_CLOSING_EXEC &&
+                        mount->content_lease_fork_owner_row ==
+                            record->shared_owner_row) {
+                        mount->content_lease_fork_owner_row = 0u;
                         mount->content_lease_closing = 0u;
                     } else if (reacquired &&
+                               mount->content_lease_closing ==
+                                   RINFS_CONTENT_LEASE_CLOSING_EXEC) {
+                        /* A sibling began its own exec after this process
+                         * reopened admission. Preserve the sibling's gate. */
+                    } else if (reacquired &&
                                mount->content_lease_closing == 0u) {
-                        mount->content_lease_fork_owner_row =
-                            record->shared_owner_row;
+                        mount->content_lease_fork_owner_row = 0u;
                     } else if (reacquired &&
                                mount->content_lease_closing != 0u) {
                         reacquired = 0;
@@ -18770,6 +18744,7 @@ int rinfs_exec_prepare_all(void) {
         result = rinfs_exec_mount_sync(mount);
         if (result != RINFS_OK) goto rollback;
     }
+
     for (uint32_t index = 0u;
          index < g_rinfs_exec_mount_record_count; ++index) {
         RinFSExecMountRecord* record = &g_rinfs_exec_mount_records[index];
@@ -18782,8 +18757,6 @@ int rinfs_exec_prepare_all(void) {
                 result = RINFS_ERR_BUSY;
                 goto rollback;
             }
-            mount->external_mount_lease_token = 0u;
-            mount->shared_lease_released = 1u;
             record->lease_suspended = 1u;
         } else {
             if (mount->external_mount_lease_token != 0u) {
