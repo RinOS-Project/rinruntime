@@ -14,3 +14,10 @@ absent.
 The pure models do not open files, access a compositor, discover hardware, or
 invent a service result. Consumers provide authenticated adapters for those
 operations; an absent or rejected adapter remains an explicit error.
+
+Dependency cache checkouts are kept beneath the configured cache root (the
+build-local `rinruntime-deps` directory by default). The resolver rejects a
+checkout or lock path that escapes that root or traverses a detected
+symlink/junction/reparse point, and rejects `.`/`..` checkout directory names.
+Set `RINRUNTIME_DEPENDENCY_CACHE_ROOT` to choose a different canonical cache
+root explicitly.

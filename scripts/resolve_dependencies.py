@@ -10,6 +10,7 @@ import hashlib
 import json
 import os
 import re
+import stat
 import subprocess
 import sys
 import time
@@ -67,11 +68,52 @@ def _is_clean_pinned_checkout(path: Path, dependency: dict[str, object]) -> bool
         return False
 
 
+def _is_reparse_point(path: Path) -> bool:
+    try:
+        metadata = path.lstat()
+    except FileNotFoundError:
+        return False
+    if stat.S_ISLNK(metadata.st_mode):
+        return True
+    # Windows junctions and other reparse points may not report S_ISLNK.
+    return bool(getattr(metadata, "st_file_attributes", 0) & 0x400)
+
+
+def _cache_path_under_root(path: Path, cache_root: Path) -> Path:
+    """Reject cache paths that escape or redirect through a reparse point."""
+    root = Path(os.path.abspath(cache_root))
+    candidate = Path(os.path.abspath(path))
+    try:
+        relative = candidate.relative_to(root)
+    except ValueError as error:
+        raise RuntimeError(
+            f"dependency cache path escapes its configured root: {candidate}") from error
+
+    current = root
+    for component in relative.parts:
+        current /= component
+        if _is_reparse_point(current):
+            raise RuntimeError(
+                f"dependency cache path contains a symlink or reparse point: {current}")
+
+    resolved_root = root.resolve()
+    resolved_candidate = candidate.resolve()
+    try:
+        resolved_candidate.relative_to(resolved_root)
+    except ValueError as error:
+        raise RuntimeError(
+            f"dependency cache path resolves outside its configured root: {candidate}") from error
+    return candidate
+
+
 @contextmanager
-def _dependency_cache_lock(path: Path):
+def _dependency_cache_lock(path: Path, cache_root: Path):
     """Serialize initialization and validation of one pinned checkout."""
-    lock_path = path.with_name(path.name + ".lock")
+    path = _cache_path_under_root(path, cache_root)
+    lock_path = _cache_path_under_root(
+        path.with_name(path.name + ".lock"), cache_root)
     lock_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = _cache_path_under_root(lock_path, cache_root)
     with lock_path.open("a+b") as lock_file:
         lock_file.seek(0, os.SEEK_END)
         if lock_file.tell() == 0:
@@ -109,15 +151,19 @@ def _dependency_cache_lock(path: Path):
                 fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
 
-def _ensure_cache_checkout(path: Path, dependency: dict[str, object]) -> Path:
-    path = path.resolve()
+def _ensure_cache_checkout(path: Path, dependency: dict[str, object],
+                           cache_root: Path) -> Path:
+    path = _cache_path_under_root(path, cache_root)
     path.parent.mkdir(parents=True, exist_ok=True)
-    with _dependency_cache_lock(path):
-        return _ensure_cache_checkout_locked(path, dependency)
+    path = _cache_path_under_root(path, cache_root)
+    with _dependency_cache_lock(path, cache_root):
+        return _ensure_cache_checkout_locked(path, dependency, cache_root)
 
 
 def _ensure_cache_checkout_locked(path: Path,
-                                  dependency: dict[str, object]) -> Path:
+                                  dependency: dict[str, object],
+                                  cache_root: Path) -> Path:
+    path = _cache_path_under_root(path, cache_root)
     url = str(dependency["url"])
     revision = str(dependency["revision"])
 
@@ -145,6 +191,7 @@ def _ensure_cache_checkout_locked(path: Path,
                 f"or ignored artifacts; preserve and clear it manually: {path}")
     else:
         path.mkdir()
+        path = _cache_path_under_root(path, cache_root)
         _git(path, "init")
         _git(path, "remote", "add", "origin", url)
 
@@ -157,7 +204,7 @@ def _ensure_cache_checkout_locked(path: Path,
     if _has_worktree_artifacts(path):
         raise RuntimeError(
             f"resolved dependency checkout contains working-tree artifacts: {path}")
-    return path.resolve()
+    return _cache_path_under_root(path, cache_root).resolve()
 
 
 def _validate_required_paths(name: str, root: Path,
@@ -231,9 +278,11 @@ def _resolve(source_root: Path, build_root: Path, names: list[str],
         name: Path(str(entries[name]["checkout"])).name
         for name in names
     }
-    if any(not cache_name for cache_name in cache_names.values()) or \
+    if any(cache_name in ("", ".", "..")
+           for cache_name in cache_names.values()) or \
        len(set(cache_names.values())) != len(cache_names):
-        raise RuntimeError("dependency checkout paths must have unique directory names")
+        raise RuntimeError(
+            "dependency checkout paths must have unique, non-special directory names")
     cache_namespace = _dependency_cache_namespace(names, entries)
     # Keep sibling-relative includes inside libi18n valid by choosing all local
     # checkouts together or resolving the complete dependency set in one cache.
@@ -247,9 +296,12 @@ def _resolve(source_root: Path, build_root: Path, names: list[str],
         configured_cache = os.environ.get("RINRUNTIME_DEPENDENCY_CACHE_ROOT")
         cache_root = (Path(configured_cache).expanduser().resolve()
                       if configured_cache else build_root / "rinruntime-deps")
+        cache_root.mkdir(parents=True, exist_ok=True)
+        cache_root = cache_root.resolve()
         resolved = {
             name: _ensure_cache_checkout(
-                cache_root / cache_namespace / cache_names[name], entries[name])
+                cache_root / cache_namespace / cache_names[name], entries[name],
+                cache_root)
             for name in names
         }
 
