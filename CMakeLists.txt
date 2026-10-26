@@ -21,7 +21,7 @@ set(RINRUNTIME_RLL_TARGET "x86_64-unknown-rinos" CACHE STRING
 set(RINRUNTIME_RLL_SIGN_PROFILE "release" CACHE STRING
     "RinCompiler signing profile used by the target .rll route")
 set(RINRUNTIME_RLL_SOURCES
-    "src/portal.c;src/crash.c;src/rin_crash_record.c;src/rin_crash_summary.c;src/rin_crash_consent.c;src/backup_restore.c;src/known_folders.c;src/file_operation.c;src/safe_save.c;src/safe_save_posix.c;src/session_recovery.c;src/crash_service.c;src/frame_copy.c;src/serial_portal_protocol.c;src/unicode_grapheme.c;src/unicode.c;src/platform.c;src/service.c;src/clipboard.c;src/crash_service_client.c;src/file_portal.c;src/file_portal_startup.c;src/durable_file_portal.c;src/file_chooser_portal.c;src/file_operation_service_client.c;src/accessibility_service_client.c;src/audio/rin_audio_service_client.c;src/firewall/rule_engine.c;src/firewall/namespace_policy.c;src/firewall/profile.c;src/firewall/application.c;src/firewall/conntrack_query.c"
+    "src/portal.c;src/crash.c;src/rin_crash_record.c;src/rin_crash_summary.c;src/rin_crash_consent.c;src/backup_restore.c;src/known_folders.c;src/file_operation.c;src/safe_save.c;src/safe_save_posix.c;src/session_recovery.c;src/crash_service.c;src/frame_copy.c;src/serial_portal_protocol.c;src/unicode_grapheme.c;src/unicode.c;src/platform.c;src/service.c;src/clipboard.c;src/crash_service_client.c;src/file_portal.c;src/file_portal_startup.c;src/durable_file_portal.c;src/file_chooser_portal.c;src/file_operation_service_client.c;src/accessibility_service_client.c;src/audio/rin_audio_service_client.c;src/compositor_gui.c;src/compositor_gpu_bridge.c;src/sdk_gui_v1.c;../aquamarine/aq_blend.c;../aquamarine/aq_color.c;../aquamarine/aq_draw.c;../aquamarine/aq_surface.c;../aquamarine/aq_text.c;src/firewall/rule_engine.c;src/firewall/namespace_policy.c;src/firewall/profile.c;src/firewall/application.c;src/firewall/conntrack_query.c"
     CACHE STRING "semicolon-separated RinRuntime sources for the target .rll route")
 set(RINRUNTIME_RLL_DEPENDENCIES "" CACHE STRING
     "semicolon-separated dependency .rll images for the target .rll route")
@@ -159,6 +159,7 @@ if(RINRUNTIME_BUILD_GUI)
          ${RINRUNTIME_AQUAMARINE_ROOT}/aq_transform.c
          src/compositor_gui.c
          src/compositor_gpu_bridge.c
+         src/sdk_gui_v1.c
          src/render.c
          src/media_render.c
          src/render_context.cpp)
@@ -292,7 +293,8 @@ if(RINRUNTIME_BUILD_RLL)
         --include ${RINRUNTIME_LIBUNICODE_ROOT}
         --include ${RINRUNTIME_LIBI18N_ROOT}
         --include ${RINRUNTIME_RINRESOURCE_ROOT}/include
-        --include ${RINRUNTIME_RINJSON_ROOT}/include)
+        --include ${RINRUNTIME_RINJSON_ROOT}/include
+        --include ${RINRUNTIME_AQUAMARINE_ROOT}/..)
     foreach(dependency_root IN LISTS RINRUNTIME_DEPENDENCY_PATHS)
         list(APPEND RINRUNTIME_RLL_COMMAND --dependency-root ${dependency_root})
     endforeach()

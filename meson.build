@@ -116,7 +116,8 @@ if host_machine.system() != 'windows'
                      join_paths(aquamarine_root, 'aq_transform.c'))
   runtime_sources += aq_sources
   runtime_sources += files('src/compositor_gui.c',
-                           'src/compositor_gpu_bridge.c', 'src/render.c',
+                           'src/compositor_gpu_bridge.c',
+                           'src/sdk_gui_v1.c', 'src/render.c',
                            'src/media_render.c', 'src/render_context.cpp')
 endif
 runtime_deps = []
@@ -198,6 +199,16 @@ if get_option('build_rll')
       rll_sources += [join_paths(libi18n_root, 'rin_i18n.c')]
     elif rll_source == '../rinjson/src/json.cpp'
       rll_sources += [join_paths(rinjson_root, 'src/json.cpp')]
+    elif rll_source == '../aquamarine/aq_blend.c'
+      rll_sources += [join_paths(aquamarine_root, 'aq_blend.c')]
+    elif rll_source == '../aquamarine/aq_color.c'
+      rll_sources += [join_paths(aquamarine_root, 'aq_color.c')]
+    elif rll_source == '../aquamarine/aq_draw.c'
+      rll_sources += [join_paths(aquamarine_root, 'aq_draw.c')]
+    elif rll_source == '../aquamarine/aq_surface.c'
+      rll_sources += [join_paths(aquamarine_root, 'aq_surface.c')]
+    elif rll_source == '../aquamarine/aq_text.c'
+      rll_sources += [join_paths(aquamarine_root, 'aq_text.c')]
     else
       rll_sources += [rll_source]
     endif
@@ -245,6 +256,7 @@ if get_option('build_rll')
     '--include', libi18n_root,
     '--include', join_paths(rinresource_root, 'include'),
     '--include', join_paths(rinjson_root, 'include'),
+    '--include', join_paths(aquamarine_root, '..'),
   ]
   foreach dependency_root : dependency_paths
     rll_command += ['--dependency-root', dependency_root]

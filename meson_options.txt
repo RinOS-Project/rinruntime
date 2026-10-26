@@ -30,6 +30,11 @@ option('rll_sources', type: 'array', value: [
   'src/file_operation_service_client.c',
   'src/accessibility_service_client.c',
   'src/audio/rin_audio_service_client.c',
+  'src/compositor_gui.c', 'src/compositor_gpu_bridge.c',
+  'src/sdk_gui_v1.c',
+  '../aquamarine/aq_blend.c', '../aquamarine/aq_color.c',
+  '../aquamarine/aq_draw.c', '../aquamarine/aq_surface.c',
+  '../aquamarine/aq_text.c',
   'src/firewall/rule_engine.c', 'src/firewall/profile.c',
   'src/firewall/application.c', 'src/firewall/conntrack_query.c'],
   description: 'RinRuntime sources for the target .rll route')

@@ -96,6 +96,29 @@ The public C++ runtime also provides the backend-independent bounded
 `PollEventLoopBackend` adapter in `event_loop_poll.hpp`; it owns only the
 userspace `poll(2)` translation, while RinOS wait syscalls and production IPC
 owners remain target-side adapters through `EventLoop::WaitFunction`.
+
+The SDK GUI v1 calls declared by `<rin/gui.h>` are implemented in
+`src/sdk_gui_v1.c` and use this Runtime's authenticated Compositor connection.
+The target `RinRuntime.rll` source profile includes that adapter, the native
+window transport, and the Aquamarine drawing code. Window handles therefore
+must be closed with `rin_window_close_v1()`; they are Runtime-owned handles,
+not kernel object-table entries.
+
+`rin_surface_create_v1()` creates a process-local packed BGRA32 or RGBA32
+buffer capped at 64 MiB. `rin_surface_map_v1()` grants one mapping lease at a
+time; the exact returned descriptor must be passed to
+`rin_surface_unmap_v1()`. Present and destroy return BUSY while the mapping is
+open. `rin_surface_destroy_v1()` retires the generation-bearing handle and
+frees the allocation. Present validates every damage rectangle, copies the
+complete source image into the current generation-bound writable Compositor
+target (converting RGBA/BGRA as needed), releases that exact target, and then
+queues the frame. The full copy keeps alternating Compositor buffers coherent;
+damage currently constrains the request but does not reduce the copy area.
+
+`rin_dialog_show_v1()` creates a modal Compositor dialog, draws bounded UTF-8
+text with Aquamarine, supports scrolling for long messages, and returns 1 for
+OK or 0 for cancel, Escape, or close. These are source-level routes; product
+build, QEMU, and target acceptance remain separate requirements.
 Timer and wait IDs carry a non-zero generation.  The generation allocator is
 failure-closed at `UINT32_MAX` instead of wrapping, and `clear()` never resets
 that lifetime state, so a stale ID cannot become valid again after a long-lived
