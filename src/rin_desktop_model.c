@@ -527,6 +527,7 @@ static int fuzzy_match(const char* text, const char* query)
 {
     uint32_t query_codepoint = 0u;
     int query_state;
+    int matched = 0;
     if (!query || !query[0]) return 1;
     if (!text) return 0;
     query_state = utf8_next_codepoint(&query, &query_codepoint);
@@ -535,14 +536,17 @@ static int fuzzy_match(const char* text, const char* query)
         uint32_t text_codepoint = 0u;
         const int text_state = utf8_next_codepoint(&text, &text_codepoint);
         if (text_state <= 0) return 0;
-        if (fold_ascii_codepoint(text_codepoint) ==
+        if (!matched && fold_ascii_codepoint(text_codepoint) ==
             fold_ascii_codepoint(query_codepoint)) {
             query_state = utf8_next_codepoint(&query, &query_codepoint);
-            if (query_state == 0) return 1;
+            if (query_state == 0) {
+                matched = 1;
+                continue;
+            }
             if (query_state < 0) return 0;
         }
     }
-    return 0;
+    return matched;
 }
 
 uint32_t rin_desktop_model_search(RinDesktopModel* model, const char* query, int fuzzy)
