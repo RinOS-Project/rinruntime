@@ -774,6 +774,11 @@ typedef struct {
     void* internal;
 } RinFS_RestoreTransactionV1;
 
+/* Run ordinary RinFS operations under the active restore transaction's
+ * mount/process owner scope. Do not call another rinfs_restore_transaction_*
+ * API from the callback; invoke those APIs before or after this scope. */
+typedef int (*RinFS_RestoreTransactionOperationCallback)(void* context);
+
 RINRUNTIME_STATIC_ASSERT(sizeof(RinFS_ContentSnapshot) <= 384u,
                           "RinFS content snapshot must fit the VFS opaque lease ABI");
 
@@ -975,6 +980,9 @@ int rinfs_restore_transaction_begin(RinFS_Mount* mount,
                                     RinFS_RestoreTransactionV1* transaction,
                                     uint32_t uid, uint32_t gid,
                                     uint64_t* staging_root_inode_out);
+int rinfs_restore_transaction_run_operation(
+    RinFS_RestoreTransactionV1* transaction,
+    RinFS_RestoreTransactionOperationCallback callback, void* context);
 int rinfs_restore_transaction_store_inode(
     RinFS_RestoreTransactionV1* transaction, uint64_t entry_index,
     uint64_t inode_number);

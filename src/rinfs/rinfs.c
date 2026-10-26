@@ -2661,7 +2661,7 @@ static uint64_t rinfs_restore_current_process_id(void) {
 #if defined(RINFS_USERLAND_MOUNT_LEASES) && !defined(RIN_KERNEL)
     return rinruntime_process_id();
 #elif !defined(RIN_KERNEL) && !defined(_WIN32)
-    pid_t process_id = getpid();
+    int64_t process_id = (int64_t)getpid();
     return process_id > 0 ? (uint64_t)process_id : 0u;
 #else
     return 1u;
@@ -15842,6 +15842,7 @@ static int rinfs_check_full_internal(RinFS_Mount* mount, uint32_t repair_flags,
     uint64_t link_bytes;
     uint64_t queue_bytes;
     int err = RINFS_OK;
+    const char* failure_stage = "allocation";
 
     if (!mount || !mount->mounted || !report ||
         (repair_flags & ~RINFS_FULL_REPAIR_ALL_SAFE) != 0) {
@@ -15900,8 +15901,10 @@ static int rinfs_check_full_internal(RinFS_Mount* mount, uint32_t repair_flags,
     rinfs_memset(context.observed_links, 0, (uint32_t)link_bytes);
     rinfs_memset(context.expected_inode_blocks, 0, (uint32_t)queue_bytes);
 
+    failure_stage = "inode bitmap";
     err = rinfs_check_load_inode_bitmap(&context);
     if (err != RINFS_OK) goto out;
+    failure_stage = "allocated inode blocks";
     for (uint64_t ino = 1; ino <= mount->sb.s_inode_count; ino++) {
         if (!rinfs_check_inode_allocated(&context, ino)) continue;
         local_report.allocated_inodes++;
@@ -15913,11 +15916,13 @@ static int rinfs_check_full_internal(RinFS_Mount* mount, uint32_t repair_flags,
         if (err != RINFS_OK) goto out;
     }
 
+    failure_stage = "reachable directory tree";
     err = rinfs_check_directory_tree(&context);
     if (err != RINFS_OK) goto out;
     /* The namespace walk above validates reachable directories. This second
      * bounded pass adds exact duplicate-name diagnosis for every directory,
      * including unreachable trees that the root walk intentionally skips. */
+    failure_stage = "directory name validation";
     for (uint64_t ino = 1; ino <= mount->sb.s_inode_count; ino++) {
         RinFS_Inode inode;
         uint64_t duplicate_names = 0;
@@ -15947,6 +15952,7 @@ static int rinfs_check_full_internal(RinFS_Mount* mount, uint32_t repair_flags,
             local_report.duplicate_directory_names += duplicate_names;
         }
     }
+    failure_stage = "inode reachability and link counts";
     for (uint64_t ino = 1; ino <= mount->sb.s_inode_count; ino++) {
         if (!rinfs_check_inode_allocated(&context, ino) ||
             ino == RINFS_INODE_BADBLK || ino == RINFS_INODE_JOURNAL) {
@@ -15970,11 +15976,13 @@ static int rinfs_check_full_internal(RinFS_Mount* mount, uint32_t repair_flags,
             local_report.link_count_mismatches++;
         }
     }
+    failure_stage = "block bitmap";
     err = rinfs_check_block_bitmap(&context);
     if (err != RINFS_OK) goto out;
     /* A diagnostic scan may continue after structural damage to collect
      * useful findings. Repair must not act on reachability or link counts
      * derived from a directory walk that skipped any namespace edges. */
+    failure_stage = "repair preflight";
     if (repair_flags != 0 && context.directory_walk_incomplete) {
         err = RINFS_ERR_CORRUPT;
         goto out;
@@ -16097,10 +16105,16 @@ static int rinfs_check_full_internal(RinFS_Mount* mount, uint32_t repair_flags,
         }
         if (err != RINFS_OK) goto out;
     } else if (local_report.issues != 0) {
+        failure_stage = "reported filesystem issues";
         err = RINFS_ERR_CORRUPT;
     }
 
 out:
+    if (err != RINFS_OK) {
+        rinfs_debug("[RinFS] Full check failed during ");
+        rinfs_debug(failure_stage);
+        rinfs_debug("\n");
+    }
     *report = local_report;
     if (context.block_buffer) rinfs_free(context.block_buffer);
     if (context.directory_parents) rinfs_free(context.directory_parents);
@@ -17443,6 +17457,7 @@ static int rinfs_mount_sized_io_unleased(
      * the last on-disk view so files can be copied out for offline repair. */
     int recovery_err = rinfs_journal_recover_mount_startup(mount);
     if (recovery_err != RINFS_OK) {
+        rinfs_debug("[RinFS] Startup journal recovery failed\n");
         if ((flags & RINFS_MNT_RESCUE) != 0 &&
             recovery_err == RINFS_ERR_ROFS) {
             rinfs_debug("[RinFS] Rescue mount leaving rename intent unreplayed\n");
@@ -17454,6 +17469,7 @@ static int rinfs_mount_sized_io_unleased(
     if ((flags & RINFS_MNT_RESCUE) == 0) {
         int orphan_err = rinfs_orphan_intent_recover(mount);
         if (orphan_err != RINFS_OK) {
+            rinfs_debug("[RinFS] Orphan recovery failed\n");
             if ((flags & RINFS_MNT_RDONLY) != 0 &&
                 orphan_err == RINFS_ERR_ROFS) {
                 return rinfs_mount_abort_with_cleanup(mount, orphan_err);
@@ -17465,6 +17481,7 @@ static int rinfs_mount_sized_io_unleased(
             int link_recovery_err =
                 rinfs_directory_link_counts_recover(mount);
             if (link_recovery_err != RINFS_OK) {
+                rinfs_debug("[RinFS] Directory link recovery failed\n");
                 return rinfs_mount_abort_with_cleanup(
                     mount, link_recovery_err);
             }
@@ -17478,6 +17495,7 @@ static int rinfs_mount_sized_io_unleased(
     {
         int restore_err = rinfs_restore_transaction_mount_recover(mount);
         if (restore_err != RINFS_OK) {
+            rinfs_debug("[RinFS] Restore transaction recovery failed\n");
             return rinfs_mount_abort_with_cleanup(mount, restore_err);
         }
     }
@@ -17496,6 +17514,7 @@ static int rinfs_mount_sized_io_unleased(
                 mount, RINFS_FULL_REPAIR_ALL_SAFE, &full_report);
         }
         if (full_err != RINFS_OK) {
+            rinfs_debug("[RinFS] Full filesystem validation failed\n");
             return rinfs_mount_abort_with_cleanup(mount, full_err);
         }
         if (structural_repair_required &&
@@ -27907,6 +27926,25 @@ static int rinfs_restore_transaction_operation_end(
     return result;
 }
 
+int rinfs_restore_transaction_run_operation(
+    RinFS_RestoreTransactionV1* transaction,
+    RinFS_RestoreTransactionOperationCallback callback, void* context) {
+    RinFS_RestoreTransactionOperation operation;
+    RinFS_RestoreTransactionInternal* internal = NULL;
+    int error;
+    int release_error;
+    if (!callback) return RINFS_ERR_INVAL;
+    error = rinfs_restore_transaction_operation_begin(
+        transaction, 0, &operation, &internal);
+    if (error != RINFS_OK) return error;
+    /* operation_begin holds the transaction against commit/abort and installs
+     * the short-lived mount/process scope needed by ordinary RinFS APIs. */
+    (void)internal;
+    error = callback(context);
+    release_error = rinfs_restore_transaction_operation_end(&operation, 0);
+    return release_error == RINFS_OK ? error : release_error;
+}
+
 static int rinfs_restore_mount_teardown_begin(RinFS_Mount* mount,
                                               uint64_t mount_epoch) {
     RinFS_RestoreMountGateRecord* gate;
@@ -28687,9 +28725,52 @@ static int rinfs_restore_transaction_validate_internal(
     return RINFS_OK;
 }
 
+static void rinfs_debug_restore_uint(uint32_t value) {
+    char digits[11];
+    uint32_t index = 10u;
+    digits[index] = '\0';
+    do {
+        digits[--index] = (char)('0' + value % 10u);
+        value /= 10u;
+    } while (value != 0u);
+    rinfs_debug(&digits[index]);
+}
+
 static int rinfs_restore_recover_cleanup_leaks(RinFS_Mount* mount) {
     RinFS_FullCheckReport report;
-    int error = rinfs_check_full(mount, &report);
+    /* Recovery already holds the restore-owner gate. Call the internal pass
+     * directly so a CORRUPT finding remains available for the narrowly safe
+     * leaked-block repair below; the public wrapper intentionally clears its
+     * report on every error. */
+    int error = rinfs_check_full_internal(mount, 0u, &report);
+    if (error != RINFS_OK || report.issues != 0u) {
+        rinfs_debug("[RinFS] Restore recovery check failed; error=");
+        rinfs_debug_restore_uint(error < 0 ? 0u - (uint32_t)error
+                                           : (uint32_t)error);
+        rinfs_debug(", issues=");
+        rinfs_debug_restore_uint(report.issues);
+        rinfs_debug("\n");
+        if ((report.issues & RINFS_FULL_ISSUE_INVALID_INODE) != 0u)
+            rinfs_debug("[RinFS] Restore recovery check: invalid inode\n");
+        if ((report.issues & RINFS_FULL_ISSUE_INVALID_BLOCK_REF) != 0u)
+            rinfs_debug("[RinFS] Restore recovery check: invalid block reference\n");
+        if ((report.issues & RINFS_FULL_ISSUE_DUPLICATE_BLOCK) != 0u)
+            rinfs_debug("[RinFS] Restore recovery check: duplicate block\n");
+        if ((report.issues & RINFS_FULL_ISSUE_LEAKED_BLOCK) != 0u)
+            rinfs_debug("[RinFS] Restore recovery check: leaked block\n");
+        if ((report.issues & RINFS_FULL_ISSUE_DIRECTORY) != 0u)
+            rinfs_debug("[RinFS] Restore recovery check: directory graph\n");
+        if ((report.issues & RINFS_FULL_ISSUE_UNREACHABLE_INODE) != 0u)
+            rinfs_debug("[RinFS] Restore recovery check: unreachable inode\n");
+        if ((report.issues & RINFS_FULL_ISSUE_LINK_COUNT) != 0u)
+            rinfs_debug("[RinFS] Restore recovery check: link count\n");
+        if ((report.issues & RINFS_FULL_ISSUE_INODE_BLOCK_COUNT) != 0u)
+            rinfs_debug("[RinFS] Restore recovery check: inode block count\n");
+        if ((report.issues & RINFS_FULL_ISSUE_AMBIGUOUS_METADATA) != 0u)
+            rinfs_debug("[RinFS] Restore recovery check: ambiguous metadata\n");
+        if ((report.issues & RINFS_FULL_ISSUE_UNALLOCATED_BLOCK) != 0u)
+            rinfs_debug("[RinFS] Restore recovery check: unallocated block\n");
+    }
     if (error == RINFS_ERR_CORRUPT &&
         report.issues == RINFS_FULL_ISSUE_LEAKED_BLOCK &&
         report.leaked_blocks != 0u) {
@@ -28711,61 +28792,114 @@ static int rinfs_restore_commit_record(RinFS_Mount* mount,
     int error;
     if (record->phase == RINFS_RESTORE_PHASE_MOVING_OLD) {
         error = rinfs_restore_record_refresh_children(mount, record);
-        if (error != RINFS_OK) return error;
+        if (error != RINFS_OK) {
+            rinfs_debug("[RinFS] Restore recovery: refresh old children failed\n");
+            return error;
+        }
         error = rinfs_restore_move_children(mount, RINFS_INODE_ROOT,
             record->old_inode, record->transaction_inode);
-        if (error != RINFS_OK) return error;
+        if (error != RINFS_OK) {
+            rinfs_debug("[RinFS] Restore recovery: move old children failed\n");
+            return error;
+        }
         record->phase = RINFS_RESTORE_PHASE_INSTALLING;
         error = rinfs_restore_record_store(mount, record);
-        if (error != RINFS_OK) return error;
+        if (error != RINFS_OK) {
+            rinfs_debug("[RinFS] Restore recovery: save installing phase failed\n");
+            return error;
+        }
     }
     if (record->phase == RINFS_RESTORE_PHASE_INSTALLING) {
         error = rinfs_restore_record_refresh_children(mount, record);
-        if (error != RINFS_OK) return error;
+        if (error != RINFS_OK) {
+            rinfs_debug("[RinFS] Restore recovery: refresh staged children failed\n");
+            return error;
+        }
         error = rinfs_restore_move_children(mount, record->staging_inode,
                                              RINFS_INODE_ROOT, 0u);
-        if (error != RINFS_OK) return error;
+        if (error != RINFS_OK) {
+            rinfs_debug("[RinFS] Restore recovery: install staged children failed\n");
+            return error;
+        }
         error = rinfs_xattr_copy(mount, record->staging_inode,
                                  mount, RINFS_INODE_ROOT);
-        if (error != RINFS_OK) return error;
+        if (error != RINFS_OK) {
+            rinfs_debug("[RinFS] Restore recovery: copy root xattrs failed\n");
+            return error;
+        }
         error = rinfs_restore_apply_metadata_log(mount, record);
-        if (error != RINFS_OK) return error;
+        if (error != RINFS_OK) {
+            rinfs_debug("[RinFS] Restore recovery: apply inode metadata failed\n");
+            return error;
+        }
         error = rinfs_sync(mount);
-        if (error != RINFS_OK) return error;
+        if (error != RINFS_OK) {
+            rinfs_debug("[RinFS] Restore recovery: sync installed tree failed\n");
+            return error;
+        }
         record->phase = RINFS_RESTORE_PHASE_CLEANING;
         error = rinfs_restore_record_store(mount, record);
-        if (error != RINFS_OK) return error;
+        if (error != RINFS_OK) {
+            rinfs_debug("[RinFS] Restore recovery: save cleaning phase failed\n");
+            return error;
+        }
     }
     if (record->phase == RINFS_RESTORE_PHASE_CLEANING) {
         error = rinfs_restore_record_refresh_children(mount, record);
-        if (error != RINFS_OK) return error;
+        if (error != RINFS_OK) {
+            rinfs_debug("[RinFS] Restore recovery: refresh cleanup children failed\n");
+            return error;
+        }
         error = rinfs_restore_transaction_cleanup_children(mount, record);
-        if (error != RINFS_OK) return error;
+        if (error != RINFS_OK) {
+            rinfs_debug("[RinFS] Restore recovery: clean transaction children failed\n");
+            return error;
+        }
         record->phase = RINFS_RESTORE_PHASE_DONE;
         error = rinfs_restore_record_store(mount, record);
-        if (error != RINFS_OK) return error;
+        if (error != RINFS_OK) {
+            rinfs_debug("[RinFS] Restore recovery: save done phase failed\n");
+            return error;
+        }
     }
     if (record->phase == RINFS_RESTORE_PHASE_DONE) {
         error = rinfs_restore_transaction_remove_dir(mount, record);
-        if (error != RINFS_OK) return error;
+        if (error != RINFS_OK) {
+            rinfs_debug("[RinFS] Restore recovery: remove transaction directory failed\n");
+            return error;
+        }
         if (recover_cleanup_leaks) {
             error = rinfs_restore_recover_cleanup_leaks(mount);
-            if (error != RINFS_OK) return error;
+            if (error != RINFS_OK) {
+                rinfs_debug("[RinFS] Restore recovery: reclaim leaked blocks failed\n");
+                return error;
+            }
         }
-        if (record->root_metadata_valid == 0u)
+        if (record->root_metadata_valid == 0u) {
+            rinfs_debug("[RinFS] Restore recovery: missing root metadata\n");
             return RINFS_ERR_CORRUPT;
+        }
         {
             RinFS_Inode root;
             error = rinfs_inode_read(mount, RINFS_INODE_ROOT, &root);
-            if (error != RINFS_OK) return error;
+            if (error != RINFS_OK) {
+                rinfs_debug("[RinFS] Restore recovery: read root metadata target failed\n");
+                return error;
+            }
             error = rinfs_restore_apply_metadata(
                 mount, RINFS_INODE_ROOT, root.i_generation,
                 record->root_mode, record->root_flags, record->root_uid,
                 record->root_gid, &record->root_times,
                 record->root_change_time_seconds);
         }
-        if (error != RINFS_OK) return error;
-        return rinfs_restore_record_clear(mount);
+        if (error != RINFS_OK) {
+            rinfs_debug("[RinFS] Restore recovery: apply root metadata failed\n");
+            return error;
+        }
+        error = rinfs_restore_record_clear(mount);
+        if (error != RINFS_OK)
+            rinfs_debug("[RinFS] Restore recovery: clear durable record failed\n");
+        return error;
     }
     return RINFS_ERR_CORRUPT;
 }
@@ -28974,9 +29108,11 @@ static int rinfs_restore_transaction_mount_recover_core(RinFS_Mount* mount) {
         error = rinfs_restore_abort_record(mount, &record);
     else
         error = rinfs_restore_commit_record(mount, &record, 1);
-    if (error != RINFS_OK)
+    if (error != RINFS_OK) {
+        rinfs_debug("[RinFS] Restore recovery replay returned an error\n");
         rinfs_mount_recovery_fence(
             mount, RINFS_READONLY_RECOVERY_RESTORE_REPLAY, error);
+    }
     return error;
 }
 
@@ -28999,10 +29135,22 @@ static int rinfs_restore_transaction_mount_recover_retry(RinFS_Mount* mount) {
 
 int rinfs_restore_transaction_mount_recover(RinFS_Mount* mount) {
     uint64_t mount_epoch;
+    RinFS_RestoreRecord record;
+    int record_present = 0;
     RinFS_RestoreInternalScope internal_scope = {0u};
     int error;
     int release_error;
     if (!mount || !mount->mounted) return RINFS_ERR_INVAL;
+    /* A normal read-only mount needs no restore owner gate when the durable
+     * marker is absent. Read the checksummed superblock record first; a
+     * pending or malformed transaction still fails closed without attempting
+     * to acquire a writable restore lease. */
+    if ((mount->mount_flags & RINFS_MNT_RDONLY) != 0u) {
+        error = rinfs_restore_record_load(mount, &record,
+                                          &record_present);
+        if (error != RINFS_OK) return error;
+        return record_present ? RINFS_ERR_ROFS : RINFS_OK;
+    }
     /* The first shared mount performs recovery before publishing its owner
      * row. Its provisional VFS range lease excludes another mount of these
      * sectors until shared_mount_ready is published. */
