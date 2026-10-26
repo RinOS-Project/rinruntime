@@ -474,19 +474,75 @@ int rin_desktop_model_mark_app_stale(RinDesktopModel* model, uint64_t id, int st
     return -1;
 }
 
+static int utf8_next_codepoint(const char** text, uint32_t* codepoint)
+{
+    const unsigned char* bytes;
+    uint32_t value;
+    uint32_t width;
+    unsigned char first;
+    if (!text || !*text || !codepoint) return -1;
+    bytes = (const unsigned char*)*text;
+    first = bytes[0];
+    if (first == 0u) return 0;
+    if (first <= 0x7fu) {
+        value = first;
+        width = 1u;
+    } else if (first >= 0xc2u && first <= 0xdfu) {
+        value = first & 0x1fu;
+        width = 2u;
+    } else if (first >= 0xe0u && first <= 0xefu) {
+        value = first & 0x0fu;
+        width = 3u;
+    } else if (first >= 0xf0u && first <= 0xf4u) {
+        value = first & 0x07u;
+        width = 4u;
+    } else {
+        return -1;
+    }
+    for (uint32_t index = 1u; index < width; ++index) {
+        const unsigned char continuation = bytes[index];
+        if (continuation == 0u || (continuation & 0xc0u) != 0x80u)
+            return -1;
+        if (index == 1u &&
+            ((first == 0xe0u && continuation < 0xa0u) ||
+             (first == 0xedu && continuation > 0x9fu) ||
+             (first == 0xf0u && continuation < 0x90u) ||
+             (first == 0xf4u && continuation > 0x8fu)))
+            return -1;
+        value = (value << 6u) | (continuation & 0x3fu);
+    }
+    *text += width;
+    *codepoint = value;
+    return 1;
+}
+
+static uint32_t fold_ascii_codepoint(uint32_t codepoint)
+{
+    if (codepoint >= (uint32_t)'A' && codepoint <= (uint32_t)'Z')
+        return codepoint + 32u;
+    return codepoint;
+}
+
 static int fuzzy_match(const char* text, const char* query)
 {
-    uint32_t i = 0u, j = 0u;
+    uint32_t query_codepoint = 0u;
+    int query_state;
     if (!query || !query[0]) return 1;
     if (!text) return 0;
-    while (text[i] && query[j]) {
-        unsigned char a = (unsigned char)text[i++];
-        unsigned char b = (unsigned char)query[j];
-        if (a >= 'A' && a <= 'Z') a = (unsigned char)(a + 32u);
-        if (b >= 'A' && b <= 'Z') b = (unsigned char)(b + 32u);
-        if (a == b) ++j;
+    query_state = utf8_next_codepoint(&query, &query_codepoint);
+    if (query_state < 0) return 0;
+    while (*text) {
+        uint32_t text_codepoint = 0u;
+        const int text_state = utf8_next_codepoint(&text, &text_codepoint);
+        if (text_state <= 0) return 0;
+        if (fold_ascii_codepoint(text_codepoint) ==
+            fold_ascii_codepoint(query_codepoint)) {
+            query_state = utf8_next_codepoint(&query, &query_codepoint);
+            if (query_state == 0) return 1;
+            if (query_state < 0) return 0;
+        }
     }
-    return query[j] == '\0';
+    return 0;
 }
 
 uint32_t rin_desktop_model_search(RinDesktopModel* model, const char* query, int fuzzy)
