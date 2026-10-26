@@ -21,3 +21,10 @@ checkout or lock path that escapes that root or traverses a detected
 symlink/junction/reparse point, and rejects `.`/`..` checkout directory names.
 Set `RINRUNTIME_DEPENDENCY_CACHE_ROOT` to choose a different canonical cache
 root explicitly.
+
+The per-checkout lock is opened with no-follow semantics where the host
+supports them, then checked against the opened descriptor and canonical path.
+Non-regular files, reparse points, hard links, oversized lock files, and path
+identity changes detected during validation are rejected before locking.
+This narrows replacement races at lock acquisition; it does not claim immunity
+to every concurrent mutation of the configured cache directory.

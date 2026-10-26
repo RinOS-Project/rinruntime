@@ -109,6 +109,46 @@ def _cache_path_under_root(path: Path, cache_root: Path) -> Path:
     return resolved_candidate
 
 
+def _cache_lock_file_identity(status: os.stat_result) -> tuple[int, int, int, int, int, int]:
+    return (
+        status.st_dev,
+        status.st_ino,
+        status.st_mode,
+        status.st_size,
+        getattr(status, "st_mtime_ns", int(status.st_mtime * 1_000_000_000)),
+        getattr(status, "st_ctime_ns", int(status.st_ctime * 1_000_000_000)),
+    )
+
+
+def _open_cache_lock_file(path: Path, cache_root: Path) -> int:
+    """Open a cache lock and reject redirects or replacements detected on open."""
+    path = _cache_path_under_root(path, cache_root)
+    flags = os.O_RDWR | os.O_CREAT
+    flags |= getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_BINARY", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(path, flags, 0o600)
+    try:
+        opened = os.fstat(descriptor)
+        path_status = path.lstat()
+        # Revalidate every path component after opening. O_NOFOLLOW prevents a
+        # final-component race on platforms that expose it. Descriptor/path
+        # identity and reparse checks also reject replacements observed during
+        # validation on Windows, where Python does not expose O_NOFOLLOW.
+        resolved_path = _cache_path_under_root(path, cache_root)
+        if (resolved_path != path or
+                not stat.S_ISREG(opened.st_mode) or
+                _is_reparse_point(path) or
+                _cache_lock_file_identity(opened) !=
+                    _cache_lock_file_identity(path_status) or
+                getattr(opened, "st_nlink", 1) != 1 or opened.st_size > 1):
+            raise RuntimeError(
+                f"dependency cache lock is not a private regular file: {path}")
+        return descriptor
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
 @contextmanager
 def _dependency_cache_lock(path: Path, cache_root: Path):
     """Serialize initialization and validation of one pinned checkout."""
@@ -117,7 +157,8 @@ def _dependency_cache_lock(path: Path, cache_root: Path):
         path.with_name(path.name + ".lock"), cache_root)
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     lock_path = _cache_path_under_root(lock_path, cache_root)
-    with lock_path.open("a+b") as lock_file:
+    descriptor = _open_cache_lock_file(lock_path, cache_root)
+    with os.fdopen(descriptor, "r+b") as lock_file:
         lock_file.seek(0, os.SEEK_END)
         if lock_file.tell() == 0:
             lock_file.write(b"\0")
