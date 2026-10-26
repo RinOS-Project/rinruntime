@@ -923,8 +923,11 @@ int rin_keyring_client_kerberos_operation(
                ~RIN_KERBEROS_OPERATION_RETURN_FLAG_EXTENDED_ERROR) != 0u)) ||
             (operation_response.return_flags &
              ~RIN_KERBEROS_OPERATION_KNOWN_RETURN_FLAGS) != 0u ||
-            rin_wire_capability_generation_valid(
-                operation_response.generation) != RIN_WIRE_CAPABILITY_OK ||
+            ((request->operation != RIN_KERBEROS_OPERATION_DELETE_SEC_CONTEXT &&
+              rin_wire_capability_generation_valid(
+                  operation_response.generation) != RIN_WIRE_CAPABILITY_OK) ||
+             (request->operation == RIN_KERBEROS_OPERATION_DELETE_SEC_CONTEXT &&
+              operation_response.generation != 0u)) ||
             operation_response.context_token_size > next_context_capacity ||
             operation_response.output_size > output_capacity ||
             response.payload_size != sizeof(operation_response) +
