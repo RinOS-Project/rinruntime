@@ -11,14 +11,14 @@
     },
     "libunicode": {
       "url": "https://github.com/RinOS-Project/libunicode",
-      "revision": "5d02c0d544cc665bb061c05e9e0de1596286e98a",
+      "revision": "2c00b140b4e80de407bfef7f404be3055d3dbe66",
       "checkout": "../libunicode",
       "corePath": "public-base/libs/libunicode",
       "requiredPaths": ["core.c", "locale_adapter.c", "rin_unicode.h"]
     },
     "libc": {
       "url": "https://github.com/RinOS-Project/libc.git",
-      "revision": "53a01e42c3ac6d6e01fbc2778e47aebceed19340",
+      "revision": "8a137cfba4d4319803237e587635f67cfc42c734",
       "checkout": "../libc",
       "corePath": "public-base/libs/libc",
       "requiredPaths": ["errno.h", "poll.h", "sys/syscall.h"],
@@ -26,7 +26,7 @@
     },
     "libcxx": {
       "url": "https://github.com/RinOS-Project/libcxx.git",
-      "revision": "802d39df9d151fe470eaf35044646a0440f2c7f0",
+      "revision": "99b4faf3e3aecbb89491f8e43d1fd9151cb89671",
       "checkout": "../libcxx",
       "corePath": "public-base/libs/libcxx",
       "requiredPaths": ["cstddef.h", "cstdint.h", "limits.h", "string.h", "vector.h"],
@@ -49,7 +49,7 @@
     },
     "rinjson": {
       "url": "https://github.com/RinOS-Project/rinjson",
-      "revision": "c32b7ed6265e2df694d27fa1d6ebe1331c2947e1",
+      "revision": "41ed603f340f3aa88dfeda1da5361433bcd9b558",
       "checkout": "../rinjson",
       "corePath": "public-base/libs/rinjson",
       "requiredPaths": ["src/json.cpp", "include/rinjson/json.hpp"],
@@ -96,7 +96,7 @@
     },
     "ringpu": {
       "url": "https://github.com/RinOS-Project/RinGPU",
-      "revision": "2ef293143ebf9234b029b98375e145103a3f0324",
+      "revision": "63377fca6f335e54a0cfe916816202ac6d5c2b05",
       "checkout": "../RinGPU",
       "corePath": "public-base/libs/RinGPU",
       "requiredPaths": ["include/ringpu/ringpu.h"],
