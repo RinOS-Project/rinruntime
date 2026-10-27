@@ -254,9 +254,17 @@ static inline void rinfs_trace_emit_current(uint32_t event, uint64_t arg0,
     rinfs_trace_emit_current((event), (arg0), (arg1))
 #define RINFS_TRACE_CPU_ID() RIN_TRACE_ID_UNKNOWN
 #else
-#include "kernel/core/trace.h"
-#include "kernel/core/smp.h"
-#define RINFS_TRACE_CPU_ID() smp_get_current_cpu_id()
+#include "kernel_port_v1.h"
+#ifndef RIN_TRACE_ID_UNKNOWN
+#define RIN_TRACE_ID_UNKNOWN UINT32_MAX
+#endif
+#define RIN_TRACE_CYCLES_NOW() rinfs_kernel_port_trace_cycles_v1()
+#define RIN_TRACE_EMIT(cpu, pid, tid, event, arg0, arg1) \
+    rinfs_kernel_port_trace_emit_v1((cpu), (pid), (tid), (event), \
+                                    (arg0), (arg1))
+#define RIN_TRACE_EMIT_CURRENT(event, arg0, arg1) \
+    rinfs_kernel_port_trace_emit_current_v1((event), (arg0), (arg1))
+#define RINFS_TRACE_CPU_ID() rinfs_kernel_port_cpu_id_v1()
 #endif
 
 #if defined(RIN_FREESTANDING)
@@ -279,7 +287,6 @@ static inline void rinfs_spin_preempt_leave(void) {}
 #endif
 
 #if defined(RIN_KERNEL) && defined(RIN_FREESTANDING) && defined(__x86_64__)
-#include "kernel/arch/x86_64/mmu/va_layout.h"
 extern uint64_t platform_pmm_alloc_file_cache_page(void);
 extern void platform_pmm_free_page(uint64_t address);
 #endif
@@ -516,7 +523,6 @@ static void rinfs_touch_changed(RinFS_Inode* inode) {
 #if defined(RIN_KERNEL)
 /* Kernel environment: block I/O and allocators stay behind the kernel API. */
 #include <stddef.h>
-#include "kernel/fs/block.h"
 
 extern void* platform_kmalloc(size_t size);
 extern void  platform_kfree(void* ptr);
@@ -535,13 +541,13 @@ extern void  platform_serial_hex(uint32_t val);
 /* RinFS consumes only the Rin-native block contract. The transport-specific
  * ATA/AHCI/NVMe/VirtIO implementation stays below this boundary. */
 #define platform_ata_read(device, lba, count, buffer) \
-    rin_block_read_wait((RinBlockId)(device), (uint64_t)(lba), (count), \
-                        (buffer), RIN_BLOCK_DEFAULT_TIMEOUT_MS)
+    rinfs_kernel_port_block_read_v1((uint32_t)(device), (uint64_t)(lba), \
+                                    (count), (buffer))
 #define platform_ata_write(device, lba, count, buffer) \
-    rin_block_write_wait((RinBlockId)(device), (uint64_t)(lba), (count), \
-                         (buffer), 0u, RIN_BLOCK_DEFAULT_TIMEOUT_MS)
+    rinfs_kernel_port_block_write_v1((uint32_t)(device), (uint64_t)(lba), \
+                                     (count), (buffer))
 #define platform_ata_flush(device) \
-    rin_block_flush_wait((RinBlockId)(device), RIN_BLOCK_DEFAULT_TIMEOUT_MS)
+    rinfs_kernel_port_block_flush_v1((uint32_t)(device))
 
 #define rinfs_malloc   platform_kmalloc
 #define rinfs_free     platform_kfree
@@ -5622,7 +5628,8 @@ static int rinfs_page_cache_ensure_storage(RinFS_PageCacheEntry* entry) {
         uint64_t physical = platform_pmm_alloc_file_cache_page();
         if (physical == 0u) return RINFS_ERR_NOMEM;
         entry->physical_address = physical;
-        entry->data = (uint8_t*)__phys_to_virt(physical);
+        entry->data = (uint8_t*)
+            rinfs_kernel_port_physical_to_virtual_v1(physical);
         rinfs_memset(entry->data, 0, RINFS_PAGE_CACHE_PAGE_SIZE);
     }
     return entry->data != NULL ? RINFS_OK : RINFS_ERR_NOMEM;
@@ -17392,7 +17399,8 @@ static int rinfs_mount_sized_io_unleased(
             }
             mount->page_cache->entries[index].physical_address = physical;
             mount->page_cache->entries[index].data =
-                (uint8_t*)__phys_to_virt(physical);
+                (uint8_t*)
+                    rinfs_kernel_port_physical_to_virtual_v1(physical);
             rinfs_memset(mount->page_cache->entries[index].data, 0,
                          RINFS_PAGE_CACHE_PAGE_SIZE);
         }
