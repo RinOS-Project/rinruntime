@@ -18,7 +18,7 @@
     },
     "libc": {
       "url": "https://github.com/RinOS-Project/libc.git",
-      "revision": "8a137cfba4d4319803237e587635f67cfc42c734",
+      "revision": "ac9340b657e0dcfcabdfb08fdd62be531e6e4d87",
       "checkout": "../libc",
       "corePath": "public-base/libs/libc",
       "requiredPaths": ["errno.h", "poll.h", "sys/syscall.h"],
