@@ -34,6 +34,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y meson ninja-build pkg-config python3
+      - name: Test dependency resolver cache contract
+        run: python3 tests/dependency_resolver_cache_test.py
       - name: Resolve all dependencies from the standalone checkout cache
         run: |
           test "$(git rev-parse --show-toplevel)" = "$(realpath "$GITHUB_WORKSPACE")"
