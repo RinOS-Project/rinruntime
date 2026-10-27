@@ -120,6 +120,17 @@ def _cache_lock_file_identity(status: os.stat_result) -> tuple[int, int, int, in
     )
 
 
+def _cache_checkout_has_private_git_directory(path: Path) -> bool:
+    """Cache checkouts created here must not redirect Git metadata elsewhere."""
+    git_directory = path / ".git"
+    try:
+        metadata = git_directory.lstat()
+    except OSError:
+        return False
+    return (stat.S_ISDIR(metadata.st_mode) and
+            not _is_reparse_point(git_directory))
+
+
 def _open_cache_lock_file(path: Path, cache_root: Path) -> int:
     """Open a cache lock and reject redirects or replacements detected on open."""
     path = _cache_path_under_root(path, cache_root)
@@ -212,7 +223,8 @@ def _ensure_cache_checkout_locked(path: Path,
     revision = str(dependency["revision"])
 
     if path.exists():
-        if not path.is_dir() or not (path / ".git").exists():
+        if (not path.is_dir() or
+                not _cache_checkout_has_private_git_directory(path)):
             raise RuntimeError(f"dependency cache path is occupied: {path}")
         origin = _git(path, "remote", "get-url", "origin", check=False)
         normalize = lambda value: value.removesuffix(".git").rstrip("/").casefold()
