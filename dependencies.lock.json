@@ -57,7 +57,7 @@
     },
     "rinos-sdk": {
       "url": "https://github.com/RinOS-Project/RinOS-SDK",
-      "revision": "12912014013f9d96c7d842c11857f543816580a2",
+      "revision": "82db6aca28bc4dbe18a28ede77fcfe99627748e4",
       "checkout": "../../RinOS-SDK",
       "corePath": "public-base/RinOS-SDK",
       "requiredPaths": ["include/rin/abi.h", "include/rin/crash_service.h"],

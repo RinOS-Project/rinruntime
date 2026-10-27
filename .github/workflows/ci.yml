@@ -71,6 +71,8 @@ jobs:
                 ;;
             esac
           done
+          python3 scripts/check_public_api_license_manifest.py \
+            --sdk-root "${resolved[7]}"
           echo "all 13 dependencies resolved from $cache_root"
       - name: Configure CMake
         if: matrix.build_system == 'cmake'
@@ -110,6 +112,11 @@ jobs:
           else
             meson install -C build --no-rebuild
           fi
+      - name: Verify installed public API license bundle
+        if: success()
+        run: >-
+          python3 scripts/check_public_api_license_manifest.py
+          --installed-prefix "$RINRUNTIME_INSTALL_PREFIX"
       - name: Verify installed public headers
         if: success()
         run: >-

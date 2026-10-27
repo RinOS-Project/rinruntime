@@ -1,0 +1,2896 @@
+{
+  "schemaVersion": 1,
+  "scope": "First-party RinRuntime and RinOS-SDK public headers installed by RinRuntime.",
+  "licenseGuide": "share/licenses/RinRuntime/LICENSE-README.md",
+  "repositories": {
+    "RinRuntime": {
+      "url": "https://github.com/RinOS-Project/rinruntime",
+      "revision": "same commit as this manifest",
+      "licenseFile": "LICENSE",
+      "rootLicense": "MIT"
+    },
+    "RinOS-SDK": {
+      "url": "https://github.com/RinOS-Project/RinOS-SDK",
+      "revision": "82db6aca28bc4dbe18a28ede77fcfe99627748e4",
+      "licenseFile": "LICENSE",
+      "rootLicense": "MIT"
+    }
+  },
+  "licenseCatalog": {
+    "MIT": {
+      "spdxUrl": "https://spdx.org/licenses/MIT.html",
+      "conditions": "Retain the copyright and permission notices in copies or substantial portions."
+    },
+    "GPL-2.0-or-later": {
+      "spdxUrl": "https://spdx.org/licenses/GPL-2.0-or-later.html",
+      "conditions": "Retain notices and comply with the selected GPL version when distributing covered source or binaries."
+    }
+  },
+  "licenseFiles": [
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "LICENSE",
+      "installedPath": "share/licenses/RinRuntime/RinRuntime-MIT.txt",
+      "license": "MIT",
+      "sha256": "3dec6506d8e45839805e37d8f684580efe82173e2fb35e497907f6a2b8d3ad26"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "LICENSE",
+      "installedPath": "share/licenses/RinRuntime/RinOS-SDK-MIT.txt",
+      "license": "MIT",
+      "sha256": "3dec6506d8e45839805e37d8f684580efe82173e2fb35e497907f6a2b8d3ad26"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "LICENSES/GPL-2.0-or-later.txt",
+      "installedPath": "share/licenses/RinRuntime/GPL-2.0-or-later.txt",
+      "license": "GPL-2.0-or-later",
+      "sha256": "189b1af95d661151e054cea10c91b3d754e4de4d3fecfb074c1fb29476f7167b"
+    }
+  ],
+  "headers": [
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/abi.h",
+      "installedPath": "include/rin/abi.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/accessibility_service.h",
+      "installedPath": "include/rin/accessibility_service.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/audio/abi.h",
+      "installedPath": "include/rin/audio/abi.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/audio/device.h",
+      "installedPath": "include/rin/audio/device.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/audio/device_abi.h",
+      "installedPath": "include/rin/audio/device_abi.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/audio/formats.h",
+      "installedPath": "include/rin/audio/formats.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/audio/midi.h",
+      "installedPath": "include/rin/audio/midi.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/audio/policy_abi.h",
+      "installedPath": "include/rin/audio/policy_abi.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/audio/ring_abi.h",
+      "installedPath": "include/rin/audio/ring_abi.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/audio/service_abi.h",
+      "installedPath": "include/rin/audio/service_abi.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/audio/stream_abi.h",
+      "installedPath": "include/rin/audio/stream_abi.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/base.h",
+      "installedPath": "include/rin/base.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/bluetooth/hci_control.h",
+      "installedPath": "include/rin/bluetooth/hci_control.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/capability.h",
+      "installedPath": "include/rin/capability.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/capture.h",
+      "installedPath": "include/rin/capture.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/compat/nt_service_abi.h",
+      "installedPath": "include/rin/compat/nt_service_abi.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/compat/uxtheme_abi.h",
+      "installedPath": "include/rin/compat/uxtheme_abi.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/compositor_abi.h",
+      "installedPath": "include/rin/compositor_abi.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/compositor_input_ring.h",
+      "installedPath": "include/rin/compositor_input_ring.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/compositor_protocol.h",
+      "installedPath": "include/rin/compositor_protocol.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/config.h",
+      "installedPath": "include/rin/config.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/contract_abi.h",
+      "installedPath": "include/rin/contract_abi.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/cpp/sdk.hpp",
+      "installedPath": "include/rin/cpp/sdk.hpp",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/crash_pending_dump_cleanup.h",
+      "installedPath": "include/rin/crash_pending_dump_cleanup.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/crash_record.h",
+      "installedPath": "include/rin/crash_record.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/crash_region.h",
+      "installedPath": "include/rin/crash_region.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/crash_service.h",
+      "installedPath": "include/rin/crash_service.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/crash_summary.h",
+      "installedPath": "include/rin/crash_summary.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/crypt.h",
+      "installedPath": "include/rin/crypt.h",
+      "license": "GPL-2.0-or-later",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/device.h",
+      "installedPath": "include/rin/device.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/display/power_abi.h",
+      "installedPath": "include/rin/display/power_abi.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/dotnet/nativeaot_thunk_abi.h",
+      "installedPath": "include/rin/dotnet/nativeaot_thunk_abi.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/driver/bluetooth/hci.h",
+      "installedPath": "include/rin/driver/bluetooth/hci.h",
+      "license": "GPL-2.0-or-later",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/driver/display/edid.h",
+      "installedPath": "include/rin/driver/display/edid.h",
+      "license": "GPL-2.0-or-later",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/driver/image_abi_v3.h",
+      "installedPath": "include/rin/driver/image_abi_v3.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/driver/module_api_v3.h",
+      "installedPath": "include/rin/driver/module_api_v3.h",
+      "license": "GPL-2.0-or-later",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/driver/resource_contract_v3.h",
+      "installedPath": "include/rin/driver/resource_contract_v3.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/driver/resource_runtime_v3.h",
+      "installedPath": "include/rin/driver/resource_runtime_v3.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/driver/serial.h",
+      "installedPath": "include/rin/driver/serial.h",
+      "license": "GPL-2.0-or-later",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/driver/services_v3.h",
+      "installedPath": "include/rin/driver/services_v3.h",
+      "license": "GPL-2.0-or-later",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/driver/usb/audio/iso_transport_v1.h",
+      "installedPath": "include/rin/driver/usb/audio/iso_transport_v1.h",
+      "license": "GPL-2.0-or-later",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/driver/usb/audio/packet_planner_v1.h",
+      "installedPath": "include/rin/driver/usb/audio/packet_planner_v1.h",
+      "license": "GPL-2.0-or-later",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/driver/usb/audio/uac1_catalog_v1.h",
+      "installedPath": "include/rin/driver/usb/audio/uac1_catalog_v1.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/driver/usb/audio/uac1_descriptor_v1.h",
+      "installedPath": "include/rin/driver/usb/audio/uac1_descriptor_v1.h",
+      "license": "GPL-2.0-or-later",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/driver/usb/audio/uac1_runtime_v1.h",
+      "installedPath": "include/rin/driver/usb/audio/uac1_runtime_v1.h",
+      "license": "GPL-2.0-or-later",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/driver/usb/audio/uac2_catalog_v2.h",
+      "installedPath": "include/rin/driver/usb/audio/uac2_catalog_v2.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/driver/usb/audio/uac2_descriptor_v2.h",
+      "installedPath": "include/rin/driver/usb/audio/uac2_descriptor_v2.h",
+      "license": "GPL-2.0-or-later",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/driver/usb/fido/ctaphid.h",
+      "installedPath": "include/rin/driver/usb/fido/ctaphid.h",
+      "license": "GPL-2.0-or-later",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/driver/usb/hid/boot_report.h",
+      "installedPath": "include/rin/driver/usb/hid/boot_report.h",
+      "license": "GPL-2.0-or-later",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/driver/usb/hid/gamepad_force_feedback_v1.h",
+      "installedPath": "include/rin/driver/usb/hid/gamepad_force_feedback_v1.h",
+      "license": "GPL-2.0-or-later",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/driver/usb/hid/gamepad_mapping_v1.h",
+      "installedPath": "include/rin/driver/usb/hid/gamepad_mapping_v1.h",
+      "license": "GPL-2.0-or-later",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/driver/usb/hid/gamepad_pid_actuator_v1.h",
+      "installedPath": "include/rin/driver/usb/hid/gamepad_pid_actuator_v1.h",
+      "license": "GPL-2.0-or-later",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/driver/usb/hid/gamepad_pid_effects_v1.h",
+      "installedPath": "include/rin/driver/usb/hid/gamepad_pid_effects_v1.h",
+      "license": "GPL-2.0-or-later",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/driver/usb/hid/gamepad_v1.h",
+      "installedPath": "include/rin/driver/usb/hid/gamepad_v1.h",
+      "license": "GPL-2.0-or-later",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/driver/usb/hid/pen_v1.h",
+      "installedPath": "include/rin/driver/usb/hid/pen_v1.h",
+      "license": "GPL-2.0-or-later",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/driver/validation_v3.h",
+      "installedPath": "include/rin/driver/validation_v3.h",
+      "license": "GPL-2.0-or-later",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/driver/virtio/pci_transport_v3.h",
+      "installedPath": "include/rin/driver/virtio/pci_transport_v3.h",
+      "license": "GPL-2.0-or-later",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/driver/virtio/virtqueue_v3.h",
+      "installedPath": "include/rin/driver/virtio/virtqueue_v3.h",
+      "license": "GPL-2.0-or-later",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/driver/wifi.h",
+      "installedPath": "include/rin/driver/wifi.h",
+      "license": "GPL-2.0-or-later",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/dynlink/addr_abi.h",
+      "installedPath": "include/rin/dynlink/addr_abi.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/dynlink/flags.h",
+      "installedPath": "include/rin/dynlink/flags.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/dynlink/inventory_abi.h",
+      "installedPath": "include/rin/dynlink/inventory_abi.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/dynlink/memory_abi.h",
+      "installedPath": "include/rin/dynlink/memory_abi.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/dynlink/unwind_abi.h",
+      "installedPath": "include/rin/dynlink/unwind_abi.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/event_abi.h",
+      "installedPath": "include/rin/event_abi.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/file_portal.h",
+      "installedPath": "include/rin/file_portal.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/file_portal_call.h",
+      "installedPath": "include/rin/file_portal_call.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/firewall/abi.h",
+      "installedPath": "include/rin/firewall/abi.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/firewall/application_abi.h",
+      "installedPath": "include/rin/firewall/application_abi.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/firewall/conntrack_abi.h",
+      "installedPath": "include/rin/firewall/conntrack_abi.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/firewall/permission_abi.h",
+      "installedPath": "include/rin/firewall/permission_abi.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/firewall/profile_abi.h",
+      "installedPath": "include/rin/firewall/profile_abi.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/firewall/service_abi.h",
+      "installedPath": "include/rin/firewall/service_abi.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/formats_v3.h",
+      "installedPath": "include/rin/formats_v3.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/fs.h",
+      "installedPath": "include/rin/fs.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/fs/fcntl_lock_abi.h",
+      "installedPath": "include/rin/fs/fcntl_lock_abi.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/fs/namespace_abi.h",
+      "installedPath": "include/rin/fs/namespace_abi.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/fs/path_at_abi.h",
+      "installedPath": "include/rin/fs/path_at_abi.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/gpu.h",
+      "installedPath": "include/rin/gpu.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/gpu_capability.h",
+      "installedPath": "include/rin/gpu_capability.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/gpu_compute_bind_group_owner_v1.h",
+      "installedPath": "include/rin/gpu_compute_bind_group_owner_v1.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/gpu_compute_pipeline_owner_v1.h",
+      "installedPath": "include/rin/gpu_compute_pipeline_owner_v1.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/gpu_graphics_bind_group_owner_v1.h",
+      "installedPath": "include/rin/gpu_graphics_bind_group_owner_v1.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/gpu_graphics_bind_group_owner_v2.h",
+      "installedPath": "include/rin/gpu_graphics_bind_group_owner_v2.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/gpu_graphics_pipeline_owner_v1.h",
+      "installedPath": "include/rin/gpu_graphics_pipeline_owner_v1.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/gpu_process_allocated_image_owner_v1.h",
+      "installedPath": "include/rin/gpu_process_allocated_image_owner_v1.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/gpu_process_encoder.h",
+      "installedPath": "include/rin/gpu_process_encoder.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/gpu_process_graphics_binding_v2.h",
+      "installedPath": "include/rin/gpu_process_graphics_binding_v2.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/gpu_process_image_owner_v1.h",
+      "installedPath": "include/rin/gpu_process_image_owner_v1.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/gpu_process_query_owner_v1.h",
+      "installedPath": "include/rin/gpu_process_query_owner_v1.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/gpu_process_queue_owner_v1.h",
+      "installedPath": "include/rin/gpu_process_queue_owner_v1.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/gpu_sampler_owner_v1.h",
+      "installedPath": "include/rin/gpu_sampler_owner_v1.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/gui.h",
+      "installedPath": "include/rin/gui.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/gui/compositor_abi.h",
+      "installedPath": "include/rin/gui/compositor_abi.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/gui/compositor_input_ring.h",
+      "installedPath": "include/rin/gui/compositor_input_ring.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/gui/compositor_protocol.h",
+      "installedPath": "include/rin/gui/compositor_protocol.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/gui/event_abi.h",
+      "installedPath": "include/rin/gui/event_abi.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/gui/keyboard_layout.h",
+      "installedPath": "include/rin/gui/keyboard_layout.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/gui/native_event.h",
+      "installedPath": "include/rin/gui/native_event.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/gui/presentation_abi.h",
+      "installedPath": "include/rin/gui/presentation_abi.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/gui/surface_abi.h",
+      "installedPath": "include/rin/gui/surface_abi.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/gui/text_input.h",
+      "installedPath": "include/rin/gui/text_input.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/gui/text_input_provider.h",
+      "installedPath": "include/rin/gui/text_input_provider.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/gui/window_abi.h",
+      "installedPath": "include/rin/gui/window_abi.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/gui_native_event.h",
+      "installedPath": "include/rin/gui_native_event.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/icu/service_abi.h",
+      "installedPath": "include/rin/icu/service_abi.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/icu_service_abi.h",
+      "installedPath": "include/rin/icu_service_abi.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/input/gamepad_state_v1.h",
+      "installedPath": "include/rin/input/gamepad_state_v1.h",
+      "license": "GPL-2.0-or-later",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/input/keyboard_layout_preference_v1.h",
+      "installedPath": "include/rin/input/keyboard_layout_preference_v1.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/input_method.h",
+      "installedPath": "include/rin/input_method.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/internal/imagedecoder_ipc_v1.h",
+      "installedPath": "include/rin/internal/imagedecoder_ipc_v1.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/ipc.h",
+      "installedPath": "include/rin/ipc.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/ipc/posix_semaphore_abi.h",
+      "installedPath": "include/rin/ipc/posix_semaphore_abi.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/ipc/shm_abi.h",
+      "installedPath": "include/rin/ipc/shm_abi.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/ipc_peer_abi.h",
+      "installedPath": "include/rin/ipc_peer_abi.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/keyring.h",
+      "installedPath": "include/rin/keyring.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/latency_abi.h",
+      "installedPath": "include/rin/latency_abi.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/legacy/ndrv_v1/block_abi.h",
+      "installedPath": "include/rin/legacy/ndrv_v1/block_abi.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/legacy/ndrv_v1/char_abi.h",
+      "installedPath": "include/rin/legacy/ndrv_v1/char_abi.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/legacy/ndrv_v1/clock_abi.h",
+      "installedPath": "include/rin/legacy/ndrv_v1/clock_abi.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/legacy/ndrv_v1/deferred_abi.h",
+      "installedPath": "include/rin/legacy/ndrv_v1/deferred_abi.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/legacy/ndrv_v1/irq_control_abi.h",
+      "installedPath": "include/rin/legacy/ndrv_v1/irq_control_abi.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/legacy/ndrv_v1/runtime_abi.h",
+      "installedPath": "include/rin/legacy/ndrv_v1/runtime_abi.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/legacy/ndrv_v2/audio_abi.h",
+      "installedPath": "include/rin/legacy/ndrv_v2/audio_abi.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/legacy/ndrv_v2/char_abi.h",
+      "installedPath": "include/rin/legacy/ndrv_v2/char_abi.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/legacy/ndrv_v2/input_abi.h",
+      "installedPath": "include/rin/legacy/ndrv_v2/input_abi.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/location.h",
+      "installedPath": "include/rin/location.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/media.h",
+      "installedPath": "include/rin/media.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/media_types.h",
+      "installedPath": "include/rin/media_types.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/memory/address_space_abi.h",
+      "installedPath": "include/rin/memory/address_space_abi.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/memory/numa_policy_abi.h",
+      "installedPath": "include/rin/memory/numa_policy_abi.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/mman_abi.h",
+      "installedPath": "include/rin/mman_abi.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/net.h",
+      "installedPath": "include/rin/net.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/net/auth_provider_abi.h",
+      "installedPath": "include/rin/net/auth_provider_abi.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/net/dns_abi.h",
+      "installedPath": "include/rin/net/dns_abi.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/net/interface_abi.h",
+      "installedPath": "include/rin/net/interface_abi.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/net/ipv4.h",
+      "installedPath": "include/rin/net/ipv4.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/net/ipv6_text.h",
+      "installedPath": "include/rin/net/ipv6_text.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/net/kerberos_credential_owner_abi.h",
+      "installedPath": "include/rin/net/kerberos_credential_owner_abi.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/net/kerberos_operation_abi.h",
+      "installedPath": "include/rin/net/kerberos_operation_abi.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/net/kerberos_operation_owner_abi.h",
+      "installedPath": "include/rin/net/kerberos_operation_owner_abi.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/net/namespace/abi.h",
+      "installedPath": "include/rin/net/namespace/abi.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/net/namespace/forwarding_abi.h",
+      "installedPath": "include/rin/net/namespace/forwarding_abi.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/net/namespace/multicast_abi.h",
+      "installedPath": "include/rin/net/namespace/multicast_abi.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/net/namespace/neighbor_abi.h",
+      "installedPath": "include/rin/net/namespace/neighbor_abi.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/net/namespace/route_abi.h",
+      "installedPath": "include/rin/net/namespace/route_abi.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/net/netdev_link.h",
+      "installedPath": "include/rin/net/netdev_link.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/net/netif_abi.h",
+      "installedPath": "include/rin/net/netif_abi.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/net/netif_addrconfig_policy.h",
+      "installedPath": "include/rin/net/netif_addrconfig_policy.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/net/resolved_nameinfo_policy.h",
+      "installedPath": "include/rin/net/resolved_nameinfo_policy.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/net/resolved_protocol.h",
+      "installedPath": "include/rin/net/resolved_protocol.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/net/socket_abi.h",
+      "installedPath": "include/rin/net/socket_abi.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/net/wifi_awdl_transport.h",
+      "installedPath": "include/rin/net/wifi_awdl_transport.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/pass_platform_abi.h",
+      "installedPath": "include/rin/pass_platform_abi.h",
+      "license": "GPL-2.0-or-later",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/pkg.h",
+      "installedPath": "include/rin/pkg.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/posix_mqueue_abi.h",
+      "installedPath": "include/rin/posix_mqueue_abi.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/presentation_abi.h",
+      "installedPath": "include/rin/presentation_abi.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/process/image_path_abi.h",
+      "installedPath": "include/rin/process/image_path_abi.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/process/image_range_abi.h",
+      "installedPath": "include/rin/process/image_range_abi.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/process/memory_abi.h",
+      "installedPath": "include/rin/process/memory_abi.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/process/namespace_abi.h",
+      "installedPath": "include/rin/process/namespace_abi.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/process/posix_spawn_abi.h",
+      "installedPath": "include/rin/process/posix_spawn_abi.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/process/process_group_abi.h",
+      "installedPath": "include/rin/process/process_group_abi.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/render_target.h",
+      "installedPath": "include/rin/render_target.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/resource/capability.h",
+      "installedPath": "include/rin/resource/capability.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/resource/limit_abi.h",
+      "installedPath": "include/rin/resource/limit_abi.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/resource/rgroup_abi.h",
+      "installedPath": "include/rin/resource/rgroup_abi.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/resource/subject.h",
+      "installedPath": "include/rin/resource/subject.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/rinshare_airdrop_control.h",
+      "installedPath": "include/rin/rinshare_airdrop_control.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/rinshare_control.h",
+      "installedPath": "include/rin/rinshare_control.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/runtime.h",
+      "installedPath": "include/rin/runtime.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/sdk.h",
+      "installedPath": "include/rin/sdk.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/serial_abi.h",
+      "installedPath": "include/rin/serial_abi.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/service.h",
+      "installedPath": "include/rin/service.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/service_directory.h",
+      "installedPath": "include/rin/service_directory.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/shm_abi.h",
+      "installedPath": "include/rin/shm_abi.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/socket_abi.h",
+      "installedPath": "include/rin/socket_abi.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/surface_abi.h",
+      "installedPath": "include/rin/surface_abi.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/syscall_abi.h",
+      "installedPath": "include/rin/syscall_abi.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/syscall_contract.h",
+      "installedPath": "include/rin/syscall_contract.h",
+      "license": "GPL-2.0-or-later",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/syscall_enum.inc",
+      "installedPath": "include/rin/syscall_enum.inc",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/syscall_legacy.h",
+      "installedPath": "include/rin/syscall_legacy.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/syscall_names.inc",
+      "installedPath": "include/rin/syscall_names.inc",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/thread/name_abi.h",
+      "installedPath": "include/rin/thread/name_abi.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/thread/sched_abi.h",
+      "installedPath": "include/rin/thread/sched_abi.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/time/abi.h",
+      "installedPath": "include/rin/time/abi.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/time/cpu_time_abi.h",
+      "installedPath": "include/rin/time/cpu_time_abi.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/time/futimens_abi.h",
+      "installedPath": "include/rin/time/futimens_abi.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/time/timer_abi.h",
+      "installedPath": "include/rin/time/timer_abi.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/tls_abi.h",
+      "installedPath": "include/rin/tls_abi.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/tty/abi.h",
+      "installedPath": "include/rin/tty/abi.h",
+      "license": "GPL-2.0-or-later",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/utsname_abi.h",
+      "installedPath": "include/rin/utsname_abi.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/validation.h",
+      "installedPath": "include/rin/validation.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/web/request_body_capability.h",
+      "installedPath": "include/rin/web/request_body_capability.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/web/requestserver_protocol.h",
+      "installedPath": "include/rin/web/requestserver_protocol.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/web/webauthn_abi.h",
+      "installedPath": "include/rin/web/webauthn_abi.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/web/webcontent_protocol.h",
+      "installedPath": "include/rin/web/webcontent_protocol.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/web/workerd_protocol.h",
+      "installedPath": "include/rin/web/workerd_protocol.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinOS-SDK",
+      "sourcePath": "include/rin/window_abi.h",
+      "installedPath": "include/rin/window_abi.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rincompression/deflate.hpp",
+      "installedPath": "include/rincompression/deflate.hpp",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rincompression/lz4.hpp",
+      "installedPath": "include/rincompression/lz4.hpp",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rincompression/zstd.hpp",
+      "installedPath": "include/rincompression/zstd.hpp",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/abi_feature_manifest.hpp",
+      "installedPath": "include/rinruntime/abi_feature_manifest.hpp",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/abi_policy.hpp",
+      "installedPath": "include/rinruntime/abi_policy.hpp",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/abi_symbol_policy.hpp",
+      "installedPath": "include/rinruntime/abi_symbol_policy.hpp",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/accessibility.hpp",
+      "installedPath": "include/rinruntime/accessibility.hpp",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/accessibility_bridge.hpp",
+      "installedPath": "include/rinruntime/accessibility_bridge.hpp",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/accessibility_service_client.h",
+      "installedPath": "include/rinruntime/accessibility_service_client.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/accessibility_wire.hpp",
+      "installedPath": "include/rinruntime/accessibility_wire.hpp",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/application.hpp",
+      "installedPath": "include/rinruntime/application.hpp",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/application_data.hpp",
+      "installedPath": "include/rinruntime/application_data.hpp",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/application_data_lifecycle.hpp",
+      "installedPath": "include/rinruntime/application_data_lifecycle.hpp",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/application_metadata.hpp",
+      "installedPath": "include/rinruntime/application_metadata.hpp",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/application_metadata_catalog.hpp",
+      "installedPath": "include/rinruntime/application_metadata_catalog.hpp",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/application_metadata_catalog_json.hpp",
+      "installedPath": "include/rinruntime/application_metadata_catalog_json.hpp",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/application_metadata_json.hpp",
+      "installedPath": "include/rinruntime/application_metadata_json.hpp",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/archive.hpp",
+      "installedPath": "include/rinruntime/archive.hpp",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/archive_7z.hpp",
+      "installedPath": "include/rinruntime/archive_7z.hpp",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/archive_container.hpp",
+      "installedPath": "include/rinruntime/archive_container.hpp",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/archive_deflate.hpp",
+      "installedPath": "include/rinruntime/archive_deflate.hpp",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/archive_gzip.hpp",
+      "installedPath": "include/rinruntime/archive_gzip.hpp",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/archive_policy.h",
+      "installedPath": "include/rinruntime/archive_policy.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/archive_tar.hpp",
+      "installedPath": "include/rinruntime/archive_tar.hpp",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/archive_targz.hpp",
+      "installedPath": "include/rinruntime/archive_targz.hpp",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/archive_xz.hpp",
+      "installedPath": "include/rinruntime/archive_xz.hpp",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/archive_zip.hpp",
+      "installedPath": "include/rinruntime/archive_zip.hpp",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/audio_policy.h",
+      "installedPath": "include/rinruntime/audio_policy.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/backup_archive.hpp",
+      "installedPath": "include/rinruntime/backup_archive.hpp",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/backup_restore.h",
+      "installedPath": "include/rinruntime/backup_restore.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/cancellation.h",
+      "installedPath": "include/rinruntime/cancellation.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/clipboard.h",
+      "installedPath": "include/rinruntime/clipboard.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/compositor_gui.h",
+      "installedPath": "include/rinruntime/compositor_gui.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/controls.hpp",
+      "installedPath": "include/rinruntime/controls.hpp",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/core.hpp",
+      "installedPath": "include/rinruntime/core.hpp",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/crash.h",
+      "installedPath": "include/rinruntime/crash.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/crash_consent.h",
+      "installedPath": "include/rinruntime/crash_consent.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/crash_pending_dump_cleanup.h",
+      "installedPath": "include/rinruntime/crash_pending_dump_cleanup.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/crash_pending_minidumps.h",
+      "installedPath": "include/rinruntime/crash_pending_minidumps.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/crash_service.h",
+      "installedPath": "include/rinruntime/crash_service.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/cursor.h",
+      "installedPath": "include/rinruntime/cursor.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/cxx_compat.h",
+      "installedPath": "include/rinruntime/cxx_compat.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/device_manifest.hpp",
+      "installedPath": "include/rinruntime/device_manifest.hpp",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/device_manifest_json.hpp",
+      "installedPath": "include/rinruntime/device_manifest_json.hpp",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/display_policy.hpp",
+      "installedPath": "include/rinruntime/display_policy.hpp",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/dns_transport.hpp",
+      "installedPath": "include/rinruntime/dns_transport.hpp",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/dns_wire.h",
+      "installedPath": "include/rinruntime/dns_wire.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/download_policy.h",
+      "installedPath": "include/rinruntime/download_policy.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/download_range_transport.hpp",
+      "installedPath": "include/rinruntime/download_range_transport.hpp",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/download_resume.hpp",
+      "installedPath": "include/rinruntime/download_resume.hpp",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/drag_drop.hpp",
+      "installedPath": "include/rinruntime/drag_drop.hpp",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/durable_file_portal.h",
+      "installedPath": "include/rinruntime/durable_file_portal.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/event.hpp",
+      "installedPath": "include/rinruntime/event.hpp",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/event_loop.hpp",
+      "installedPath": "include/rinruntime/event_loop.hpp",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/event_loop_poll.hpp",
+      "installedPath": "include/rinruntime/event_loop_poll.hpp",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/event_loop_rin.hpp",
+      "installedPath": "include/rinruntime/event_loop_rin.hpp",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/events.hpp",
+      "installedPath": "include/rinruntime/events.hpp",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/file_associations.hpp",
+      "installedPath": "include/rinruntime/file_associations.hpp",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/file_chooser_portal.h",
+      "installedPath": "include/rinruntime/file_chooser_portal.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/file_operation.h",
+      "installedPath": "include/rinruntime/file_operation.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/file_operation_service.h",
+      "installedPath": "include/rinruntime/file_operation_service.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/file_portal.h",
+      "installedPath": "include/rinruntime/file_portal.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/file_portal_startup.h",
+      "installedPath": "include/rinruntime/file_portal_startup.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/firewall_application.h",
+      "installedPath": "include/rinruntime/firewall_application.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/firewall_conntrack.h",
+      "installedPath": "include/rinruntime/firewall_conntrack.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/firewall_namespace_policy.h",
+      "installedPath": "include/rinruntime/firewall_namespace_policy.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/firewall_profile.h",
+      "installedPath": "include/rinruntime/firewall_profile.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/firewall_rule_index.h",
+      "installedPath": "include/rinruntime/firewall_rule_index.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/firewall_service_protocol.h",
+      "installedPath": "include/rinruntime/firewall_service_protocol.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/frame_copy.h",
+      "installedPath": "include/rinruntime/frame_copy.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/json_input_alias.hpp",
+      "installedPath": "include/rinruntime/json_input_alias.hpp",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/known_folders.h",
+      "installedPath": "include/rinruntime/known_folders.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/known_folders.hpp",
+      "installedPath": "include/rinruntime/known_folders.hpp",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/layout.hpp",
+      "installedPath": "include/rinruntime/layout.hpp",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/layout_direction.hpp",
+      "installedPath": "include/rinruntime/layout_direction.hpp",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/media.hpp",
+      "installedPath": "include/rinruntime/media.hpp",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/netif_addrconfig_policy.h",
+      "installedPath": "include/rinruntime/netif_addrconfig_policy.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/netif_identity.h",
+      "installedPath": "include/rinruntime/netif_identity.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/netif_policy.h",
+      "installedPath": "include/rinruntime/netif_policy.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/package_metadata.hpp",
+      "installedPath": "include/rinruntime/package_metadata.hpp",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/package_metadata_catalog.hpp",
+      "installedPath": "include/rinruntime/package_metadata_catalog.hpp",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/package_metadata_catalog_json.hpp",
+      "installedPath": "include/rinruntime/package_metadata_catalog_json.hpp",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/package_metadata_json.hpp",
+      "installedPath": "include/rinruntime/package_metadata_json.hpp",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/path.h",
+      "installedPath": "include/rinruntime/path.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/pe_loader.h",
+      "installedPath": "include/rinruntime/pe_loader.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/performance_trace.h",
+      "installedPath": "include/rinruntime/performance_trace.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/permission_prompt.hpp",
+      "installedPath": "include/rinruntime/permission_prompt.hpp",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/permission_revocation.hpp",
+      "installedPath": "include/rinruntime/permission_revocation.hpp",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/piece_table.hpp",
+      "installedPath": "include/rinruntime/piece_table.hpp",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/poll_wait.h",
+      "installedPath": "include/rinruntime/poll_wait.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/portal.h",
+      "installedPath": "include/rinruntime/portal.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/presentation.h",
+      "installedPath": "include/rinruntime/presentation.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/pty.h",
+      "installedPath": "include/rinruntime/pty.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/render.h",
+      "installedPath": "include/rinruntime/render.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/render_context.hpp",
+      "installedPath": "include/rinruntime/render_context.hpp",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/requestserver_tls_client_certificate_policy.h",
+      "installedPath": "include/rinruntime/requestserver_tls_client_certificate_policy.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/requestserver_upload_body_policy.hpp",
+      "installedPath": "include/rinruntime/requestserver_upload_body_policy.hpp",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/resolved_async_status_policy.h",
+      "installedPath": "include/rinruntime/resolved_async_status_policy.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/resolved_search_policy.h",
+      "installedPath": "include/rinruntime/resolved_search_policy.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/rin_aes_siv.h",
+      "installedPath": "include/rinruntime/rin_aes_siv.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/rin_app.hpp",
+      "installedPath": "include/rinruntime/rin_app.hpp",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/rin_app_activity.hpp",
+      "installedPath": "include/rinruntime/rin_app_activity.hpp",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/rin_app_application.hpp",
+      "installedPath": "include/rinruntime/rin_app_application.hpp",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/rin_app_documents.hpp",
+      "installedPath": "include/rinruntime/rin_app_documents.hpp",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/rin_app_effects.hpp",
+      "installedPath": "include/rinruntime/rin_app_effects.hpp",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/rin_app_forms.hpp",
+      "installedPath": "include/rinruntime/rin_app_forms.hpp",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/rin_app_printing.hpp",
+      "installedPath": "include/rinruntime/rin_app_printing.hpp",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/rin_app_printing_layout.hpp",
+      "installedPath": "include/rinruntime/rin_app_printing_layout.hpp",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/rin_app_system.hpp",
+      "installedPath": "include/rinruntime/rin_app_system.hpp",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/rin_app_ui.hpp",
+      "installedPath": "include/rinruntime/rin_app_ui.hpp",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/rin_app_widgets.hpp",
+      "installedPath": "include/rinruntime/rin_app_widgets.hpp",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/rin_audio_service_client.h",
+      "installedPath": "include/rinruntime/rin_audio_service_client.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/rin_capture_policy.h",
+      "installedPath": "include/rinruntime/rin_capture_policy.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/rin_capture_transport.h",
+      "installedPath": "include/rinruntime/rin_capture_transport.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/rin_certificate_revocation.h",
+      "installedPath": "include/rinruntime/rin_certificate_revocation.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/rin_certificate_revocation_cache.h",
+      "installedPath": "include/rinruntime/rin_certificate_revocation_cache.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/rin_compositor_policy.hpp",
+      "installedPath": "include/rinruntime/rin_compositor_policy.hpp",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/rin_compositor_protocol.h",
+      "installedPath": "include/rinruntime/rin_compositor_protocol.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/rin_container_network_portal.h",
+      "installedPath": "include/rinruntime/rin_container_network_portal.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/rin_cursor.h",
+      "installedPath": "include/rinruntime/rin_cursor.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/rin_desktop_model.h",
+      "installedPath": "include/rinruntime/rin_desktop_model.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/rin_dhcpv4_wire.h",
+      "installedPath": "include/rinruntime/rin_dhcpv4_wire.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/rin_dhcpv6_client.h",
+      "installedPath": "include/rinruntime/rin_dhcpv6_client.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/rin_dhcpv6_reconfigure.h",
+      "installedPath": "include/rinruntime/rin_dhcpv6_reconfigure.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/rin_dhcpv6_transport.h",
+      "installedPath": "include/rinruntime/rin_dhcpv6_transport.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/rin_dns_client_policy.h",
+      "installedPath": "include/rinruntime/rin_dns_client_policy.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/rin_gui_clip_stack.h",
+      "installedPath": "include/rinruntime/rin_gui_clip_stack.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/rin_gui_text_policy.h",
+      "installedPath": "include/rinruntime/rin_gui_text_policy.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/rin_http_policy.h",
+      "installedPath": "include/rinruntime/rin_http_policy.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/rin_http_request_policy.h",
+      "installedPath": "include/rinruntime/rin_http_request_policy.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/rin_http_url.hpp",
+      "installedPath": "include/rinruntime/rin_http_url.hpp",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/rin_icc_connector_profile_store_v1.h",
+      "installedPath": "include/rinruntime/rin_icc_connector_profile_store_v1.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/rin_icc_display_profile_v1.h",
+      "installedPath": "include/rinruntime/rin_icc_display_profile_v1.h",
+      "license": "GPL-2.0-or-later",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/rin_icc_display_transform_v1.h",
+      "installedPath": "include/rinruntime/rin_icc_display_transform_v1.h",
+      "license": "GPL-2.0-or-later",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/rin_icc_lut_profile_v1.h",
+      "installedPath": "include/rinruntime/rin_icc_lut_profile_v1.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/rin_icc_lut_transform_v1.h",
+      "installedPath": "include/rinruntime/rin_icc_lut_transform_v1.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/rin_installer_runtime.h",
+      "installedPath": "include/rinruntime/rin_installer_runtime.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/rin_ipv6_literal.hpp",
+      "installedPath": "include/rinruntime/rin_ipv6_literal.hpp",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/rin_keyring_client.h",
+      "installedPath": "include/rinruntime/rin_keyring_client.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/rin_midi_policy.h",
+      "installedPath": "include/rinruntime/rin_midi_policy.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/rin_nvme_health_snapshot_v1.h",
+      "installedPath": "include/rinruntime/rin_nvme_health_snapshot_v1.h",
+      "license": "GPL-2.0-or-later",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/rin_power_inhibit_kernel_abi.h",
+      "installedPath": "include/rinruntime/rin_power_inhibit_kernel_abi.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/rin_product_version.h",
+      "installedPath": "include/rinruntime/rin_product_version.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/rin_resolved_network_generation.h",
+      "installedPath": "include/rinruntime/rin_resolved_network_generation.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/rin_resource.h",
+      "installedPath": "include/rinruntime/rin_resource.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/rin_serial_portal_protocol.h",
+      "installedPath": "include/rinruntime/rin_serial_portal_protocol.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/rin_service_socket_path_policy.h",
+      "installedPath": "include/rinruntime/rin_service_socket_path_policy.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/rin_signal_set_state.h",
+      "installedPath": "include/rinruntime/rin_signal_set_state.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/rin_socket_abi.h",
+      "installedPath": "include/rinruntime/rin_socket_abi.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/rin_theme_palette.h",
+      "installedPath": "include/rinruntime/rin_theme_palette.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/rin_tls_evidence.h",
+      "installedPath": "include/rinruntime/rin_tls_evidence.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/rin_tray_protocol.h",
+      "installedPath": "include/rinruntime/rin_tray_protocol.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/rin_trust_store_bundle_v1.h",
+      "installedPath": "include/rinruntime/rin_trust_store_bundle_v1.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/rin_trust_store_update.h",
+      "installedPath": "include/rinruntime/rin_trust_store_update.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/rin_trusted_time.hpp",
+      "installedPath": "include/rinruntime/rin_trusted_time.hpp",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/rin_user_agent.h",
+      "installedPath": "include/rinruntime/rin_user_agent.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/rin_web_serial_portal.h",
+      "installedPath": "include/rinruntime/rin_web_serial_portal.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/rin_workerd_client_handle_quota_abi.h",
+      "installedPath": "include/rinruntime/rin_workerd_client_handle_quota_abi.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/rinfs/rinfs.h",
+      "installedPath": "include/rinruntime/rinfs/rinfs.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/rinfs/vfs_open_flags.h",
+      "installedPath": "include/rinruntime/rinfs/vfs_open_flags.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/rinos_http_transport_policy.h",
+      "installedPath": "include/rinruntime/rinos_http_transport_policy.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/rinruntime.hpp",
+      "installedPath": "include/rinruntime/rinruntime.hpp",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/safe_save.h",
+      "installedPath": "include/rinruntime/safe_save.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/safe_save_posix.h",
+      "installedPath": "include/rinruntime/safe_save_posix.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/semantic_widget.hpp",
+      "installedPath": "include/rinruntime/semantic_widget.hpp",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/service_configuration.hpp",
+      "installedPath": "include/rinruntime/service_configuration.hpp",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/session_recovery.h",
+      "installedPath": "include/rinruntime/session_recovery.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/setting_provenance.h",
+      "installedPath": "include/rinruntime/setting_provenance.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/settings_search.hpp",
+      "installedPath": "include/rinruntime/settings_search.hpp",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/storage.hpp",
+      "installedPath": "include/rinruntime/storage.hpp",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/storage_health_snapshot_v1.h",
+      "installedPath": "include/rinruntime/storage_health_snapshot_v1.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/system.hpp",
+      "installedPath": "include/rinruntime/system.hpp",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/text_codec.h",
+      "installedPath": "include/rinruntime/text_codec.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/text_editor.hpp",
+      "installedPath": "include/rinruntime/text_editor.hpp",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/text_input.hpp",
+      "installedPath": "include/rinruntime/text_input.hpp",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/theme.hpp",
+      "installedPath": "include/rinruntime/theme.hpp",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/theme_json.hpp",
+      "installedPath": "include/rinruntime/theme_json.hpp",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/timezone.hpp",
+      "installedPath": "include/rinruntime/timezone.hpp",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/tls_client_certificate.h",
+      "installedPath": "include/rinruntime/tls_client_certificate.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/tls_client_certificate_binding.hpp",
+      "installedPath": "include/rinruntime/tls_client_certificate_binding.hpp",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/tls_client_certificate_transport.hpp",
+      "installedPath": "include/rinruntime/tls_client_certificate_transport.hpp",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/tpm2/formats.h",
+      "installedPath": "include/rinruntime/tpm2/formats.h",
+      "license": "GPL-2.0-or-later",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/ui.hpp",
+      "installedPath": "include/rinruntime/ui.hpp",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/unicode.h",
+      "installedPath": "include/rinruntime/unicode.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/unicode.hpp",
+      "installedPath": "include/rinruntime/unicode.hpp",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/update_metadata.hpp",
+      "installedPath": "include/rinruntime/update_metadata.hpp",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/update_metadata_catalog.hpp",
+      "installedPath": "include/rinruntime/update_metadata_catalog.hpp",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/update_metadata_catalog_json.hpp",
+      "installedPath": "include/rinruntime/update_metadata_catalog_json.hpp",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/update_metadata_json.hpp",
+      "installedPath": "include/rinruntime/update_metadata_json.hpp",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/volume_service.hpp",
+      "installedPath": "include/rinruntime/volume_service.hpp",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/webcontent_bridge_recovery_policy.h",
+      "installedPath": "include/rinruntime/webcontent_bridge_recovery_policy.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/webcontent_client_policy.h",
+      "installedPath": "include/rinruntime/webcontent_client_policy.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/webcontent_location_permission.h",
+      "installedPath": "include/rinruntime/webcontent_location_permission.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/webcontent_network_failure_policy.h",
+      "installedPath": "include/rinruntime/webcontent_network_failure_policy.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/webcontent_peer_identity_policy.h",
+      "installedPath": "include/rinruntime/webcontent_peer_identity_policy.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/webcontent_permission_producer.h",
+      "installedPath": "include/rinruntime/webcontent_permission_producer.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/webcontent_service_abi.h",
+      "installedPath": "include/rinruntime/webcontent_service_abi.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/webcontent_service_policy.h",
+      "installedPath": "include/rinruntime/webcontent_service_policy.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/webcontent_tls_identity_owner_abi.h",
+      "installedPath": "include/rinruntime/webcontent_tls_identity_owner_abi.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/widget.hpp",
+      "installedPath": "include/rinruntime/widget.hpp",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/widgets.hpp",
+      "installedPath": "include/rinruntime/widgets.hpp",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/wincompat_image_bmp.h",
+      "installedPath": "include/rinruntime/wincompat_image_bmp.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/window.h",
+      "installedPath": "include/rinruntime/window.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/window.hpp",
+      "installedPath": "include/rinruntime/window.hpp",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/window_layout.hpp",
+      "installedPath": "include/rinruntime/window_layout.hpp",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/workerd_request_policy.h",
+      "installedPath": "include/rinruntime/workerd_request_policy.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    },
+    {
+      "repository": "RinRuntime",
+      "sourcePath": "include/rinruntime/workerd_service_abi.h",
+      "installedPath": "include/rinruntime/workerd_service_abi.h",
+      "license": "MIT",
+      "licenseSource": "SPDX-License-Identifier"
+    }
+  ]
+}

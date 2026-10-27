@@ -139,6 +139,18 @@ runtime_dep = declare_dependency(link_with: runtime, include_directories: inc,
 install_subdir('include/rinruntime', install_dir: get_option('includedir'),
                exclude_directories: ['crypt'])
 install_subdir('include/rincompression', install_dir: get_option('includedir'))
+license_install_dir = join_paths(get_option('datadir'), 'licenses', 'RinRuntime')
+install_data('LICENSE', install_dir: license_install_dir,
+             rename: 'RinRuntime-MIT.txt')
+install_data(join_paths(sdk_root, 'LICENSE'), install_dir: license_install_dir,
+             rename: 'RinOS-SDK-MIT.txt')
+install_data(join_paths(sdk_root, 'LICENSES', 'GPL-2.0-or-later.txt'),
+             install_dir: license_install_dir,
+             rename: 'GPL-2.0-or-later.txt')
+install_data('licenses/public-api-license-manifest.json',
+             install_dir: license_install_dir)
+install_data('licenses/README.md', install_dir: license_install_dir,
+             rename: 'LICENSE-README.md')
 install_headers(files(join_paths(aquamarine_root, 'aq_types.h')),
                 subdir: 'aquamarine')
 public_header_command = [python, files('scripts/resolve_dependencies.py'),
