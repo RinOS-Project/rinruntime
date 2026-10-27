@@ -1352,6 +1352,11 @@ int rinfs_rename_expected(
     RinFS_Mount* mount, uint64_t old_dir, const char* old_name,
     uint64_t new_dir, const char* new_name, uint64_t expected_source_inode,
     uint32_t expected_source_generation);
+/* 1回のジャーナルトランザクションで宛先を置換する。宛先が新しい場合は
+ * RINFS_ERR_EXISTを返し、変更しない。 */
+int rinfs_rename_if_newer(RinFS_Mount* mount, uint64_t old_dir,
+                          const char* old_name, uint64_t new_dir,
+                          const char* new_name, uint64_t source_mtime);
 int rinfs_link(RinFS_Mount* mount, uint64_t dir_ino, const char* name, uint64_t target_ino);
 /* Publish an O_TMPFILE lifetime under one name, recovering a persisted
  * directory entry through its orphan-intent marker if power is lost. */
