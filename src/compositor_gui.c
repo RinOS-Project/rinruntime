@@ -280,6 +280,8 @@ static int runtime_role_has_application_icon(uint32_t role) {
 
 static void runtime_drop_input_ring(void) {
     if (g_input_ring_wake) {
+        if (g_input_ring_wake_name[0] != '\0')
+            (void)sem_unlink(g_input_ring_wake_name);
         (void)sem_close(g_input_ring_wake);
         g_input_ring_wake = 0;
     }
