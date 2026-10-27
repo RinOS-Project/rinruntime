@@ -644,7 +644,7 @@ static int runtime_setup_input_ring(void) {
         return -1;
     }
     g_input_ring_wake = sem_open(g_input_ring_wake_name, O_CREAT | O_EXCL,
-                                 0, 0u);
+                                 (mode_t)0600, 0u);
     if (!g_input_ring_wake || g_input_ring_wake == SEM_FAILED) {
         runtime_drop_input_ring();
         return -1;
