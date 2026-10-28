@@ -5,6 +5,8 @@
 
 #include <libc/sys/syscall.h>
 #include <limits.h>
+#include <rin/contract_abi.h>
+#include <rin/file_portal_call.h>
 #include <rin/syscall_abi.h>
 
 static int platform_int_result(intptr_t result)
@@ -27,6 +29,13 @@ static void* platform_pointer_result(intptr_t result)
         return (void*)0;
     }
     return (void*)(uintptr_t)result;
+}
+
+int rin_file_portal_call(RinFilePortalCallV1* call)
+{
+    if (call == NULL) return (int)RIN_RESULT_INVALID_ARGUMENT;
+    return (int)_syscall1((uintptr_t)RIN_SYS_FILE_PORTAL_CALL,
+                          (uintptr_t)call);
 }
 
 int rin_shm_get(const char* name, uint32_t size, uint32_t flags)

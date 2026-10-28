@@ -42,7 +42,7 @@ rinwire_root = dependency_paths[10]
 aquamarine_root = dependency_paths[11]
 ringpu_root = dependency_paths[12]
 generated_include = meson.current_build_dir()
-inc = include_directories('include', '.',
+inc = [include_directories('include', '.',
                           join_paths(sdk_root, 'include'),
                           join_paths(rinjson_root, 'include'),
                           join_paths(rinpath_root, 'include'),
@@ -54,9 +54,9 @@ inc = include_directories('include', '.',
                           join_paths(libc_root, '..'),
                           join_paths(libcxx_root, '..'),
                           join_paths(aquamarine_root, '..'),
-                          libunicode_root, libi18n_root)
+                          libunicode_root, libi18n_root)]
 if host_machine.system() != 'windows'
-  inc += include_directories(aquamarine_root)
+  inc += [include_directories(aquamarine_root)]
 endif
 runtime_sources = files('src/portal.c', 'src/crash.c',
                         'src/rin_crash_record.c',
@@ -135,7 +135,8 @@ runtime = library('RinRuntime', runtime_sources, include_directories: inc,
                   override_options: ['b_lundef=false'],
                   install: true, version: '1.0.0')
 runtime_dep = declare_dependency(link_with: runtime, include_directories: inc,
-                                 dependencies: runtime_deps)
+                                 dependencies: runtime_deps,
+                                 link_args: runtime_link_args)
 install_subdir('include/rinruntime', install_dir: get_option('includedir'),
                exclude_directories: ['crypt'])
 install_subdir('include/rincompression', install_dir: get_option('includedir'))
@@ -189,6 +190,7 @@ pkgconfig.generate(runtime,
   name: 'RinRuntime',
   filebase: 'rinruntime',
   description: 'RinOS public application models and service-client contracts',
+  libraries: runtime_link_args,
   version: meson.project_version())
 
 if get_option('build_rll')
