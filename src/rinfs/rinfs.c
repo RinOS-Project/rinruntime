@@ -26824,7 +26824,7 @@ int rinfs_symlink(RinFS_Mount* mount, uint64_t dir_ino, const char* name, const 
 /* Read symbolic link target */
 static int rinfs_readlink_unscoped(RinFS_Mount* mount, uint64_t ino,
                                    char* buf, uint32_t size) {
-    if (!mount || !mount->mounted || !buf || size == 0) return RINFS_ERR_INVAL;
+    if (!mount || !mount->mounted || !buf) return RINFS_ERR_INVAL;
 
     /* Read inode */
     RinFS_Inode inode;
