@@ -20916,7 +20916,9 @@ int rinfs_mmap_source_retain_page(RinFS_MmapSource* source,
 /* mmap-source reads use a synthetic RinFS_File protected by the mmap source's
  * full-call lifetime operation and content lease, rather than an open
  * descriptor close-reference record. */
-static int64_t rinfs_read_unleased(RinFS_File* file, void* buf, uint64_t size);
+static int64_t rinfs_read_unleased(
+    RinFS_File* file, void* buf, uint64_t size, uint8_t advice,
+    uint64_t readahead_end, int readahead_end_valid);
 
 static int64_t rinfs_mmap_source_read_impl(RinFS_MmapSource* source,
                                uint64_t expected_inode,
@@ -20967,7 +20969,8 @@ static int64_t rinfs_mmap_source_read_impl(RinFS_MmapSource* source,
     file.position = offset;
     file.flags = 0;
     file.mount = identity.mount;
-    result = rinfs_read_unleased(&file, output, size);
+    result = rinfs_read_unleased(
+        &file, output, size, RINFS_READ_ADVICE_NORMAL, UINT64_MAX, 0);
     rinfs_keep_first_error(&content_unlock_error, rinfs_content_lease_release(
         identity.mount, identity.inode_num, identity.inode_generation,
         lease_token, 0));
@@ -21595,7 +21598,9 @@ static int rinfs_path_lookup_nofollow_unscoped(
 /* Payload traversal assumes the caller has already pinned the inode
  * generation.  The public wrapper below establishes that lease for ordinary
  * file descriptors as well as for temporary mmap-source descriptors. */
-static int64_t rinfs_read_unleased(RinFS_File* file, void* buf, uint64_t size) {
+static int64_t rinfs_read_unleased(
+    RinFS_File* file, void* buf, uint64_t size, uint8_t advice,
+    uint64_t readahead_end, int readahead_end_valid) {
     if (!file || !file->in_use || !buf) return RINFS_ERR_INVAL;
     
     RinFS_Mount* mount = file->mount;
@@ -21649,15 +21654,15 @@ static int64_t rinfs_read_unleased(RinFS_File* file, void* buf, uint64_t size) {
             file->position += chunk;
             bytes_read += chunk;
             size -= chunk;
-            if (file->read_advice != RINFS_READ_ADVICE_RANDOM &&
-                (file->read_advice == RINFS_READ_ADVICE_SEQUENTIAL ||
+            if (advice != RINFS_READ_ADVICE_RANDOM &&
+                (advice == RINFS_READ_ADVICE_SEQUENTIAL ||
                  (file->read_pattern_kind == RINFS_READ_PATTERN_FORWARD &&
                   file->read_pattern_sequential_hits >=
                       RINFS_READAHEAD_MIN_SEQUENTIAL_HITS)) &&
                 file_block != UINT64_MAX) {
                 uint64_t logical_pages = file->inode.i_size / block_size;
                 uint32_t window =
-                    file->read_advice == RINFS_READ_ADVICE_SEQUENTIAL
+                    advice == RINFS_READ_ADVICE_SEQUENTIAL
                         ? RINFS_READAHEAD_MAX_PAGES
                         : file->read_pattern_window_pages;
                 if (file->inode.i_size % block_size != 0u)
@@ -21665,14 +21670,30 @@ static int64_t rinfs_read_unleased(RinFS_File* file, void* buf, uint64_t size) {
                 if (logical_pages > file_block + 1u) {
                     uint64_t available = logical_pages - (file_block + 1u);
                     if (available < window) window = (uint32_t)available;
-                    int readahead_error = rinfs_page_cache_readahead(
-                        mount, file->inode_num, &file->inode,
-                        file_block + 1u, window);
-                    /* Speculative I/O must not turn an already completed
-                     * foreground read into an error, but a cache recovery
-                     * failure fences further work on this mount. */
-                    if (readahead_error == RINFS_ERR_CORRUPT)
-                        return (int64_t)bytes_read;
+                    if (readahead_end_valid != 0) {
+                        uint64_t advice_pages =
+                            readahead_end / block_size;
+                        if (readahead_end % block_size != 0u)
+                            ++advice_pages;
+                        if (advice_pages <= file_block + 1u) {
+                            window = 0u;
+                        } else {
+                            uint64_t advice_available =
+                                advice_pages - (file_block + 1u);
+                            if (advice_available < window)
+                                window = (uint32_t)advice_available;
+                        }
+                    }
+                    if (window != 0u) {
+                        int readahead_error = rinfs_page_cache_readahead(
+                            mount, file->inode_num, &file->inode,
+                            file_block + 1u, window);
+                        /* Speculative I/O must not turn an already completed
+                         * foreground read into an error, but a cache recovery
+                         * failure fences further work on this mount. */
+                        if (readahead_error == RINFS_ERR_CORRUPT)
+                            return (int64_t)bytes_read;
+                    }
                 }
             }
             continue;
@@ -21783,7 +21804,9 @@ static int64_t rinfs_read_unleased(RinFS_File* file, void* buf, uint64_t size) {
     return (int64_t)bytes_read;
 }
 
-static int64_t rinfs_read_core(RinFS_File* file, void* buf, uint64_t size) {
+static int64_t rinfs_read_core(
+    RinFS_File* file, void* buf, uint64_t size, uint8_t advice,
+    uint64_t readahead_end, int readahead_end_valid) {
     int content_unlock_error = RINFS_OK;
     RinFS_Mount* mount;
     RinFS_Inode observed;
@@ -21814,32 +21837,54 @@ static int64_t rinfs_read_core(RinFS_File* file, void* buf, uint64_t size) {
                                     observed.i_generation, lease_token, 0));
         return rinfs_content_unlock_status((err != RINFS_OK ? err : RINFS_ERR_STALE), content_unlock_error);
     }
-    result = rinfs_read_unleased(file, buf, size);
+    result = rinfs_read_unleased(
+        file, buf, size, advice, readahead_end, readahead_end_valid);
     rinfs_keep_first_error(&content_unlock_error, rinfs_content_lease_release(mount, file->inode_num,
                                 observed.i_generation, lease_token, 0));
     return rinfs_content_unlock_status((result), content_unlock_error);
 }
 
 int64_t rinfs_read(RinFS_File* file, void* buf, uint64_t size) {
+    if (!file) return RINFS_ERR_INVAL;
+    return rinfs_read_advised_range(
+        file, buf, size, file->read_advice, UINT64_MAX, 0);
+}
+
+int64_t rinfs_read_advised_range(
+    RinFS_File* file, void* buf, uint64_t size, uint8_t advice,
+    uint64_t readahead_end, int readahead_end_valid) {
     RinFS_CloseReferenceOperationLease operation;
     int64_t result;
     int release_result;
-    if (!buf) return RINFS_ERR_INVAL;
+    if (!file || !buf || advice > RINFS_READ_ADVICE_SEQUENTIAL ||
+        (readahead_end_valid != 0 && readahead_end_valid != 1))
+        return RINFS_ERR_INVAL;
     result = rinfs_file_operation_begin(file, &operation);
     if (result != RINFS_OK) return result;
-    result = rinfs_read_core(file, buf, size);
+    result = rinfs_read_core(
+        file, buf, size, advice, readahead_end, readahead_end_valid);
     release_result = rinfs_close_ref_end_operation(&operation);
     return release_result == RINFS_OK ? result : release_result;
 }
 
 int64_t rinfs_pread(RinFS_File* file, void* buf, uint64_t size,
                     uint64_t offset) {
+    if (!file) return RINFS_ERR_INVAL;
+    return rinfs_pread_advised_range(
+        file, buf, size, offset, file->read_advice, UINT64_MAX, 0);
+}
+
+int64_t rinfs_pread_advised_range(
+    RinFS_File* file, void* buf, uint64_t size, uint64_t offset,
+    uint8_t advice, uint64_t readahead_end, int readahead_end_valid) {
     RinFS_File positioned;
     int64_t result;
     RinFS_CloseReferenceOperationLease operation;
     int release_result;
 
-    if (!buf) return RINFS_ERR_INVAL;
+    if (!file || !buf || advice > RINFS_READ_ADVICE_SEQUENTIAL ||
+        (readahead_end_valid != 0 && readahead_end_valid != 1))
+        return RINFS_ERR_INVAL;
     result = rinfs_file_operation_begin(file, &operation);
     if (result != RINFS_OK) return result;
 
@@ -21849,7 +21894,9 @@ int64_t rinfs_pread(RinFS_File* file, void* buf, uint64_t size,
      * open-file position visible to read(), write(), or lseek(). */
     positioned = *file;
     positioned.position = offset;
-    result = rinfs_read(&positioned, buf, size);
+    result = rinfs_read_advised_range(
+        &positioned, buf, size, advice, readahead_end,
+        readahead_end_valid);
     if (result >= 0) {
         file->inode = positioned.inode;
         file->read_pattern_last_page = positioned.read_pattern_last_page;

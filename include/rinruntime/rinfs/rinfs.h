@@ -1393,6 +1393,11 @@ int rinfs_close(RinFS_File* file);
 int rinfs_close_with_disposition(RinFS_File* file, int* consumed_out,
                                  int* retryable_out);
 int64_t rinfs_read(RinFS_File* file, void* buf, uint64_t size);
+/* VFS向け。範囲の方針と、先読みを止める排他的な終端を指定する。 */
+int64_t rinfs_read_advised_range(RinFS_File* file, void* buf,
+                                 uint64_t size, uint8_t advice,
+                                 uint64_t readahead_end,
+                                 int readahead_end_valid);
 int64_t rinfs_write(RinFS_File* file, const void* buf, uint64_t size);
 /* Positional I/O never advances the caller's open-file position.  The
  * inode snapshot is refreshed only after the delegated operation succeeds,
@@ -1400,6 +1405,10 @@ int64_t rinfs_write(RinFS_File* file, const void* buf, uint64_t size);
  * that descriptor. */
 int64_t rinfs_pread(RinFS_File* file, void* buf, uint64_t size,
                     uint64_t offset);
+int64_t rinfs_pread_advised_range(RinFS_File* file, void* buf,
+                                  uint64_t size, uint64_t offset,
+                                  uint8_t advice, uint64_t readahead_end,
+                                  int readahead_end_valid);
 int64_t rinfs_pwrite(RinFS_File* file, const void* buf, uint64_t size,
                      uint64_t offset);
 /* 指定範囲のブロックを事前確保する。既存データを保持し、EOFを越える範囲では
