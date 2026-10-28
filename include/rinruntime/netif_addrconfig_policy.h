@@ -71,7 +71,9 @@ static inline int rin_netif_addrconfig_decode(
     if (has_ipv4 !=
         ((info->flags & RIN_NETINFO_FLAG_IPV4_CONFIGURED) != 0u))
         return -1;
-    *ipv4_configured = has_ipv4;
+    /* RFC 3493's AI_ADDRCONFIG policy does not count IPv4 loopback as a
+     * configured address, even when the primary snapshot carries 127/8. */
+    *ipv4_configured = has_ipv4 && info->ip[0] != 127u;
     *ipv6_configured =
         (info->flags & RIN_NETINFO_FLAG_IPV6_CONFIGURED) != 0u;
     return 0;
