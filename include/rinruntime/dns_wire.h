@@ -727,7 +727,6 @@ static inline int rin_dns_wire_parse_response_answers_ex(
     if (answer_count > RIN_DNS_WIRE_MAX_ANSWERS ||
         authority_count > RIN_DNS_WIRE_MAX_AUTHORITY ||
         additional_count > RIN_DNS_WIRE_MAX_ADDITIONAL ||
-        (rcode == 3u && answer_count != 0u) ||
         rin_dns_wire_copy_name(current_name, sizeof(current_name),
                                expected_name) != 0 ||
         rin_dns_wire_copy_name(seen_names[0], sizeof(seen_names[0]),
@@ -919,8 +918,19 @@ static inline int rin_dns_wire_parse_response_answers_ex(
     }
 
     if (position != packet_size) goto fail;
+    if (rcode == 3u) {
+        if (result_found || (answer_count != 0u && cname_hops == 0u)) {
+            goto fail;
+        }
+        if (cname_hops != 0u && cname_referral &&
+            cname_referral_capacity > 0u &&
+            rin_dns_wire_copy_name(cname_referral, cname_referral_capacity,
+                                   current_name) != 0) {
+            goto fail;
+        }
+        return RIN_DNS_WIRE_PARSE_NAME_ERROR;
+    }
     if (result_found) return RIN_DNS_WIRE_PARSE_SUCCESS;
-    if (rcode == 3u) return RIN_DNS_WIRE_PARSE_NAME_ERROR;
     if (cname_hops != 0u && cname_referral &&
         cname_referral_capacity > 0u &&
         rin_dns_wire_copy_name(cname_referral, cname_referral_capacity,
