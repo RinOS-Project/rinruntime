@@ -60,6 +60,8 @@ typedef struct RinDnsWireAnswerSet {
 #define RIN_DNS_WIRE_PARSE_NAME_ERROR 2
 #define RIN_DNS_WIRE_PARSE_NO_DATA 3
 #define RIN_DNS_WIRE_PARSE_NOT_IMPLEMENTED 4
+#define RIN_DNS_WIRE_PARSE_CNAME_LOOP (-5)
+#define RIN_DNS_WIRE_PARSE_CNAME_LIMIT (-6)
 
 static inline uint16_t rin_dns_wire_read_u16(const uint8_t* input)
 {
@@ -103,6 +105,87 @@ static inline int rin_dns_wire_names_equal(const char* left,
         if (left_character == 0u) return 1;
         ++index;
     }
+    return 0;
+}
+
+static inline int rin_dns_wire_copy_name(char* destination,
+                                         size_t capacity,
+                                         const char* source);
+
+/* CNAME referrals can be split across DNS responses. Keep the hop budget and
+ * canonical-name loop set in one bounded value so the packet parser and the
+ * resolver state machine enforce the same chain policy. names[0] is the
+ * original query and names[hop_count] is the next name to query. */
+typedef struct RinDnsWireCnameChain {
+    uint32_t hop_count;
+    char names[RIN_DNS_WIRE_MAX_CNAME_HOPS + 1u]
+              [RIN_DNS_WIRE_MAX_NAME_SIZE + 1u];
+} RinDnsWireCnameChain;
+
+#define RIN_DNS_WIRE_CNAME_CHAIN_INVALID (-1)
+#define RIN_DNS_WIRE_CNAME_CHAIN_LOOP (-2)
+#define RIN_DNS_WIRE_CNAME_CHAIN_LIMIT (-3)
+
+static inline int rin_dns_wire_cname_chain_init(
+    RinDnsWireCnameChain* chain,
+    const char* initial_name)
+{
+    RinDnsWireCnameChain empty;
+    uint8_t* empty_bytes = (uint8_t*)&empty;
+    for (size_t index = 0u; index < sizeof(empty); ++index)
+        empty_bytes[index] = 0u;
+    if (!chain || !initial_name || initial_name[0] == '\0' ||
+        rin_dns_wire_copy_name(empty.names[0], sizeof(empty.names[0]),
+                               initial_name) != 0) {
+        return RIN_DNS_WIRE_CNAME_CHAIN_INVALID;
+    }
+    *chain = empty;
+    return 0;
+}
+
+static inline const char* rin_dns_wire_cname_chain_current(
+    const RinDnsWireCnameChain* chain)
+{
+    if (!chain || chain->hop_count > RIN_DNS_WIRE_MAX_CNAME_HOPS ||
+        chain->names[0][0] == '\0' ||
+        chain->names[chain->hop_count][0] == '\0') {
+        return NULL;
+    }
+    for (uint32_t index = 0u; index <= chain->hop_count; ++index) {
+        size_t length = 0u;
+        while (length <= RIN_DNS_WIRE_MAX_NAME_SIZE &&
+               chain->names[index][length] != '\0') {
+            ++length;
+        }
+        if (length == 0u || length > RIN_DNS_WIRE_MAX_NAME_SIZE)
+            return NULL;
+    }
+    return chain->names[chain->hop_count];
+}
+
+static inline int rin_dns_wire_cname_chain_follow(
+    RinDnsWireCnameChain* chain,
+    const char* target_name)
+{
+    char target[RIN_DNS_WIRE_MAX_NAME_SIZE + 1u];
+    const char* current = rin_dns_wire_cname_chain_current(chain);
+    if (!current || !target_name || target_name[0] == '\0' ||
+        rin_dns_wire_copy_name(target, sizeof(target), target_name) != 0) {
+        return RIN_DNS_WIRE_CNAME_CHAIN_INVALID;
+    }
+    for (uint32_t index = 0u; index <= chain->hop_count; ++index) {
+        if (rin_dns_wire_names_equal(target, chain->names[index])) {
+            return RIN_DNS_WIRE_CNAME_CHAIN_LOOP;
+        }
+    }
+    if (chain->hop_count >= RIN_DNS_WIRE_MAX_CNAME_HOPS) {
+        return RIN_DNS_WIRE_CNAME_CHAIN_LIMIT;
+    }
+    if (rin_dns_wire_copy_name(chain->names[chain->hop_count + 1u],
+                               sizeof(chain->names[0]), target) != 0) {
+        return RIN_DNS_WIRE_CNAME_CHAIN_INVALID;
+    }
+    ++chain->hop_count;
     return 0;
 }
 
@@ -665,12 +748,13 @@ static inline int rin_dns_wire_is_notimp_response(
  * bounded result capacity is rejected rather than truncated.  CNAME-only,
  * NXDOMAIN, and NODATA responses are returned only after every DNS section
  * has been admitted. */
-static inline int rin_dns_wire_parse_response_answers_ex(
+static inline int rin_dns_wire_parse_response_answers_chain_ex(
     const uint8_t* packet,
     size_t packet_size,
     uint16_t expected_id,
     const char* expected_name,
     uint16_t expected_type,
+    RinDnsWireCnameChain* cname_chain,
     RinDnsWireAnswerSet* answer_set,
     char* cname_referral,
     size_t cname_referral_capacity)
@@ -684,24 +768,31 @@ static inline int rin_dns_wire_parse_response_answers_ex(
     uint16_t rcode;
     uint32_t cname_ttl = UINT32_MAX;
     unsigned int cname_hops = 0u;
-    unsigned int seen_name_count = 0u;
     int result_found = 0;
+    int failure_result = -1;
     RinDnsWireAnswer* answer;
+    RinDnsWireCnameChain chain_candidate;
     char decoded_name[RIN_DNS_WIRE_MAX_NAME_SIZE + 1u] = {0};
     char current_name[RIN_DNS_WIRE_MAX_NAME_SIZE + 1u] = {0};
     char record_data_name[RIN_DNS_WIRE_MAX_NAME_SIZE + 1u] = {0};
-    char seen_names[RIN_DNS_WIRE_MAX_CNAME_HOPS + 1u]
-                   [RIN_DNS_WIRE_MAX_NAME_SIZE + 1u] = {{0}};
 
     rin_dns_wire_clear_answer_set(answer_set);
     if (cname_referral && cname_referral_capacity > 0u) {
         cname_referral[0] = '\0';
     }
     if (!packet || packet_size < 12u || !expected_name || !answer_set ||
+        !cname_chain ||
         (expected_type != RIN_DNS_WIRE_TYPE_A &&
          expected_type != RIN_DNS_WIRE_TYPE_AAAA &&
          expected_type != RIN_DNS_WIRE_TYPE_PTR) ||
         rin_dns_wire_read_u16(packet) != expected_id) {
+        goto fail;
+    }
+    chain_candidate = *cname_chain;
+    if (!rin_dns_wire_cname_chain_current(&chain_candidate) ||
+        !rin_dns_wire_names_equal(
+            rin_dns_wire_cname_chain_current(&chain_candidate),
+            expected_name)) {
         goto fail;
     }
     answer = &answer_set->primary;
@@ -729,8 +820,6 @@ static inline int rin_dns_wire_parse_response_answers_ex(
         additional_count > RIN_DNS_WIRE_MAX_ADDITIONAL ||
         rin_dns_wire_copy_name(current_name, sizeof(current_name),
                                expected_name) != 0 ||
-        rin_dns_wire_copy_name(seen_names[0], sizeof(seen_names[0]),
-                               expected_name) != 0 ||
         rin_dns_wire_decode_name(packet, packet_size, position, decoded_name,
                                  sizeof(decoded_name), &next_offset) != 0 ||
         !rin_dns_wire_names_equal(decoded_name, expected_name) ||
@@ -741,7 +830,6 @@ static inline int rin_dns_wire_parse_response_answers_ex(
         goto fail;
     }
     position = next_offset + 4u;
-    seen_name_count = 1u;
 
     for (uint16_t index = 0u; index < answer_count; ++index) {
         uint16_t record_type;
@@ -773,31 +861,31 @@ static inline int rin_dns_wire_parse_response_answers_ex(
                 goto fail;
             }
             if (record_type == RIN_DNS_WIRE_TYPE_CNAME) {
+                int chain_status;
                 if (result_found ||
-                    cname_hops >= RIN_DNS_WIRE_MAX_CNAME_HOPS ||
                     rin_dns_wire_decode_name(packet, packet_size, position,
                                              record_data_name,
                                              sizeof(record_data_name),
                                              &next_offset) != 0 ||
-                    next_offset != data_end || record_data_name[0] == '\0' ||
+                    next_offset != data_end || record_data_name[0] == '\0') {
+                    goto fail;
+                }
+                chain_status = rin_dns_wire_cname_chain_follow(
+                    &chain_candidate, record_data_name);
+                if (chain_status == RIN_DNS_WIRE_CNAME_CHAIN_LOOP) {
+                    failure_result = RIN_DNS_WIRE_PARSE_CNAME_LOOP;
+                    goto fail;
+                }
+                if (chain_status == RIN_DNS_WIRE_CNAME_CHAIN_LIMIT) {
+                    failure_result = RIN_DNS_WIRE_PARSE_CNAME_LIMIT;
+                    goto fail;
+                }
+                if (chain_status != 0 ||
                     rin_dns_wire_copy_name(current_name,
                                            sizeof(current_name),
                                            record_data_name) != 0) {
                     goto fail;
                 }
-                for (unsigned int seen_index = 0u;
-                     seen_index < seen_name_count; ++seen_index) {
-                    if (rin_dns_wire_names_equal(record_data_name,
-                                                 seen_names[seen_index])) {
-                        goto fail;
-                    }
-                }
-                if (rin_dns_wire_copy_name(seen_names[seen_name_count],
-                                           sizeof(seen_names[seen_name_count]),
-                                           record_data_name) != 0) {
-                    goto fail;
-                }
-                ++seen_name_count;
                 ++cname_hops;
                 record_data_name[0] = '\0';
                 if (ttl < cname_ttl) cname_ttl = ttl;
@@ -928,23 +1016,53 @@ static inline int rin_dns_wire_parse_response_answers_ex(
                                    current_name) != 0) {
             goto fail;
         }
+        *cname_chain = chain_candidate;
         return RIN_DNS_WIRE_PARSE_NAME_ERROR;
     }
-    if (result_found) return RIN_DNS_WIRE_PARSE_SUCCESS;
+    if (result_found) {
+        *cname_chain = chain_candidate;
+        return RIN_DNS_WIRE_PARSE_SUCCESS;
+    }
     if (cname_hops != 0u && cname_referral &&
         cname_referral_capacity > 0u &&
         rin_dns_wire_copy_name(cname_referral, cname_referral_capacity,
                                current_name) == 0) {
+        *cname_chain = chain_candidate;
         return RIN_DNS_WIRE_PARSE_CNAME_REFERRAL;
     }
-    if (cname_hops == 0u) return RIN_DNS_WIRE_PARSE_NO_DATA;
+    if (cname_hops == 0u) {
+        *cname_chain = chain_candidate;
+        return RIN_DNS_WIRE_PARSE_NO_DATA;
+    }
 
 fail:
     rin_dns_wire_clear_answer_set(answer_set);
     if (cname_referral && cname_referral_capacity > 0u) {
         cname_referral[0] = '\0';
     }
-    return -1;
+    return failure_result;
+}
+
+static inline int rin_dns_wire_parse_response_answers_ex(
+    const uint8_t* packet,
+    size_t packet_size,
+    uint16_t expected_id,
+    const char* expected_name,
+    uint16_t expected_type,
+    RinDnsWireAnswerSet* answer_set,
+    char* cname_referral,
+    size_t cname_referral_capacity)
+{
+    RinDnsWireCnameChain chain;
+    if (rin_dns_wire_cname_chain_init(&chain, expected_name) != 0) {
+        rin_dns_wire_clear_answer_set(answer_set);
+        if (cname_referral && cname_referral_capacity > 0u)
+            cname_referral[0] = '\0';
+        return -1;
+    }
+    return rin_dns_wire_parse_response_answers_chain_ex(
+        packet, packet_size, expected_id, expected_name, expected_type,
+        &chain, answer_set, cname_referral, cname_referral_capacity);
 }
 
 /* Preserve the single-record contract for existing synchronous consumers.
