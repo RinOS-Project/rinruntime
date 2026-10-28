@@ -32,6 +32,102 @@ static void installer_runtime_zero(void* memory, size_t size)
     }
 }
 
+#if !defined(_WIN32)
+static intptr_t installer_runtime_syscall(
+    uintptr_t syscall_number,
+    const uint64_t* arguments,
+    uint32_t argument_count,
+    uint32_t wide_argument_mask,
+    int ia32_carrier,
+    uint64_t* wide_return_out)
+{
+    if (wide_return_out != NULL) *wide_return_out = 0u;
+    if ((argument_count != 0u && arguments == NULL) || argument_count > 5u)
+        return (intptr_t)RIN_RESULT_INVALID_ARGUMENT;
+#if UINTPTR_MAX == UINT32_MAX
+    if (ia32_carrier) {
+        RinSyscallWideArgsV1 carrier;
+        intptr_t result;
+        uint32_t index;
+        installer_runtime_zero(&carrier, sizeof(carrier));
+        carrier.struct_size = (uint32_t)sizeof(carrier);
+        carrier.version = RIN_CONTRACT_STRUCT_VERSION_1;
+        carrier.argument_count = (uint16_t)argument_count;
+        for (index = 0u; index < argument_count; ++index)
+            carrier.arguments[index] = arguments[index];
+        result = _syscall1(syscall_number, (uintptr_t)&carrier);
+        if (result >= 0 && wide_return_out != NULL)
+            *wide_return_out = carrier.result;
+        installer_runtime_zero(&carrier, sizeof(carrier));
+        return result;
+    }
+    {
+        uint32_t raw[6] = {0u};
+        uint32_t raw_count = 0u;
+        uint32_t index;
+        for (index = 0u; index < argument_count; ++index) {
+            const uint64_t value = arguments[index];
+            if ((wide_argument_mask & (1u << index)) != 0u) {
+                if (raw_count > 4u)
+                    return (intptr_t)RIN_RESULT_INVALID_ARGUMENT;
+                raw[raw_count++] = (uint32_t)value;
+                raw[raw_count++] = (uint32_t)(value >> 32);
+            } else {
+                if (value > UINT32_MAX || raw_count >= 6u)
+                    return (intptr_t)RIN_RESULT_INVALID_ARGUMENT;
+                raw[raw_count++] = (uint32_t)value;
+            }
+        }
+        switch (raw_count) {
+            case 0u: return _syscall0(syscall_number);
+            case 1u: return _syscall1(syscall_number, raw[0]);
+            case 2u: return _syscall2(syscall_number, raw[0], raw[1]);
+            case 3u: return _syscall3(syscall_number, raw[0], raw[1], raw[2]);
+            case 4u: return _syscall4(syscall_number, raw[0], raw[1], raw[2], raw[3]);
+            case 5u: return _syscall5(syscall_number, raw[0], raw[1], raw[2], raw[3], raw[4]);
+            case 6u: return _syscall6(syscall_number, raw[0], raw[1], raw[2], raw[3], raw[4], raw[5]);
+            default: return (intptr_t)RIN_RESULT_INVALID_ARGUMENT;
+        }
+    }
+#else
+    intptr_t result;
+    (void)wide_argument_mask;
+    (void)ia32_carrier;
+    switch (argument_count) {
+        case 0u: result = _syscall0(syscall_number); break;
+        case 1u: result = _syscall1(syscall_number, (uintptr_t)arguments[0]); break;
+        case 2u:
+            result = _syscall2(syscall_number, (uintptr_t)arguments[0],
+                               (uintptr_t)arguments[1]);
+            break;
+        case 3u:
+            result = _syscall3(syscall_number, (uintptr_t)arguments[0],
+                               (uintptr_t)arguments[1],
+                               (uintptr_t)arguments[2]);
+            break;
+        case 4u:
+            result = _syscall4(syscall_number, (uintptr_t)arguments[0],
+                               (uintptr_t)arguments[1],
+                               (uintptr_t)arguments[2],
+                               (uintptr_t)arguments[3]);
+            break;
+        case 5u:
+            result = _syscall5(syscall_number, (uintptr_t)arguments[0],
+                               (uintptr_t)arguments[1],
+                               (uintptr_t)arguments[2],
+                               (uintptr_t)arguments[3],
+                               (uintptr_t)arguments[4]);
+            break;
+        default:
+            return (intptr_t)RIN_RESULT_INVALID_ARGUMENT;
+    }
+    if (result >= 0 && wide_return_out != NULL)
+        *wide_return_out = (uint64_t)result;
+    return result;
+#endif
+}
+#endif
+
 static int installer_block_info_v1_valid(const RinBlockInfoV1* info)
 {
     return info != NULL && info->struct_size == sizeof(*info) &&
@@ -183,8 +279,7 @@ static RinResultCode installer_target_open_with_syscall(
     intptr_t result;
     if (session_out == NULL) return RIN_RESULT_INVALID_ARGUMENT;
     installer_runtime_zero(session_out, sizeof(*session_out));
-    if (block_id == 0u || minimum_blocks == 0u ||
-        minimum_blocks > (uint64_t)UINTPTR_MAX)
+    if (block_id == 0u || minimum_blocks == 0u)
         return RIN_RESULT_INVALID_ARGUMENT;
     installer_runtime_zero(&session, sizeof(session));
     session.struct_size = (uint32_t)sizeof(session);
@@ -193,23 +288,29 @@ static RinResultCode installer_target_open_with_syscall(
     (void)syscall_number;
     return RIN_RESULT_NOT_SUPPORTED;
 #else
-    result = _syscall3(syscall_number,
-                       (uintptr_t)block_id, (uintptr_t)minimum_blocks,
-                       (uintptr_t)&session);
+    {
+        const uint64_t arguments[3] = {
+            block_id, minimum_blocks, (uintptr_t)&session
+        };
+        result = installer_runtime_syscall(
+            syscall_number, arguments, 3u, 1u << 1, 0, NULL);
+    }
     if (installer_runtime_result(result) != RIN_RESULT_OK)
         return installer_runtime_result(result);
     if (session.struct_size != sizeof(session) ||
         session.version != RIN_CONTRACT_STRUCT_VERSION_1 ||
-        session.handle == 0u || session.handle > (uint64_t)UINTPTR_MAX ||
+        session.handle == 0u ||
         session.block_id != block_id ||
         session.block_count < minimum_blocks ||
         session.logical_block_size == 0u ||
         session.physical_block_size < session.logical_block_size ||
         session.max_transfer_blocks == 0u) {
-        if (session.handle != 0u &&
-            session.handle <= (uint64_t)UINTPTR_MAX)
-            (void)_syscall1((uintptr_t)RIN_SYS_INSTALL_TARGET_CLOSE,
-                            (uintptr_t)session.handle);
+        if (session.handle != 0u) {
+            const uint64_t close_arguments[1] = {session.handle};
+            (void)installer_runtime_syscall(
+                (uintptr_t)RIN_SYS_INSTALL_TARGET_CLOSE,
+                close_arguments, 1u, 1u, 0, NULL);
+        }
         installer_runtime_zero(&session, sizeof(session));
         return RIN_RESULT_CORRUPT_DATA;
     }
@@ -252,23 +353,25 @@ RinResultCode rin_app_install_target_rinfs_mount_begin(
 {
 #if !defined(_WIN32)
     intptr_t result;
+    uint64_t mount_lease_token = 0u;
 #endif
     if (mount_lease_token_out) *mount_lease_token_out = 0u;
-    if (target_handle == 0u || target_handle > (uint64_t)UINTPTR_MAX ||
-        first_lba > (uint64_t)UINTPTR_MAX ||
-        sector_count == 0u || sector_count > (uint64_t)UINTPTR_MAX ||
-        !mount_lease_token_out)
+    if (target_handle == 0u || sector_count == 0u || !mount_lease_token_out)
         return RIN_RESULT_INVALID_ARGUMENT;
 #if defined(_WIN32)
     return RIN_RESULT_NOT_SUPPORTED;
 #else
-    result = _syscall3(
-        (uintptr_t)RIN_SYS_INSTALL_TARGET_RINFS_MOUNT_BEGIN,
-        (uintptr_t)target_handle, (uintptr_t)first_lba,
-        (uintptr_t)sector_count);
+    {
+        const uint64_t arguments[3] = {
+            target_handle, first_lba, sector_count
+        };
+        result = installer_runtime_syscall(
+            (uintptr_t)RIN_SYS_INSTALL_TARGET_RINFS_MOUNT_BEGIN,
+            arguments, 3u, 0x7u, 1, &mount_lease_token);
+    }
     if (result < 0) return installer_runtime_result(result);
-    if (result == 0) return RIN_RESULT_IO;
-    *mount_lease_token_out = (uint64_t)result;
+    if (mount_lease_token == 0u) return RIN_RESULT_IO;
+    *mount_lease_token_out = mount_lease_token;
     return RIN_RESULT_OK;
 #endif
 }
@@ -276,16 +379,17 @@ RinResultCode rin_app_install_target_rinfs_mount_begin(
 RinResultCode rin_app_install_target_rinfs_mount_end(
     uint64_t target_handle, uint64_t mount_lease_token)
 {
-    if (target_handle == 0u || target_handle > (uint64_t)UINTPTR_MAX ||
-        mount_lease_token == 0u ||
-        mount_lease_token > (uint64_t)UINTPTR_MAX)
+    if (target_handle == 0u || mount_lease_token == 0u)
         return RIN_RESULT_INVALID_HANDLE;
 #if defined(_WIN32)
     return RIN_RESULT_NOT_SUPPORTED;
 #else
-    return installer_runtime_result(_syscall2(
-        (uintptr_t)RIN_SYS_INSTALL_TARGET_RINFS_MOUNT_END,
-        (uintptr_t)target_handle, (uintptr_t)mount_lease_token));
+    {
+        const uint64_t arguments[2] = {target_handle, mount_lease_token};
+        return installer_runtime_result(installer_runtime_syscall(
+            (uintptr_t)RIN_SYS_INSTALL_TARGET_RINFS_MOUNT_END,
+            arguments, 2u, 0x3u, 0, NULL));
+    }
 #endif
 }
 
@@ -295,6 +399,7 @@ RinResultCode rin_app_rinfs_cache_lease_begin(
 {
 #if !defined(_WIN32)
     intptr_t result;
+    uint64_t mount_lease_token = 0u;
 #endif
     if (mount_lease_token_out) *mount_lease_token_out = 0u;
     if (block_id == 0u || !mount_lease_token_out ||
@@ -303,12 +408,16 @@ RinResultCode rin_app_rinfs_cache_lease_begin(
 #if defined(_WIN32)
     return RIN_RESULT_NOT_SUPPORTED;
 #else
-    result = _syscall3(
-        (uintptr_t)RIN_SYS_RINFS_CACHE_LEASE_BEGIN, (uintptr_t)block_id,
-        (uintptr_t)first_lba, (uintptr_t)sector_count);
+    {
+        const uint64_t arguments[3] = {block_id, first_lba, sector_count};
+        result = installer_runtime_syscall(
+            (uintptr_t)RIN_SYS_RINFS_CACHE_LEASE_BEGIN,
+            arguments, 3u, (1u << 1) | (1u << 2), 1,
+            &mount_lease_token);
+    }
     if (result < 0) return installer_runtime_result(result);
-    if (result == 0) return RIN_RESULT_IO;
-    *mount_lease_token_out = (uint64_t)result;
+    if (mount_lease_token == 0u) return RIN_RESULT_IO;
+    *mount_lease_token_out = mount_lease_token;
     return RIN_RESULT_OK;
 #endif
 }
@@ -331,14 +440,17 @@ RinResultCode rin_app_rinfs_cache_lease_begin_shared(
 #if defined(_WIN32)
     return RIN_RESULT_NOT_SUPPORTED;
 #else
-    result = _syscall5(
-        (uintptr_t)RIN_SYS_RINFS_CACHE_LEASE_BEGIN_SHARED,
-        (uintptr_t)block_id, (uintptr_t)first_lba,
-        (uintptr_t)sector_count, (uintptr_t)mapping_base,
-        (uintptr_t)mapping_size);
+    {
+        const uint64_t arguments[5] = {
+            block_id, first_lba, sector_count,
+            (uintptr_t)mapping_base, mapping_size
+        };
+        result = installer_runtime_syscall(
+            (uintptr_t)RIN_SYS_RINFS_CACHE_LEASE_BEGIN_SHARED,
+            arguments, 5u, 0x1eu, 1, mount_lease_token_out);
+    }
     if (result < 0) return installer_runtime_result(result);
-    if (result == 0) return RIN_RESULT_IO;
-    *mount_lease_token_out = (uint64_t)result;
+    if (*mount_lease_token_out == 0u) return RIN_RESULT_IO;
     return RIN_RESULT_OK;
 #endif
 }
@@ -352,7 +464,7 @@ RinResultCode rin_app_rinfs_cache_lease_shared_transition(
 #endif
     if (final_owner_out) *final_owner_out = 0u;
     if (!mapping_base || mapping_size == 0u || mount_lease_token == 0u ||
-        mount_lease_token > (uint64_t)UINTPTR_MAX || !final_owner_out ||
+        !final_owner_out ||
         mapping_size > (uint64_t)UINTPTR_MAX ||
         (uintptr_t)mapping_base > UINTPTR_MAX - (uintptr_t)mapping_size ||
         action < RINFS_SHARED_LEASE_READY ||
@@ -361,10 +473,14 @@ RinResultCode rin_app_rinfs_cache_lease_shared_transition(
 #if defined(_WIN32)
     return RIN_RESULT_NOT_SUPPORTED;
 #else
-    result = _syscall4(
-        (uintptr_t)RIN_SYS_RINFS_CACHE_LEASE_SHARED_TRANSITION,
-        (uintptr_t)mapping_base, (uintptr_t)mapping_size,
-        (uintptr_t)action, (uintptr_t)mount_lease_token);
+    {
+        const uint64_t arguments[4] = {
+            (uintptr_t)mapping_base, mapping_size, action, mount_lease_token
+        };
+        result = installer_runtime_syscall(
+            (uintptr_t)RIN_SYS_RINFS_CACHE_LEASE_SHARED_TRANSITION,
+            arguments, 4u, (1u << 0) | (1u << 1) | (1u << 3), 1, NULL);
+    }
     if (result < 0) return installer_runtime_result(result);
     if (action == RINFS_SHARED_LEASE_OWNER_QUERY) {
         if (result <= 0 || result > (intptr_t)RINFS_SHARED_OWNER_CAPACITY)
@@ -380,55 +496,66 @@ RinResultCode rin_app_rinfs_cache_lease_shared_transition(
 
 RinResultCode rin_app_rinfs_cache_lease_end(uint64_t mount_lease_token)
 {
-    if (mount_lease_token == 0u ||
-        mount_lease_token > (uint64_t)UINTPTR_MAX)
+    if (mount_lease_token == 0u)
         return RIN_RESULT_INVALID_ARGUMENT;
 #if defined(_WIN32)
     return RIN_RESULT_NOT_SUPPORTED;
 #else
-    return installer_runtime_result(_syscall1(
-        (uintptr_t)RIN_SYS_RINFS_CACHE_LEASE_END,
-        (uintptr_t)mount_lease_token));
+    {
+        const uint64_t arguments[1] = {mount_lease_token};
+        return installer_runtime_result(installer_runtime_syscall(
+            (uintptr_t)RIN_SYS_RINFS_CACHE_LEASE_END,
+            arguments, 1u, 1u, 0, NULL));
+    }
 #endif
 }
 
 RinResultCode rin_app_install_target_validate(uint64_t handle)
 {
-    if (handle == 0u || handle > (uint64_t)UINTPTR_MAX)
+    if (handle == 0u)
         return RIN_RESULT_INVALID_HANDLE;
 #if defined(_WIN32)
     return RIN_RESULT_NOT_SUPPORTED;
 #else
-    return installer_runtime_result(_syscall1(
-        (uintptr_t)RIN_SYS_INSTALL_TARGET_VALIDATE, (uintptr_t)handle));
+    {
+        const uint64_t arguments[1] = {handle};
+        return installer_runtime_result(installer_runtime_syscall(
+            (uintptr_t)RIN_SYS_INSTALL_TARGET_VALIDATE,
+            arguments, 1u, 1u, 0, NULL));
+    }
 #endif
 }
 
 RinResultCode rin_app_install_target_close(uint64_t handle)
 {
-    if (handle == 0u || handle > (uint64_t)UINTPTR_MAX)
+    if (handle == 0u)
         return RIN_RESULT_INVALID_HANDLE;
 #if defined(_WIN32)
     return RIN_RESULT_NOT_SUPPORTED;
 #else
-    return installer_runtime_result(_syscall1(
-        (uintptr_t)RIN_SYS_INSTALL_TARGET_CLOSE, (uintptr_t)handle));
+    {
+        const uint64_t arguments[1] = {handle};
+        return installer_runtime_result(installer_runtime_syscall(
+            (uintptr_t)RIN_SYS_INSTALL_TARGET_CLOSE,
+            arguments, 1u, 1u, 0, NULL));
+    }
 #endif
 }
 
 RinResultCode rin_app_install_target_authorize(uint64_t target_handle,
                                                 uint64_t source_handle)
 {
-    if (target_handle == 0u || source_handle == 0u ||
-        target_handle > (uint64_t)UINTPTR_MAX ||
-        source_handle > (uint64_t)UINTPTR_MAX)
+    if (target_handle == 0u || source_handle == 0u)
         return RIN_RESULT_INVALID_HANDLE;
 #if defined(_WIN32)
     return RIN_RESULT_NOT_SUPPORTED;
 #else
-    return installer_runtime_result(_syscall2(
-        (uintptr_t)RIN_SYS_INSTALL_TARGET_AUTHORIZE,
-        (uintptr_t)target_handle, (uintptr_t)source_handle));
+    {
+        const uint64_t arguments[2] = {target_handle, source_handle};
+        return installer_runtime_result(installer_runtime_syscall(
+            (uintptr_t)RIN_SYS_INSTALL_TARGET_AUTHORIZE,
+            arguments, 2u, 0x3u, 0, NULL));
+    }
 #endif
 }
 
@@ -441,7 +568,7 @@ static RinResultCode installer_target_io(uintptr_t syscall_number,
     RinInstallTargetReadV1 request;
     uint64_t byte_count;
     intptr_t result;
-    if (handle == 0u || handle > (uint64_t)UINTPTR_MAX)
+    if (handle == 0u)
         return RIN_RESULT_INVALID_HANDLE;
     if (buffer == NULL || block_count == 0u || block_count > 128u ||
         lba > UINT64_MAX - block_count ||
@@ -464,8 +591,13 @@ static RinResultCode installer_target_io(uintptr_t syscall_number,
     request.lba = lba;
     request.buffer = (uint64_t)(uintptr_t)buffer;
     request.block_count = block_count;
-    result = _syscall2(syscall_number, (uintptr_t)&request,
-                       (uintptr_t)sizeof(request));
+    {
+        const uint64_t arguments[2] = {
+            (uintptr_t)&request, sizeof(request)
+        };
+        result = installer_runtime_syscall(
+            syscall_number, arguments, 2u, 1u << 1, 0, NULL);
+    }
     installer_runtime_zero(&request, sizeof(request));
     return installer_runtime_result(result);
 #endif
@@ -490,24 +622,32 @@ RinResultCode rin_app_install_target_write(uint64_t handle, uint64_t lba,
 
 RinResultCode rin_app_install_target_flush(uint64_t handle)
 {
-    if (handle == 0u || handle > (uint64_t)UINTPTR_MAX)
+    if (handle == 0u)
         return RIN_RESULT_INVALID_HANDLE;
 #if defined(_WIN32)
     return RIN_RESULT_NOT_SUPPORTED;
 #else
-    return installer_runtime_result(_syscall1(
-        (uintptr_t)RIN_SYS_INSTALL_TARGET_FLUSH, (uintptr_t)handle));
+    {
+        const uint64_t arguments[1] = {handle};
+        return installer_runtime_result(installer_runtime_syscall(
+            (uintptr_t)RIN_SYS_INSTALL_TARGET_FLUSH,
+            arguments, 1u, 1u, 0, NULL));
+    }
 #endif
 }
 
 RinResultCode rin_app_install_target_end(uint64_t handle)
 {
-    if (handle == 0u || handle > (uint64_t)UINTPTR_MAX)
+    if (handle == 0u)
         return RIN_RESULT_INVALID_HANDLE;
 #if defined(_WIN32)
     return RIN_RESULT_NOT_SUPPORTED;
 #else
-    return installer_runtime_result(_syscall1(
-        (uintptr_t)RIN_SYS_INSTALL_TARGET_END, (uintptr_t)handle));
+    {
+        const uint64_t arguments[1] = {handle};
+        return installer_runtime_result(installer_runtime_syscall(
+            (uintptr_t)RIN_SYS_INSTALL_TARGET_END,
+            arguments, 1u, 1u, 0, NULL));
+    }
 #endif
 }
