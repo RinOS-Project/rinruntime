@@ -48,10 +48,10 @@
  * must not reinterpret the same inode bytes with the old semantics. */
 #define RINFS_FEATURE_INCOMPAT_NANO_TIMESTAMPS 0x00000001u
 #define RINFS_FEATURE_INCOMPAT_CONTENT_VERSION64 0x00000002u
-/* Enables reachable device/FIFO inodes. Character/block st_rdev is stored as
- * a little-endian uint32_t at i_reserved[24..27] (inode byte offsets 0xE0
- * through 0xE3).
- * Older kernels reject the volume instead of treating these bytes as zero. */
+/* 到達可能なデバイス、FIFO、ソケットinodeを有効にする。キャラクター／ブロック
+ * デバイスのst_rdevは、i_reserved[24..27]（inode内の0xE0〜0xE3）に
+ * little-endianのuint32_tとして保存する。このビットを認識しない旧kernelは、
+ * 該当バイトをゼロ扱いせずvolumeを拒否する。 */
 #define RINFS_FEATURE_INCOMPAT_SPECIAL_INODES 0x00000004u
 /* The high d_file_type bit is a durable DELETE_ON_CLOSE dentry marker. */
 #define RINFS_FEATURE_INCOMPAT_DELETE_ON_CLOSE 0x00000008u
@@ -1262,13 +1262,19 @@ int rinfs_createat_owned_identity(
     RinFS_Mount* mount, uint64_t parent_ino, const char* name,
     uint16_t mode, uint32_t uid, uint32_t gid, uint64_t* created_ino,
     uint32_t* created_generation);
-/* Create one device/FIFO inode below a resolved parent. Character/block
- * device numbers use the public 8:8 dev_t encoding; FIFO and regular files
- * require device_number=0. SPECIAL_INODES is committed before publication. */
+/* 解決済みparentの下にdevice、FIFOまたはsocket inodeを1つ作成する。
+ * character/block device numberは公開8:8 dev_t形式を使い、FIFO、socket、
+ * regular fileではdevice_number=0を指定する。公開前にSPECIAL_INODESを確定する。 */
 int rinfs_mknodat_owned(RinFS_Mount* mount, uint64_t parent_ino,
                         const char* name, uint16_t mode,
                         uint32_t device_number, uint32_t uid, uint32_t gid,
                         uint64_t* created_ino);
+/* identity対応版。dentry公開時点のgenerationを返す。後続のlink count確定が
+ * 失敗した場合も、公開済みdentryを特定できる値を返す。 */
+int rinfs_mknodat_owned_identity(
+    RinFS_Mount* mount, uint64_t parent_ino, const char* name,
+    uint16_t mode, uint32_t device_number, uint32_t uid, uint32_t gid,
+    uint64_t* created_ino, uint32_t* created_generation);
 uint32_t rinfs_inode_device_number(const RinFS_Inode* inode);
 /* Create an unnamed, zero-link regular inode below a validated parent. The
  * returned open lifetime owns deferred reclamation until a durable link is
