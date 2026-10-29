@@ -59,6 +59,26 @@ static inline int rin_http_request_policy_validate_header(
     return 1;
 }
 
+static inline int rin_http_request_policy_url_has_scheme(
+    const char* url, const char* scheme)
+{
+    size_t index = 0u;
+    if (!url || !scheme) return 0;
+    while (scheme[index] != '\0') {
+        unsigned char actual = (unsigned char)url[index];
+        unsigned char expected = (unsigned char)scheme[index];
+        if (actual == '\0') return 0;
+        if (actual >= (unsigned char)'A' && actual <= (unsigned char)'Z')
+            actual = (unsigned char)(actual + ('a' - 'A'));
+        if (expected >= (unsigned char)'A' && expected <= (unsigned char)'Z')
+            expected = (unsigned char)(expected + ('a' - 'A'));
+        if (actual != expected) return 0;
+        ++index;
+    }
+    return url[index] == ':' && url[index + 1u] == '/' &&
+           url[index + 2u] == '/';
+}
+
 static inline int rin_http_request_policy_validate_url(
     const char* url, size_t capacity)
 {
@@ -66,18 +86,16 @@ static inline int rin_http_request_policy_validate_url(
     const char* cursor;
     size_t length = 0u;
     size_t authority_length = 0u;
+    int has_http_scheme;
+    int has_https_scheme;
 
     if (!url || capacity == 0u) return 0;
     while (length < capacity && url[length] != '\0') ++length;
     if (length == 0u || length == capacity) return 0;
-    if ((length < 7u || url[0] != 'h' || url[1] != 't' ||
-         url[2] != 't' || url[3] != 'p' || url[4] != ':' ||
-         url[5] != '/' || url[6] != '/') &&
-        (length < 8u || url[0] != 'h' || url[1] != 't' ||
-         url[2] != 't' || url[3] != 'p' || url[4] != 's' ||
-         url[5] != ':' || url[6] != '/' || url[7] != '/'))
-        return 0;
-    authority = url + (url[4] == 's' ? 8u : 7u);
+    has_http_scheme = rin_http_request_policy_url_has_scheme(url, "http");
+    has_https_scheme = rin_http_request_policy_url_has_scheme(url, "https");
+    if (!has_http_scheme && !has_https_scheme) return 0;
+    authority = url + (has_https_scheme ? 8u : 7u);
     cursor = authority;
     while ((size_t)(cursor - url) < length && *cursor != '/' &&
            *cursor != '?' && *cursor != '#') {
