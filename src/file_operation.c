@@ -589,22 +589,17 @@ static RinRuntimeFileOperationResult file_operation_finish_copy(
                                                     operation->temporary_path,
                                                     entry->destination_path);
     if (result != 0) return file_operation_result(result);
+    entry->flags |= RINRUNTIME_FILE_OPERATION_ENTRY_FLAG_CREATED;
     sync_result = file_operation_sync_parent_once(operation, entry->destination_path);
-    if (sync_result != RINRUNTIME_FILE_OPERATION_OK) {
-        (void)operation->backend.remove_file(operation->backend.context,
-                                             entry->destination_path);
-        (void)file_operation_sync_parent_once(operation, entry->destination_path);
-        return sync_result;
-    }
+    if (sync_result != RINRUNTIME_FILE_OPERATION_OK) return sync_result;
     result = operation->backend.remove_file(operation->backend.context,
                                              operation->temporary_path);
-    if (result != 0 || file_operation_sync_parent_once(operation,
-                                                        entry->destination_path) !=
-                           RINRUNTIME_FILE_OPERATION_OK)
-        return RINRUNTIME_FILE_OPERATION_IO_FAILED;
+    if (result != 0) return file_operation_result(result);
     operation->temporary_created = 0u;
     operation->temporary_path[0] = '\0';
-    entry->flags |= RINRUNTIME_FILE_OPERATION_ENTRY_FLAG_CREATED;
+    sync_result = file_operation_sync_parent_once(operation,
+                                                  entry->destination_path);
+    if (sync_result != RINRUNTIME_FILE_OPERATION_OK) return sync_result;
     return RINRUNTIME_FILE_OPERATION_OK;
 }
 
