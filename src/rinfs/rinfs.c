@@ -13032,6 +13032,7 @@ int rinfs_readlink(RinFS_Mount* mount, uint64_t ino, char* buf, uint32_t size);
 static int rinfs_path_lookup_internal(RinFS_Mount* mount, const char* path,
                                       uint64_t* ino, RinFS_Inode* inode,
                                       int follow_final_symlink) {
+    int require_directory = 0;
     if (!mount || !mount->mounted || !path || !ino) return RINFS_ERR_INVAL;
     
     /* Start from root */
@@ -13061,6 +13062,7 @@ static int rinfs_path_lookup_internal(RinFS_Mount* mount, const char* path,
     }
     if (path[path_len] != '\0') return RINFS_ERR_NAMETOOLONG;
     path_buf[path_len] = '\0';
+    require_directory = path_len > 0 && path_buf[path_len - 1] == '/';
     path = path_buf;
 
     int symlink_count = 0;
@@ -13087,7 +13089,8 @@ static int rinfs_path_lookup_internal(RinFS_Mount* mount, const char* path,
         if (err != RINFS_OK) return err;
         
         if ((next_inode.i_mode >> 12) == RINFS_FT_LNK) {
-            if (!follow_final_symlink && *path == '\0') {
+            if (!follow_final_symlink && *path == '\0' &&
+                !require_directory) {
                 current_ino = next_ino;
                 break;
             }
@@ -13139,10 +13142,16 @@ static int rinfs_path_lookup_internal(RinFS_Mount* mount, const char* path,
         }
     }
     
-    *ino = current_ino;
-    if (inode) {
-        return rinfs_inode_read(mount, current_ino, inode);
+    if (inode || require_directory) {
+        RinFS_Inode resolved_inode;
+        RinFS_Inode* resolved_out = inode ? inode : &resolved_inode;
+        int err = rinfs_inode_read(mount, current_ino, resolved_out);
+        if (err != RINFS_OK) return err;
+        if (require_directory &&
+            (resolved_out->i_mode >> 12) != RINFS_FT_DIR)
+            return RINFS_ERR_NOTDIR;
     }
+    *ino = current_ino;
     return RINFS_OK;
 }
 
