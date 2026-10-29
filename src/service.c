@@ -95,6 +95,12 @@ static int service_result_valid(intptr_t result)
     case RIN_ERROR_ABI_MISMATCH:
     case RIN_ERROR_STALE_HANDLE:
     case RIN_ERROR_INTEGRITY:
+    case RIN_ERROR_BUFFER_TOO_SMALL:
+    case RIN_ERROR_TABLE_FULL:
+    case RIN_ERROR_LIMIT_EXCEEDED:
+    case RIN_ERROR_WRONG_TYPE:
+    case RIN_ERROR_INVALID_ADDRESS:
+    case RIN_ERROR_EXISTS:
         return 1;
     default:
         return 0;
