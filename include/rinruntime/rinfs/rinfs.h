@@ -618,6 +618,9 @@ struct RinFS_Mount {
     /* Shared-memory intents for interrupted bitmap allocation transactions. */
     void* shared_allocation_recovery_logs;
     volatile uint32_t block_allocation_lock;
+    /* Volatile next-fit hint. The bitmap remains authoritative; a new mount
+     * starts from the first allocatable block and may wrap to find holes. */
+    uint64_t         block_allocation_cursor;
     volatile uint32_t inode_allocation_lock;
     volatile uint32_t superblock_lock;
     volatile uint32_t shared_superblock_recovery_state;

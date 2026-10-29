@@ -9864,85 +9864,106 @@ static int rinfs_block_alloc_unscoped(RinFS_Mount* mount, uint64_t* block) {
         rinfs_free(bitmap);
         return release_err;
     }
-    
-    /* Scan bitmap blocks */
-    uint64_t bits_per_block = block_size * 8;
-    uint64_t bitmap_blocks = (mount->sb.s_block_count + bits_per_block - 1) / bits_per_block;
-    
-    for (uint64_t bm_block = 0; bm_block < bitmap_blocks; bm_block++) {
-        int err = rinfs_block_read(mount, mount->sb.s_block_bitmap + bm_block, bitmap);
-        if (err != RINFS_OK) {
-            err = rinfs_block_allocation_unlock_status(mount, err);
-            rinfs_free(bitmap);
-            return err;
-        }
-        
-        /* Find first free bit */
-        for (uint32_t byte = 0; byte < block_size; byte++) {
-            if (bitmap[byte] != 0xFF) {
-                for (int bit = 0; bit < 8; bit++) {
-                    if (!(bitmap[byte] & (1 << bit))) {
-                        /* Found free block */
-                        uint64_t blk = bm_block * bits_per_block + byte * 8 + bit;
-                        if (blk >= mount->sb.s_block_count) continue;
-                        uint64_t reserved_end =
-                            rinfs_reserved_data_end(mount);
-                        if (blk < reserved_end) {
-                            err = rinfs_block_allocation_unlock_status(
-                                mount, RINFS_ERR_CORRUPT);
-                            rinfs_free(bitmap);
-                            return err;
-                        }
 
-                        err = rinfs_allocator_recovery_prepare_locked(
-                            mount, 0,
-                            RINFS_ALLOCATOR_RECOVERY_BLOCK_ALLOC_ROLLBACK,
-                            blk, 0u);
-                        if (err != RINFS_OK) {
-                            err = rinfs_block_allocation_unlock_status(
-                                mount, err);
-                            rinfs_free(bitmap);
-                            return err;
-                        }
-                        
-                        /* Mark as used */
-                        bitmap[byte] |= (1 << bit);
-                        err = rinfs_block_write_unprepared(
-                            mount, mount->sb.s_block_bitmap + bm_block,
-                            bitmap);
-                        if (err != RINFS_OK) {
-                            int recovery_err =
-                                rinfs_allocator_recover_failed_write_locked(
-                                    mount, 0);
-                            err = recovery_err != RINFS_OK ? recovery_err
-                                                           : err;
-                            err = rinfs_block_allocation_unlock_status(
-                                mount, err);
-                            rinfs_free(bitmap);
-                            return err;
-                        }
-                        err = rinfs_allocator_recovery_commit_locked(
-                            mount, 0,
-                            RINFS_ALLOCATOR_RECOVERY_BLOCK_ALLOC_ROLLBACK,
-                            blk);
-                        if (err != RINFS_OK) {
-                            err = rinfs_block_allocation_unlock_status(
-                                mount, err);
-                            rinfs_free(bitmap);
-                            return err;
-                        }
-                        mount->sb.s_free_blocks--;
-                        *block = blk;
-                        err = rinfs_block_allocation_unlock_status(
-                            mount, RINFS_OK);
+    /* Search from the boot-local hint, then wrap once. The allocation lock
+     * serializes the bitmap transaction; the cursor is only a hint, so a
+     * stale/recovered value cannot hide a free block or authorize reuse. */
+    {
+        const uint64_t bits_per_block = (uint64_t)block_size * 8u;
+        const uint64_t bitmap_blocks =
+            mount->sb.s_block_count / bits_per_block +
+            (mount->sb.s_block_count % bits_per_block != 0u);
+        const uint64_t reserved_end = rinfs_reserved_data_end(mount);
+        uint64_t cursor = mount->block_allocation_cursor;
+        uint32_t pass;
+        if (cursor < reserved_end || cursor >= mount->sb.s_block_count)
+            cursor = reserved_end;
+
+        for (pass = 0u; pass < 2u; ++pass) {
+            const uint64_t range_start = pass == 0u ? cursor : reserved_end;
+            const uint64_t range_end = pass == 0u
+                ? mount->sb.s_block_count : cursor;
+            uint64_t first_bitmap;
+            uint64_t last_bitmap;
+            uint64_t bm_block;
+            if (range_start >= range_end) continue;
+            first_bitmap = range_start / bits_per_block;
+            last_bitmap = (range_end - 1u) / bits_per_block;
+            if (last_bitmap >= bitmap_blocks) {
+                int err = rinfs_block_allocation_unlock_status(
+                    mount, RINFS_ERR_CORRUPT);
+                rinfs_free(bitmap);
+                return err;
+            }
+
+            for (bm_block = first_bitmap; bm_block <= last_bitmap;
+                 ++bm_block) {
+                const uint64_t bitmap_base = bm_block * bits_per_block;
+                const uint64_t scan_start = range_start > bitmap_base
+                    ? range_start - bitmap_base : 0u;
+                uint64_t scan_end = range_end - bitmap_base;
+                uint64_t relative;
+                int err;
+                if (scan_end > bits_per_block) scan_end = bits_per_block;
+                err = rinfs_block_read(
+                    mount, mount->sb.s_block_bitmap + bm_block, bitmap);
+                if (err != RINFS_OK) {
+                    err = rinfs_block_allocation_unlock_status(mount, err);
+                    rinfs_free(bitmap);
+                    return err;
+                }
+
+                for (relative = scan_start; relative < scan_end; ++relative) {
+                    const uint32_t byte = (uint32_t)(relative / 8u);
+                    const uint8_t mask = (uint8_t)(1u << (relative % 8u));
+                    uint64_t blk;
+                    if ((bitmap[byte] & mask) != 0u) continue;
+                    blk = bitmap_base + relative;
+
+                    err = rinfs_allocator_recovery_prepare_locked(
+                        mount, 0,
+                        RINFS_ALLOCATOR_RECOVERY_BLOCK_ALLOC_ROLLBACK,
+                        blk, 0u);
+                    if (err != RINFS_OK) {
+                        err = rinfs_block_allocation_unlock_status(mount, err);
                         rinfs_free(bitmap);
                         return err;
                     }
+
+                    bitmap[byte] |= mask;
+                    err = rinfs_block_write_unprepared(
+                        mount, mount->sb.s_block_bitmap + bm_block, bitmap);
+                    if (err != RINFS_OK) {
+                        int recovery_err =
+                            rinfs_allocator_recover_failed_write_locked(
+                                mount, 0);
+                        err = recovery_err != RINFS_OK ? recovery_err : err;
+                        err = rinfs_block_allocation_unlock_status(mount, err);
+                        rinfs_free(bitmap);
+                        return err;
+                    }
+                    err = rinfs_allocator_recovery_commit_locked(
+                        mount, 0,
+                        RINFS_ALLOCATOR_RECOVERY_BLOCK_ALLOC_ROLLBACK, blk);
+                    if (err != RINFS_OK) {
+                        err = rinfs_block_allocation_unlock_status(mount, err);
+                        rinfs_free(bitmap);
+                        return err;
+                    }
+                    mount->sb.s_free_blocks--;
+                    mount->block_allocation_cursor =
+                        blk + 1u < mount->sb.s_block_count
+                            ? blk + 1u : reserved_end;
+                    *block = blk;
+                    err = rinfs_block_allocation_unlock_status(
+                        mount, RINFS_OK);
+                    rinfs_free(bitmap);
+                    return err;
                 }
             }
         }
     }
-    
+
     int result = rinfs_block_allocation_unlock_status(
         mount, RINFS_ERR_NOSPC);
     rinfs_free(bitmap);
