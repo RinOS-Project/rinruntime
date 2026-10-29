@@ -12,6 +12,15 @@ static void file_operation_zero(void* output, uint32_t size)
     while (size-- != 0u) *bytes++ = 0u;
 }
 
+static int file_operation_bytes_zero(const void* input, uint32_t size)
+{
+    const uint8_t* bytes = (const uint8_t*)input;
+    uint8_t value = 0u;
+    if (input == 0) return 0;
+    while (size-- != 0u) value |= *bytes++;
+    return value == 0u;
+}
+
 static int file_operation_kind_valid(uint32_t kind)
 {
     return kind == RINRUNTIME_FILE_OPERATION_ENTRY_FILE ||
@@ -38,7 +47,33 @@ static RinRuntimeFileOperationResult file_operation_result(int result)
         return RINRUNTIME_FILE_OPERATION_NO_SPACE;
     if (result == RINRUNTIME_FILE_OPERATION_BACKEND_DEVICE_REMOVED)
         return RINRUNTIME_FILE_OPERATION_DEVICE_REMOVED;
+    if (result == RINRUNTIME_FILE_OPERATION_BACKEND_IDENTITY_MISMATCH)
+        return RINRUNTIME_FILE_OPERATION_CONFLICT;
     return RINRUNTIME_FILE_OPERATION_IO_FAILED;
+}
+
+static int file_operation_identity_valid(
+    const RinRuntimeFileOperationObjectIdentityV1* identity)
+{
+    return identity != 0 && identity->inode != 0u &&
+           identity->generation != 0u;
+}
+
+static int file_operation_identity_equal(
+    const RinRuntimeFileOperationObjectIdentityV1* left,
+    const RinRuntimeFileOperationObjectIdentityV1* right)
+{
+    return file_operation_identity_valid(left) &&
+           file_operation_identity_valid(right) &&
+           left->device == right->device && left->inode == right->inode &&
+           left->generation == right->generation;
+}
+
+static int file_operation_identity_empty(
+    const RinRuntimeFileOperationObjectIdentityV1* identity)
+{
+    return identity != 0 && identity->device == 0u && identity->inode == 0u &&
+           identity->generation == 0u;
 }
 
 static int file_operation_copy(char* output, uint32_t capacity, const char* input)
@@ -156,9 +191,13 @@ static int file_operation_backend_valid(const RinRuntimeFileOperationBackendV1* 
         return backend->open_read != 0 && backend->open_create_exclusive != 0 &&
                backend->read != 0 && backend->write != 0 &&
                backend->sync_file != 0 && backend->close != 0 &&
-               backend->mkdir != 0 && backend->publish_no_replace != 0;
+               backend->mkdir != 0 && backend->publish_no_replace != 0 &&
+               backend->path_identity != 0 && backend->handle_identity != 0 &&
+               backend->remove_file_expected != 0 &&
+               backend->remove_directory_expected != 0;
     return kind == RINRUNTIME_FILE_OPERATION_DELETE ||
-           backend->rename_no_replace != 0;
+           (backend->rename_no_replace != 0 && backend->path_identity != 0 &&
+            backend->rename_no_replace_expected != 0);
 }
 
 static int file_operation_entry_valid(const RinRuntimeFileOperationEntryV1* entry,
@@ -168,12 +207,37 @@ static int file_operation_entry_valid(const RinRuntimeFileOperationEntryV1* entr
         (entry->flags & ~(RINRUNTIME_FILE_OPERATION_ENTRY_FLAG_SKIP |
                           RINRUNTIME_FILE_OPERATION_ENTRY_FLAG_CREATED |
                           RINRUNTIME_FILE_OPERATION_ENTRY_FLAG_APPLIED)) != 0u ||
+        entry->cleanup_state >
+            RINRUNTIME_FILE_OPERATION_CLEANUP_RENAME_SYNC_PENDING ||
+        entry->replacement_state >
+            RINRUNTIME_FILE_OPERATION_REPLACEMENT_UNDO_RESTORE_IN_PROGRESS ||
+        entry->reserved0 != 0u ||
         !rinruntime_file_operation_path_valid(entry->source_path))
         return 0;
     if (kind != RINRUNTIME_FILE_OPERATION_DELETE &&
         !rinruntime_file_operation_path_valid(entry->destination_path))
         return 0;
+    if (entry->replacement_state == RINRUNTIME_FILE_OPERATION_REPLACEMENT_NONE) {
+        if (!file_operation_bytes_zero(entry->backup_path,
+                                       sizeof(entry->backup_path)) ||
+            !file_operation_identity_empty(&entry->backup_identity))
+            return 0;
+    } else if (!rinruntime_file_operation_path_valid(entry->backup_path) ||
+               entry->backup_path[0] == '\0' ||
+               !file_operation_identity_valid(&entry->backup_identity)) {
+        return 0;
+    }
     return 1;
+}
+
+static RinRuntimeFileOperationResult file_operation_checkpoint(
+    RinRuntimeFileOperationV1* operation)
+{
+    if (operation == 0 || operation->backend.checkpoint == 0)
+        return RINRUNTIME_FILE_OPERATION_OK;
+    return operation->backend.checkpoint(operation->backend.context,
+                                          operation) == 0
+        ? RINRUNTIME_FILE_OPERATION_OK : RINRUNTIME_FILE_OPERATION_IO_FAILED;
 }
 
 static int file_operation_skipped(const RinRuntimeFileOperationV1* operation,
@@ -261,44 +325,309 @@ static int file_operation_close_files(RinRuntimeFileOperationV1* operation)
     return success;
 }
 
-static int file_operation_rollback(RinRuntimeFileOperationV1* operation)
+static int file_operation_cleanup_created_path(
+    RinRuntimeFileOperationV1* operation, const char* path, int directory,
+    const RinRuntimeFileOperationObjectIdentityV1* identity,
+    uint32_t* cleanup_state)
 {
-    uint32_t index;
-    int success = 1;
-    if (!file_operation_close_files(operation)) success = 0;
-    if (operation->temporary_created != 0u) {
-        if (operation->backend.remove_file(operation->backend.context,
-                                           operation->temporary_path) != 0)
-            success = 0;
+    int state;
+    int result;
+    if (!operation || !path || !identity || !cleanup_state ||
+        !file_operation_identity_valid(identity))
+        return 0;
+    if (*cleanup_state == RINRUNTIME_FILE_OPERATION_CLEANUP_NONE)
+        *cleanup_state = RINRUNTIME_FILE_OPERATION_CLEANUP_REMOVE_PENDING;
+    if (*cleanup_state == RINRUNTIME_FILE_OPERATION_CLEANUP_REMOVE_PENDING ||
+        *cleanup_state == RINRUNTIME_FILE_OPERATION_CLEANUP_REMOVE_IN_PROGRESS) {
+        state = operation->backend.path_state(operation->backend.context, path);
+        if (state == 0) {
+            *cleanup_state = RINRUNTIME_FILE_OPERATION_CLEANUP_SYNC_PENDING;
+            if (file_operation_checkpoint(operation) !=
+                RINRUNTIME_FILE_OPERATION_OK)
+                return 0;
+        } else if (state == 1) {
+            *cleanup_state = RINRUNTIME_FILE_OPERATION_CLEANUP_REMOVE_IN_PROGRESS;
+            if (file_operation_checkpoint(operation) !=
+                RINRUNTIME_FILE_OPERATION_OK)
+                return 0;
+            result = directory
+                ? operation->backend.remove_directory_expected(
+                      operation->backend.context, path, identity)
+                : operation->backend.remove_file_expected(
+                      operation->backend.context, path, identity);
+            if (result == 0) {
+                *cleanup_state = RINRUNTIME_FILE_OPERATION_CLEANUP_SYNC_PENDING;
+            } else {
+                /* Some backends can report an I/O error after the namespace
+                 * change. Missing means removal happened; an identity mismatch
+                 * means a replacement is present and must remain untouched. */
+                state = operation->backend.path_state(operation->backend.context,
+                                                      path);
+                if (state != 0) return 0;
+                *cleanup_state = RINRUNTIME_FILE_OPERATION_CLEANUP_SYNC_PENDING;
+            }
+            if (file_operation_checkpoint(operation) !=
+                RINRUNTIME_FILE_OPERATION_OK)
+                return 0;
+        } else {
+            return 0;
+        }
+    }
+    if (*cleanup_state != RINRUNTIME_FILE_OPERATION_CLEANUP_SYNC_PENDING)
+        return 0;
+    if (file_operation_sync_parent_once(operation, path) !=
+        RINRUNTIME_FILE_OPERATION_OK)
+        return 0;
+    *cleanup_state = RINRUNTIME_FILE_OPERATION_CLEANUP_NONE;
+    if (file_operation_checkpoint(operation) != RINRUNTIME_FILE_OPERATION_OK)
+        return 0;
+    return 1;
+}
+
+static int file_operation_restore_replacement(
+    RinRuntimeFileOperationV1* operation,
+    RinRuntimeFileOperationEntryV1* entry)
+{
+    int destination_state;
+    int backup_state;
+    int result;
+    RinRuntimeFileOperationObjectIdentityV1 current;
+    if (!operation || !entry || entry->replacement_state ==
+            RINRUNTIME_FILE_OPERATION_REPLACEMENT_NONE ||
+        !file_operation_identity_valid(&entry->backup_identity))
+        return 0;
+    destination_state = operation->backend.path_state(
+        operation->backend.context, entry->destination_path);
+    backup_state = operation->backend.path_state(
+        operation->backend.context, entry->backup_path);
+    if (destination_state < 0 || backup_state < 0) return 0;
+
+    /* Reconcile a crash after the backup rename but before its checkpoint. */
+    if (entry->replacement_state ==
+        RINRUNTIME_FILE_OPERATION_REPLACEMENT_BACKUP_IN_PROGRESS) {
+        if (backup_state == 0 && destination_state == 1) {
+            memset(&current, 0, sizeof(current));
+            result = operation->backend.path_identity(
+                operation->backend.context, entry->destination_path, &current);
+            if (result != 0 || !file_operation_identity_equal(
+                    &current, &entry->backup_identity))
+                return 0;
+            entry->replacement_state = RINRUNTIME_FILE_OPERATION_REPLACEMENT_NONE;
+            file_operation_zero(entry->backup_path, sizeof(entry->backup_path));
+            memset(&entry->backup_identity, 0, sizeof(entry->backup_identity));
+            if (file_operation_checkpoint(operation) !=
+                RINRUNTIME_FILE_OPERATION_OK ||
+                file_operation_sync_parent_once(operation,
+                                                entry->destination_path) !=
+                    RINRUNTIME_FILE_OPERATION_OK)
+                return 0;
+            return 1;
+        }
+        if (backup_state != 1 || destination_state != 0) return 0;
+        memset(&current, 0, sizeof(current));
+        result = operation->backend.path_identity(
+            operation->backend.context, entry->backup_path, &current);
+        if (result != 0 || !file_operation_identity_equal(
+                &current, &entry->backup_identity))
+            return 0;
+        entry->replacement_state =
+            RINRUNTIME_FILE_OPERATION_REPLACEMENT_BACKUP_HELD;
+    }
+
+    if (entry->replacement_state ==
+            RINRUNTIME_FILE_OPERATION_REPLACEMENT_PUBLISH_IN_PROGRESS ||
+        entry->replacement_state ==
+            RINRUNTIME_FILE_OPERATION_REPLACEMENT_BACKUP_HELD)
+        entry->replacement_state =
+            RINRUNTIME_FILE_OPERATION_REPLACEMENT_RESTORE_IN_PROGRESS;
+
+    if (entry->replacement_state !=
+        RINRUNTIME_FILE_OPERATION_REPLACEMENT_RESTORE_IN_PROGRESS)
+        return 0;
+    if (backup_state == 0 && destination_state == 1) {
+        memset(&current, 0, sizeof(current));
+        result = operation->backend.path_identity(
+            operation->backend.context, entry->destination_path, &current);
+        if (result != 0 || !file_operation_identity_equal(
+                &current, &entry->backup_identity))
+            return 0;
+    } else if (backup_state == 1 && destination_state == 0) {
+        memset(&current, 0, sizeof(current));
+        result = operation->backend.path_identity(
+            operation->backend.context, entry->backup_path, &current);
+        if (result != 0 || !file_operation_identity_equal(
+                &current, &entry->backup_identity))
+            return 0;
+        if (file_operation_checkpoint(operation) !=
+            RINRUNTIME_FILE_OPERATION_OK)
+            return 0;
+        result = operation->backend.rename_no_replace_expected(
+            operation->backend.context, entry->backup_path,
+            entry->destination_path, &entry->backup_identity);
+        if (result != 0) return 0;
+        if (file_operation_checkpoint(operation) !=
+            RINRUNTIME_FILE_OPERATION_OK)
+            return 0;
+    } else {
+        return 0;
+    }
+    if (file_operation_sync_parent_once(operation, entry->destination_path) !=
+        RINRUNTIME_FILE_OPERATION_OK)
+        return 0;
+    entry->replacement_state = RINRUNTIME_FILE_OPERATION_REPLACEMENT_NONE;
+    file_operation_zero(entry->backup_path, sizeof(entry->backup_path));
+    memset(&entry->backup_identity, 0, sizeof(entry->backup_identity));
+    if (file_operation_checkpoint(operation) != RINRUNTIME_FILE_OPERATION_OK)
+        return 0;
+    return 1;
+}
+
+/* Performs no more than one namespace recovery action. The service persists
+ * the operation checkpoint between calls, so restart recovery cannot lose a
+ * successful remove merely because the following directory sync failed. */
+static int file_operation_rollback_step(RinRuntimeFileOperationV1* operation)
+{
+    if (!file_operation_close_files(operation)) return -1;
+    if (operation->operation == RINRUNTIME_FILE_OPERATION_COPY &&
+        operation->temporary_created != 0u) {
+        if (!file_operation_cleanup_created_path(
+                operation, operation->temporary_path, 0,
+                &operation->temporary_identity,
+                &operation->temporary_cleanup_state))
+            return -1;
         operation->temporary_created = 0u;
         operation->temporary_path[0] = '\0';
+        operation->temporary_cleanup_state =
+            RINRUNTIME_FILE_OPERATION_CLEANUP_NONE;
+        memset(&operation->temporary_identity, 0,
+               sizeof(operation->temporary_identity));
+        if (file_operation_checkpoint(operation) !=
+            RINRUNTIME_FILE_OPERATION_OK)
+            return -1;
+        return 1;
     }
-    for (index = operation->entry_count; index > 0u; --index) {
-        RinRuntimeFileOperationEntryV1* entry = &operation->entries[index - 1u];
+    while (operation->rollback_index != 0u) {
+        RinRuntimeFileOperationEntryV1* entry =
+            &operation->entries[operation->rollback_index - 1u];
+        int source_state;
+        int destination_state;
+        RinRuntimeFileOperationObjectIdentityV1 current_identity;
         int result;
-        if ((entry->flags & RINRUNTIME_FILE_OPERATION_ENTRY_FLAG_CREATED) == 0u)
-            continue;
-        result = entry->kind == RINRUNTIME_FILE_OPERATION_ENTRY_DIRECTORY
-                     ? operation->backend.remove_directory(operation->backend.context,
-                                                           entry->destination_path)
-                     : operation->backend.remove_file(operation->backend.context,
-                                                      entry->destination_path);
-        if (result != 0 || file_operation_sync_parent_once(operation,
-                                                            entry->destination_path) !=
-                               RINRUNTIME_FILE_OPERATION_OK)
-            success = 0;
-        entry->flags &= ~RINRUNTIME_FILE_OPERATION_ENTRY_FLAG_CREATED;
+        if ((entry->flags & RINRUNTIME_FILE_OPERATION_ENTRY_FLAG_CREATED) != 0u) {
+            if (!file_operation_cleanup_created_path(
+                    operation, entry->destination_path,
+                    entry->kind == RINRUNTIME_FILE_OPERATION_ENTRY_DIRECTORY,
+                    &entry->object_identity, &entry->cleanup_state))
+                return -1;
+            entry->flags &= ~RINRUNTIME_FILE_OPERATION_ENTRY_FLAG_CREATED;
+            entry->cleanup_state = RINRUNTIME_FILE_OPERATION_CLEANUP_NONE;
+            memset(&entry->object_identity, 0, sizeof(entry->object_identity));
+            if (file_operation_checkpoint(operation) !=
+                RINRUNTIME_FILE_OPERATION_OK)
+                return -1;
+            if (entry->replacement_state ==
+                RINRUNTIME_FILE_OPERATION_REPLACEMENT_NONE)
+                --operation->rollback_index;
+            return 1;
+        }
+        if ((entry->flags & RINRUNTIME_FILE_OPERATION_ENTRY_FLAG_APPLIED) != 0u) {
+            if (!file_operation_identity_valid(&entry->object_identity)) return -1;
+            if (entry->cleanup_state == RINRUNTIME_FILE_OPERATION_CLEANUP_NONE)
+                entry->cleanup_state =
+                    RINRUNTIME_FILE_OPERATION_CLEANUP_RENAME_IN_PROGRESS;
+            if (entry->cleanup_state ==
+                RINRUNTIME_FILE_OPERATION_CLEANUP_RENAME_IN_PROGRESS) {
+                if (file_operation_checkpoint(operation) !=
+                    RINRUNTIME_FILE_OPERATION_OK)
+                    return -1;
+                source_state = operation->backend.path_state(
+                    operation->backend.context, entry->source_path);
+                destination_state = operation->backend.path_state(
+                    operation->backend.context, entry->destination_path);
+                if (source_state < 0 || destination_state < 0) return -1;
+                if (source_state == 0 && destination_state == 1) {
+                    memset(&current_identity, 0, sizeof(current_identity));
+                    result = operation->backend.path_identity(
+                        operation->backend.context, entry->destination_path,
+                        &current_identity);
+                    if (result != 0 || !file_operation_identity_equal(
+                            &current_identity, &entry->object_identity))
+                        return -1;
+                    result = operation->backend.rename_no_replace_expected(
+                        operation->backend.context, entry->destination_path,
+                        entry->source_path, &entry->object_identity);
+                    if (result != 0) return -1;
+                } else if (source_state == 1 && destination_state == 0) {
+                    memset(&current_identity, 0, sizeof(current_identity));
+                    result = operation->backend.path_identity(
+                        operation->backend.context, entry->source_path,
+                        &current_identity);
+                    if (result != 0 || !file_operation_identity_equal(
+                            &current_identity, &entry->object_identity))
+                        return -1;
+                } else {
+                    return -1;
+                }
+                entry->cleanup_state =
+                    RINRUNTIME_FILE_OPERATION_CLEANUP_RENAME_SYNC_PENDING;
+                if (file_operation_checkpoint(operation) !=
+                    RINRUNTIME_FILE_OPERATION_OK)
+                    return -1;
+            }
+            if (entry->cleanup_state !=
+                RINRUNTIME_FILE_OPERATION_CLEANUP_RENAME_SYNC_PENDING ||
+                file_operation_sync_parent_once(operation, entry->source_path) !=
+                    RINRUNTIME_FILE_OPERATION_OK ||
+                file_operation_sync_parent_once(operation,
+                                                entry->destination_path) !=
+                    RINRUNTIME_FILE_OPERATION_OK)
+                return -1;
+            entry->flags &= ~RINRUNTIME_FILE_OPERATION_ENTRY_FLAG_APPLIED;
+            entry->cleanup_state = RINRUNTIME_FILE_OPERATION_CLEANUP_NONE;
+            memset(&entry->object_identity, 0, sizeof(entry->object_identity));
+            --operation->rollback_index;
+            if (file_operation_checkpoint(operation) !=
+                RINRUNTIME_FILE_OPERATION_OK)
+                return -1;
+            return 1;
+        }
+        if (entry->replacement_state !=
+            RINRUNTIME_FILE_OPERATION_REPLACEMENT_NONE) {
+            if (!file_operation_restore_replacement(operation, entry)) return -1;
+            return 1;
+        }
+        --operation->rollback_index;
     }
-    return success;
+    return 0;
 }
 
 static RinRuntimeFileOperationResult file_operation_finish_failure(
     RinRuntimeFileOperationV1* operation, RinRuntimeFileOperationResult result,
     int rollback)
 {
+    int rollback_step;
+    operation->pending_result = result;
+    if (rollback && operation->operation != RINRUNTIME_FILE_OPERATION_DELETE) {
+        operation->rollback_active = 1u;
+        operation->rollback_index = operation->entry_count;
+        operation->active = 1u;
+        if (file_operation_checkpoint(operation) !=
+            RINRUNTIME_FILE_OPERATION_OK) {
+            operation->active = 0u;
+            operation->recovery_required = 1u;
+            return RINRUNTIME_FILE_OPERATION_ROLLBACK_FAILED;
+        }
+        rollback_step = file_operation_rollback_step(operation);
+        if (rollback_step < 0) {
+            operation->active = 0u;
+            operation->recovery_required = 1u;
+            return RINRUNTIME_FILE_OPERATION_ROLLBACK_FAILED;
+        }
+        if (rollback_step > 0) return RINRUNTIME_FILE_OPERATION_IN_PROGRESS;
+        operation->rollback_active = 0u;
+    }
     operation->active = 0u;
-    if (rollback && !file_operation_rollback(operation))
-        return RINRUNTIME_FILE_OPERATION_ROLLBACK_FAILED;
+    operation->recovery_required = 0u;
     return result;
 }
 
@@ -317,20 +646,63 @@ static RinRuntimeFileOperationResult file_operation_conflict(
         return RINRUNTIME_FILE_OPERATION_OK;
     }
     if (operation->conflict_policy == RINRUNTIME_FILE_OPERATION_CONFLICT_REPLACE) {
+        char backup_path[RINRUNTIME_FILE_OPERATION_PATH_MAX];
+        RinRuntimeFileOperationObjectIdentityV1 identity;
         int result;
-        if (operation->backend.replace_destination == 0)
+        if (operation->operation != RINRUNTIME_FILE_OPERATION_COPY ||
+            operation->backend.replacement_backup_path == 0 ||
+            operation->backend.rename_no_replace_expected == 0 ||
+            operation->backend.checkpoint == 0)
             return RINRUNTIME_FILE_OPERATION_UNSUPPORTED;
-        result = operation->backend.replace_destination(operation->backend.context,
-                                                        entry->destination_path,
-                                                        entry->kind);
-        if (result != 0) return file_operation_result(result);
-        result = file_operation_sync_parent_once(operation, entry->destination_path);
-        if (result != RINRUNTIME_FILE_OPERATION_OK) return result;
-        result = operation->backend.path_state(operation->backend.context,
-                                                entry->destination_path);
-        return result == 0 ? RINRUNTIME_FILE_OPERATION_OK
-                           : result == 1 ? RINRUNTIME_FILE_OPERATION_CONFLICT
-                                         : file_operation_result(result);
+        if (entry->replacement_state ==
+            RINRUNTIME_FILE_OPERATION_REPLACEMENT_NONE) {
+            memset(&identity, 0, sizeof(identity));
+            result = operation->backend.path_identity(
+                operation->backend.context, entry->destination_path, &identity);
+            if (result != 0 || !file_operation_identity_valid(&identity))
+                return result == 0 ? RINRUNTIME_FILE_OPERATION_IO_FAILED
+                                   : file_operation_result(result);
+            file_operation_zero(backup_path, sizeof(backup_path));
+            if (operation->backend.replacement_backup_path(
+                    operation->backend.context, entry->destination_path,
+                    &identity, backup_path, sizeof(backup_path)) != 0 ||
+                !rinruntime_file_operation_path_valid(backup_path) ||
+                backup_path[0] == '\0' ||
+                strcmp(backup_path, entry->destination_path) == 0 ||
+                strcmp(backup_path, entry->source_path) == 0 ||
+                operation->backend.path_state(operation->backend.context,
+                                               backup_path) != 0)
+                return RINRUNTIME_FILE_OPERATION_CONFLICT;
+            if (!file_operation_copy(entry->backup_path,
+                                     sizeof(entry->backup_path), backup_path))
+                return RINRUNTIME_FILE_OPERATION_INVALID_ARGUMENT;
+            entry->backup_identity = identity;
+            entry->replacement_state =
+                RINRUNTIME_FILE_OPERATION_REPLACEMENT_BACKUP_IN_PROGRESS;
+            if (file_operation_checkpoint(operation) !=
+                RINRUNTIME_FILE_OPERATION_OK)
+                return RINRUNTIME_FILE_OPERATION_IO_FAILED;
+            result = operation->backend.rename_no_replace_expected(
+                operation->backend.context, entry->destination_path,
+                entry->backup_path, &entry->backup_identity);
+            if (result != 0) return file_operation_result(result);
+            result = file_operation_sync_parent_once(
+                operation, entry->destination_path);
+            if (result != RINRUNTIME_FILE_OPERATION_OK) return result;
+            entry->replacement_state =
+                RINRUNTIME_FILE_OPERATION_REPLACEMENT_BACKUP_HELD;
+            if (file_operation_checkpoint(operation) !=
+                RINRUNTIME_FILE_OPERATION_OK)
+                return RINRUNTIME_FILE_OPERATION_IO_FAILED;
+        }
+        if (entry->replacement_state !=
+            RINRUNTIME_FILE_OPERATION_REPLACEMENT_BACKUP_HELD)
+            return RINRUNTIME_FILE_OPERATION_CONFLICT;
+        state = operation->backend.path_state(operation->backend.context,
+                                              entry->destination_path);
+        return state == 0 ? RINRUNTIME_FILE_OPERATION_OK
+                          : state == 1 ? RINRUNTIME_FILE_OPERATION_CONFLICT
+                                       : file_operation_result(state);
     }
     if (entry->kind != RINRUNTIME_FILE_OPERATION_ENTRY_FILE ||
         operation->entry_count != 1u ||
@@ -371,18 +743,35 @@ RinRuntimeFileOperationResult rinruntime_file_operation_start(
     uint64_t total = 0u;
     if (operation == 0 || operation->struct_size != sizeof(*operation) ||
         operation->version != RINRUNTIME_FILE_OPERATION_VERSION ||
-        operation->active != 0u || entries == 0 || entry_count == 0u ||
+        operation->active != 0u || operation->recovery_required != 0u ||
+        entries == 0 || entry_count == 0u ||
         entry_count > RINRUNTIME_FILE_OPERATION_ENTRY_LIMIT ||
         !file_operation_operation_valid((uint16_t)kind) ||
         !file_operation_conflict_valid((uint32_t)conflict_policy) ||
         !file_operation_backend_valid(backend, kind))
         return RINRUNTIME_FILE_OPERATION_INVALID_ARGUMENT;
+    if (conflict_policy == RINRUNTIME_FILE_OPERATION_CONFLICT_REPLACE &&
+        (kind != RINRUNTIME_FILE_OPERATION_COPY ||
+         backend->replacement_backup_path == 0 ||
+         backend->rename_no_replace_expected == 0 ||
+         backend->checkpoint == 0))
+        return RINRUNTIME_FILE_OPERATION_UNSUPPORTED;
     for (index = 0u; index < entry_count; ++index) {
         RinRuntimeFileOperationEntryV1* entry = &entries[index];
         if (!file_operation_entry_valid(entry, kind))
             return RINRUNTIME_FILE_OPERATION_INVALID_ARGUMENT;
         if ((entry->flags & RINRUNTIME_FILE_OPERATION_ENTRY_FLAG_CREATED) != 0u ||
-            (entry->flags & RINRUNTIME_FILE_OPERATION_ENTRY_FLAG_APPLIED) != 0u)
+            (entry->flags & RINRUNTIME_FILE_OPERATION_ENTRY_FLAG_APPLIED) != 0u ||
+            entry->cleanup_state != RINRUNTIME_FILE_OPERATION_CLEANUP_NONE ||
+            entry->object_identity.device != 0u ||
+            entry->object_identity.inode != 0u ||
+            entry->object_identity.generation != 0u ||
+            entry->replacement_state !=
+                RINRUNTIME_FILE_OPERATION_REPLACEMENT_NONE ||
+            entry->reserved0 != 0u ||
+            !file_operation_bytes_zero(entry->backup_path,
+                                       sizeof(entry->backup_path)) ||
+            !file_operation_identity_empty(&entry->backup_identity))
             return RINRUNTIME_FILE_OPERATION_INVALID_ARGUMENT;
         if (kind == RINRUNTIME_FILE_OPERATION_COPY &&
             entry->kind == RINRUNTIME_FILE_OPERATION_ENTRY_DIRECTORY &&
@@ -433,7 +822,54 @@ RinRuntimeFileOperationResult rinruntime_file_operation_start(
     operation->temporary_handle = 0u;
     operation->temporary_path[0] = '\0';
     operation->sparse_data_end = 0u;
+    operation->recovery_required = 0u;
+    operation->replace_undo_active = 0u;
+    operation->temporary_cleanup_state = RINRUNTIME_FILE_OPERATION_CLEANUP_NONE;
+    operation->pending_result = RINRUNTIME_FILE_OPERATION_OK;
+    operation->rollback_index = entry_count;
+    memset(&operation->temporary_identity, 0,
+           sizeof(operation->temporary_identity));
+    for (index = 0u; index < entry_count; ++index) {
+        entries[index].cleanup_state = RINRUNTIME_FILE_OPERATION_CLEANUP_NONE;
+        memset(&entries[index].object_identity, 0,
+               sizeof(entries[index].object_identity));
+    }
     operation->active = 1u;
+    return RINRUNTIME_FILE_OPERATION_IN_PROGRESS;
+}
+
+static int file_operation_recovery_restore_internal(
+    RinRuntimeFileOperationV1* operation,
+    const RinRuntimeFileOperationBackendV1* backend,
+    RinRuntimeFileOperationEntryV1* entries, uint32_t entry_count,
+    const RinRuntimeFileOperationRecoveryV1* recovery,
+    int require_interrupted_state);
+
+RinRuntimeFileOperationResult rinruntime_file_operation_start_replace_undo(
+    RinRuntimeFileOperationV1* operation,
+    const RinRuntimeFileOperationBackendV1* backend,
+    RinRuntimeFileOperationEntryV1* entries, uint32_t entry_count,
+    const RinRuntimeFileOperationRecoveryV1* recovery)
+{
+    if (!operation || !backend || !entries || !recovery ||
+        operation->struct_size != sizeof(*operation) ||
+        operation->version != RINRUNTIME_FILE_OPERATION_VERSION ||
+        operation->active != 0u || operation->recovery_required != 0u ||
+        recovery->operation != RINRUNTIME_FILE_OPERATION_COPY ||
+        recovery->recovery_required != 0u || recovery->rollback_active != 0u ||
+        recovery->replace_undo_active != 0u ||
+        file_operation_recovery_restore_internal(
+            operation, backend, entries, entry_count, recovery, 0) != 0)
+        return RINRUNTIME_FILE_OPERATION_INVALID_ARGUMENT;
+    if (recovery->entry_index != entry_count)
+        return RINRUNTIME_FILE_OPERATION_INVALID_ARGUMENT;
+    operation->entry_index = entry_count;
+    operation->rollback_index = 0u;
+    operation->active = 1u;
+    operation->recovery_required = 0u;
+    operation->rollback_active = 0u;
+    operation->replace_undo_active = 1u;
+    operation->pending_result = RINRUNTIME_FILE_OPERATION_IN_PROGRESS;
     return RINRUNTIME_FILE_OPERATION_IN_PROGRESS;
 }
 
@@ -470,6 +906,15 @@ static RinRuntimeFileOperationResult file_operation_open_copy(
     }
     operation->file_open = 1u;
     operation->temporary_created = 1u;
+    result = operation->backend.handle_identity(
+        operation->backend.context, operation->temporary_handle,
+        &operation->temporary_identity);
+    if (result != 0 || !file_operation_identity_valid(
+                           &operation->temporary_identity))
+        return result == 0 ? RINRUNTIME_FILE_OPERATION_IO_FAILED
+                           : file_operation_result(result);
+    result = file_operation_checkpoint(operation);
+    if (result != RINRUNTIME_FILE_OPERATION_OK) return result;
     operation->sparse_file_enabled = operation->backend.seek != 0 ? 1u : 0u;
     operation->sparse_output_sized = 0u;
     operation->sparse_data_end = 0u;
@@ -585,21 +1030,49 @@ static RinRuntimeFileOperationResult file_operation_finish_copy(
                                           operation->temporary_handle);
     if (result != 0) return file_operation_result(result);
     if (!file_operation_close_files(operation)) return RINRUNTIME_FILE_OPERATION_IO_FAILED;
+    entry->flags |= RINRUNTIME_FILE_OPERATION_ENTRY_FLAG_CREATED;
+    entry->object_identity = operation->temporary_identity;
+    if (entry->replacement_state ==
+        RINRUNTIME_FILE_OPERATION_REPLACEMENT_BACKUP_HELD)
+        entry->replacement_state =
+            RINRUNTIME_FILE_OPERATION_REPLACEMENT_PUBLISH_IN_PROGRESS;
+    if (file_operation_checkpoint(operation) !=
+        RINRUNTIME_FILE_OPERATION_OK)
+        return RINRUNTIME_FILE_OPERATION_IO_FAILED;
     result = operation->backend.publish_no_replace(operation->backend.context,
                                                     operation->temporary_path,
                                                     entry->destination_path);
     if (result != 0) return file_operation_result(result);
-    entry->flags |= RINRUNTIME_FILE_OPERATION_ENTRY_FLAG_CREATED;
+    if (file_operation_checkpoint(operation) !=
+        RINRUNTIME_FILE_OPERATION_OK)
+        return RINRUNTIME_FILE_OPERATION_IO_FAILED;
+    result = operation->backend.path_identity(
+        operation->backend.context, entry->destination_path,
+        &operation->temporary_identity);
+    if (result != 0 || !file_operation_identity_valid(&entry->object_identity))
+        return result == 0 ? RINRUNTIME_FILE_OPERATION_IO_FAILED
+                           : file_operation_result(result);
+    if (!file_operation_identity_equal(&operation->temporary_identity,
+                                       &entry->object_identity))
+        return RINRUNTIME_FILE_OPERATION_CONFLICT;
+    if (entry->replacement_state ==
+        RINRUNTIME_FILE_OPERATION_REPLACEMENT_PUBLISH_IN_PROGRESS)
+        entry->replacement_state =
+            RINRUNTIME_FILE_OPERATION_REPLACEMENT_BACKUP_HELD;
     sync_result = file_operation_sync_parent_once(operation, entry->destination_path);
     if (sync_result != RINRUNTIME_FILE_OPERATION_OK) return sync_result;
-    result = operation->backend.remove_file(operation->backend.context,
-                                             operation->temporary_path);
-    if (result != 0) return file_operation_result(result);
+    if (file_operation_checkpoint(operation) !=
+        RINRUNTIME_FILE_OPERATION_OK)
+        return RINRUNTIME_FILE_OPERATION_IO_FAILED;
+    if (!file_operation_cleanup_created_path(
+            operation, operation->temporary_path, 0,
+            &operation->temporary_identity,
+            &operation->temporary_cleanup_state))
+        return RINRUNTIME_FILE_OPERATION_IO_FAILED;
     operation->temporary_created = 0u;
     operation->temporary_path[0] = '\0';
-    sync_result = file_operation_sync_parent_once(operation,
-                                                  entry->destination_path);
-    if (sync_result != RINRUNTIME_FILE_OPERATION_OK) return sync_result;
+    memset(&operation->temporary_identity, 0,
+           sizeof(operation->temporary_identity));
     return RINRUNTIME_FILE_OPERATION_OK;
 }
 
@@ -634,6 +1107,15 @@ static RinRuntimeFileOperationResult file_operation_create_symlink(
         target, entry->destination_path);
     if (result != 0) return file_operation_result(result);
     entry->flags |= RINRUNTIME_FILE_OPERATION_ENTRY_FLAG_CREATED;
+    result = operation->backend.path_identity(
+        operation->backend.context, entry->destination_path,
+        &entry->object_identity);
+    if (result != 0 || !file_operation_identity_valid(&entry->object_identity))
+        return result == 0 ? RINRUNTIME_FILE_OPERATION_IO_FAILED
+                           : file_operation_result(result);
+    if (file_operation_checkpoint(operation) !=
+        RINRUNTIME_FILE_OPERATION_OK)
+        return RINRUNTIME_FILE_OPERATION_IO_FAILED;
     sync_result = file_operation_copy_metadata(operation, entry,
                                                 entry->destination_path);
     if (sync_result != RINRUNTIME_FILE_OPERATION_OK) return sync_result;
@@ -655,6 +1137,15 @@ static RinRuntimeFileOperationResult file_operation_create_hardlink(
         source->destination_path, entry->destination_path);
     if (result != 0) return file_operation_result(result);
     entry->flags |= RINRUNTIME_FILE_OPERATION_ENTRY_FLAG_CREATED;
+    result = operation->backend.path_identity(
+        operation->backend.context, entry->destination_path,
+        &entry->object_identity);
+    if (result != 0 || !file_operation_identity_valid(&entry->object_identity))
+        return result == 0 ? RINRUNTIME_FILE_OPERATION_IO_FAILED
+                           : file_operation_result(result);
+    if (file_operation_checkpoint(operation) !=
+        RINRUNTIME_FILE_OPERATION_OK)
+        return RINRUNTIME_FILE_OPERATION_IO_FAILED;
     sync_result = file_operation_sync_parent_once(operation, entry->destination_path);
     return sync_result;
 }
@@ -726,6 +1217,18 @@ static RinRuntimeFileOperationResult file_operation_pump_copy(
                 return file_operation_finish_failure(operation,
                     file_operation_result(mkdir_result), 1);
             entry->flags |= RINRUNTIME_FILE_OPERATION_ENTRY_FLAG_CREATED;
+            mkdir_result = operation->backend.path_identity(
+                operation->backend.context, entry->destination_path,
+                &entry->object_identity);
+            if (mkdir_result != 0 ||
+                !file_operation_identity_valid(&entry->object_identity))
+                return file_operation_finish_failure(operation,
+                    mkdir_result == 0 ? RINRUNTIME_FILE_OPERATION_IO_FAILED
+                                      : file_operation_result(mkdir_result), 1);
+            if (file_operation_checkpoint(operation) !=
+                RINRUNTIME_FILE_OPERATION_OK)
+                return file_operation_finish_failure(operation,
+                    RINRUNTIME_FILE_OPERATION_IO_FAILED, 1);
             result = operation->backend.sync_directory(operation->backend.context,
                                                        entry->destination_path);
             if (result != 0)
@@ -843,18 +1346,48 @@ static RinRuntimeFileOperationResult file_operation_pump_namespace(
             ++operation->completed_items;
             return RINRUNTIME_FILE_OPERATION_IN_PROGRESS;
         }
-        action_result = operation->backend.rename_no_replace(operation->backend.context,
-            entry->source_path, entry->destination_path);
+        action_result = operation->backend.path_identity(
+            operation->backend.context, entry->source_path,
+            &entry->object_identity);
+        if (action_result != 0 ||
+            !file_operation_identity_valid(&entry->object_identity)) {
+            result = action_result == 0 ? RINRUNTIME_FILE_OPERATION_IO_FAILED
+                                        : file_operation_result(action_result);
+            goto namespace_failure;
+        }
+        entry->flags |= RINRUNTIME_FILE_OPERATION_ENTRY_FLAG_APPLIED;
+        entry->cleanup_state =
+            RINRUNTIME_FILE_OPERATION_CLEANUP_RENAME_IN_PROGRESS;
+        if (file_operation_checkpoint(operation) !=
+            RINRUNTIME_FILE_OPERATION_OK) {
+            result = RINRUNTIME_FILE_OPERATION_IO_FAILED;
+            goto namespace_failure;
+        }
+        action_result = operation->backend.rename_no_replace_expected(
+            operation->backend.context, entry->source_path,
+            entry->destination_path, &entry->object_identity);
         if (action_result != 0) {
             result = file_operation_result(action_result);
             goto namespace_failure;
         }
-        entry->flags |= RINRUNTIME_FILE_OPERATION_ENTRY_FLAG_APPLIED;
+        entry->cleanup_state =
+            RINRUNTIME_FILE_OPERATION_CLEANUP_RENAME_SYNC_PENDING;
+        if (file_operation_checkpoint(operation) !=
+            RINRUNTIME_FILE_OPERATION_OK) {
+            result = RINRUNTIME_FILE_OPERATION_IO_FAILED;
+            goto namespace_failure;
+        }
         result = file_operation_sync_parent_once(operation, entry->destination_path);
         if (result == RINRUNTIME_FILE_OPERATION_OK &&
             !file_operation_descendant(entry->destination_path, entry->source_path))
             result = file_operation_sync_parent_once(operation, entry->source_path);
         if (result != RINRUNTIME_FILE_OPERATION_OK) goto namespace_failure;
+        entry->cleanup_state = RINRUNTIME_FILE_OPERATION_CLEANUP_NONE;
+        if (file_operation_checkpoint(operation) !=
+            RINRUNTIME_FILE_OPERATION_OK) {
+            result = RINRUNTIME_FILE_OPERATION_IO_FAILED;
+            goto namespace_failure;
+        }
     } else {
         action_result = entry->kind == RINRUNTIME_FILE_OPERATION_ENTRY_DIRECTORY
             ? operation->backend.remove_directory(operation->backend.context, entry->source_path)
@@ -875,41 +1408,195 @@ static RinRuntimeFileOperationResult file_operation_pump_namespace(
     return RINRUNTIME_FILE_OPERATION_IN_PROGRESS;
 
 namespace_failure:
-    operation->active = 0u;
-    if (operation->operation != RINRUNTIME_FILE_OPERATION_DELETE) {
-        uint32_t index;
-        int rollback_success = 1;
-        for (index = operation->entry_count; index > 0u; --index) {
-            RinRuntimeFileOperationEntryV1* changed =
-                &operation->entries[index - 1u];
-            if ((changed->flags & RINRUNTIME_FILE_OPERATION_ENTRY_FLAG_APPLIED) == 0u)
-                continue;
-            if (operation->backend.rename_no_replace(operation->backend.context,
-                changed->destination_path, changed->source_path) != 0 ||
-                file_operation_sync_parent_once(operation,
-                                                changed->source_path) !=
-                    RINRUNTIME_FILE_OPERATION_OK ||
-                file_operation_sync_parent_once(operation,
-                                                changed->destination_path) !=
-                    RINRUNTIME_FILE_OPERATION_OK) {
-                rollback_success = 0;
-            } else {
-                changed->flags &= ~RINRUNTIME_FILE_OPERATION_ENTRY_FLAG_APPLIED;
-            }
-        }
-        if (!rollback_success) return RINRUNTIME_FILE_OPERATION_ROLLBACK_FAILED;
+    if (operation->operation == RINRUNTIME_FILE_OPERATION_DELETE) {
+        operation->active = 0u;
+        operation->pending_result = result;
+        return result;
     }
-    return result;
+    return file_operation_finish_failure(operation, result, 1);
+}
+
+static RinRuntimeFileOperationResult file_operation_pump_replace_undo(
+    RinRuntimeFileOperationV1* operation)
+{
+    RinRuntimeFileOperationEntryV1* entry;
+    RinRuntimeFileOperationObjectIdentityV1 current;
+    int destination_state;
+    int backup_state;
+    int result;
+    if (operation->entry_index == 0u) {
+        operation->active = 0u;
+        operation->replace_undo_active = 0u;
+        return RINRUNTIME_FILE_OPERATION_COMPLETED;
+    }
+    entry = &operation->entries[operation->entry_index - 1u];
+    if ((entry->flags & RINRUNTIME_FILE_OPERATION_ENTRY_FLAG_SKIP) != 0u ||
+        (entry->flags & RINRUNTIME_FILE_OPERATION_ENTRY_FLAG_CREATED) == 0u) {
+        --operation->entry_index;
+        return RINRUNTIME_FILE_OPERATION_IN_PROGRESS;
+    }
+    destination_state = operation->backend.path_state(
+        operation->backend.context, entry->destination_path);
+    if (destination_state < 0) return RINRUNTIME_FILE_OPERATION_IO_FAILED;
+
+    if (entry->replacement_state == RINRUNTIME_FILE_OPERATION_REPLACEMENT_NONE) {
+        if (destination_state == 1) {
+            memset(&current, 0, sizeof(current));
+            result = operation->backend.path_identity(
+                operation->backend.context, entry->destination_path, &current);
+            if (result != 0 || !file_operation_identity_equal(
+                    &current, &entry->object_identity))
+                return RINRUNTIME_FILE_OPERATION_CONFLICT;
+            if (file_operation_checkpoint(operation) !=
+                RINRUNTIME_FILE_OPERATION_OK)
+                return RINRUNTIME_FILE_OPERATION_IO_FAILED;
+            result = entry->kind == RINRUNTIME_FILE_OPERATION_ENTRY_DIRECTORY
+                ? operation->backend.remove_directory_expected(
+                      operation->backend.context, entry->destination_path,
+                      &entry->object_identity)
+                : operation->backend.remove_file_expected(
+                      operation->backend.context, entry->destination_path,
+                      &entry->object_identity);
+            if (result != 0) return file_operation_result(result);
+            result = file_operation_sync_parent_once(
+                operation, entry->destination_path);
+            if (result != RINRUNTIME_FILE_OPERATION_OK) return result;
+            if (file_operation_checkpoint(operation) !=
+                RINRUNTIME_FILE_OPERATION_OK)
+                return RINRUNTIME_FILE_OPERATION_IO_FAILED;
+        }
+        entry->flags &= ~RINRUNTIME_FILE_OPERATION_ENTRY_FLAG_CREATED;
+        memset(&entry->object_identity, 0, sizeof(entry->object_identity));
+        if (file_operation_checkpoint(operation) !=
+            RINRUNTIME_FILE_OPERATION_OK)
+            return RINRUNTIME_FILE_OPERATION_IO_FAILED;
+        --operation->entry_index;
+        return RINRUNTIME_FILE_OPERATION_IN_PROGRESS;
+    }
+
+    if (entry->replacement_state !=
+            RINRUNTIME_FILE_OPERATION_REPLACEMENT_BACKUP_HELD &&
+        entry->replacement_state !=
+            RINRUNTIME_FILE_OPERATION_REPLACEMENT_UNDO_REMOVE_IN_PROGRESS &&
+        entry->replacement_state !=
+            RINRUNTIME_FILE_OPERATION_REPLACEMENT_UNDO_RESTORE_IN_PROGRESS)
+        return RINRUNTIME_FILE_OPERATION_CONFLICT;
+
+    if (entry->replacement_state ==
+            RINRUNTIME_FILE_OPERATION_REPLACEMENT_BACKUP_HELD ||
+        entry->replacement_state ==
+            RINRUNTIME_FILE_OPERATION_REPLACEMENT_UNDO_REMOVE_IN_PROGRESS) {
+        if (destination_state == 1) {
+            memset(&current, 0, sizeof(current));
+            result = operation->backend.path_identity(
+                operation->backend.context, entry->destination_path, &current);
+            if (result != 0 || !file_operation_identity_equal(
+                    &current, &entry->object_identity))
+                return RINRUNTIME_FILE_OPERATION_CONFLICT;
+            entry->replacement_state =
+                RINRUNTIME_FILE_OPERATION_REPLACEMENT_UNDO_REMOVE_IN_PROGRESS;
+            if (file_operation_checkpoint(operation) !=
+                RINRUNTIME_FILE_OPERATION_OK)
+                return RINRUNTIME_FILE_OPERATION_IO_FAILED;
+            result = entry->kind == RINRUNTIME_FILE_OPERATION_ENTRY_DIRECTORY
+                ? operation->backend.remove_directory_expected(
+                      operation->backend.context, entry->destination_path,
+                      &entry->object_identity)
+                : operation->backend.remove_file_expected(
+                      operation->backend.context, entry->destination_path,
+                      &entry->object_identity);
+            if (result != 0) return file_operation_result(result);
+            result = file_operation_sync_parent_once(
+                operation, entry->destination_path);
+            if (result != RINRUNTIME_FILE_OPERATION_OK) return result;
+            if (file_operation_checkpoint(operation) !=
+                RINRUNTIME_FILE_OPERATION_OK)
+                return RINRUNTIME_FILE_OPERATION_IO_FAILED;
+        }
+        entry->replacement_state =
+            RINRUNTIME_FILE_OPERATION_REPLACEMENT_UNDO_RESTORE_IN_PROGRESS;
+        if (file_operation_checkpoint(operation) !=
+            RINRUNTIME_FILE_OPERATION_OK)
+            return RINRUNTIME_FILE_OPERATION_IO_FAILED;
+    }
+
+    backup_state = operation->backend.path_state(
+        operation->backend.context, entry->backup_path);
+    destination_state = operation->backend.path_state(
+        operation->backend.context, entry->destination_path);
+    if (backup_state < 0 || destination_state < 0)
+        return RINRUNTIME_FILE_OPERATION_IO_FAILED;
+    if (backup_state == 1 && destination_state == 0) {
+        memset(&current, 0, sizeof(current));
+        result = operation->backend.path_identity(
+            operation->backend.context, entry->backup_path, &current);
+        if (result != 0 || !file_operation_identity_equal(
+                &current, &entry->backup_identity))
+            return RINRUNTIME_FILE_OPERATION_CONFLICT;
+        if (file_operation_checkpoint(operation) !=
+            RINRUNTIME_FILE_OPERATION_OK)
+            return RINRUNTIME_FILE_OPERATION_IO_FAILED;
+        result = operation->backend.rename_no_replace_expected(
+            operation->backend.context, entry->backup_path,
+            entry->destination_path, &entry->backup_identity);
+        if (result != 0) return file_operation_result(result);
+    } else if (backup_state == 0 && destination_state == 1) {
+        memset(&current, 0, sizeof(current));
+        result = operation->backend.path_identity(
+            operation->backend.context, entry->destination_path, &current);
+        if (result != 0 || !file_operation_identity_equal(
+                &current, &entry->backup_identity))
+            return RINRUNTIME_FILE_OPERATION_CONFLICT;
+    } else {
+        return RINRUNTIME_FILE_OPERATION_CONFLICT;
+    }
+    result = file_operation_sync_parent_once(operation, entry->destination_path);
+    if (result != RINRUNTIME_FILE_OPERATION_OK) return result;
+    entry->replacement_state = RINRUNTIME_FILE_OPERATION_REPLACEMENT_NONE;
+    file_operation_zero(entry->backup_path, sizeof(entry->backup_path));
+    memset(&entry->backup_identity, 0, sizeof(entry->backup_identity));
+    entry->flags &= ~RINRUNTIME_FILE_OPERATION_ENTRY_FLAG_CREATED;
+    memset(&entry->object_identity, 0, sizeof(entry->object_identity));
+    if (file_operation_checkpoint(operation) !=
+        RINRUNTIME_FILE_OPERATION_OK)
+        return RINRUNTIME_FILE_OPERATION_IO_FAILED;
+    --operation->entry_index;
+    return RINRUNTIME_FILE_OPERATION_IN_PROGRESS;
 }
 
 RinRuntimeFileOperationResult rinruntime_file_operation_pump(
     RinRuntimeFileOperationV1* operation)
 {
+    int rollback_step;
     if (operation == 0 || operation->struct_size != sizeof(*operation) ||
         operation->version != RINRUNTIME_FILE_OPERATION_VERSION ||
         !file_operation_operation_valid(operation->operation) ||
         operation->active == 0u)
         return RINRUNTIME_FILE_OPERATION_INVALID_ARGUMENT;
+    if (operation->rollback_active != 0u) {
+        rollback_step = file_operation_rollback_step(operation);
+        if (rollback_step < 0) {
+            operation->active = 0u;
+            operation->recovery_required = 1u;
+            return RINRUNTIME_FILE_OPERATION_ROLLBACK_FAILED;
+        }
+        if (rollback_step > 0) return RINRUNTIME_FILE_OPERATION_IN_PROGRESS;
+        operation->rollback_active = 0u;
+        operation->active = 0u;
+        operation->recovery_required = 0u;
+        return (RinRuntimeFileOperationResult)operation->pending_result;
+    }
+    if (operation->replace_undo_active != 0u) {
+        RinRuntimeFileOperationResult undo_result =
+            file_operation_pump_replace_undo(operation);
+        if (undo_result < 0) {
+            operation->pending_result = undo_result;
+            operation->active = 0u;
+            operation->recovery_required = 1u;
+            return RINRUNTIME_FILE_OPERATION_ROLLBACK_FAILED;
+        }
+        return undo_result;
+    }
     return operation->operation == RINRUNTIME_FILE_OPERATION_COPY
                ? file_operation_pump_copy(operation)
                : file_operation_pump_namespace(operation);
@@ -923,6 +1610,230 @@ RinRuntimeFileOperationResult rinruntime_file_operation_cancel(
         return RINRUNTIME_FILE_OPERATION_INVALID_ARGUMENT;
     (void)rinruntime_cancellation_request(&operation->cancel_requested);
     return RINRUNTIME_FILE_OPERATION_IN_PROGRESS;
+}
+
+RinRuntimeFileOperationResult rinruntime_file_operation_retry_recovery(
+    RinRuntimeFileOperationV1* operation)
+{
+    int rollback_step;
+    if (operation == 0 || operation->struct_size != sizeof(*operation) ||
+        operation->version != RINRUNTIME_FILE_OPERATION_VERSION ||
+        operation->active != 0u || operation->recovery_required == 0u ||
+        !file_operation_operation_valid(operation->operation) ||
+        operation->entries == 0 || operation->entry_count == 0u ||
+        !file_operation_backend_valid(
+            &operation->backend,
+            (RinRuntimeFileOperationKind)operation->operation))
+        return RINRUNTIME_FILE_OPERATION_INVALID_ARGUMENT;
+    operation->active = 1u;
+    operation->rollback_active = 1u;
+    if (operation->rollback_index > operation->entry_count)
+        operation->rollback_index = operation->entry_count;
+    rollback_step = file_operation_rollback_step(operation);
+    if (rollback_step < 0) {
+        operation->active = 0u;
+        operation->recovery_required = 1u;
+        return RINRUNTIME_FILE_OPERATION_ROLLBACK_FAILED;
+    }
+    if (rollback_step > 0) return RINRUNTIME_FILE_OPERATION_IN_PROGRESS;
+    operation->active = 0u;
+    operation->rollback_active = 0u;
+    operation->recovery_required = 0u;
+    if (operation->pending_result == RINRUNTIME_FILE_OPERATION_OK ||
+        operation->pending_result == RINRUNTIME_FILE_OPERATION_IN_PROGRESS ||
+        operation->pending_result == RINRUNTIME_FILE_OPERATION_COMPLETED)
+        return RINRUNTIME_FILE_OPERATION_IO_FAILED;
+    return (RinRuntimeFileOperationResult)operation->pending_result;
+}
+
+int rinruntime_file_operation_recovery_save(
+    const RinRuntimeFileOperationV1* operation,
+    RinRuntimeFileOperationRecoveryV1* recovery_out)
+{
+    uint32_t index;
+    if (!operation || !recovery_out ||
+        operation->struct_size != sizeof(*operation) ||
+        operation->version != RINRUNTIME_FILE_OPERATION_VERSION ||
+        !file_operation_operation_valid(operation->operation) ||
+        operation->entries == 0 || operation->entry_count == 0u ||
+        operation->entry_count > RINRUNTIME_FILE_OPERATION_ENTRY_LIMIT ||
+        operation->recovery_required > 1u || operation->rollback_active > 1u ||
+        operation->temporary_created > 1u ||
+        operation->temporary_cleanup_state >
+            RINRUNTIME_FILE_OPERATION_CLEANUP_SYNC_PENDING ||
+        operation->replace_undo_active > 1u ||
+        operation->entry_index > operation->entry_count ||
+        (operation->temporary_created != 0u &&
+         !rinruntime_file_operation_path_valid(operation->temporary_path)))
+        return -1;
+    file_operation_zero(recovery_out, sizeof(*recovery_out));
+    recovery_out->struct_size = sizeof(*recovery_out);
+    recovery_out->version = RINRUNTIME_FILE_OPERATION_RECOVERY_VERSION;
+    recovery_out->operation = operation->operation;
+    recovery_out->entry_count = operation->entry_count;
+    recovery_out->conflict_policy = operation->conflict_policy;
+    recovery_out->temporary_created = operation->temporary_created;
+    recovery_out->temporary_cleanup_state = operation->temporary_cleanup_state;
+    recovery_out->recovery_required =
+        operation->recovery_required != 0u || operation->active != 0u;
+    recovery_out->rollback_active = operation->rollback_active;
+    recovery_out->pending_result = operation->pending_result;
+    recovery_out->rollback_index = operation->rollback_index;
+    recovery_out->entry_index = operation->entry_index;
+    recovery_out->replace_undo_active = operation->replace_undo_active;
+    if (operation->temporary_created != 0u) {
+        if (!file_operation_copy(recovery_out->temporary_path,
+                                 sizeof(recovery_out->temporary_path),
+                                 operation->temporary_path))
+            return -1;
+        recovery_out->temporary_identity = operation->temporary_identity;
+    }
+    for (index = 0u; index < operation->entry_count; ++index) {
+        const RinRuntimeFileOperationEntryV1* source = &operation->entries[index];
+        RinRuntimeFileOperationRecoveryEntryV1* destination =
+            &recovery_out->entries[index];
+        if (!file_operation_entry_valid(
+                source, (RinRuntimeFileOperationKind)operation->operation))
+            return -1;
+        destination->flags = source->flags;
+        destination->cleanup_state = source->cleanup_state;
+        destination->object_identity = source->object_identity;
+        destination->replacement_state = source->replacement_state;
+        destination->reserved0 = source->reserved0;
+        memcpy(destination->backup_path, source->backup_path,
+               sizeof(destination->backup_path));
+        destination->backup_identity = source->backup_identity;
+    }
+    return 0;
+}
+
+static int file_operation_recovery_restore_internal(
+    RinRuntimeFileOperationV1* operation,
+    const RinRuntimeFileOperationBackendV1* backend,
+    RinRuntimeFileOperationEntryV1* entries, uint32_t entry_count,
+    const RinRuntimeFileOperationRecoveryV1* recovery,
+    int require_interrupted_state)
+{
+    uint32_t index;
+    RinRuntimeFileOperationResult pending_result;
+    if (!operation || !backend || !entries || !recovery ||
+        operation->struct_size != sizeof(*operation) ||
+        operation->version != RINRUNTIME_FILE_OPERATION_VERSION ||
+        operation->active != 0u || operation->recovery_required != 0u ||
+        recovery->struct_size != sizeof(*recovery) ||
+        recovery->version != RINRUNTIME_FILE_OPERATION_RECOVERY_VERSION ||
+        !file_operation_operation_valid(recovery->operation) ||
+        entry_count == 0u || entry_count != recovery->entry_count ||
+        entry_count > RINRUNTIME_FILE_OPERATION_ENTRY_LIMIT ||
+        !file_operation_conflict_valid(recovery->conflict_policy) ||
+        recovery->temporary_created > 1u || recovery->recovery_required > 1u ||
+        (require_interrupted_state != 0 &&
+         recovery->recovery_required != 1u) ||
+        recovery->rollback_active > 1u ||
+        recovery->replace_undo_active > 1u ||
+        recovery->entry_index > entry_count ||
+        recovery->temporary_cleanup_state >
+            RINRUNTIME_FILE_OPERATION_CLEANUP_SYNC_PENDING ||
+        !file_operation_backend_valid(
+            backend, (RinRuntimeFileOperationKind)recovery->operation) ||
+        (recovery->temporary_created != 0u &&
+         (!rinruntime_file_operation_path_valid(recovery->temporary_path) ||
+          recovery->temporary_path[0] == '\0')) ||
+        (recovery->temporary_created == 0u &&
+         (recovery->temporary_path[0] != '\0' ||
+          recovery->temporary_cleanup_state !=
+              RINRUNTIME_FILE_OPERATION_CLEANUP_NONE)))
+        return -1;
+    if (recovery->temporary_created == 0u &&
+        (recovery->temporary_identity.device != 0u ||
+         recovery->temporary_identity.inode != 0u ||
+         recovery->temporary_identity.generation != 0u))
+        return -1;
+    if (!file_operation_bytes_zero(
+            &recovery->entries[entry_count],
+            (RINRUNTIME_FILE_OPERATION_ENTRY_LIMIT - entry_count) *
+                sizeof(recovery->entries[0])))
+        return -1;
+    for (index = 0u; index < entry_count; ++index) {
+        if (!file_operation_entry_valid(
+                &entries[index], (RinRuntimeFileOperationKind)recovery->operation) ||
+            (recovery->entries[index].flags &
+             ~(RINRUNTIME_FILE_OPERATION_ENTRY_FLAG_SKIP |
+               RINRUNTIME_FILE_OPERATION_ENTRY_FLAG_CREATED |
+               RINRUNTIME_FILE_OPERATION_ENTRY_FLAG_APPLIED)) != 0u ||
+            recovery->entries[index].cleanup_state >
+                RINRUNTIME_FILE_OPERATION_CLEANUP_RENAME_SYNC_PENDING ||
+            recovery->entries[index].replacement_state >
+                RINRUNTIME_FILE_OPERATION_REPLACEMENT_UNDO_RESTORE_IN_PROGRESS ||
+            recovery->entries[index].reserved0 != 0u)
+            return -1;
+        if (recovery->entries[index].replacement_state ==
+            RINRUNTIME_FILE_OPERATION_REPLACEMENT_NONE) {
+            if (!file_operation_bytes_zero(
+                    recovery->entries[index].backup_path,
+                    sizeof(recovery->entries[index].backup_path)) ||
+                !file_operation_identity_empty(
+                    &recovery->entries[index].backup_identity))
+                return -1;
+        } else if (!rinruntime_file_operation_path_valid(
+                       recovery->entries[index].backup_path) ||
+                   recovery->entries[index].backup_path[0] == '\0' ||
+                   !file_operation_identity_valid(
+                       &recovery->entries[index].backup_identity)) {
+            return -1;
+        }
+    }
+    rinruntime_file_operation_init(operation);
+    operation->backend = *backend;
+    operation->entries = entries;
+    operation->entry_count = entry_count;
+    operation->operation = recovery->operation;
+    operation->conflict_policy = recovery->conflict_policy;
+    operation->temporary_created = recovery->temporary_created;
+    operation->temporary_cleanup_state = recovery->temporary_cleanup_state;
+    operation->temporary_identity = recovery->temporary_identity;
+    if (operation->temporary_created != 0u &&
+        !file_operation_copy(operation->temporary_path,
+                             sizeof(operation->temporary_path),
+                             recovery->temporary_path))
+        return -1;
+    for (index = 0u; index < entry_count; ++index) {
+        entries[index].flags = recovery->entries[index].flags;
+        entries[index].cleanup_state = recovery->entries[index].cleanup_state;
+        entries[index].object_identity =
+            recovery->entries[index].object_identity;
+        entries[index].replacement_state =
+            recovery->entries[index].replacement_state;
+        entries[index].reserved0 = recovery->entries[index].reserved0;
+        memcpy(entries[index].backup_path,
+               recovery->entries[index].backup_path,
+               sizeof(entries[index].backup_path));
+        entries[index].backup_identity =
+            recovery->entries[index].backup_identity;
+    }
+    pending_result = (RinRuntimeFileOperationResult)recovery->pending_result;
+    if (pending_result == RINRUNTIME_FILE_OPERATION_OK ||
+        pending_result == RINRUNTIME_FILE_OPERATION_IN_PROGRESS ||
+        pending_result == RINRUNTIME_FILE_OPERATION_COMPLETED)
+        pending_result = RINRUNTIME_FILE_OPERATION_IO_FAILED;
+    operation->pending_result = pending_result;
+    operation->rollback_index = entry_count;
+    operation->entry_index = recovery->entry_index;
+    operation->replace_undo_active = recovery->replace_undo_active;
+    operation->active = 0u;
+    operation->rollback_active = 0u;
+    operation->recovery_required = 1u;
+    return 0;
+}
+
+int rinruntime_file_operation_recovery_restore(
+    RinRuntimeFileOperationV1* operation,
+    const RinRuntimeFileOperationBackendV1* backend,
+    RinRuntimeFileOperationEntryV1* entries, uint32_t entry_count,
+    const RinRuntimeFileOperationRecoveryV1* recovery)
+{
+    return file_operation_recovery_restore_internal(
+        operation, backend, entries, entry_count, recovery, 1);
 }
 
 uint32_t rinruntime_file_operation_percent(const RinRuntimeFileOperationV1* operation)

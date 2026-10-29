@@ -12,7 +12,7 @@ extern "C" {
 
 /* Metadata, link, and sparse-copy callbacks extend the backend layout; reject
  * clients compiled against an older layout instead of reading beyond it. */
-#define RINRUNTIME_FILE_OPERATION_VERSION 5u
+#define RINRUNTIME_FILE_OPERATION_VERSION 7u
 #define RINRUNTIME_FILE_OPERATION_PATH_MAX 512u
 #define RINRUNTIME_FILE_OPERATION_ENTRY_LIMIT 4096u
 #define RINRUNTIME_FILE_OPERATION_COPY_CHUNK_SIZE (64u * 1024u)
@@ -25,6 +25,33 @@ extern "C" {
 #define RINRUNTIME_FILE_OPERATION_BACKEND_NO_DATA (-4)
 /* The filesystem cannot report sparse extents. The core copies dense bytes. */
 #define RINRUNTIME_FILE_OPERATION_BACKEND_SPARSE_UNSUPPORTED (-5)
+/* The pathname exists but no longer names the object recorded by the job. */
+#define RINRUNTIME_FILE_OPERATION_BACKEND_IDENTITY_MISMATCH (-6)
+
+typedef struct RinRuntimeFileOperationObjectIdentityV1 {
+    uint64_t device;
+    uint64_t inode;
+    uint64_t generation;
+} RinRuntimeFileOperationObjectIdentityV1;
+
+typedef enum RinRuntimeFileOperationReplacementState {
+    RINRUNTIME_FILE_OPERATION_REPLACEMENT_NONE = 0,
+    RINRUNTIME_FILE_OPERATION_REPLACEMENT_BACKUP_IN_PROGRESS = 1,
+    RINRUNTIME_FILE_OPERATION_REPLACEMENT_BACKUP_HELD = 2,
+    RINRUNTIME_FILE_OPERATION_REPLACEMENT_PUBLISH_IN_PROGRESS = 3,
+    RINRUNTIME_FILE_OPERATION_REPLACEMENT_RESTORE_IN_PROGRESS = 4,
+    RINRUNTIME_FILE_OPERATION_REPLACEMENT_UNDO_REMOVE_IN_PROGRESS = 5,
+    RINRUNTIME_FILE_OPERATION_REPLACEMENT_UNDO_RESTORE_IN_PROGRESS = 6
+} RinRuntimeFileOperationReplacementState;
+
+typedef enum RinRuntimeFileOperationCleanupState {
+    RINRUNTIME_FILE_OPERATION_CLEANUP_NONE = 0,
+    RINRUNTIME_FILE_OPERATION_CLEANUP_REMOVE_PENDING = 1,
+    RINRUNTIME_FILE_OPERATION_CLEANUP_REMOVE_IN_PROGRESS = 2,
+    RINRUNTIME_FILE_OPERATION_CLEANUP_SYNC_PENDING = 3,
+    RINRUNTIME_FILE_OPERATION_CLEANUP_RENAME_IN_PROGRESS = 4,
+    RINRUNTIME_FILE_OPERATION_CLEANUP_RENAME_SYNC_PENDING = 5
+} RinRuntimeFileOperationCleanupState;
 
 typedef enum RinRuntimeFileOperationSeekWhence {
     RINRUNTIME_FILE_OPERATION_SEEK_SET = 0,
@@ -86,7 +113,15 @@ typedef struct RinRuntimeFileOperationEntryV1 {
     uint32_t kind;
     uint32_t flags;
     uint32_t link_source_index;
+    uint32_t cleanup_state;
+    RinRuntimeFileOperationObjectIdentityV1 object_identity;
+    uint32_t replacement_state;
+    uint32_t reserved0;
+    char backup_path[RINRUNTIME_FILE_OPERATION_PATH_MAX];
+    RinRuntimeFileOperationObjectIdentityV1 backup_identity;
 } RinRuntimeFileOperationEntryV1;
+
+typedef struct RinRuntimeFileOperationV1 RinRuntimeFileOperationV1;
 
 typedef struct RinRuntimeFileOperationBackendV1 {
     uint32_t struct_size;
@@ -147,20 +182,39 @@ typedef struct RinRuntimeFileOperationBackendV1 {
     /* Returns the source logical size used to reject mutation between plan
      * capture and sparse extent copying. */
     int (*file_size)(void* context, uintptr_t handle, uint64_t* size_out);
-    /* REPLACE is explicitly destructive. The backend must remove only the
-     * already-authorized existing destination, return after it is absent, and
-     * preserve a separate undo record if its product contract requires one. */
-    int (*replace_destination)(void* context, const char* path,
-                               uint32_t entry_kind);
+    /* Chooses an unused sibling path for a same-filesystem replacement backup.
+     * It must not create the path or replace an existing object. */
+    int (*replacement_backup_path)(
+        void* context, const char* destination_path,
+        const RinRuntimeFileOperationObjectIdentityV1* identity,
+        char* output, uint32_t output_capacity);
     /* RENAME conflict policy is supported for one file entry. The callback
      * writes an absolute canonical, currently missing path into output. */
     int (*choose_renamed_destination)(void* context, const char* source_path,
                                       const char* destination_path,
                                       char* output, uint32_t output_capacity);
+    /* Recovery callbacks bind cleanup and reverse renames to the exact object
+     * created or moved by this operation. Identity mismatch must not mutate
+     * the current pathname. */
+    int (*path_identity)(void* context, const char* path,
+                         RinRuntimeFileOperationObjectIdentityV1* identity_out);
+    int (*handle_identity)(void* context, uintptr_t handle,
+                           RinRuntimeFileOperationObjectIdentityV1* identity_out);
+    int (*remove_file_expected)(void* context, const char* path,
+                                const RinRuntimeFileOperationObjectIdentityV1* identity);
+    int (*remove_directory_expected)(void* context, const char* path,
+                                     const RinRuntimeFileOperationObjectIdentityV1* identity);
+    int (*rename_no_replace_expected)(
+        void* context, const char* source_path, const char* destination_path,
+        const RinRuntimeFileOperationObjectIdentityV1* identity);
+    /* Called before and after a namespace mutation. Implementations persist a
+     * pointer-free recovery snapshot before allowing the mutation to proceed. */
+    int (*checkpoint)(void* context,
+                      const RinRuntimeFileOperationV1* operation);
     uint64_t reserved[2];
 } RinRuntimeFileOperationBackendV1;
 
-typedef struct RinRuntimeFileOperationV1 {
+struct RinRuntimeFileOperationV1 {
     uint32_t struct_size;
     uint16_t version;
     uint16_t operation;
@@ -183,8 +237,48 @@ typedef struct RinRuntimeFileOperationV1 {
     uint64_t completed_items;
     uint64_t temporary_sequence;
     uint64_t sparse_data_end;
+    uint32_t recovery_required;
+    uint32_t rollback_active;
+    uint32_t temporary_cleanup_state;
+    int32_t pending_result;
+    uint32_t rollback_index;
+    uint32_t replace_undo_active;
+    RinRuntimeFileOperationObjectIdentityV1 temporary_identity;
     uint8_t copy_buffer[RINRUNTIME_FILE_OPERATION_COPY_CHUNK_SIZE];
-} RinRuntimeFileOperationV1;
+};
+
+#define RINRUNTIME_FILE_OPERATION_RECOVERY_VERSION 1u
+typedef struct RinRuntimeFileOperationRecoveryEntryV1 {
+    uint32_t flags;
+    uint32_t cleanup_state;
+    RinRuntimeFileOperationObjectIdentityV1 object_identity;
+    uint32_t replacement_state;
+    uint32_t reserved0;
+    char backup_path[RINRUNTIME_FILE_OPERATION_PATH_MAX];
+    RinRuntimeFileOperationObjectIdentityV1 backup_identity;
+} RinRuntimeFileOperationRecoveryEntryV1;
+
+/* Pointer-free durable namespace state. Backends and plan paths are rebound
+ * by restore(); open handles and copy buffers are intentionally not serialized. */
+typedef struct RinRuntimeFileOperationRecoveryV1 {
+    uint32_t struct_size;
+    uint16_t version;
+    uint16_t operation;
+    uint32_t entry_count;
+    uint32_t conflict_policy;
+    uint32_t temporary_created;
+    uint32_t temporary_cleanup_state;
+    uint32_t recovery_required;
+    uint32_t rollback_active;
+    int32_t pending_result;
+    uint32_t rollback_index;
+    uint32_t entry_index;
+    uint32_t replace_undo_active;
+    char temporary_path[RINRUNTIME_FILE_OPERATION_PATH_MAX];
+    RinRuntimeFileOperationObjectIdentityV1 temporary_identity;
+    RinRuntimeFileOperationRecoveryEntryV1
+        entries[RINRUNTIME_FILE_OPERATION_ENTRY_LIMIT];
+} RinRuntimeFileOperationRecoveryV1;
 
 void rinruntime_file_operation_init(RinRuntimeFileOperationV1* operation);
 int rinruntime_file_operation_path_valid(const char* path);
@@ -194,10 +288,27 @@ RinRuntimeFileOperationResult rinruntime_file_operation_start(
     RinRuntimeFileOperationKind kind,
     RinRuntimeFileOperationConflictPolicy conflict_policy,
     RinRuntimeFileOperationEntryV1* entries, uint32_t entry_count);
+RinRuntimeFileOperationResult rinruntime_file_operation_start_replace_undo(
+    RinRuntimeFileOperationV1* operation,
+    const RinRuntimeFileOperationBackendV1* backend,
+    RinRuntimeFileOperationEntryV1* entries, uint32_t entry_count,
+    const RinRuntimeFileOperationRecoveryV1* recovery);
 RinRuntimeFileOperationResult rinruntime_file_operation_pump(
     RinRuntimeFileOperationV1* operation);
 RinRuntimeFileOperationResult rinruntime_file_operation_cancel(
     RinRuntimeFileOperationV1* operation);
+/* Resume cleanup after ROLLBACK_FAILED or after restoring a durable recovery
+ * checkpoint. Returns IN_PROGRESS while cleanup has more entries to process. */
+RinRuntimeFileOperationResult rinruntime_file_operation_retry_recovery(
+    RinRuntimeFileOperationV1* operation);
+int rinruntime_file_operation_recovery_save(
+    const RinRuntimeFileOperationV1* operation,
+    RinRuntimeFileOperationRecoveryV1* recovery_out);
+int rinruntime_file_operation_recovery_restore(
+    RinRuntimeFileOperationV1* operation,
+    const RinRuntimeFileOperationBackendV1* backend,
+    RinRuntimeFileOperationEntryV1* entries, uint32_t entry_count,
+    const RinRuntimeFileOperationRecoveryV1* recovery);
 uint32_t rinruntime_file_operation_percent(
     const RinRuntimeFileOperationV1* operation);
 

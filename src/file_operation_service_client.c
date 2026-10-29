@@ -388,6 +388,16 @@ RinRuntimeFileOperationServiceStatus rinruntime_file_operation_service_undo(
                                   request, reply_out);
 }
 
+RinRuntimeFileOperationServiceStatus rinruntime_file_operation_service_recover(
+    RinRuntimeFileOperationServiceClientV1* client,
+    const RinRuntimeFileOperationServiceControlV1* request,
+    RinRuntimeFileOperationServiceReplyV1* reply_out)
+{
+    return service_client_control(client,
+                                  RINRUNTIME_FILE_OPERATION_SERVICE_RECOVER,
+                                  request, reply_out);
+}
+
 void rinruntime_file_operation_service_broker_client_init(
     RinRuntimeFileOperationServiceBrokerClientV1* client)
 {

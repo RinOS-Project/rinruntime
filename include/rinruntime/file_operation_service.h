@@ -12,7 +12,7 @@
 extern "C" {
 #endif
 
-#define RINRUNTIME_FILE_OPERATION_SERVICE_VERSION 2u
+#define RINRUNTIME_FILE_OPERATION_SERVICE_VERSION 3u
 #define RINRUNTIME_FILE_OPERATION_SERVICE_PATH "/run/rin/fileoperationd.sock"
 /* The broker endpoint is deliberately distinct from the ordinary application
  * endpoint.  No authorization ticket is accepted on SERVICE_PATH. */
@@ -45,7 +45,8 @@ typedef enum RinRuntimeFileOperationServiceRequestKind {
     RINRUNTIME_FILE_OPERATION_SERVICE_SUBMIT = 1,
     RINRUNTIME_FILE_OPERATION_SERVICE_QUERY = 2,
     RINRUNTIME_FILE_OPERATION_SERVICE_CANCEL = 3,
-    RINRUNTIME_FILE_OPERATION_SERVICE_UNDO = 4
+    RINRUNTIME_FILE_OPERATION_SERVICE_UNDO = 4,
+    RINRUNTIME_FILE_OPERATION_SERVICE_RECOVER = 5
 } RinRuntimeFileOperationServiceRequestKind;
 
 typedef enum RinRuntimeFileOperationServiceStatus {
@@ -193,6 +194,10 @@ RinRuntimeFileOperationServiceStatus rinruntime_file_operation_service_cancel(
     const RinRuntimeFileOperationServiceControlV1* request,
     RinRuntimeFileOperationServiceReplyV1* reply_out);
 RinRuntimeFileOperationServiceStatus rinruntime_file_operation_service_undo(
+    RinRuntimeFileOperationServiceClientV1* client,
+    const RinRuntimeFileOperationServiceControlV1* request,
+    RinRuntimeFileOperationServiceReplyV1* reply_out);
+RinRuntimeFileOperationServiceStatus rinruntime_file_operation_service_recover(
     RinRuntimeFileOperationServiceClientV1* client,
     const RinRuntimeFileOperationServiceControlV1* request,
     RinRuntimeFileOperationServiceReplyV1* reply_out);
