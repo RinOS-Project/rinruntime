@@ -13,7 +13,7 @@
 #define RIN_SIGNAL_UNBLOCKABLE32 \
     ((UINT32_C(1) << 9) | (UINT32_C(1) << 19))
 #define RIN_SIGNAL_UNBLOCKABLE64 \
-    ((UINT64_C(1) << 9) | (UINT64_C(1) << 19))
+    ((UINT64_C(1) << 9) | (UINT64_C(1) << 19) | (UINT64_C(1) << 63))
 
 static inline int rin_signal_mask_next32(uint32_t current, int how,
                                          uint32_t requested,
