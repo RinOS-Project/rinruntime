@@ -124,7 +124,7 @@ static int crash_text_valid(const uint8_t* text, uint32_t size)
 }
 
 static int crash_section_content_valid(uint32_t type, const void* data,
-                                       uint32_t size)
+                                       uint32_t size, uint32_t architecture)
 {
     uint32_t index;
     if (!data || !crash_section_size_valid(type, size)) return 0;
@@ -148,16 +148,31 @@ static int crash_section_content_valid(uint32_t type, const void* data,
             uint64_t frame;
             crash_copy(&frame, (const uint8_t*)data +
                                    index * sizeof(frame), sizeof(frame));
-            if (!crash_x64_address_valid(frame)) return 0;
+            if (architecture == RIN_CRASH_ARCH_X86_32) {
+                if (frame > UINT32_MAX ||
+                    !crash_x86_address_valid((uint32_t)frame))
+                    return 0;
+            } else if (!crash_x64_address_valid(frame)) {
+                return 0;
+            }
         }
     } else if (type == RIN_CRASH_SECTION_PROCESS) {
         RinCrashProcessInfo process = {0};
         int terminated = 0;
         uint32_t package_digest_nonzero = 0u;
         crash_copy(&process, data, size);
-        if (!crash_x64_address_valid(process.image_base) ||
-            process.image_size == 0u ||
-            process.image_base > UINT64_MAX - process.image_size) return 0;
+        if (process.image_size == 0u ||
+            process.image_base > UINT64_MAX - process.image_size)
+            return 0;
+        if (architecture == RIN_CRASH_ARCH_X86_32) {
+            if (process.image_base > UINT32_MAX ||
+                process.image_size > UINT64_C(0x100000000) -
+                                         process.image_base ||
+                !crash_x86_address_valid((uint32_t)process.image_base))
+                return 0;
+        } else if (!crash_x64_address_valid(process.image_base)) {
+            return 0;
+        }
         for (index = 0u; index < sizeof(process.image_name); ++index) {
             if (process.image_name[index] == '\0') {
                 terminated = index != 0u;
@@ -431,7 +446,8 @@ RinCrashRecordResult rin_crash_record_validate(
             return RIN_CRASH_RECORD_CORRUPT;
         }
         if (!crash_section_content_valid(section->type, section_data,
-                                         section->size)) {
+                                         section->size,
+                                         header->architecture)) {
             return RIN_CRASH_RECORD_CORRUPT;
         }
         if (section->type == RIN_CRASH_SECTION_PROCESS &&
