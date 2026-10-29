@@ -196,6 +196,10 @@ typedef enum {
 #define RINFS_XATTR_VERSION     1u
 #define RINFS_XATTR_NAME_MAX    255u
 #define RINFS_XATTR_ENTRY_MAX   64u
+#define RINFS_XATTR_CREATE      0x0001u
+#define RINFS_XATTR_REPLACE     0x0002u
+#define RINFS_XATTR_SET_FLAGS   \
+    (RINFS_XATTR_CREATE | RINFS_XATTR_REPLACE)
 
 /* ═══════════════════════════════════════════════════════════════
  * On-Disk Structures
@@ -1217,6 +1221,10 @@ int rinfs_page_cache_set_pressure(RinFS_Mount* mount,
 int rinfs_xattr_set(RinFS_Mount* mount, uint64_t ino, const char* name,
                     uint32_t name_length, const void* value,
                     uint32_t value_length);
+int rinfs_xattr_set_flags(RinFS_Mount* mount, uint64_t ino,
+                          const char* name, uint32_t name_length,
+                          const void* value, uint32_t value_length,
+                          uint32_t flags);
 int rinfs_xattr_get(RinFS_Mount* mount, uint64_t ino, const char* name,
                     uint32_t name_length, void* value,
                     uint32_t value_capacity, uint32_t* value_length_out);

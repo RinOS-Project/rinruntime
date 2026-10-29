@@ -10347,10 +10347,11 @@ static int rinfs_xattr_publish_buffer(RinFS_Mount* mount, uint64_t ino,
     return result;
 }
 
-int rinfs_xattr_set(RinFS_Mount* mount, uint64_t ino, const char* name,
-                    uint32_t name_length, const void* value,
-                    uint32_t value_length) {
+int rinfs_xattr_set_flags(RinFS_Mount* mount, uint64_t ino, const char* name,
+                          uint32_t name_length, const void* value,
+                          uint32_t value_length, uint32_t flags) {
     RinFS_MountOperationScope operation = {0};
+    RinFS_ContentLeaseNode* inode_lease = NULL;
     RinFS_Inode inode;
     uint8_t* block = NULL;
     uint32_t block_size;
@@ -10361,11 +10362,15 @@ int rinfs_xattr_set(RinFS_Mount* mount, uint64_t ino, const char* name,
     uint32_t new_record_size;
     uint32_t new_bytes_used;
     uint16_t entry_count;
+    uint32_t observed_generation = 0u;
+    uint64_t lease_generation = 0u;
     int found;
     int result;
     if (mount == NULL || !mount->mounted ||
         !rinfs_xattr_name_valid(name, name_length) ||
-        (value_length != 0u && value == NULL)) {
+        (value_length != 0u && value == NULL) ||
+        (flags & ~RINFS_XATTR_SET_FLAGS) != 0u ||
+        flags == RINFS_XATTR_SET_FLAGS) {
         return RINFS_ERR_INVAL;
     }
     result = rinfs_mount_operation_scope_begin(mount, &operation);
@@ -10374,6 +10379,17 @@ int rinfs_xattr_set(RinFS_Mount* mount, uint64_t ino, const char* name,
     if (result != RINFS_OK) goto done;
     result = rinfs_inode_read(mount, ino, &inode);
     if (result != RINFS_OK) goto done;
+    observed_generation = inode.i_generation;
+    result = rinfs_content_lease_acquire(
+        mount, ino, observed_generation, 1, &inode_lease,
+        &lease_generation);
+    if (result != RINFS_OK) goto done;
+    result = rinfs_inode_read(mount, ino, &inode);
+    if (result != RINFS_OK) goto done;
+    if (inode.i_generation != observed_generation) {
+        result = RINFS_ERR_STALE;
+        goto done;
+    }
     block_size = mount->sb.s_block_size;
     if (value_length > block_size - RINFS_XATTR_HEADER_BYTES -
                        RINFS_XATTR_RECORD_BYTES - name_length) {
@@ -10393,6 +10409,15 @@ int rinfs_xattr_set(RinFS_Mount* mount, uint64_t ino, const char* name,
                              &record_end, NULL, &old_value_length);
     if (found != RINFS_OK && found != RINFS_ERR_NOENT) {
         result = found;
+        goto out;
+    }
+    if ((flags & RINFS_XATTR_CREATE) != 0u && found == RINFS_OK) {
+        result = RINFS_ERR_EXIST;
+        goto out;
+    }
+    if ((flags & RINFS_XATTR_REPLACE) != 0u &&
+        found == RINFS_ERR_NOENT) {
+        result = RINFS_ERR_NOENT;
         goto out;
     }
     new_record_size = RINFS_XATTR_RECORD_BYTES + name_length + value_length;
@@ -10443,10 +10468,22 @@ int rinfs_xattr_set(RinFS_Mount* mount, uint64_t ino, const char* name,
 out:
     rinfs_free(block);
 done:
+    if (inode_lease != NULL) {
+        int release_error = rinfs_content_lease_release(
+            mount, ino, observed_generation, lease_generation, 1);
+        if (release_error != RINFS_OK) result = release_error;
+    }
     {
         int release_error = rinfs_mount_operation_scope_end(&operation);
         return release_error == RINFS_OK ? result : release_error;
     }
+}
+
+int rinfs_xattr_set(RinFS_Mount* mount, uint64_t ino, const char* name,
+                    uint32_t name_length, const void* value,
+                    uint32_t value_length) {
+    return rinfs_xattr_set_flags(mount, ino, name, name_length, value,
+                                 value_length, 0u);
 }
 
 static void rinfs_xattr_output_clear(void* output, uint32_t capacity) {
@@ -10460,10 +10497,13 @@ int rinfs_xattr_get(RinFS_Mount* mount, uint64_t ino, const char* name,
                     uint32_t name_length, void* value,
                     uint32_t value_capacity, uint32_t* value_length_out) {
     RinFS_MountOperationScope operation = {0};
+    RinFS_ContentLeaseNode* inode_lease = NULL;
     RinFS_Inode inode;
     uint8_t* block = NULL;
     uint32_t value_start;
     uint32_t value_length;
+    uint32_t observed_generation = 0u;
+    uint64_t lease_token = 0u;
     int result;
     rinfs_xattr_output_clear(value, value_capacity);
     if (value_length_out) *value_length_out = 0u;
@@ -10473,6 +10513,16 @@ int rinfs_xattr_get(RinFS_Mount* mount, uint64_t ino, const char* name,
     if (result != RINFS_OK) return result;
     result = rinfs_inode_read(mount, ino, &inode);
     if (result != RINFS_OK) goto done;
+    observed_generation = inode.i_generation;
+    result = rinfs_content_lease_acquire(
+        mount, ino, observed_generation, 0, &inode_lease, &lease_token);
+    if (result != RINFS_OK) goto done;
+    result = rinfs_inode_read(mount, ino, &inode);
+    if (result != RINFS_OK) goto done;
+    if (inode.i_generation != observed_generation) {
+        result = RINFS_ERR_STALE;
+        goto done;
+    }
     if (inode.i_xattr_block == 0u) {
         result = RINFS_ERR_NOENT;
         goto done;
@@ -10496,6 +10546,11 @@ int rinfs_xattr_get(RinFS_Mount* mount, uint64_t ino, const char* name,
     }
 done:
     if (block) rinfs_free(block);
+    if (inode_lease != NULL) {
+        int lease_error = rinfs_content_lease_release(
+            mount, ino, observed_generation, lease_token, 0);
+        if (lease_error != RINFS_OK) result = lease_error;
+    }
     {
         int release_error = rinfs_mount_operation_scope_end(&operation);
         if (release_error != RINFS_OK) {
@@ -10515,12 +10570,15 @@ done:
 int rinfs_xattr_list(RinFS_Mount* mount, uint64_t ino, char* output,
                      uint32_t output_capacity, uint32_t* output_length_out) {
     RinFS_MountOperationScope operation = {0};
+    RinFS_ContentLeaseNode* inode_lease = NULL;
     RinFS_Inode inode;
     uint8_t* block = NULL;
     uint16_t entry_count;
     uint32_t cursor;
     uint32_t required = 0u;
     uint32_t index;
+    uint32_t observed_generation = 0u;
+    uint64_t lease_token = 0u;
     int result;
     rinfs_xattr_output_clear(output, output_capacity);
     if (output_length_out) *output_length_out = 0u;
@@ -10529,6 +10587,16 @@ int rinfs_xattr_list(RinFS_Mount* mount, uint64_t ino, char* output,
     if (result != RINFS_OK) return result;
     result = rinfs_inode_read(mount, ino, &inode);
     if (result != RINFS_OK) goto done;
+    observed_generation = inode.i_generation;
+    result = rinfs_content_lease_acquire(
+        mount, ino, observed_generation, 0, &inode_lease, &lease_token);
+    if (result != RINFS_OK) goto done;
+    result = rinfs_inode_read(mount, ino, &inode);
+    if (result != RINFS_OK) goto done;
+    if (inode.i_generation != observed_generation) {
+        result = RINFS_ERR_STALE;
+        goto done;
+    }
     if (inode.i_xattr_block == 0u) {
         result = RINFS_OK;
         goto done;
@@ -10560,17 +10628,29 @@ int rinfs_xattr_list(RinFS_Mount* mount, uint64_t ino, char* output,
     if (output_length_out) *output_length_out = required;
     if (output == NULL || output_capacity < required) result = RINFS_ERR_NOSPC;
 out:
-    if (block) rinfs_free(block);
+    if (block) {
+        rinfs_free(block);
+        block = NULL;
+    }
 done:
     {
+        if (block) rinfs_free(block);
+        if (inode_lease != NULL) {
+            int lease_error = rinfs_content_lease_release(
+                mount, ino, observed_generation, lease_token, 0);
+            if (lease_error != RINFS_OK) result = lease_error;
+        }
         int release_error = rinfs_mount_operation_scope_end(&operation);
         if (release_error != RINFS_OK) {
             rinfs_xattr_output_clear(output, output_capacity);
             if (output_length_out) *output_length_out = 0u;
             return release_error;
         }
-        if (result != RINFS_OK)
+        if (result != RINFS_OK) {
             rinfs_xattr_output_clear(output, output_capacity);
+            if (result != RINFS_ERR_NOSPC && output_length_out)
+                *output_length_out = 0u;
+        }
         return result;
     }
 }
@@ -10578,6 +10658,7 @@ done:
 int rinfs_xattr_remove(RinFS_Mount* mount, uint64_t ino, const char* name,
                        uint32_t name_length) {
     RinFS_MountOperationScope operation = {0};
+    RinFS_ContentLeaseNode* inode_lease = NULL;
     RinFS_Inode inode;
     uint8_t* block = NULL;
     uint32_t block_size;
@@ -10586,6 +10667,8 @@ int rinfs_xattr_remove(RinFS_Mount* mount, uint64_t ino, const char* name,
     uint32_t record_end;
     uint32_t tail_size;
     uint16_t entry_count;
+    uint32_t observed_generation = 0u;
+    uint64_t lease_token = 0u;
     int result;
     if (mount == NULL || !mount->mounted ||
         !rinfs_xattr_name_valid(name, name_length)) return RINFS_ERR_INVAL;
@@ -10595,6 +10678,16 @@ int rinfs_xattr_remove(RinFS_Mount* mount, uint64_t ino, const char* name,
     if (result != RINFS_OK) goto done;
     result = rinfs_inode_read(mount, ino, &inode);
     if (result != RINFS_OK) goto done;
+    observed_generation = inode.i_generation;
+    result = rinfs_content_lease_acquire(
+        mount, ino, observed_generation, 1, &inode_lease, &lease_token);
+    if (result != RINFS_OK) goto done;
+    result = rinfs_inode_read(mount, ino, &inode);
+    if (result != RINFS_OK) goto done;
+    if (inode.i_generation != observed_generation) {
+        result = RINFS_ERR_STALE;
+        goto done;
+    }
     if (inode.i_xattr_block == 0u) {
         result = RINFS_ERR_NOENT;
         goto done;
@@ -10630,6 +10723,11 @@ int rinfs_xattr_remove(RinFS_Mount* mount, uint64_t ino, const char* name,
 out:
     if (block) rinfs_free(block);
 done:
+    if (inode_lease != NULL) {
+        int lease_error = rinfs_content_lease_release(
+            mount, ino, observed_generation, lease_token, 1);
+        if (lease_error != RINFS_OK) result = lease_error;
+    }
     {
         int release_error = rinfs_mount_operation_scope_end(&operation);
         return release_error == RINFS_OK ? result : release_error;
