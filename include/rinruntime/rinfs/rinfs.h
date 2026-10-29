@@ -1253,6 +1253,12 @@ int rinfs_dirent_add(RinFS_Mount* mount, uint64_t dir_ino, const char* name,
                      uint64_t child_ino, uint8_t file_type);
 int rinfs_path_lookup(RinFS_Mount* mount, const char* path, uint64_t* ino,
                       RinFS_Inode* inode);
+/* Resolves symlinks and dot components and returns the absolute path of the
+ * resolved inode. Directory-required trailing slashes are retained. The input
+ * path and output buffer must not overlap. */
+int rinfs_path_lookup_resolved(
+    RinFS_Mount* mount, const char* path, uint64_t* ino, RinFS_Inode* inode,
+    char* resolved_path, uint32_t resolved_path_size);
 int rinfs_path_lookup_nofollow(RinFS_Mount* mount, const char* path, uint64_t* ino,
                                RinFS_Inode* inode);
 int rinfs_create(RinFS_Mount* mount, const char* path, uint16_t mode);
