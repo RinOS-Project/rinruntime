@@ -51,7 +51,7 @@ typedef struct RinRuntimeSafeSavePosixContext {
     char parent_path[RINRUNTIME_FILE_OPERATION_PATH_MAX];
     char target_path[RINRUNTIME_FILE_OPERATION_PATH_MAX];
     char target_name[RINRUNTIME_FILE_OPERATION_PATH_MAX];
-    char temporary_path[RINRUNTIME_FILE_OPERATION_PATH_MAX];
+    char temporary_path[RINRUNTIME_SAFE_SAVE_TEMP_PATH_MAX];
     char temporary_name[RINRUNTIME_FILE_OPERATION_PATH_MAX];
 } RinRuntimeSafeSavePosixContext;
 
@@ -162,9 +162,14 @@ static int posix_open_temporary(void* context, const char* target_path,
     for (; state->next_attempt < RINRUNTIME_SAFE_SAVE_POSIX_ATTEMPTS;
          ++state->next_attempt) {
         int descriptor;
+        size_t parent_length = strlen(state->parent_path);
+        const char* separator =
+            parent_length != 0u && state->parent_path[parent_length - 1u] == '/'
+                ? "" : "/";
         int count = snprintf(temporary_path_out, temporary_path_capacity,
-                             "%s.rinos-save-%ld-%u.tmp", target_path,
-                             (long)getpid(), state->next_attempt);
+                             "%s%s.rinos-save-%ld-%u.tmp",
+                             state->parent_path, separator, (long)getpid(),
+                             state->next_attempt);
         if (count < 0 || (uint32_t)count >= temporary_path_capacity) {
             temporary_path_out[0] = '\0';
             return -1;

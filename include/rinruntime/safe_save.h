@@ -13,6 +13,10 @@ extern "C" {
 #endif
 
 #define RINRUNTIME_SAFE_SAVE_VERSION 1u
+/* Temporary siblings may be longer than a valid target basename. Keep room
+ * for the bounded private-name suffix while still limiting the parent path. */
+#define RINRUNTIME_SAFE_SAVE_TEMP_PATH_MAX \
+    (RINRUNTIME_FILE_OPERATION_PATH_MAX + 64u)
 
 typedef enum RinRuntimeSafeSaveResult {
     /* The replacement and its parent directory have been synchronized. */
@@ -34,7 +38,8 @@ typedef struct RinRuntimeSafeSaveBackendV1 {
     uint16_t reserved0;
     void* context;
     /* Create an exclusive private temporary in target_path's parent. On
-     * success, write its absolute canonical path and return its open handle. */
+     * success, write its absolute canonical path (bounded by
+     * RINRUNTIME_SAFE_SAVE_TEMP_PATH_MAX) and return its open handle. */
     int (*open_temporary)(void* context, const char* target_path,
                           char* temporary_path_out,
                           uint32_t temporary_path_capacity,

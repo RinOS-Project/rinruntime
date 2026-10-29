@@ -48,13 +48,46 @@ static int safe_save_parent(const char* path, char* parent)
     return rinruntime_file_operation_path_valid(parent);
 }
 
-static int safe_save_same_parent(const char* first, const char* second)
+static int safe_save_temporary_path_valid(const char* temporary_path,
+                                         const char* expected_parent)
 {
-    char first_parent[RINRUNTIME_FILE_OPERATION_PATH_MAX];
-    char second_parent[RINRUNTIME_FILE_OPERATION_PATH_MAX];
-    return safe_save_parent(first, first_parent) &&
-           safe_save_parent(second, second_parent) &&
-           strcmp(first_parent, second_parent) == 0;
+    size_t path_length;
+    size_t parent_length;
+    const char* basename;
+    const char* cursor;
+    if (temporary_path == NULL || expected_parent == NULL ||
+        !rinruntime_file_operation_path_valid(expected_parent))
+        return 0;
+    for (path_length = 0u;
+         path_length < RINRUNTIME_SAFE_SAVE_TEMP_PATH_MAX &&
+         temporary_path[path_length] != '\0';
+         ++path_length) {
+    }
+    parent_length = strlen(expected_parent);
+    if (path_length >= RINRUNTIME_SAFE_SAVE_TEMP_PATH_MAX ||
+        parent_length == 0u || path_length <= parent_length)
+        return 0;
+    if (expected_parent[parent_length - 1u] == '/') {
+        if (memcmp(temporary_path, expected_parent, parent_length) != 0)
+            return 0;
+        basename = temporary_path + parent_length;
+    } else {
+        if (path_length <= parent_length + 1u ||
+            memcmp(temporary_path, expected_parent, parent_length) != 0 ||
+            temporary_path[parent_length] != '/')
+            return 0;
+        basename = temporary_path + parent_length + 1u;
+    }
+    if (basename[0] == '\0' || strcmp(basename, ".") == 0 ||
+        strcmp(basename, "..") == 0)
+        return 0;
+    for (cursor = basename; *cursor != '\0'; ++cursor) {
+        unsigned char value = (unsigned char)*cursor;
+        if (value == '/' || value == '\\' || value < 0x20u ||
+            value == 0x7fu)
+            return 0;
+    }
+    return 1;
 }
 
 static RinRuntimeSafeSaveResult safe_save_cleanup(
@@ -72,7 +105,7 @@ RinRuntimeSafeSaveResult rinruntime_safe_save(
     const RinRuntimeSafeSaveBackendV1* backend, const char* target_path,
     const uint8_t* data, uint32_t size)
 {
-    char temporary_path[RINRUNTIME_FILE_OPERATION_PATH_MAX];
+    char temporary_path[RINRUNTIME_SAFE_SAVE_TEMP_PATH_MAX];
     char parent[RINRUNTIME_FILE_OPERATION_PATH_MAX];
     uintptr_t handle = 0u;
     uint32_t written = 0u;
@@ -87,9 +120,10 @@ RinRuntimeSafeSaveResult rinruntime_safe_save(
     if (backend->open_temporary(backend->context, target_path, temporary_path,
                                 sizeof(temporary_path), &handle) != 0)
         return RINRUNTIME_SAFE_SAVE_IO_FAILED;
-    if (handle == 0u || !rinruntime_file_operation_path_valid(temporary_path) ||
+    if (handle == 0u ||
+        !safe_save_temporary_path_valid(temporary_path, parent) ||
         strcmp(temporary_path, target_path) == 0 ||
-        !safe_save_same_parent(temporary_path, target_path)) {
+        !rinruntime_file_operation_path_valid(target_path)) {
         (void)backend->close(backend->context, handle);
         return RINRUNTIME_SAFE_SAVE_IO_FAILED;
     }
