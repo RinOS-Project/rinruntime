@@ -265,7 +265,7 @@ static int file_operation_rollback(RinRuntimeFileOperationV1* operation)
 {
     uint32_t index;
     int success = 1;
-    (void)file_operation_close_files(operation);
+    if (!file_operation_close_files(operation)) success = 0;
     if (operation->temporary_created != 0u) {
         if (operation->backend.remove_file(operation->backend.context,
                                            operation->temporary_path) != 0)
