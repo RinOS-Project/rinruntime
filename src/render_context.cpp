@@ -66,10 +66,16 @@ const AqFont* loadSystemUiFont() noexcept {
 
 int setSystemUiFontLoader(SystemUiFontLoaderFunction loader,
                           void* context) noexcept {
-    if (__atomic_load_n(&g_system_ui_font_state, __ATOMIC_ACQUIRE) != 0u)
+    /* Reserve the uninitialized state while publishing both borrowed values.
+     * This excludes the first systemUiFont() caller and concurrent setters. */
+    std::uint32_t expected = 0u;
+    if (!__atomic_compare_exchange_n(&g_system_ui_font_state, &expected,
+                                    3u, false, __ATOMIC_ACQ_REL,
+                                    __ATOMIC_ACQUIRE))
         return RIN_ERROR_BUSY;
     g_system_ui_font_loader = loader;
     g_system_ui_font_loader_context = context;
+    __atomic_store_n(&g_system_ui_font_state, 0u, __ATOMIC_RELEASE);
     return RIN_SUCCESS;
 }
 
