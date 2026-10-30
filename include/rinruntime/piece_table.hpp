@@ -89,6 +89,11 @@ public:
         size_ = 0u;
     }
 
+    void disableSecureStorage() {
+        secureClear();
+        secureStorage_ = false;
+    }
+
     /* Reserve the append-only edit buffer before protected editing starts.
      * This prevents ordinary string growth from retiring earlier text
      * allocations without giving the caller a chance to wipe them. */
