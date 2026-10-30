@@ -1133,6 +1133,12 @@ int rinfs_mmap_source_get_page(RinFS_MmapSource* source,
                                uint64_t reference_cookie,
                                uint64_t page_index,
                                uint64_t* physical_out);
+/* Snapshot whether an already-resident cache page exists. This never faults,
+ * reads storage, or acquires a cache-page reference. */
+int rinfs_mmap_source_page_is_resident(
+    RinFS_MmapSource* source, uint64_t expected_inode,
+    uint64_t reference_generation, uint64_t reference_cookie,
+    uint64_t page_index, int* resident_out);
 int rinfs_mmap_source_get_page_view(RinFS_MmapSource* source,
                                     uint64_t expected_inode,
                                     uint64_t reference_generation,

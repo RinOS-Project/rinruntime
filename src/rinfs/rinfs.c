@@ -8486,6 +8486,72 @@ static int rinfs_content_lease_acquire(RinFS_Mount* mount, uint64_t ino,
     }
 }
 
+/* Retain an existing source lease as a read snapshot without allocating or
+ * waiting. mincore may call this while holding a VM lock; a writer conflict
+ * must return BUSY so it cannot create a lock-order cycle with truncate. */
+static int rinfs_content_lease_try_retain(
+    RinFS_Mount* mount, uint64_t ino, uint32_t inode_generation,
+    uint64_t expected_token, RinFS_ContentLeaseNode** node_out,
+    uint64_t* token_out) {
+    RinFS_ContentLeaseNode* node;
+    uint32_t shared_owner_row = 0u;
+    int err;
+    if (node_out) *node_out = NULL;
+    if (token_out) *token_out = 0u;
+    if (!mount || ino == 0u || inode_generation == 0u ||
+        expected_token == 0u || !node_out || !token_out)
+        return RINFS_ERR_INVAL;
+    if (mount->shared_mapping_base && mount->shared_mount_ready != 0u &&
+        rinfs_shared_owner_query_row(mount, &shared_owner_row) != RINFS_OK)
+        return RINFS_ERR_BUSY;
+    err = rinfs_shared_content_lock(mount);
+    if (err != RINFS_OK) return err;
+    if (!mount->mounted) {
+        err = RINFS_ERR_STALE;
+        goto unlock;
+    }
+    err = rinfs_restore_operation_gate_check(mount);
+    if (err != RINFS_OK) goto unlock;
+    if (mount->content_lease_closing != 0u) {
+        err = RINFS_ERR_BUSY;
+        goto unlock;
+    }
+    err = rinfs_shared_owner_reap_locked(mount);
+    if (err != RINFS_OK) goto unlock;
+    node = rinfs_content_lease_find(mount, ino, inode_generation);
+    if (!node || node->token_generation != expected_token ||
+        node->references == 0u) {
+        err = RINFS_ERR_STALE;
+        goto unlock;
+    }
+    if (node->writer != 0u || node->waiting_writers != 0u) {
+        err = RINFS_ERR_BUSY;
+        goto unlock;
+    }
+    if (!rinfs_wincompat_share_counts_consistent(node)) {
+        err = RINFS_ERR_CORRUPT;
+        goto unlock;
+    }
+    if (node->references == UINT32_MAX || node->readers == UINT32_MAX ||
+        (shared_owner_row != 0u &&
+         (shared_owner_row > RINFS_SHARED_OWNER_CAPACITY ||
+          node->shared_readers[shared_owner_row - 1u] == UINT32_MAX))) {
+        err = RINFS_ERR_OVERFLOW;
+        goto unlock;
+    }
+    ++node->references;
+    ++node->readers;
+    if (shared_owner_row != 0u)
+        ++node->shared_readers[shared_owner_row - 1u];
+    *node_out = node;
+    *token_out = expected_token;
+    err = RINFS_OK;
+
+unlock:
+    return rinfs_content_unlock_status(
+        err, rinfs_shared_content_unlock(mount));
+}
+
 static int rinfs_content_lease_release_ex(RinFS_Mount* mount, uint64_t ino,
                                           uint32_t inode_generation,
                                           uint64_t token, int writer,
@@ -21249,6 +21315,117 @@ int rinfs_mmap_source_get_page(RinFS_MmapSource* source,
     rinfs_mmap_source_end_operation(
         source, reference_generation, reference_cookie);
     return err;
+}
+
+int rinfs_mmap_source_page_is_resident(
+    RinFS_MmapSource* source, uint64_t expected_inode,
+    uint64_t reference_generation, uint64_t reference_cookie,
+    uint64_t page_index, int* resident_out) {
+    RinFS_Mount* mount;
+    RinFS_PageCache* cache;
+    RinFS_Inode inode;
+    RinFS_ContentLeaseNode* lease = NULL;
+    uint64_t inode_num;
+    uint64_t lease_token = 0u;
+    uint64_t content_version = 0u;
+    uint64_t page_count;
+    uint32_t inode_generation;
+    uint32_t content_state = 0u;
+    uint32_t index;
+    int cache_hit = 0;
+    int cleanup_error = RINFS_OK;
+    int err;
+
+    if (resident_out) *resident_out = 0;
+    if (!resident_out || expected_inode == 0u ||
+        page_index > UINT64_MAX / RINFS_PAGE_CACHE_PAGE_SIZE)
+        return RINFS_ERR_INVAL;
+    err = rinfs_mmap_source_begin_operation(
+        source, reference_generation, reference_cookie);
+    if (err != RINFS_OK) return err;
+
+    mount = source->mount;
+    inode_num = source->inode_num;
+    inode_generation = source->inode_generation;
+    if (!mount || !mount->mounted || inode_num != expected_inode ||
+        inode_generation == 0u) {
+        err = RINFS_ERR_STALE;
+        goto done;
+    }
+
+    /* Serialize the metadata snapshot with writers and truncation. A content
+     * lease is not a page-cache reference and does not perform storage I/O. */
+    err = rinfs_content_lease_try_retain(
+        mount, inode_num, inode_generation, source->pin_token,
+        &lease, &lease_token);
+    if (err != RINFS_OK) goto done;
+    if (lease_token != source->pin_token) {
+        err = RINFS_ERR_STALE;
+        goto done;
+    }
+    err = rinfs_inode_cache_lookup(mount, inode_num, &inode, &cache_hit);
+    if (err != RINFS_OK) goto done;
+    /* A cache miss must not be repaired with an inode-table read here. Without
+     * a current size/version snapshot, a retained old cache page cannot be
+     * reported resident safely after truncate or an indeterminate mutation. */
+    if (!cache_hit || inode.i_generation != inode_generation ||
+        (inode.i_mode >> 12u) != RINFS_FT_REG) {
+        err = RINFS_ERR_BUSY;
+        goto done;
+    }
+    err = rinfs_inode_content_tracking(
+        mount, &inode, &content_version, &content_state);
+    if (err != RINFS_OK) goto done;
+    if (content_version == 0u || content_state != 0u) {
+        err = RINFS_ERR_BUSY;
+        goto done;
+    }
+    page_count = inode.i_size == 0u
+        ? 0u
+        : (inode.i_size - 1u) / RINFS_PAGE_CACHE_PAGE_SIZE + 1u;
+    if (page_index >= page_count) {
+        err = RINFS_ERR_INVAL;
+        goto done;
+    }
+
+    /* A missing or unsupported page cache is a valid nonresident snapshot.
+     * Matching live entries are sufficient: content mutation either rekeys
+     * mapped clean pages to the new version or retires stale entries before
+     * publishing the mutation. The cache lock makes this scan atomic with
+     * eviction and version invalidation, without taking a page reference. */
+    cache = mount->page_cache;
+    if (!cache || mount->mount_epoch == 0u ||
+        mount->sb.s_block_size != RINFS_PAGE_CACHE_PAGE_SIZE ||
+        (mount->device_flags & RINFS_DEVICE_FLAG_OFFLINE) != 0u) {
+        err = RINFS_OK;
+        goto done;
+    }
+    err = rinfs_page_cache_lock(cache);
+    if (err != RINFS_OK) goto done;
+    for (index = 0u; index < RINFS_PAGE_CACHE_CAPACITY; ++index) {
+        const RinFS_PageCacheEntry* entry = &cache->entries[index];
+        if (entry->valid != 0u &&
+            entry->mount_epoch == mount->mount_epoch &&
+            entry->inode_num == inode_num &&
+            entry->inode_generation == inode_generation &&
+            entry->content_version == content_version &&
+            entry->page_index == page_index && entry->data != NULL &&
+            entry->state != RINFS_PAGE_CACHE_FREE &&
+            entry->state != RINFS_PAGE_CACHE_FILLING) {
+            *resident_out = 1;
+            break;
+        }
+    }
+    err = rinfs_page_cache_unlock_status(cache, RINFS_OK);
+
+done:
+    if (lease) {
+        cleanup_error = rinfs_content_lease_release(
+            mount, inode_num, inode_generation, lease_token, 0);
+    }
+    rinfs_mmap_source_end_operation(
+        source, reference_generation, reference_cookie);
+    return rinfs_content_unlock_status(err, cleanup_error);
 }
 
 static int rinfs_mmap_source_get_page_view_impl(RinFS_MmapSource* source,
