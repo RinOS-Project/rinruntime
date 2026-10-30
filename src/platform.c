@@ -7,6 +7,7 @@
 #include <limits.h>
 #include <rin/contract_abi.h>
 #include <rin/file_portal_call.h>
+#include <rin/ipc/shm_abi.h>
 #include <rin/syscall_abi.h>
 
 static int platform_int_result(intptr_t result)
@@ -24,8 +25,10 @@ static int platform_int_result(intptr_t result)
 
 static void* platform_pointer_result(intptr_t result)
 {
-    if (result < 0) {
-        errno = result >= -4095 ? (int)(-result) : EIO;
+    /* 32-bit user mappings may have the sign bit set.  Syscall errors are
+     * reserved to the conventional negative errno range only. */
+    if (result < 0 && result >= -4095) {
+        errno = (int)(-result);
         return (void*)0;
     }
     return (void*)(uintptr_t)result;
@@ -67,10 +70,26 @@ void* rin_shm_at_range(int handle, void* address_hint, uint64_t offset,
         errno = handle < 0 ? EBADF : EINVAL;
         return (void*)0;
     }
+#if defined(__i386__) || defined(_M_IX86)
+    {
+        RinShmAttachRangeV1 request = {0};
+        request.struct_size = (uint32_t)sizeof(request);
+        request.version = RIN_SHM_RANGE_REQUEST_VERSION;
+        request.handle = handle;
+        request.protection = prot;
+        request.address_hint = (uint64_t)(uintptr_t)address_hint;
+        request.offset = offset;
+        request.size = size;
+        return platform_pointer_result(_syscall2(
+            (uintptr_t)RIN_SYS_SHM_ATTACH_RANGE_V1,
+            (uintptr_t)&request, (uintptr_t)sizeof(request)));
+    }
+#else
     return platform_pointer_result(_syscall5(
         (uintptr_t)RIN_SYS_SHM_ATTACH_RANGE, (uintptr_t)(intptr_t)handle,
         (uintptr_t)address_hint, (uintptr_t)offset, (uintptr_t)size,
         (uintptr_t)prot));
+#endif
 }
 
 int rin_shm_dt(int handle, void* address)
@@ -101,9 +120,23 @@ int rin_shm_protect(void* address, uint64_t size, uint32_t prot)
         errno = EINVAL;
         return -1;
     }
+#if defined(__i386__) || defined(_M_IX86)
+    {
+        RinShmProtectV1 request = {0};
+        request.struct_size = (uint32_t)sizeof(request);
+        request.version = RIN_SHM_RANGE_REQUEST_VERSION;
+        request.address = (uint64_t)(uintptr_t)address;
+        request.size = size;
+        request.protection = prot;
+        result = _syscall2((uintptr_t)RIN_SYS_SHM_PROTECT_V1,
+                           (uintptr_t)&request,
+                           (uintptr_t)sizeof(request));
+    }
+#else
     result = _syscall3((uintptr_t)RIN_SYS_SHM_PROTECT,
                        (uintptr_t)address, (uintptr_t)size,
                        (uintptr_t)prot);
+#endif
     if (result < 0) {
         errno = result >= -4095 ? (int)(-result) : EIO;
         return -1;
