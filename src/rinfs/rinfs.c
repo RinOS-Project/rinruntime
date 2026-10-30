@@ -27171,13 +27171,15 @@ static int rinfs_rename_journal_recover(RinFS_Mount* mount) {
 }
 
 static int rinfs_release_replaced_inode(RinFS_Mount* mount, uint64_t ino,
-                                        uint8_t expected_type) {
+                                        uint8_t expected_type,
+                                        uint32_t* links_after_out) {
     int content_unlock_error = RINFS_OK;
     RinFS_ContentLeaseNode* lease = NULL;
     uint64_t lease_token = 0u;
     RinFS_Inode inode;
     uint32_t generation;
     int defer;
+    if (links_after_out) *links_after_out = 0u;
     int err = rinfs_inode_read(mount, ino, &inode);
     if (err != RINFS_OK) return rinfs_content_unlock_status((err), content_unlock_error);
     generation = inode.i_generation;
@@ -27207,6 +27209,8 @@ static int rinfs_release_replaced_inode(RinFS_Mount* mount, uint64_t ino,
     }
     if (inode.i_links != 0u) {
         err = rinfs_inode_orphan_commit(mount, ino, &inode, 0);
+        if (err == RINFS_OK && links_after_out)
+            *links_after_out = inode.i_links;
         rinfs_keep_first_error(&content_unlock_error, rinfs_content_lease_release(mount, ino, generation, lease_token, 1));
         return rinfs_content_unlock_status((err), content_unlock_error);
     }
@@ -27255,13 +27259,31 @@ static int rinfs_delete_on_close_path_registered(
     return rinfs_content_unlock_status((found), content_unlock_error);
 }
 
+static void rinfs_rename_identity_capture(
+    RinFS_RenameObjectIdentity* identity, uint64_t ino,
+    const RinFS_Inode* inode) {
+    if (!identity) return;
+    rinfs_memset(identity, 0, sizeof(*identity));
+    if (!inode || ino == 0u || inode->i_generation == 0u) return;
+    identity->inode = ino;
+    identity->generation = inode->i_generation;
+    identity->mode = inode->i_mode;
+    identity->links = inode->i_links;
+}
+
 static int rinfs_rename_impl(RinFS_Mount* mount, uint64_t old_dir,
                              const char* old_name, uint64_t new_dir,
                              const char* new_name, int no_replace,
                              uint64_t expected_source_inode,
                              uint32_t expected_source_generation,
+                             uint32_t expected_old_parent_generation,
+                             uint32_t expected_new_parent_generation,
+                             uint64_t expected_destination_inode,
+                             uint32_t expected_destination_generation,
+                             int verify_destination,
                              int update_if_newer,
-                             uint64_t source_mtime) {
+                             uint64_t source_mtime,
+                             RinFS_RenameOutcome* outcome) {
     int prepare_error;
     if (!mount || !mount->mounted || !old_name || !new_name) return RINFS_ERR_INVAL;
     prepare_error = rinfs_mount_prepare_write(mount);
@@ -27306,6 +27328,19 @@ static int rinfs_rename_impl(RinFS_Mount* mount, uint64_t old_dir,
         return RINFS_ERR_STALE;
     err = rinfs_inode_read(mount, old_dir, &old_parent_inode);
     if (err != RINFS_OK) return err;
+    if (expected_old_parent_generation != 0u &&
+        old_parent_inode.i_generation != expected_old_parent_generation)
+        return RINFS_ERR_STALE;
+    RinFS_Inode new_parent_inode;
+    if (new_dir == old_dir) {
+        new_parent_inode = old_parent_inode;
+    } else {
+        err = rinfs_inode_read(mount, new_dir, &new_parent_inode);
+        if (err != RINFS_OK) return err;
+    }
+    if (expected_new_parent_generation != 0u &&
+        new_parent_inode.i_generation != expected_new_parent_generation)
+        return RINFS_ERR_STALE;
     uint8_t old_type = old_inode.i_mode >> 12;
     int old_delete_on_close = rinfs_delete_on_close_path_registered(
         mount, old_dir, old_parent_inode.i_generation, old_ino,
@@ -27343,6 +27378,15 @@ static int rinfs_rename_impl(RinFS_Mount* mount, uint64_t old_dir,
     } else if (err != RINFS_ERR_NOENT) {
         return err;
     }
+
+    if (verify_destination &&
+        ((expected_destination_inode == 0u && has_new_existing) ||
+         (expected_destination_inode != 0u &&
+          (!has_new_existing ||
+           new_existing_ino != expected_destination_inode ||
+           new_existing_inode.i_generation !=
+               expected_destination_generation))))
+        return RINFS_ERR_STALE;
 
     err = rinfs_journal_begin_rename(mount, old_dir, old_name, new_dir, new_name,
                                      old_ino, old_type, has_new_existing,
@@ -27464,10 +27508,12 @@ static int rinfs_rename_impl(RinFS_Mount* mount, uint64_t old_dir,
     }
 
     /* If destination existed, unlink replaced inode now */
+    uint32_t replaced_links_after = 0u;
     if (has_new_existing) {
         uint8_t new_type = new_existing_inode.i_mode >> 12;
         err = rinfs_release_replaced_inode(mount, new_existing_ino,
-                                           new_type);
+                                           new_type,
+                                           &replaced_links_after);
         if (err != RINFS_OK) {
             if ((mount->sb.s_compat_features &
                  RINFS_FEATURE_COMPAT_RENAME_JOURNAL) != 0u)
@@ -27491,7 +27537,29 @@ static int rinfs_rename_impl(RinFS_Mount* mount, uint64_t old_dir,
         return err;
     }
 
-    return rinfs_journal_finish(mount);
+    err = rinfs_journal_finish(mount);
+    if (err == RINFS_OK && outcome) {
+        rinfs_rename_identity_capture(&outcome->source, old_ino,
+                                      &old_inode);
+        rinfs_rename_identity_capture(&outcome->source_parent, old_dir,
+                                      &old_parent_inode);
+        rinfs_rename_identity_capture(&outcome->destination_parent, new_dir,
+                                      &new_parent_inode);
+        if (has_new_existing) {
+            rinfs_rename_identity_capture(&outcome->replaced,
+                                          new_existing_ino,
+                                          &new_existing_inode);
+            outcome->flags |= RINFS_RENAME_OUTCOME_REPLACED;
+            outcome->replaced_links_before = new_existing_inode.i_links;
+            outcome->replaced_links_after = replaced_links_after;
+            if (replaced_links_after != 0u)
+                outcome->flags |=
+                    RINFS_RENAME_OUTCOME_REPLACED_REMAINS;
+        }
+        outcome->flags |= RINFS_RENAME_OUTCOME_COMMITTED |
+                          RINFS_RENAME_OUTCOME_CHANGED;
+    }
+    return err;
 }
 
 int rinfs_rename(RinFS_Mount* mount, uint64_t old_dir, const char* old_name,
@@ -27503,7 +27571,8 @@ int rinfs_rename(RinFS_Mount* mount, uint64_t old_dir, const char* old_name,
     result = rinfs_journal_transaction_lock(mount);
     if (result == RINFS_OK) {
         result = rinfs_rename_impl(mount, old_dir, old_name, new_dir, new_name,
-                                   0, 0u, 0u, 0, 0u);
+                                   0, 0u, 0u, 0u, 0u, 0u, 0u, 0, 0,
+                                   0u, NULL);
         result = rinfs_journal_transaction_unlock_status(mount, result);
     }
     return rinfs_mount_operation_scope_finish(&operation, result);
@@ -27519,7 +27588,8 @@ int rinfs_rename_no_replace(RinFS_Mount* mount, uint64_t old_dir,
     result = rinfs_journal_transaction_lock(mount);
     if (result == RINFS_OK) {
         result = rinfs_rename_impl(mount, old_dir, old_name, new_dir, new_name,
-                                   1, 0u, 0u, 0, 0u);
+                                   1, 0u, 0u, 0u, 0u, 0u, 0u, 0, 0,
+                                   0u, NULL);
         result = rinfs_journal_transaction_unlock_status(mount, result);
     }
     return rinfs_mount_operation_scope_finish(&operation, result);
@@ -27537,7 +27607,8 @@ static int rinfs_rename_no_replace_expected_unscoped(
     if (result != RINFS_OK) return result;
     result = rinfs_rename_impl(mount, old_dir, old_name, new_dir, new_name,
                                1, expected_source_inode,
-                               expected_source_generation, 0, 0u);
+                               expected_source_generation, 0u, 0u, 0u, 0u,
+                               0, 0, 0u, NULL);
     return rinfs_journal_transaction_unlock_status(mount, result);
 }
 
@@ -27553,7 +27624,8 @@ static int rinfs_rename_expected_unscoped(
     if (result != RINFS_OK) return result;
     result = rinfs_rename_impl(mount, old_dir, old_name, new_dir, new_name,
                                0, expected_source_inode,
-                               expected_source_generation, 0, 0u);
+                               expected_source_generation, 0u, 0u, 0u, 0u,
+                               0, 0, 0u, NULL);
     return rinfs_journal_transaction_unlock_status(mount, result);
 }
 
@@ -31152,6 +31224,48 @@ int rinfs_rename_expected(
     return rinfs_mount_operation_scope_finish(&operation, error);
 }
 
+int rinfs_rename_with_outcome(
+    RinFS_Mount* mount, uint64_t old_dir, const char* old_name,
+    uint32_t expected_old_parent_generation,
+    uint64_t new_dir, const char* new_name,
+    uint32_t expected_new_parent_generation,
+    uint64_t expected_source_inode, uint32_t expected_source_generation,
+    uint64_t expected_destination_inode,
+    uint32_t expected_destination_generation,
+    int no_replace, int update_if_newer, uint64_t source_mtime,
+    RinFS_RenameOutcome* outcome) {
+    RinFS_MountOperationScope operation = {0};
+    int error;
+    if (outcome) rinfs_memset(outcome, 0, sizeof(*outcome));
+    if (!mount || !old_name || !new_name || !outcome ||
+        expected_old_parent_generation == 0u ||
+        expected_new_parent_generation == 0u ||
+        expected_source_inode == 0u || expected_source_generation == 0u ||
+        (expected_destination_inode == 0u &&
+         expected_destination_generation != 0u) ||
+        (expected_destination_inode != 0u &&
+         expected_destination_generation == 0u) ||
+        (no_replace != 0 && no_replace != 1) ||
+        (update_if_newer != 0 && update_if_newer != 1) ||
+        (no_replace && update_if_newer) ||
+        (!update_if_newer && source_mtime != 0u))
+        return RINFS_ERR_INVAL;
+    error = rinfs_mount_operation_scope_begin(mount, &operation);
+    if (error != RINFS_OK) return error;
+    error = rinfs_journal_transaction_lock(mount);
+    if (error == RINFS_OK) {
+        error = rinfs_rename_impl(
+            mount, old_dir, old_name, new_dir, new_name, no_replace,
+            expected_source_inode, expected_source_generation,
+            expected_old_parent_generation,
+            expected_new_parent_generation, expected_destination_inode,
+            expected_destination_generation, no_replace ? 0 : 1,
+            update_if_newer, source_mtime, outcome);
+        error = rinfs_journal_transaction_unlock_status(mount, error);
+    }
+    return rinfs_mount_operation_scope_finish(&operation, error);
+}
+
 /* 現在の宛先が古い場合だけ、一時ファイルまたはリンクを原子的に公開する。
  * RINFS_ERR_EXISTは新しい宛先を維持したことを示す。 */
 int rinfs_rename_if_newer(RinFS_Mount* mount, uint64_t old_dir,
@@ -31165,7 +31279,8 @@ int rinfs_rename_if_newer(RinFS_Mount* mount, uint64_t old_dir,
     error = rinfs_journal_transaction_lock(mount);
     if (error == RINFS_OK) {
         error = rinfs_rename_impl(mount, old_dir, old_name, new_dir, new_name,
-                                  0, 0u, 0u, 1, source_mtime);
+                                  0, 0u, 0u, 0u, 0u, 0u, 0u, 1, source_mtime,
+                                  NULL);
         error = rinfs_journal_transaction_unlock_status(mount, error);
     }
     return rinfs_mount_operation_scope_finish(&operation, error);

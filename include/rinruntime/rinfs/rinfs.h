@@ -328,6 +328,34 @@ RINRUNTIME_STATIC_ASSERT(offsetof(RinFS_Inode, i_generation) == 0xC0u &&
 RINRUNTIME_STATIC_ASSERT(offsetof(RinFS_Inode, i_reserved) + 20u == 0xDCu,
                          "RinFS content-version high word must remain at 0xDC");
 
+/* Identity snapshots captured while the journal transaction lock still owns
+ * a rename. These are operation results, not borrowed inode pointers. */
+typedef struct {
+    uint64_t inode;
+    uint32_t generation;
+    uint16_t mode;
+    uint16_t reserved;
+    uint32_t links;
+} RinFS_RenameObjectIdentity;
+
+enum {
+    RINFS_RENAME_OUTCOME_COMMITTED = 1u << 0,
+    RINFS_RENAME_OUTCOME_CHANGED = 1u << 1,
+    RINFS_RENAME_OUTCOME_REPLACED = 1u << 2,
+    RINFS_RENAME_OUTCOME_REPLACED_REMAINS = 1u << 3
+};
+
+typedef struct {
+    RinFS_RenameObjectIdentity source;
+    RinFS_RenameObjectIdentity replaced;
+    RinFS_RenameObjectIdentity source_parent;
+    RinFS_RenameObjectIdentity destination_parent;
+    uint32_t flags;
+    uint32_t replaced_links_before;
+    uint32_t replaced_links_after;
+    uint32_t reserved;
+} RinFS_RenameOutcome;
+
 typedef struct __attribute__((packed)) {
     uint32_t magic;
     uint16_t version;
@@ -1441,6 +1469,21 @@ int rinfs_rename_expected(
     RinFS_Mount* mount, uint64_t old_dir, const char* old_name,
     uint64_t new_dir, const char* new_name, uint64_t expected_source_inode,
     uint32_t expected_source_generation);
+/* Rename against generation-checked parent/source/destination identities and
+ * return the objects actually changed by the journal transaction. For a
+ * replacing rename, a zero expected_destination_inode means the destination
+ * must be absent; no-replace mode enforces absence in the transaction itself.
+ * Outcome COMMITTED remains set if later scope release reports an error. */
+int rinfs_rename_with_outcome(
+    RinFS_Mount* mount, uint64_t old_dir, const char* old_name,
+    uint32_t expected_old_parent_generation,
+    uint64_t new_dir, const char* new_name,
+    uint32_t expected_new_parent_generation,
+    uint64_t expected_source_inode, uint32_t expected_source_generation,
+    uint64_t expected_destination_inode,
+    uint32_t expected_destination_generation,
+    int no_replace, int update_if_newer, uint64_t source_mtime,
+    RinFS_RenameOutcome* outcome);
 /* 1回のジャーナルトランザクションで宛先を置換する。宛先が新しい場合は
  * RINFS_ERR_EXISTを返し、変更しない。 */
 int rinfs_rename_if_newer(RinFS_Mount* mount, uint64_t old_dir,
