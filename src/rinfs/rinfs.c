@@ -17519,7 +17519,12 @@ static int rinfs_mount_sized_io_unleased(
     if (!mount || !device_ops_valid(device_ops)) return RINFS_ERR_INVAL;
     if ((flags & ~(RINFS_MNT_RDONLY | RINFS_MNT_NOATIME | RINFS_MNT_SYNC |
                    RINFS_MNT_JOURNAL | RINFS_MNT_REPAIR |
-                   RINFS_MNT_RESCUE | RINFS_MNT_RESIZE)) != 0 ||
+                   RINFS_MNT_RESCUE | RINFS_MNT_RESIZE |
+                   RINFS_MNT_RELATIME | RINFS_MNT_STRICTATIME)) != 0 ||
+        ((flags & RINFS_MNT_NOATIME) != 0 &&
+         (flags & (RINFS_MNT_RELATIME | RINFS_MNT_STRICTATIME)) != 0) ||
+        ((flags & RINFS_MNT_RELATIME) != 0 &&
+         (flags & RINFS_MNT_STRICTATIME) != 0) ||
         ((flags & RINFS_MNT_RDONLY) != 0 && (flags & RINFS_MNT_REPAIR) != 0) ||
         ((flags & RINFS_MNT_RDONLY) != 0 && (flags & RINFS_MNT_RESIZE) != 0) ||
         ((flags & RINFS_MNT_RESCUE) != 0 &&
@@ -22052,6 +22057,62 @@ static int rinfs_path_lookup_resolved_unscoped(
                                       resolved_path, resolved_path_size);
 }
 
+static int rinfs_inode_time_pair_leq(int64_t left_seconds,
+                                     uint32_t left_nanoseconds,
+                                     int64_t right_seconds,
+                                     uint32_t right_nanoseconds) {
+    return left_seconds < right_seconds ||
+           (left_seconds == right_seconds &&
+            left_nanoseconds <= right_nanoseconds);
+}
+
+/* The default mount policy is relatime. Explicit noatime and strictatime
+ * policies are exclusive in mount validation; an explicit relatime flag is
+ * accepted for callers that want the default written down in their options. */
+static int rinfs_read_atime_due(const RinFS_Mount* mount,
+                                const RinFS_Inode* inode, uint64_t now) {
+    RinFS_InodeTimes times;
+    int64_t now_seconds;
+    int64_t ctime_seconds;
+    int strict;
+    if (!mount || !inode || now == 0u || now > (uint64_t)INT64_MAX ||
+        (mount->mount_flags & RINFS_MNT_NOATIME) != 0u)
+        return 0;
+    strict = (mount->mount_flags & RINFS_MNT_STRICTATIME) != 0u;
+    now_seconds = (int64_t)now;
+    if (rinfs_inode_get_times_precise_unscoped(mount, inode, &times) !=
+        RINFS_OK)
+        return strict;
+    if ((times.valid_mask & RINFS_INODE_TIME_ACCESS) == 0u)
+        return 1;
+    if (strict)
+        return times.access.seconds != now_seconds ||
+               times.access.nanoseconds != 0u;
+
+    if ((times.valid_mask & RINFS_INODE_TIME_WRITE) != 0u &&
+        rinfs_inode_time_pair_leq(times.access.seconds,
+                                  times.access.nanoseconds,
+                                  times.write.seconds,
+                                  times.write.nanoseconds))
+        return 1;
+
+    if (inode->i_ctime != 0u) {
+        ctime_seconds = rinfs_mount_has_nanotimes(mount)
+            ? rinfs_inode_time_decode_seconds(inode->i_ctime)
+            : (inode->i_ctime <= (uint64_t)INT64_MAX
+                   ? (int64_t)inode->i_ctime : INT64_MIN);
+        if (ctime_seconds != INT64_MIN &&
+            rinfs_inode_time_pair_leq(times.access.seconds,
+                                      times.access.nanoseconds,
+                                      ctime_seconds, 0u))
+            return 1;
+    }
+
+    if (times.access.seconds < 0) return 1;
+    return now_seconds >= times.access.seconds &&
+           (uint64_t)(now_seconds - times.access.seconds) >= 86400u;
+}
+
 /* Payload traversal assumes the caller has already pinned the inode
  * generation.  The public wrapper below establishes that lease for ordinary
  * file descriptors as well as for temporary mmap-source descriptors. */
@@ -22230,29 +22291,30 @@ static int64_t rinfs_read_unleased(
     
     if (block_buf) rinfs_free(block_buf);
 
-    if (bytes_read > 0 && !mount->readonly &&
-        (mount->mount_flags & RINFS_MNT_NOATIME) == 0) {
+    if (bytes_read > 0 && !mount->readonly) {
         uint64_t now = rinfs_now_seconds();
-        if (now != 0) {
-            file->inode.i_atime = now;
-            rinfs_inode_time_metadata_mark(&file->inode,
+        if (rinfs_read_atime_due(mount, &file->inode, now)) {
+            RinFS_Inode candidate = file->inode;
+            int require_sync =
+                (mount->mount_flags & RINFS_MNT_SYNC) != 0u ||
+                (file->inode.i_flags & RINFS_IFLG_SYNC) != 0u;
+            candidate.i_atime = now;
+            rinfs_inode_time_metadata_mark(&candidate,
                                            RINFS_INODE_TIME_ACCESS);
             int atime_err = rinfs_inode_write_internal(
-                mount, file->inode_num, &file->inode, 3);
+                mount, file->inode_num, &candidate, 3);
             if (atime_err == RINFS_OK) {
+                file->inode = candidate;
                 uint64_t position = file->position;
-                atime_err = rinfs_inode_read(mount, file->inode_num,
-                                             &file->inode);
+                RinFS_Inode latest;
+                atime_err = rinfs_inode_read(mount, file->inode_num, &latest);
+                if (atime_err == RINFS_OK) file->inode = latest;
                 file->position = position;
             }
-            if (atime_err == RINFS_OK &&
-                (((mount->mount_flags & RINFS_MNT_SYNC) != 0) ||
-                 ((file->inode.i_flags & RINFS_IFLG_SYNC) != 0))) {
+            if (atime_err == RINFS_OK && require_sync) {
                 atime_err = rinfs_sync(mount);
             }
-            if (atime_err != RINFS_OK &&
-                (((mount->mount_flags & RINFS_MNT_SYNC) != 0) ||
-                 ((file->inode.i_flags & RINFS_IFLG_SYNC) != 0))) {
+            if (atime_err != RINFS_OK && require_sync) {
                 file->position = initial_position;
                 return atime_err;
             }

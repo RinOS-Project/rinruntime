@@ -143,6 +143,8 @@ enum {
 #define RINFS_MNT_REPAIR    0x0010  /* Explicit allocation/structural recovery */
 #define RINFS_MNT_RESCUE    0x0020  /* Explicit read-only best-effort salvage */
 #define RINFS_MNT_RESIZE    0x0040  /* Offline resize/recovery maintenance */
+#define RINFS_MNT_RELATIME  0x0080  /* Update access time at mtime/ctime or 24h */
+#define RINFS_MNT_STRICTATIME 0x0100 /* Update access time after each successful read */
 
 /* Allocation-metadata checker flags and issue bits.  Counter repair is
  * deliberately narrower than a full inode/block reference fsck. */
