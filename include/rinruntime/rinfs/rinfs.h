@@ -1356,8 +1356,8 @@ int rinfs_rmdir(RinFS_Mount* mount, uint64_t dir_ino, const char* name);
 int rinfs_rmdir_expected(RinFS_Mount* mount, uint64_t dir_ino,
                          const char* name, uint64_t expected_inode,
                          uint32_t expected_generation);
-/* Kernel event identity copied into a deferred delete owner. This is a
- * transport-neutral snapshot; it deliberately contains no pointers. */
+/* 遅延削除ownerへコピーするkernel event identity。pointerを含まない
+ * 値のsnapshotとして、kernelとRinFSの境界を越えて保持する。 */
 typedef struct RinFS_DeleteOnCloseIdentityV1 {
     uint64_t source_epoch;
     uint64_t namespace_id;
@@ -1387,8 +1387,8 @@ int rinfs_delete_on_close_register(RinFS_Mount* mount,
                                    const char* name, uint64_t target_ino,
                                    uint32_t target_generation,
                                    int directory, const char* path);
-/* Versioned form retains the original watch scope for the final DELETE
- * notification. Invalid or absent scope never falls back to path delivery. */
+/* version付きAPIは最終DELETE通知に登録時のwatch scopeを保持する。
+ * scopeが無効または未指定の場合、pathによる通知へfallbackしない。 */
 int rinfs_delete_on_close_register_scoped_v1(
     RinFS_Mount* mount, uint64_t parent_ino, uint32_t parent_generation,
     const char* name, uint64_t target_ino, uint32_t target_generation,
