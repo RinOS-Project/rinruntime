@@ -448,9 +448,8 @@ int rin_keyring_client_status(void)
     return status;
 }
 
-int rin_keyring_client_put_expected_generation(
-    const char* name, const void* secret, uint32_t secret_size,
-    uint64_t expected_generation, uint64_t* generation)
+int rin_keyring_client_put(const char* name, const void* secret,
+                           uint32_t secret_size, uint64_t* generation)
 {
     RinKeyringMessageHeaderV1 request;
     RinKeyringMessageHeaderV1 response;
@@ -468,7 +467,7 @@ int rin_keyring_client_put_expected_generation(
     if (fd < 0) return RIN_KEYRING_LOCKED;
     memset(&put, 0, sizeof(put));
     memset(&result, 0, sizeof(result));
-    put.expected_generation = expected_generation;
+    put.expected_generation = RIN_KEYRING_GENERATION_ANY;
     put.secret_name_size = name_size;
     put.secret_size = secret_size;
     request_header(&request, RIN_KEYRING_OP_PUT,
@@ -493,13 +492,6 @@ int rin_keyring_client_put_expected_generation(
     close(fd);
     secure_clear(&result, sizeof(result));
     return status;
-}
-
-int rin_keyring_client_put(const char* name, const void* secret,
-                           uint32_t secret_size, uint64_t* generation)
-{
-    return rin_keyring_client_put_expected_generation(
-        name, secret, secret_size, RIN_KEYRING_GENERATION_ANY, generation);
 }
 
 int rin_keyring_client_import_kerberos_credential(

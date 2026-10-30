@@ -224,21 +224,11 @@ install(TARGETS RinRuntime EXPORT RinRuntimeTargets
         ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
         LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
         RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
-set(RINRUNTIME_HEADER_INSTALL_EXCLUDES
+install(DIRECTORY include/rinruntime/
+        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/rinruntime
         PATTERN "crypt" EXCLUDE
         PATTERN "pe_loader.h" EXCLUDE
         PATTERN "rin_cursor.h" EXCLUDE)
-if(WIN32)
-    # These headers expose POSIX-only implementations omitted from the Windows
-    # library target. Do not publish declarations that installed consumers
-    # cannot link against.
-    list(APPEND RINRUNTIME_HEADER_INSTALL_EXCLUDES
-         PATTERN "rin_installer_runtime.h" EXCLUDE
-         PATTERN "pty.h" EXCLUDE)
-endif()
-install(DIRECTORY include/rinruntime/
-        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/rinruntime
-        ${RINRUNTIME_HEADER_INSTALL_EXCLUDES})
 install(DIRECTORY include/rincompression/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/rincompression)
 install(DIRECTORY ${RINRUNTIME_RINPATH_ROOT}/include/rinpath/
         DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/rinpath)

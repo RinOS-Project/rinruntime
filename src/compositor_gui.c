@@ -3436,7 +3436,7 @@ int rinruntime_drag_drop_poll_v1(
         sizeof(publication), sizeof(publication));
     if (result != RIN_RESULT_OK) return result;
     offer_out->struct_size = sizeof(*offer_out);
-    offer_out->version = RIN_RUNTIME_DRAG_DROP_VERSION;
+    offer_out->version = RINRUNTIME_DRAG_DROP_VERSION;
     if (publication.struct_size != sizeof(publication) ||
         publication.version != RIN_RUNTIME_DRAG_DROP_PROTOCOL_VERSION ||
         publication.flags != 0u || publication.has_publication > 1u)
@@ -3938,4 +3938,447 @@ int rinruntime_drag_drop_payload_release_v1(uint64_t payload_capability) {
     memset(&request, 0, sizeof(request));
     memset(&response, 0, sizeof(response));
     return result;
+}
+
+static int runtime_clipboard_string_size(const char* value, uint32_t maximum,
+                                         uint32_t* size_out) {
+    if (size_out != NULL) *size_out = 0u;
+    if (value == NULL || size_out == NULL) return 0;
+    size_t size = strlen(value);
+    if (size == 0u || size > maximum) return 0;
+    *size_out = (uint32_t)size;
+    return 1;
+}
+
+static int runtime_clipboard_mime_valid(const char* mime, uint32_t size) {
+    int slash = 0;
+    if (mime == NULL || size == 0u ||
+        size > RINRUNTIME_CLIPBOARD_MAX_MIME_BYTES)
+        return 0;
+    for (uint32_t index = 0u; index < size; ++index) {
+        const unsigned char value = (unsigned char)mime[index];
+        if (value == '/') {
+            if (slash != 0 || index == 0u || index + 1u == size) return 0;
+            slash = 1;
+        } else if (!((value >= 'a' && value <= 'z') ||
+                     (value >= 'A' && value <= 'Z') ||
+                     (value >= '0' && value <= '9') || value == '!' ||
+                     value == '#' || value == '$' || value == '%' ||
+                     value == '&' || value == '\'' || value == '*' ||
+                     value == '+' || value == '-' || value == '.' ||
+                     value == '^' || value == '_' || value == '`' ||
+                     value == '|' || value == '~')) {
+            return 0;
+        }
+    }
+    return slash != 0;
+}
+
+static int runtime_clipboard_owner_result_valid(int result) {
+    switch (result) {
+    case RIN_RESULT_OK:
+    case RIN_RESULT_INVALID_ARGUMENT:
+    case RIN_RESULT_NOT_FOUND:
+    case RIN_RESULT_IO:
+    case RIN_RESULT_ACCESS_DENIED:
+    case RIN_RESULT_NO_MEMORY:
+    case RIN_RESULT_BUSY:
+    case RIN_RESULT_NOT_SUPPORTED:
+    case RIN_RESULT_BUFFER_TOO_SMALL:
+    case RIN_RESULT_LIMIT_EXCEEDED:
+    case RIN_RESULT_CORRUPT_DATA:
+        return 1;
+    default:
+        return 0;
+    }
+}
+
+static int runtime_clipboard_format_valid(
+    const RinRuntimeClipboardFormatInfoV1* format) {
+    if (format == NULL || format->struct_size != sizeof(*format) ||
+        format->mime_size == 0u ||
+        format->mime_size > RINRUNTIME_CLIPBOARD_MAX_MIME_BYTES ||
+        format->label_size == 0u ||
+        format->label_size > RINRUNTIME_CLIPBOARD_MAX_LABEL_BYTES ||
+        format->mime[format->mime_size] != '\0' ||
+        format->label[format->label_size] != '\0' ||
+        !runtime_clipboard_mime_valid(format->mime, format->mime_size) ||
+        format->priority > UINT8_MAX ||
+        (format->flags & ~RINRUNTIME_CLIPBOARD_FORMAT_FLAG_SENSITIVE) != 0u ||
+        format->reserved0 != 0u)
+        return 0;
+    for (uint32_t index = format->mime_size + 1u;
+         index < sizeof(format->mime); ++index)
+        if (format->mime[index] != '\0') return 0;
+    for (uint32_t index = format->label_size + 1u;
+         index < sizeof(format->label); ++index)
+        if (format->label[index] != '\0') return 0;
+    if (format->type == RINRUNTIME_CLIPBOARD_TYPE_BYTES)
+        return format->data_size <= RINRUNTIME_CLIPBOARD_MAX_DATA_BYTES &&
+               format->file_count == 0u;
+    if (format->type == RINRUNTIME_CLIPBOARD_TYPE_FILE_LIST)
+        return format->data_size == 0u && format->file_count != 0u &&
+               format->file_count <= RINRUNTIME_CLIPBOARD_MAX_FILES &&
+               format->mime_size ==
+                   sizeof(RINRUNTIME_CLIPBOARD_FILE_LIST_MIME) - 1u &&
+               memcmp(format->mime, RINRUNTIME_CLIPBOARD_FILE_LIST_MIME,
+                      format->mime_size) == 0;
+    return 0;
+}
+
+static void runtime_clipboard_owner_request_init(
+    RinRuntimeDragDropOwnerRequestV1* request, uint16_t operation) {
+    runtime_drag_drop_owner_request_init(request, operation);
+}
+
+static int runtime_clipboard_owner_simple(
+    uint16_t operation, uint64_t transaction, uint64_t generation,
+    RinRuntimeDragDropOwnerResponseV1* response_out) {
+    RinRuntimeDragDropOwnerRequestV1 request;
+    RinRuntimeDragDropOwnerResponseV1 response;
+    runtime_clipboard_owner_request_init(&request, operation);
+    request.offer_token = transaction;
+    request.generation = generation;
+    memset(&response, 0, sizeof(response));
+    const int result = runtime_drag_drop_owner_rpc(
+        &request, NULL, 0u, &response, NULL, 0u);
+    if (!runtime_clipboard_owner_result_valid(result)) {
+        memset(&request, 0, sizeof(request));
+        memset(&response, 0, sizeof(response));
+        return RIN_RESULT_CORRUPT_DATA;
+    }
+    if (response_out != NULL) *response_out = response;
+    memset(&request, 0, sizeof(request));
+    memset(&response, 0, sizeof(response));
+    return result;
+}
+
+RinRuntimeClipboardResult rinruntime_clipboard_set_formats_v1(
+    const RinRuntimeClipboardFormatInputV1* inputs, uint32_t format_count,
+    uint64_t* generation_out) {
+    RinRuntimeClipboardFormatInfoV1 formats[RINRUNTIME_CLIPBOARD_MAX_FORMATS];
+    RinRuntimeDragDropOwnerRequestV1 request;
+    RinRuntimeDragDropOwnerResponseV1 response;
+    uint64_t transaction = 0u;
+    uint64_t total_bytes = 0u;
+    uint32_t total_files = 0u;
+    int result = RIN_RESULT_INVALID_ARGUMENT;
+    if (generation_out != NULL) *generation_out = 0u;
+    memset(formats, 0, sizeof(formats));
+    if (inputs == NULL || format_count == 0u ||
+        format_count > RINRUNTIME_CLIPBOARD_MAX_FORMATS)
+        return RINRUNTIME_CLIPBOARD_INVALID_ARGUMENT;
+    for (uint32_t index = 0u; index < format_count; ++index) {
+        const RinRuntimeClipboardFormatInputV1* input = &inputs[index];
+        RinRuntimeClipboardFormatInfoV1* format = &formats[index];
+        if (input->struct_size != sizeof(*input) || input->reserved0 != 0u ||
+            input->priority > UINT8_MAX ||
+            (input->flags & ~RINRUNTIME_CLIPBOARD_FORMAT_FLAG_SENSITIVE) != 0u ||
+            !runtime_clipboard_string_size(
+                input->mime, RINRUNTIME_CLIPBOARD_MAX_MIME_BYTES,
+                &format->mime_size) ||
+            !runtime_clipboard_string_size(
+                input->label, RINRUNTIME_CLIPBOARD_MAX_LABEL_BYTES,
+                &format->label_size) ||
+            !runtime_clipboard_mime_valid(input->mime, format->mime_size))
+            goto done;
+        format->struct_size = sizeof(*format);
+        format->type = input->type;
+        format->priority = input->priority;
+        format->flags = input->flags;
+        memcpy(format->mime, input->mime, format->mime_size);
+        for (uint32_t character = 0u; character < format->mime_size;
+             ++character)
+            if (format->mime[character] >= 'A' &&
+                format->mime[character] <= 'Z')
+                format->mime[character] = (char)(format->mime[character] +
+                                                   ('a' - 'A'));
+        memcpy(format->label, input->label, format->label_size);
+        for (uint32_t prior = 0u; prior < index; ++prior)
+            if (formats[prior].mime_size == format->mime_size &&
+                memcmp(formats[prior].mime, format->mime,
+                       format->mime_size) == 0)
+                goto done;
+        if (index != 0u &&
+            formats[index - 1u].priority > format->priority)
+            goto done;
+        if (input->type == RINRUNTIME_CLIPBOARD_TYPE_BYTES) {
+            if ((input->data == NULL && input->data_size != 0u) ||
+                input->data_size > RINRUNTIME_CLIPBOARD_MAX_DATA_BYTES ||
+                input->files != NULL || input->file_count != 0u ||
+                total_bytes > RINRUNTIME_CLIPBOARD_MAX_DATA_BYTES -
+                                  input->data_size)
+                goto done;
+            format->data_size = input->data_size;
+            total_bytes += input->data_size;
+        } else if (input->type == RINRUNTIME_CLIPBOARD_TYPE_FILE_LIST) {
+            if (input->data != NULL || input->data_size != 0u ||
+                input->files == NULL || input->file_count == 0u ||
+                input->file_count > RINRUNTIME_CLIPBOARD_MAX_FILES ||
+                format->mime_size !=
+                    sizeof(RINRUNTIME_CLIPBOARD_FILE_LIST_MIME) - 1u ||
+                memcmp(input->mime, RINRUNTIME_CLIPBOARD_FILE_LIST_MIME,
+                       format->mime_size) != 0 ||
+                total_files > RINRUNTIME_CLIPBOARD_MAX_FILES -
+                                  input->file_count)
+                goto done;
+            for (uint32_t file_index = 0u;
+                 file_index < input->file_count; ++file_index) {
+                uint32_t label_size = 0u;
+                if (input->files[file_index].descriptor < 0 ||
+                    input->files[file_index].reserved0 != 0u ||
+                    !runtime_clipboard_string_size(
+                        input->files[file_index].label,
+                        RINRUNTIME_CLIPBOARD_MAX_LABEL_BYTES, &label_size))
+                    goto done;
+            }
+            format->file_count = input->file_count;
+            total_files += input->file_count;
+        } else {
+            goto done;
+        }
+        if (!runtime_clipboard_format_valid(format)) goto done;
+    }
+
+    runtime_clipboard_owner_request_init(
+        &request, RINRUNTIME_CLIPBOARD_OWNER_SET_BEGIN);
+    request.action = format_count;
+    request.body_size = format_count * (uint32_t)sizeof(formats[0]);
+    memset(&response, 0, sizeof(response));
+    result = runtime_drag_drop_owner_rpc(
+        &request, formats, request.body_size, &response, NULL, 0u);
+    if (result != RIN_RESULT_OK || response.capability == 0u ||
+        response.body_size != 0u) {
+        if (result == RIN_RESULT_OK) result = RIN_RESULT_CORRUPT_DATA;
+        goto done;
+    }
+    transaction = response.capability;
+    for (uint32_t index = 0u; index < format_count; ++index) {
+        const RinRuntimeClipboardFormatInputV1* input = &inputs[index];
+        if (input->type == RINRUNTIME_CLIPBOARD_TYPE_BYTES) {
+            uint64_t offset = 0u;
+            while (offset < input->data_size) {
+                uint32_t chunk = (uint32_t)(input->data_size - offset);
+                if (chunk > RINRUNTIME_CLIPBOARD_MAX_CHUNK_BYTES)
+                    chunk = RINRUNTIME_CLIPBOARD_MAX_CHUNK_BYTES;
+                runtime_clipboard_owner_request_init(
+                    &request, RINRUNTIME_CLIPBOARD_OWNER_SET_CHUNK);
+                request.offer_token = transaction;
+                request.action = index;
+                request.offset = offset;
+                request.data_size = chunk;
+                request.body_size = chunk;
+                memset(&response, 0, sizeof(response));
+                result = runtime_drag_drop_owner_rpc(
+                    &request,
+                    (const uint8_t*)input->data + (size_t)offset, chunk,
+                    &response, NULL, 0u);
+                if (result != RIN_RESULT_OK || response.body_size != 0u) {
+                    if (result == RIN_RESULT_OK) result = RIN_RESULT_CORRUPT_DATA;
+                    goto abort;
+                }
+                offset += chunk;
+            }
+        } else {
+            for (uint32_t file_index = 0u;
+                 file_index < input->file_count; ++file_index) {
+                uint64_t payload_capability = 0u;
+                result = rinruntime_drag_drop_payload_register_file_v1(
+                    input->files[file_index].descriptor,
+                    RINRUNTIME_CLIPBOARD_FILE_LIST_MIME,
+                    input->files[file_index].label, &payload_capability);
+                if (result != RIN_RESULT_OK) goto abort;
+                runtime_clipboard_owner_request_init(
+                    &request, RINRUNTIME_CLIPBOARD_OWNER_SET_FILE);
+                request.offer_token = transaction;
+                request.capability = payload_capability;
+                request.action = index;
+                request.offset = file_index;
+                memset(&response, 0, sizeof(response));
+                result = runtime_drag_drop_owner_rpc(
+                    &request, NULL, 0u, &response, NULL, 0u);
+                if (result != RIN_RESULT_OK || response.body_size != 0u) {
+                    (void)rinruntime_drag_drop_payload_release_v1(
+                        payload_capability);
+                    if (result == RIN_RESULT_OK) result = RIN_RESULT_CORRUPT_DATA;
+                    goto abort;
+                }
+            }
+        }
+    }
+    result = runtime_clipboard_owner_simple(
+        RINRUNTIME_CLIPBOARD_OWNER_SET_COMMIT, transaction, 0u, &response);
+    if (result == RIN_RESULT_OK && response.generation != 0u &&
+        response.body_size == 0u) {
+        if (generation_out != NULL) *generation_out = response.generation;
+        goto done;
+    }
+    if (result == RIN_RESULT_OK) result = RIN_RESULT_CORRUPT_DATA;
+abort:
+    (void)runtime_clipboard_owner_simple(
+        RINRUNTIME_CLIPBOARD_OWNER_SET_ABORT, transaction, 0u, NULL);
+done:
+    memset(formats, 0, sizeof(formats));
+    memset(&request, 0, sizeof(request));
+    memset(&response, 0, sizeof(response));
+    return runtime_clipboard_owner_result_valid(result)
+        ? (RinRuntimeClipboardResult)result
+        : RINRUNTIME_CLIPBOARD_MALFORMED_REPLY;
+}
+
+RinRuntimeClipboardResult rinruntime_clipboard_query_v1(
+    RinRuntimeClipboardFormatInfoV1* formats, uint32_t format_capacity,
+    uint32_t* format_count_out, uint64_t* generation_out) {
+    RinRuntimeDragDropOwnerRequestV1 request;
+    RinRuntimeDragDropOwnerResponseV1 response;
+    RinRuntimeClipboardFormatInfoV1 received[RINRUNTIME_CLIPBOARD_MAX_FORMATS];
+    const uint32_t capacity = (uint32_t)sizeof(received);
+    if (format_count_out != NULL) *format_count_out = 0u;
+    if (generation_out != NULL) *generation_out = 0u;
+    if (format_count_out == NULL || generation_out == NULL ||
+        (formats == NULL && format_capacity != 0u) ||
+        format_capacity > RINRUNTIME_CLIPBOARD_MAX_FORMATS)
+        return RINRUNTIME_CLIPBOARD_INVALID_ARGUMENT;
+    if (formats != NULL && format_capacity != 0u)
+        memset(formats, 0, (size_t)format_capacity * sizeof(*formats));
+    memset(received, 0, sizeof(received));
+    runtime_clipboard_owner_request_init(
+        &request, RINRUNTIME_CLIPBOARD_OWNER_QUERY);
+    memset(&response, 0, sizeof(response));
+    const int result = runtime_drag_drop_owner_rpc(
+        &request, NULL, 0u, &response, received, capacity);
+    if (result == RIN_RESULT_NOT_FOUND) return RINRUNTIME_CLIPBOARD_NOT_FOUND;
+    if (result != RIN_RESULT_OK || response.generation == 0u ||
+        response.format_count == 0u ||
+        response.format_count > RINRUNTIME_CLIPBOARD_MAX_FORMATS ||
+        response.body_size != response.format_count * sizeof(received[0]))
+        return result == RIN_RESULT_OK ? RINRUNTIME_CLIPBOARD_MALFORMED_REPLY
+                                       : (RinRuntimeClipboardResult)result;
+    uint32_t total_files = 0u;
+    uint64_t total_bytes = 0u;
+    for (uint32_t index = 0u; index < response.format_count; ++index) {
+        if (!runtime_clipboard_format_valid(&received[index]) ||
+            (index != 0u && received[index - 1u].priority >
+                                received[index].priority))
+            return RINRUNTIME_CLIPBOARD_MALFORMED_REPLY;
+        total_bytes += received[index].data_size;
+        total_files += received[index].file_count;
+        for (uint32_t prior = 0u; prior < index; ++prior)
+            if (received[prior].mime_size == received[index].mime_size &&
+                memcmp(received[prior].mime, received[index].mime,
+                       received[index].mime_size) == 0)
+                return RINRUNTIME_CLIPBOARD_MALFORMED_REPLY;
+    }
+    if (total_bytes > RINRUNTIME_CLIPBOARD_MAX_DATA_BYTES ||
+        total_files > RINRUNTIME_CLIPBOARD_MAX_FILES)
+        return RINRUNTIME_CLIPBOARD_MALFORMED_REPLY;
+    *format_count_out = response.format_count;
+    *generation_out = response.generation;
+    if (formats == NULL || format_capacity < response.format_count) {
+        memset(received, 0, sizeof(received));
+        return RINRUNTIME_CLIPBOARD_BUFFER_TOO_SMALL;
+    }
+    memcpy(formats, received, response.body_size);
+    memset(received, 0, sizeof(received));
+    return RINRUNTIME_CLIPBOARD_OK;
+}
+
+RinRuntimeClipboardResult rinruntime_clipboard_read_chunk_v1(
+    uint64_t generation, uint32_t format_index, uint64_t offset,
+    void* data, uint32_t data_capacity, uint32_t* bytes_read_out) {
+    RinRuntimeDragDropOwnerRequestV1 request;
+    RinRuntimeDragDropOwnerResponseV1 response;
+    if (bytes_read_out != NULL) *bytes_read_out = 0u;
+    if (generation == 0u || format_index >= RINRUNTIME_CLIPBOARD_MAX_FORMATS ||
+        data_capacity > RINRUNTIME_CLIPBOARD_MAX_CHUNK_BYTES ||
+        (data == NULL && data_capacity != 0u) || bytes_read_out == NULL)
+        return RINRUNTIME_CLIPBOARD_INVALID_ARGUMENT;
+    runtime_clipboard_owner_request_init(
+        &request, RINRUNTIME_CLIPBOARD_OWNER_READ_CHUNK);
+    request.generation = generation;
+    request.action = format_index;
+    request.offset = offset;
+    request.data_size = data_capacity;
+    memset(&response, 0, sizeof(response));
+    const int result = runtime_drag_drop_owner_rpc(
+        &request, NULL, 0u, &response, data, data_capacity);
+    if (result != RIN_RESULT_OK && data != NULL)
+        memset(data, 0, data_capacity);
+    if (result == RIN_RESULT_OK &&
+        (response.generation != generation ||
+         response.body_size > data_capacity || response.data_size < offset ||
+         response.body_size > response.data_size - offset)) {
+        if (data != NULL) memset(data, 0, data_capacity);
+        return RINRUNTIME_CLIPBOARD_MALFORMED_REPLY;
+    }
+    if (result == RIN_RESULT_OK) *bytes_read_out = response.body_size;
+    return runtime_clipboard_owner_result_valid(result)
+        ? (RinRuntimeClipboardResult)result
+        : RINRUNTIME_CLIPBOARD_MALFORMED_REPLY;
+}
+
+RinRuntimeClipboardResult rinruntime_clipboard_get_file_v1(
+    uint64_t generation, uint32_t format_index, uint32_t file_index,
+    RinFilePortalTokenV1* token_out, char* label_out,
+    uint32_t label_capacity, uint32_t* label_size_out) {
+    RinRuntimeDragDropOwnerRequestV1 request;
+    RinRuntimeDragDropOwnerResponseV1 response;
+    if (token_out != NULL) memset(token_out, 0, sizeof(*token_out));
+    if (label_size_out != NULL) *label_size_out = 0u;
+    if (generation == 0u || format_index >= RINRUNTIME_CLIPBOARD_MAX_FORMATS ||
+        token_out == NULL || label_out == NULL || label_capacity == 0u ||
+        label_capacity > RINRUNTIME_CLIPBOARD_MAX_LABEL_BYTES + 1u ||
+        label_size_out == NULL)
+        return RINRUNTIME_CLIPBOARD_INVALID_ARGUMENT;
+    memset(label_out, 0, label_capacity);
+    runtime_clipboard_owner_request_init(
+        &request, RINRUNTIME_CLIPBOARD_OWNER_GET_FILE);
+    request.generation = generation;
+    request.action = format_index;
+    request.offset = file_index;
+    memset(&response, 0, sizeof(response));
+    const int result = runtime_drag_drop_owner_rpc(
+        &request, NULL, 0u, &response, NULL, 0u);
+    if (result != RIN_RESULT_OK) return runtime_clipboard_owner_result_valid(result)
+        ? (RinRuntimeClipboardResult)result
+        : RINRUNTIME_CLIPBOARD_MALFORMED_REPLY;
+    if (response.generation != generation || response.body_size != 0u ||
+        response.label_size == 0u ||
+        response.label_size > RINRUNTIME_CLIPBOARD_MAX_LABEL_BYTES ||
+        response.label_size + 1u > label_capacity ||
+        response.label[response.label_size] != '\0' ||
+        response.file_token.magic != RIN_FILE_PORTAL_TOKEN_MAGIC ||
+        response.file_token.version != RIN_FILE_PORTAL_TOKEN_VERSION ||
+        response.file_token.token_size != RIN_FILE_PORTAL_TOKEN_SIZE ||
+        response.file_token.rights != (RIN_FILE_PORTAL_RIGHT_READ |
+                                       RIN_FILE_PORTAL_RIGHT_METADATA) ||
+        response.file_token.file_object_id == 0u ||
+        response.file_token.expires_at_epoch == 0u) {
+        memset(&response, 0, sizeof(response));
+        return RINRUNTIME_CLIPBOARD_MALFORMED_REPLY;
+    }
+    memcpy(label_out, response.label, response.label_size + 1u);
+    *label_size_out = response.label_size;
+    *token_out = response.file_token;
+    memset(&response, 0, sizeof(response));
+    return RINRUNTIME_CLIPBOARD_OK;
+}
+
+RinRuntimeClipboardResult rinruntime_clipboard_poll_change_v1(
+    uint64_t previous_generation, uint64_t* generation_out,
+    int* changed_out) {
+    RinRuntimeClipboardFormatInfoV1 formats[RINRUNTIME_CLIPBOARD_MAX_FORMATS];
+    uint32_t count = 0u;
+    uint64_t generation = 0u;
+    if (generation_out != NULL) *generation_out = 0u;
+    if (changed_out != NULL) *changed_out = 0;
+    if (generation_out == NULL || changed_out == NULL)
+        return RINRUNTIME_CLIPBOARD_INVALID_ARGUMENT;
+    const RinRuntimeClipboardResult result = rinruntime_clipboard_query_v1(
+        formats, RINRUNTIME_CLIPBOARD_MAX_FORMATS, &count, &generation);
+    memset(formats, 0, sizeof(formats));
+    if (result != RINRUNTIME_CLIPBOARD_OK) return result;
+    *generation_out = generation;
+    *changed_out = generation != previous_generation ? 1 : 0;
+    return RINRUNTIME_CLIPBOARD_OK;
 }
