@@ -22,5 +22,7 @@ int rinfs_kernel_port_block_read_v1(
 int rinfs_kernel_port_block_write_v1(
     uint32_t device, uint64_t lba, uint32_t count, const void* buffer);
 int rinfs_kernel_port_block_flush_v1(uint32_t device);
+int rinfs_kernel_port_block_discard_v1(
+    uint32_t device, uint64_t lba, uint32_t sector_count);
 
 #endif /* RINFS_KERNEL_PORT_V1_H */

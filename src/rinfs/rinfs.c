@@ -50,6 +50,8 @@ typedef struct {
     uint32_t counted;
     uint32_t owner_counted;
     uint32_t restore_internal_io;
+    uint32_t discard_scope_active;
+    uint32_t discard_scope_success;
     uint64_t owner_cookie;
 } RinFS_MountOperationScope;
 
@@ -79,6 +81,11 @@ static int rinfs_mount_operation_pair_scope_begin(
     RinFS_MountOperationPairScope* scope);
 static int rinfs_mount_operation_pair_scope_end(
     RinFS_MountOperationPairScope* scope);
+static int rinfs_discard_operation_begin(RinFS_Mount* mount);
+static int rinfs_discard_operation_end(RinFS_Mount* mount, int success);
+static int rinfs_discard_block_is_queued(RinFS_Mount* mount, uint64_t block);
+static int rinfs_block_free_data(RinFS_Mount* mount, uint64_t block);
+static void rinfs_discard_queue_drain(RinFS_Mount* mount);
 
 typedef struct {
     RinFS_ForkPrepareCallback prepare;
@@ -549,6 +556,9 @@ extern void  platform_serial_hex(uint32_t val);
                                      (count), (buffer))
 #define platform_ata_flush(device) \
     rinfs_kernel_port_block_flush_v1((uint32_t)(device))
+#define platform_ata_discard(device, lba, count) \
+    rinfs_kernel_port_block_discard_v1((uint32_t)(device), (uint64_t)(lba), \
+                                       (count))
 
 #define rinfs_malloc   platform_kmalloc
 #define rinfs_free     platform_kfree
@@ -2796,11 +2806,17 @@ static int rinfs_mount_operation_scope_begin(
     RinFS_Mount* mount, RinFS_MountOperationScope* scope) {
     if (scope) rinfs_memset(scope, 0, sizeof(*scope));
     if (!mount || !scope) return RINFS_ERR_INVAL;
+    scope->discard_scope_success = 1u;
 #if defined(RIN_KERNEL)
     /* The recovery gate is a userland Installer lease. Kernel callers already
      * have their own mount lifecycle admission and must not take the shared
      * userland content lock around every device callback. */
-    (void)mount;
+    {
+        int discard_error = rinfs_discard_operation_begin(mount);
+        if (discard_error != RINFS_OK) return discard_error;
+        scope->mount = mount;
+        scope->discard_scope_active = 1u;
+    }
     return RINFS_OK;
 #else
     uint32_t owner_row = 0u;
@@ -2889,8 +2905,96 @@ done:
 #endif
 }
 
+static int rinfs_discard_operation_begin(RinFS_Mount* mount) {
+#if defined(RIN_KERNEL)
+    if (!mount) return RINFS_ERR_INVAL;
+    rinfs_spin_lock(&mount->discard_queue_lock);
+    if (mount->discard_unmounting != 0u) {
+        rinfs_spin_unlock(&mount->discard_queue_lock);
+        return RINFS_ERR_BUSY;
+    }
+    if (mount->discard_operation_depth == UINT32_MAX) {
+        rinfs_spin_unlock(&mount->discard_queue_lock);
+        return RINFS_ERR_OVERFLOW;
+    }
+    if (mount->discard_operation_depth == 0u &&
+        mount->discard_queue_count == 0u &&
+        mount->discard_drain_active == 0u)
+        mount->discard_queue_failed = 0u;
+    ++mount->discard_operation_depth;
+    rinfs_spin_unlock(&mount->discard_queue_lock);
+#else
+    (void)mount;
+#endif
+    return RINFS_OK;
+}
+
+static int rinfs_discard_operation_end(RinFS_Mount* mount, int success) {
+#if defined(RIN_KERNEL)
+    int should_drain = 0;
+    if (!mount) return RINFS_ERR_INVAL;
+    rinfs_spin_lock(&mount->discard_queue_lock);
+    if (mount->discard_operation_depth == 0u) {
+        rinfs_spin_unlock(&mount->discard_queue_lock);
+        return RINFS_ERR_CORRUPT;
+    }
+    if (!success) mount->discard_queue_failed = 1u;
+    --mount->discard_operation_depth;
+    if (mount->discard_operation_depth == 0u) {
+        if (mount->discard_queue_failed != 0u) {
+            mount->discard_queue_count = 0u;
+            mount->discard_queue_failed = 0u;
+        } else if (mount->discard_queue_count != 0u &&
+                   mount->discard_drain_active == 0u) {
+            mount->discard_drain_active = 1u;
+            should_drain = 1;
+        }
+    }
+    rinfs_spin_unlock(&mount->discard_queue_lock);
+    if (should_drain) rinfs_discard_queue_drain(mount);
+#else
+    (void)mount;
+    (void)success;
+#endif
+    return RINFS_OK;
+}
+
+static int rinfs_discard_block_is_queued(RinFS_Mount* mount, uint64_t block) {
+#if defined(RIN_KERNEL)
+    int queued = 0;
+    if (!mount) return 0;
+    rinfs_spin_lock(&mount->discard_queue_lock);
+    for (uint32_t index = 0u; index < mount->discard_queue_count; ++index) {
+        const RinFS_DiscardExtent* extent = &mount->discard_queue[index];
+        if (block >= extent->first_block &&
+            block - extent->first_block < extent->block_count) {
+            queued = 1;
+            break;
+        }
+    }
+    rinfs_spin_unlock(&mount->discard_queue_lock);
+    return queued;
+#else
+    (void)mount;
+    (void)block;
+    return 0;
+#endif
+}
+
 static int rinfs_mount_operation_scope_end(
     RinFS_MountOperationScope* scope) {
+#if defined(RIN_KERNEL)
+    int result;
+    if (!scope) return RINFS_ERR_INVAL;
+    if (scope->discard_scope_active == 0u) {
+        rinfs_memset(scope, 0, sizeof(*scope));
+        return RINFS_OK;
+    }
+    result = rinfs_discard_operation_end(
+        scope->mount, scope->discard_scope_success != 0u);
+    rinfs_memset(scope, 0, sizeof(*scope));
+    return result;
+#else
     RinFS_Mount* mount;
     int result;
     int unlock_error;
@@ -2962,6 +3066,7 @@ static int rinfs_mount_operation_scope_end(
     }
     rinfs_memset(scope, 0, sizeof(*scope));
     return result;
+#endif
 }
 
 static int rinfs_mount_operation_pair_scope_begin(
@@ -3002,6 +3107,9 @@ static int rinfs_mount_operation_pair_scope_end(
 
 static int rinfs_mount_operation_scope_finish(
     RinFS_MountOperationScope* scope, int operation_error) {
+#if defined(RIN_KERNEL)
+    if (scope) scope->discard_scope_success = operation_error == RINFS_OK;
+#endif
     int release_error = rinfs_mount_operation_scope_end(scope);
     return release_error == RINFS_OK ? operation_error : release_error;
 }
@@ -9691,13 +9799,18 @@ static int rinfs_content_delete_clear(RinFS_Mount* mount, uint64_t ino,
 static int device_ops_valid(const RinFS_DeviceOps* ops) {
     const uint32_t supported = RINFS_DEVICE_FLAG_REMOVABLE |
                                RINFS_DEVICE_FLAG_SLOW |
-                               RINFS_DEVICE_FLAG_OFFLINE;
+                               RINFS_DEVICE_FLAG_OFFLINE |
+                               RINFS_DEVICE_FLAG_DISCARD;
 #if defined(RIN_USERSPACE)
     return ops != NULL && ops->read && ops->write && ops->flush &&
-           (ops->flags & ~supported) == 0u;
+           (ops->flags & ~supported) == 0u &&
+           ((ops->flags & RINFS_DEVICE_FLAG_DISCARD) == 0u ||
+            ops->discard != NULL);
 #else
     return !ops || (ops->read && ops->write && ops->flush &&
-                    (ops->flags & ~supported) == 0u);
+                    (ops->flags & ~supported) == 0u &&
+                    ((ops->flags & RINFS_DEVICE_FLAG_DISCARD) == 0u ||
+                     ops->discard != NULL));
 #endif
 }
 
@@ -9735,6 +9848,24 @@ static int device_flush(const RinFS_DeviceOps* ops, int dev_id) {
     return -1;
 #else
     return platform_ata_flush(dev_id);
+#endif
+}
+
+static int device_discard(const RinFS_DeviceOps* ops, int dev_id,
+                          uint64_t lba, uint32_t count) {
+    if (ops && (ops->flags & RINFS_DEVICE_FLAG_OFFLINE) != 0u) return -1;
+    if (ops) {
+        if ((ops->flags & RINFS_DEVICE_FLAG_DISCARD) == 0u || !ops->discard)
+            return -1;
+        return ops->discard(ops->opaque, dev_id, lba, count);
+    }
+#if defined(RIN_KERNEL)
+    return platform_ata_discard(dev_id, lba, count);
+#else
+    (void)dev_id;
+    (void)lba;
+    (void)count;
+    return -1;
 #endif
 }
 
@@ -10266,6 +10397,7 @@ static int rinfs_block_alloc_unscoped(RinFS_Mount* mount, uint64_t* block) {
                     uint64_t blk;
                     if ((bitmap[byte] & mask) != 0u) continue;
                     blk = bitmap_base + relative;
+                    if (rinfs_discard_block_is_queued(mount, blk)) continue;
 
                     err = rinfs_allocator_recovery_prepare_locked(
                         mount, 0,
@@ -10393,6 +10525,231 @@ static int rinfs_block_free_unscoped(RinFS_Mount* mount, uint64_t block) {
     err = rinfs_block_allocation_unlock_status(mount, err);
     rinfs_free(bitmap);
     return err;
+}
+
+static void rinfs_discard_queue_enqueue(RinFS_Mount* mount, uint64_t block) {
+#if defined(RIN_KERNEL)
+    RinFS_DiscardExtent candidate;
+    if (!mount || block >= mount->sb.s_block_count) return;
+    candidate.dev_id = mount->dev_id;
+    candidate.in_flight = 0u;
+    candidate.mount_epoch = mount->mount_epoch;
+    candidate.dev_offset = mount->dev_offset;
+    candidate.dev_sector_count = mount->dev_sector_count;
+    candidate.first_block = block;
+    candidate.block_count = 1u;
+    rinfs_spin_lock(&mount->discard_queue_lock);
+    if (mount->discard_operation_depth == 0u ||
+        (mount->discard_drain_active == 0u &&
+         mount->discard_queue_failed != 0u)) {
+        rinfs_spin_unlock(&mount->discard_queue_lock);
+        return;
+    }
+    for (uint32_t index = 0u; index < mount->discard_queue_count; ++index) {
+        RinFS_DiscardExtent* extent = &mount->discard_queue[index];
+        if (extent->in_flight != 0u || extent->dev_id != candidate.dev_id ||
+            extent->mount_epoch != candidate.mount_epoch ||
+            extent->dev_offset != candidate.dev_offset ||
+            extent->dev_sector_count != candidate.dev_sector_count)
+            continue;
+        int merged = 0;
+        if (block == extent->first_block + extent->block_count) {
+            ++extent->block_count;
+            merged = 1;
+        } else if (block < extent->first_block &&
+                   extent->first_block - block == 1u) {
+            extent->first_block = block;
+            ++extent->block_count;
+            merged = 1;
+        }
+        if (!merged) {
+            continue;
+        }
+        for (uint32_t other_index = 0u;
+             other_index < mount->discard_queue_count;) {
+            RinFS_DiscardExtent* other = &mount->discard_queue[other_index];
+            if (other_index == index || other->in_flight != 0u ||
+                other->dev_id != extent->dev_id ||
+                other->mount_epoch != extent->mount_epoch ||
+                other->dev_offset != extent->dev_offset ||
+                other->dev_sector_count != extent->dev_sector_count) {
+                ++other_index;
+                continue;
+            }
+            if (other->first_block + other->block_count ==
+                extent->first_block) {
+                extent->first_block = other->first_block;
+                extent->block_count += other->block_count;
+            } else if (extent->first_block + extent->block_count ==
+                       other->first_block) {
+                extent->block_count += other->block_count;
+            } else {
+                ++other_index;
+                continue;
+            }
+            for (uint32_t move = other_index + 1u;
+                 move < mount->discard_queue_count; ++move)
+                mount->discard_queue[move - 1u] =
+                    mount->discard_queue[move];
+            --mount->discard_queue_count;
+            rinfs_memset(&mount->discard_queue[mount->discard_queue_count],
+                         0, sizeof(mount->discard_queue[0]));
+            if (other_index < index) {
+                --index;
+                extent = &mount->discard_queue[index];
+            }
+        }
+        rinfs_spin_unlock(&mount->discard_queue_lock);
+        return;
+    }
+    if (mount->discard_queue_count < RINFS_DISCARD_EXTENT_CAPACITY) {
+        mount->discard_queue[mount->discard_queue_count++] = candidate;
+    }
+    rinfs_spin_unlock(&mount->discard_queue_lock);
+#else
+    (void)mount;
+    (void)block;
+#endif
+}
+
+static void rinfs_discard_queue_drain(RinFS_Mount* mount) {
+#if defined(RIN_KERNEL)
+    for (;;) {
+        RinFS_DiscardExtent extent;
+        int request_valid = 1;
+        int discard_result = -1;
+        uint32_t sectors_per_block;
+        uint64_t lba;
+        uint64_t sector_count;
+        uint8_t* bitmap = NULL;
+        uint64_t cached_bitmap_block = UINT64_MAX;
+        if (!mount) return;
+        rinfs_spin_lock(&mount->discard_queue_lock);
+        if (mount->discard_queue_count == 0u ||
+            mount->discard_operation_depth != 0u) {
+            mount->discard_drain_active = 0u;
+            rinfs_spin_unlock(&mount->discard_queue_lock);
+            return;
+        }
+        extent = mount->discard_queue[0];
+        if (extent.in_flight != 0u) {
+            mount->discard_drain_active = 0u;
+            rinfs_spin_unlock(&mount->discard_queue_lock);
+            return;
+        }
+        mount->discard_queue[0].in_flight = 1u;
+        extent.in_flight = 1u;
+        rinfs_spin_unlock(&mount->discard_queue_lock);
+
+        sectors_per_block = mount->sb.s_block_size / RINFS_SECTOR_SIZE;
+        if (!mount->mounted || sectors_per_block == 0u ||
+            mount->sb.s_block_size % RINFS_SECTOR_SIZE != 0u ||
+            extent.dev_id != mount->dev_id ||
+            extent.mount_epoch != mount->mount_epoch ||
+            extent.dev_offset != mount->dev_offset ||
+            extent.dev_sector_count == 0u ||
+            extent.dev_sector_count != mount->dev_sector_count ||
+            extent.block_count == 0u ||
+            extent.first_block < rinfs_reserved_data_end(mount) ||
+            extent.first_block >= mount->sb.s_block_count ||
+            extent.block_count > mount->sb.s_block_count - extent.first_block ||
+            extent.block_count > UINT32_MAX / sectors_per_block ||
+            extent.first_block > UINT64_MAX / sectors_per_block) {
+            request_valid = 0;
+        }
+        if (request_valid) {
+            lba = block_to_sector(mount, extent.first_block);
+            sector_count = extent.block_count * sectors_per_block;
+            if (lba < extent.dev_offset ||
+                lba - extent.dev_offset > extent.dev_sector_count ||
+                sector_count > extent.dev_sector_count -
+                                   (lba - extent.dev_offset) ||
+                lba > UINT64_MAX - sector_count) {
+                request_valid = 0;
+            }
+        }
+
+        if (request_valid) {
+            bitmap = (uint8_t*)rinfs_malloc(mount->sb.s_block_size);
+            if (!bitmap) request_valid = 0;
+        }
+        if (request_valid) {
+            int lock_error = rinfs_block_allocation_lock(mount);
+            if (lock_error != RINFS_OK) {
+                request_valid = 0;
+            } else {
+                const uint64_t bits_per_block =
+                    (uint64_t)mount->sb.s_block_size * 8u;
+                for (uint64_t index = 0u; index < extent.block_count; ++index) {
+                    uint64_t block = extent.first_block + index;
+                    uint64_t bitmap_block = block / bits_per_block;
+                    uint64_t relative = block % bits_per_block;
+                    if (bitmap_block != cached_bitmap_block) {
+                        int read_error = rinfs_block_read_unscoped(
+                            mount, mount->sb.s_block_bitmap + bitmap_block,
+                            bitmap);
+                        if (read_error != RINFS_OK) {
+                            request_valid = 0;
+                            break;
+                        }
+                        cached_bitmap_block = bitmap_block;
+                    }
+                    if ((bitmap[relative / 8u] &
+                         (uint8_t)(1u << (relative % 8u))) != 0u) {
+                        request_valid = 0;
+                        break;
+                    }
+                }
+                if (rinfs_block_allocation_unlock_status(
+                        mount, RINFS_OK) != RINFS_OK)
+                    request_valid = 0;
+            }
+        }
+        if (bitmap) rinfs_free(bitmap);
+        if (request_valid &&
+            (mount->device_flags & RINFS_DEVICE_FLAG_OFFLINE) == 0u)
+            discard_result = device_discard(
+                mount->has_device_ops ? &mount->device_ops : NULL,
+                extent.dev_id, lba, (uint32_t)sector_count);
+        (void)discard_result;
+
+        rinfs_spin_lock(&mount->discard_queue_lock);
+        if (mount->discard_queue_count != 0u &&
+            mount->discard_queue[0].in_flight != 0u &&
+            mount->discard_queue[0].dev_id == extent.dev_id &&
+            mount->discard_queue[0].first_block == extent.first_block &&
+            mount->discard_queue[0].mount_epoch == extent.mount_epoch) {
+            for (uint32_t index = 1u;
+                 index < mount->discard_queue_count; ++index)
+                mount->discard_queue[index - 1u] =
+                    mount->discard_queue[index];
+            --mount->discard_queue_count;
+            rinfs_memset(&mount->discard_queue[mount->discard_queue_count],
+                         0, sizeof(mount->discard_queue[0]));
+        }
+        if (mount->discard_operation_depth != 0u) {
+            mount->discard_drain_active = 0u;
+            rinfs_spin_unlock(&mount->discard_queue_lock);
+            return;
+        }
+        rinfs_spin_unlock(&mount->discard_queue_lock);
+    }
+#else
+    (void)mount;
+#endif
+}
+
+static int rinfs_block_free_data(RinFS_Mount* mount, uint64_t block) {
+#if defined(RIN_KERNEL)
+    RinFS_MountOperationScope operation = {0};
+    int error = rinfs_mount_operation_scope_begin(mount, &operation);
+    if (error != RINFS_OK) return error;
+    error = rinfs_block_free_unscoped(mount, block);
+    if (error == RINFS_OK) rinfs_discard_queue_enqueue(mount, block);
+    return rinfs_mount_operation_scope_finish(&operation, error);
+#else
+    return rinfs_block_free(mount, block);
+#endif
 }
 
 /* The xattr block is metadata rather than file data, but it still occupies a
@@ -18528,6 +18885,9 @@ static int rinfs_shared_mount_registry_acquire_exact(
             mount->device_ops.read != device_ops->read ||
             mount->device_ops.write != device_ops->write ||
             mount->device_ops.flush != device_ops->flush ||
+            (((mount->device_ops.flags | device_ops->flags) &
+              RINFS_DEVICE_FLAG_DISCARD) != 0u &&
+             mount->device_ops.discard != device_ops->discard) ||
             mount->device_ops.opaque != device_ops->opaque ||
             mount->device_ops.flags != device_ops->flags)
             continue;
@@ -19945,6 +20305,16 @@ static int rinfs_unmount_core(RinFS_Mount* mount) {
     int content_unlock_error = RINFS_OK;
     int operation_error;
     if (!mount) return rinfs_content_unlock_status((RINFS_ERR_INVAL), content_unlock_error);
+#if defined(RIN_KERNEL)
+    rinfs_spin_lock(&mount->discard_queue_lock);
+    if (mount->discard_operation_depth != 0u ||
+        mount->discard_drain_active != 0u) {
+        rinfs_spin_unlock(&mount->discard_queue_lock);
+        return rinfs_content_unlock_status(RINFS_ERR_BUSY,
+                                           content_unlock_error);
+    }
+    rinfs_spin_unlock(&mount->discard_queue_lock);
+#endif
     if (!mount->mounted) {
         int cleanup_pending =
             rinfs_mount_runtime_buffers_pending(mount);
@@ -20125,12 +20495,38 @@ static int rinfs_unmount_core(RinFS_Mount* mount) {
         }
     }
     
-    int quiescent_err = rinfs_mount_page_cache_quiescent(mount, 0);
-    if (quiescent_err != RINFS_OK) return rinfs_content_unlock_status((quiescent_err), content_unlock_error);
+    int quiescent_err;
+#if defined(RIN_KERNEL)
+    rinfs_spin_lock(&mount->discard_queue_lock);
+    if (mount->discard_operation_depth != 0u ||
+        mount->discard_drain_active != 0u ||
+        mount->discard_queue_count != 0u) {
+        rinfs_spin_unlock(&mount->discard_queue_lock);
+        return rinfs_content_unlock_status(RINFS_ERR_BUSY,
+                                           content_unlock_error);
+    }
+    mount->discard_unmounting = 1u;
+    rinfs_spin_unlock(&mount->discard_queue_lock);
+#endif
+    quiescent_err = rinfs_mount_page_cache_quiescent(mount, 0);
+    if (quiescent_err != RINFS_OK) {
+#if defined(RIN_KERNEL)
+        rinfs_spin_lock(&mount->discard_queue_lock);
+        mount->discard_unmounting = 0u;
+        rinfs_spin_unlock(&mount->discard_queue_lock);
+#endif
+        return rinfs_content_unlock_status((quiescent_err), content_unlock_error);
+    }
     int free_error = rinfs_mount_free_runtime_buffers(mount);
-    if (free_error != RINFS_OK)
+    if (free_error != RINFS_OK) {
+#if defined(RIN_KERNEL)
+        rinfs_spin_lock(&mount->discard_queue_lock);
+        mount->discard_unmounting = 0u;
+        rinfs_spin_unlock(&mount->discard_queue_lock);
+#endif
         return rinfs_content_unlock_status(free_error,
                                            content_unlock_error);
+    }
     
     mount->mounted = 0;
     rinfs_debug("[RinFS] Unmounted\n");
@@ -23148,7 +23544,8 @@ static uint64_t rinfs_indirect_entry_capacity(uint64_t ptrs_per_block,
  * durable enough to detach it. */
 static int rinfs_release_indirect_tree(RinFS_Mount* mount, uint64_t tree_block,
                                        uint32_t depth, uint64_t logical_base,
-                                       uint64_t first_file_block, int* empty) {
+                                       uint64_t first_file_block,
+                                       int discard_payload, int* empty) {
     if (depth == 0 || depth > 3 || !empty ||
         !rinfs_valid_allocated_block(mount, tree_block)) {
         return RINFS_ERR_CORRUPT;
@@ -23192,6 +23589,7 @@ static int rinfs_release_indirect_tree(RinFS_Mount* mount, uint64_t tree_block,
             int child_empty = 0;
             err = rinfs_release_indirect_tree(mount, child, depth - 1,
                                               child_base, first_file_block,
+                                              discard_payload,
                                               &child_empty);
             if (err != RINFS_OK) goto out;
             if (child_empty) {
@@ -23217,7 +23615,9 @@ static int rinfs_release_indirect_tree(RinFS_Mount* mount, uint64_t tree_block,
          * data/metadata children can no longer alias a future allocation. */
         for (uint64_t i = 0; i < ptrs_per_block; i++) {
             if (original[i] != 0 && updated[i] == 0) {
-                err = rinfs_block_free(mount, original[i]);
+                err = depth == 1u && discard_payload
+                    ? rinfs_block_free_data(mount, original[i])
+                    : rinfs_block_free(mount, original[i]);
                 if (err != RINFS_OK) goto out;
             }
         }
@@ -23345,6 +23745,9 @@ static int rinfs_inode_release_from(RinFS_Mount* mount, uint64_t ino,
     uint64_t detached_roots[3] = {0, 0, 0};
     uint64_t detached_xattr = 0u;
     uint64_t ptrs_per_block = mount->sb.s_block_size / sizeof(uint64_t);
+    uint16_t file_type = (uint16_t)(inode->i_mode >> 12);
+    int discard_payload = file_type == RINFS_FT_REG ||
+                          file_type == RINFS_FT_LNK;
 
     for (uint32_t i = 0; i < RINFS_DIRECT_BLOCKS; i++) {
         if ((uint64_t)i >= first_file_block && inode->i_block[i] != 0) {
@@ -23370,6 +23773,7 @@ static int rinfs_inode_release_from(RinFS_Mount* mount, uint64_t ino,
         int empty = 0;
         int err = rinfs_release_indirect_tree(mount, roots[level], level + 1,
                                               bases[level], first_file_block,
+                                              discard_payload,
                                               &empty);
         if (err != RINFS_OK) return err;
         if (empty) detached_roots[level] = roots[level];
@@ -23412,7 +23816,9 @@ static int rinfs_inode_release_from(RinFS_Mount* mount, uint64_t ino,
 
     for (uint32_t i = 0; i < RINFS_DIRECT_BLOCKS; i++) {
         if (detached_direct[i] != 0) {
-            err = rinfs_block_free(mount, detached_direct[i]);
+            err = discard_payload
+                ? rinfs_block_free_data(mount, detached_direct[i])
+                : rinfs_block_free(mount, detached_direct[i]);
             if (err != RINFS_OK) return err;
         }
     }
@@ -31279,8 +31685,8 @@ int rinfs_rename_if_newer(RinFS_Mount* mount, uint64_t old_dir,
     error = rinfs_journal_transaction_lock(mount);
     if (error == RINFS_OK) {
         error = rinfs_rename_impl(mount, old_dir, old_name, new_dir, new_name,
-                                  0, 0u, 0u, 0u, 0u, 0u, 0u, 1, source_mtime,
-                                  NULL);
+                                  0, 0u, 0u, 0u, 0u, 0u, 0u, 1, 1,
+                                  source_mtime, NULL);
         error = rinfs_journal_transaction_unlock_status(mount, error);
     }
     return rinfs_mount_operation_scope_finish(&operation, error);

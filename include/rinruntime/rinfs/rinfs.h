@@ -178,6 +178,7 @@ enum {
 #define RINFS_DEVICE_FLAG_REMOVABLE 0x00000001u
 #define RINFS_DEVICE_FLAG_SLOW      0x00000002u
 #define RINFS_DEVICE_FLAG_OFFLINE  0x00000004u
+#define RINFS_DEVICE_FLAG_DISCARD   0x00000008u
 
 typedef enum {
     RINFS_PAGE_CACHE_PRESSURE_NORMAL = 0,
@@ -412,7 +413,20 @@ typedef struct RinFS_DeviceOps {
     int (*flush)(void* opaque, int dev_id);
     void* opaque;
     uint32_t flags;
+    int (*discard)(void* opaque, int dev_id, uint64_t lba,
+                   uint32_t sector_count);
 } RinFS_DeviceOps;
+
+#define RINFS_DISCARD_EXTENT_CAPACITY 64u
+typedef struct RinFS_DiscardExtent {
+    int32_t dev_id;
+    uint32_t in_flight;
+    uint64_t mount_epoch;
+    uint64_t dev_offset;
+    uint64_t dev_sector_count;
+    uint64_t first_block;
+    uint64_t block_count;
+} RinFS_DiscardExtent;
 
 typedef struct {
     uint64_t mount_epoch;
@@ -687,6 +701,15 @@ struct RinFS_Mount {
     volatile uint32_t content_lease_lock;
     /* Serializes the single on-disk rename/rmdir journal transaction. */
     volatile uint32_t namespace_journal_lock;
+    /* Kernel-only post-commit discard queue. Entries remain allocated to the
+     * allocator until the generation-bound device request completes. */
+    volatile uint32_t discard_queue_lock;
+    volatile uint32_t discard_operation_depth;
+    uint32_t discard_queue_count;
+    uint32_t discard_queue_failed;
+    uint32_t discard_drain_active;
+    uint32_t discard_unmounting;
+    RinFS_DiscardExtent discard_queue[RINFS_DISCARD_EXTENT_CAPACITY];
     uint32_t          content_lease_closing;
     /* One-based shared-owner row for a fork interlock. Process-death
      * reconciliation clears a stranded FORK gate owned by a dead row. */
