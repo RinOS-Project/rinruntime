@@ -153,7 +153,6 @@ int rin_app_clipboard_get(uint32_t format, void* data, size_t data_capacity,
                           uint64_t* required_out,
                           uint64_t* generation_out)
 {
-    if (required_out == NULL) return RIN_RESULT_INVALID_ARGUMENT;
     return (int)rinruntime_clipboard_get(format, data,
                                          (uint64_t)data_capacity,
                                          required_out, generation_out);
