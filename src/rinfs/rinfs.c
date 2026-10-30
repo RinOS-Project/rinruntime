@@ -3063,6 +3063,7 @@ static int rinfs_shared_cache_lock(RinFS_Mount* mount,
              ++index)
             mount->dentry_cache->entries[index].valid = 0u;
         mount->dentry_cache->clock = 0u;
+        mount->dentry_cache->replacement_cursor = 0u;
         mount->dentry_cache->hits = 0u;
         mount->dentry_cache->misses = 0u;
         break;
@@ -3070,7 +3071,11 @@ static int rinfs_shared_cache_lock(RinFS_Mount* mount,
         for (uint32_t index = 0u; index < RINFS_DIRECTORY_INDEX_CAPACITY;
              ++index)
             mount->directory_index->entries[index].valid = 0u;
+        for (uint32_t index = 0u;
+             index < RINFS_DIRECTORY_INDEX_BUILD_CAPACITY; ++index)
+            mount->directory_index->builds[index].state = 0u;
         mount->directory_index->replacement_cursor = 0u;
+        mount->directory_index->build_replacement_cursor = 0u;
         break;
     case RINFS_SHARED_CACHE_INODE:
         for (uint32_t index = 0u; index < RINFS_INODE_CACHE_CAPACITY;
@@ -4907,6 +4912,181 @@ static uint64_t rinfs_directory_index_key(uint64_t directory_inode,
     return hash == 0u ? UINT64_C(1) : hash;
 }
 
+enum {
+    RINFS_DIRECTORY_INDEX_BUILD_EMPTY = 0u,
+    RINFS_DIRECTORY_INDEX_BUILD_IN_PROGRESS = 1u,
+    RINFS_DIRECTORY_INDEX_BUILD_READY = 2u,
+    RINFS_DIRECTORY_INDEX_BUILD_INCOMPLETE = 3u,
+    RINFS_DIRECTORY_INDEX_BUILD_FAILED = 4u,
+    RINFS_DIRECTORY_INDEX_BUILD_CLAIMED = 5u,
+    RINFS_DIRECTORY_INDEX_BUILD_BUSY = 6u
+};
+
+#if RINFS_DIRECTORY_INDEX_BUILD_CAPACITY < 4u || \
+    (RINFS_DIRECTORY_INDEX_BUILD_CAPACITY % 4u) != 0u
+#error "RinFS directory index build-state capacity must be a multiple of four"
+#endif
+
+#if RINFS_DENTRY_CACHE_CAPACITY < RINFS_DENTRY_CACHE_WAYS || \
+    (RINFS_DENTRY_CACHE_CAPACITY % RINFS_DENTRY_CACHE_WAYS) != 0u
+#error "RinFS dentry cache capacity must be a multiple of its way count"
+#endif
+
+#ifdef RINFS_DIRECTORY_INDEX_BUILD_HOOK
+extern void RINFS_DIRECTORY_INDEX_BUILD_HOOK(void);
+#define RINFS_NOTE_DIRECTORY_INDEX_BUILD() \
+    RINFS_DIRECTORY_INDEX_BUILD_HOOK()
+#else
+#define RINFS_NOTE_DIRECTORY_INDEX_BUILD() ((void)0)
+#endif
+
+#ifdef RINFS_DENTRY_CACHE_PROBE_HOOK
+extern void RINFS_DENTRY_CACHE_PROBE_HOOK(void);
+#define RINFS_NOTE_DENTRY_CACHE_PROBE() RINFS_DENTRY_CACHE_PROBE_HOOK()
+#else
+#define RINFS_NOTE_DENTRY_CACHE_PROBE() ((void)0)
+#endif
+
+static uint64_t rinfs_cache_hash_mix(uint64_t value) {
+    value ^= value >> 30u;
+    value *= UINT64_C(0xbf58476d1ce4e5b9);
+    value ^= value >> 27u;
+    value *= UINT64_C(0x94d049bb133111eb);
+    value ^= value >> 31u;
+    return value;
+}
+
+static uint64_t rinfs_dentry_cache_key(
+    const RinFS_Mount* mount, uint64_t directory_inode,
+    const RinFS_Inode* directory, uint64_t content_generation,
+    const char* name, uint32_t name_length) {
+    uint64_t hash = rinfs_directory_index_key(
+        directory_inode, name, name_length);
+    hash ^= rinfs_cache_hash_mix(mount->mount_epoch);
+    hash = rinfs_cache_hash_mix(hash ^ content_generation);
+    hash = rinfs_cache_hash_mix(
+        hash ^ ((uint64_t)directory->i_generation << 32u));
+    return hash == 0u ? UINT64_C(1) : hash;
+}
+
+static uint64_t rinfs_directory_build_set_hash(
+    const RinFS_Mount* mount, uint64_t directory_inode,
+    const RinFS_Inode* directory) {
+    uint64_t hash = rinfs_cache_hash_mix(
+        mount->mount_epoch ^ UINT64_C(0x9e3779b97f4a7c15));
+    hash = rinfs_cache_hash_mix(hash ^ directory_inode);
+    return rinfs_cache_hash_mix(
+        hash ^ ((uint64_t)directory->i_generation << 32u));
+}
+
+static int rinfs_directory_index_build_state_begin(
+    RinFS_Mount* mount, uint64_t directory_inode,
+    const RinFS_Inode* directory, uint64_t content_generation,
+    uint32_t* state_out) {
+    RinFS_DirectoryIndex* cache;
+    RinFS_DirectoryIndexBuildEntry* empty = NULL;
+    RinFS_DirectoryIndexBuildEntry* stale = NULL;
+    uint32_t start;
+    uint32_t cursor;
+    if (!mount || !directory || !mount->directory_index || !state_out ||
+        mount->mount_epoch == 0u || content_generation == 0u)
+        return RINFS_ERR_INVAL;
+    cache = mount->directory_index;
+    start = (uint32_t)(rinfs_directory_build_set_hash(
+                 mount, directory_inode, directory) %
+             (RINFS_DIRECTORY_INDEX_BUILD_CAPACITY / 4u)) * 4u;
+    {
+        int lock_err = rinfs_shared_cache_lock(
+            mount, &cache->lock, RINFS_SHARED_CACHE_DIRECTORY_INDEX);
+        if (lock_err != RINFS_OK) return lock_err;
+    }
+    for (uint32_t way = 0u; way < 4u; ++way) {
+        RinFS_DirectoryIndexBuildEntry* entry =
+            &cache->builds[start + way];
+        if (entry->state != RINFS_DIRECTORY_INDEX_BUILD_EMPTY &&
+            entry->mount_epoch == mount->mount_epoch &&
+            entry->directory_inode == directory_inode &&
+            entry->directory_lifetime_generation == directory->i_generation &&
+            entry->directory_content_generation == content_generation) {
+            *state_out = entry->state;
+            return rinfs_shared_cache_unlock(mount, &cache->lock);
+        }
+        if (entry->state == RINFS_DIRECTORY_INDEX_BUILD_EMPTY) {
+            if (!empty) empty = entry;
+            continue;
+        }
+        if (entry->state == RINFS_DIRECTORY_INDEX_BUILD_IN_PROGRESS)
+            continue;
+        if (entry->mount_epoch == mount->mount_epoch &&
+            entry->directory_inode == directory_inode &&
+            entry->directory_lifetime_generation == directory->i_generation) {
+            if (!stale) stale = entry;
+        }
+    }
+    if (!empty && !stale) {
+        cursor = cache->build_replacement_cursor % 4u;
+        for (uint32_t step = 0u; step < 4u; ++step) {
+            RinFS_DirectoryIndexBuildEntry* candidate = &cache->builds[
+                start + ((cursor + step) % 4u)];
+            if (candidate->state !=
+                RINFS_DIRECTORY_INDEX_BUILD_IN_PROGRESS) {
+                stale = candidate;
+                cache->build_replacement_cursor = (cursor + step + 1u) % 4u;
+                break;
+            }
+        }
+    }
+    if (empty || stale) {
+        RinFS_DirectoryIndexBuildEntry* entry = empty ? empty : stale;
+        rinfs_memset(entry, 0, sizeof(*entry));
+        entry->mount_epoch = mount->mount_epoch;
+        entry->directory_inode = directory_inode;
+        entry->directory_content_generation = content_generation;
+        entry->directory_lifetime_generation = directory->i_generation;
+        entry->state = RINFS_DIRECTORY_INDEX_BUILD_IN_PROGRESS;
+        *state_out = RINFS_DIRECTORY_INDEX_BUILD_CLAIMED;
+    } else {
+        *state_out = RINFS_DIRECTORY_INDEX_BUILD_BUSY;
+    }
+    return rinfs_shared_cache_unlock(mount, &cache->lock);
+}
+
+static int rinfs_directory_index_build_state_finish(
+    RinFS_Mount* mount, uint64_t directory_inode,
+    const RinFS_Inode* directory, uint64_t content_generation,
+    int build_result) {
+    RinFS_DirectoryIndex* cache;
+    uint32_t start;
+    uint32_t state = build_result == RINFS_OK
+        ? RINFS_DIRECTORY_INDEX_BUILD_READY
+        : (build_result == RINFS_ERR_NOSPC
+               ? RINFS_DIRECTORY_INDEX_BUILD_INCOMPLETE
+               : RINFS_DIRECTORY_INDEX_BUILD_FAILED);
+    if (!mount || !directory || !mount->directory_index) return RINFS_ERR_INVAL;
+    cache = mount->directory_index;
+    start = (uint32_t)(rinfs_directory_build_set_hash(
+                 mount, directory_inode, directory) %
+             (RINFS_DIRECTORY_INDEX_BUILD_CAPACITY / 4u)) * 4u;
+    {
+        int lock_err = rinfs_shared_cache_lock(
+            mount, &cache->lock, RINFS_SHARED_CACHE_DIRECTORY_INDEX);
+        if (lock_err != RINFS_OK) return lock_err;
+    }
+    for (uint32_t way = 0u; way < 4u; ++way) {
+        RinFS_DirectoryIndexBuildEntry* entry =
+            &cache->builds[start + way];
+        if (entry->state == RINFS_DIRECTORY_INDEX_BUILD_IN_PROGRESS &&
+            entry->mount_epoch == mount->mount_epoch &&
+            entry->directory_inode == directory_inode &&
+            entry->directory_lifetime_generation == directory->i_generation &&
+            entry->directory_content_generation == content_generation) {
+            entry->state = state;
+            break;
+        }
+    }
+    return rinfs_shared_cache_unlock(mount, &cache->lock);
+}
+
 /* Return 1 for a verified hit, 0 for a miss, or a RinFS error.  The index is
  * advisory, but a matching bucket is still checked against the full dirent
  * so a hash collision can never redirect a pathname lookup. */
@@ -5077,6 +5257,7 @@ static int rinfs_directory_index_build(RinFS_Mount* mount,
         mount->sb.s_block_size == 0u ||
         directory->i_size < (uint64_t)mount->sb.s_block_size * 4u)
         return RINFS_ERR_NOT_SUPPORTED;
+    RINFS_NOTE_DIRECTORY_INDEX_BUILD();
     block = (uint8_t*)rinfs_malloc(mount->sb.s_block_size);
     if (!block) return RINFS_ERR_NOMEM;
     position = 0u;
@@ -5153,6 +5334,11 @@ static int rinfs_dentry_cache_eligible(const RinFS_Mount* mount,
     return 1;
 }
 
+static uint64_t rinfs_dentry_cache_touch(RinFS_DentryCache* cache) {
+    if (cache->clock != UINT64_MAX) ++cache->clock;
+    return cache->clock;
+}
+
 /* Return 1 for a positive hit, 0 for a miss, RINFS_ERR_NOENT for a cached
  * negative result, or another RinFS error. */
 static int rinfs_dentry_cache_lookup(RinFS_Mount* mount,
@@ -5162,8 +5348,9 @@ static int rinfs_dentry_cache_lookup(RinFS_Mount* mount,
                                       uint64_t* child_inode) {
     RinFS_DentryCache* cache;
     uint64_t version;
+    uint64_t key_hash;
     uint32_t state;
-    uint32_t index;
+    uint32_t first;
     int result = 0;
     int err;
     if (!rinfs_dentry_cache_eligible(mount, directory) || !name ||
@@ -5172,13 +5359,21 @@ static int rinfs_dentry_cache_lookup(RinFS_Mount* mount,
     }
     if (rinfs_inode_content_tracking(mount, directory, &version, &state) !=
             RINFS_OK) return 0;
+    key_hash = rinfs_dentry_cache_key(
+        mount, directory_inode, directory, version, name, name_length);
     cache = mount->dentry_cache;
     err = rinfs_shared_cache_lock(mount, &cache->lock,
                                   RINFS_SHARED_CACHE_DENTRY);
     if (err != RINFS_OK) return err;
-    for (index = 0u; index < RINFS_DENTRY_CACHE_CAPACITY; ++index) {
-        RinFS_DentryCacheEntry* entry = &cache->entries[index];
-        if (!entry->valid || entry->mount_epoch != mount->mount_epoch ||
+    first = (uint32_t)(key_hash %
+                       (RINFS_DENTRY_CACHE_CAPACITY /
+                        RINFS_DENTRY_CACHE_WAYS)) *
+            RINFS_DENTRY_CACHE_WAYS;
+    for (uint32_t way = 0u; way < RINFS_DENTRY_CACHE_WAYS; ++way) {
+        RinFS_DentryCacheEntry* entry = &cache->entries[first + way];
+        RINFS_NOTE_DENTRY_CACHE_PROBE();
+        if (!entry->valid || entry->key_hash != key_hash ||
+            entry->mount_epoch != mount->mount_epoch ||
             entry->directory_inode != directory_inode ||
             entry->directory_lifetime_generation != directory->i_generation ||
             entry->directory_content_generation != version ||
@@ -5186,7 +5381,7 @@ static int rinfs_dentry_cache_lookup(RinFS_Mount* mount,
             rinfs_memcmp(entry->name, name, name_length) != 0) {
             continue;
         }
-        entry->last_used = ++cache->clock;
+        entry->last_used = rinfs_dentry_cache_touch(cache);
         cache->hits++;
         result = entry->negative ? RINFS_ERR_NOENT : 1;
         if (!entry->negative) *child_inode = entry->child_inode;
@@ -5205,39 +5400,62 @@ static int rinfs_dentry_cache_store(RinFS_Mount* mount,
                                       uint64_t child_inode, int negative) {
     RinFS_DentryCache* cache;
     uint64_t version;
+    uint64_t key_hash;
     uint32_t state;
-    uint32_t index;
-    uint32_t victim = 0u;
+    uint32_t first;
+    uint32_t victim = UINT32_MAX;
+    int empty_victim = 0;
+    int exact_victim = 0;
     uint64_t oldest = UINT64_MAX;
     if (!rinfs_dentry_cache_eligible(mount, directory) || !name ||
         name_length == 0u || name_length > RINFS_NAME_MAX ||
         rinfs_inode_content_tracking(mount, directory, &version, &state) !=
             RINFS_OK) return RINFS_OK;
+    key_hash = rinfs_dentry_cache_key(
+        mount, directory_inode, directory, version, name, name_length);
     cache = mount->dentry_cache;
     {
         int err = rinfs_shared_cache_lock(mount, &cache->lock,
                                           RINFS_SHARED_CACHE_DENTRY);
         if (err != RINFS_OK) return err;
     }
-    for (index = 0u; index < RINFS_DENTRY_CACHE_CAPACITY; ++index) {
+    first = (uint32_t)(key_hash %
+                       (RINFS_DENTRY_CACHE_CAPACITY /
+                        RINFS_DENTRY_CACHE_WAYS)) *
+            RINFS_DENTRY_CACHE_WAYS;
+    for (uint32_t way = 0u; way < RINFS_DENTRY_CACHE_WAYS; ++way) {
+        uint32_t index = first + way;
         RinFS_DentryCacheEntry* entry = &cache->entries[index];
+        RINFS_NOTE_DENTRY_CACHE_PROBE();
         if (!entry->valid) {
             victim = index;
+            empty_victim = 1;
             break;
         }
-        if (entry->mount_epoch == mount->mount_epoch &&
+        if (entry->key_hash == key_hash &&
+            entry->mount_epoch == mount->mount_epoch &&
             entry->directory_inode == directory_inode &&
             entry->directory_lifetime_generation == directory->i_generation &&
             entry->directory_content_generation == version &&
             entry->name_length == name_length &&
             rinfs_memcmp(entry->name, name, name_length) == 0) {
             victim = index;
+            exact_victim = 1;
             break;
         }
-        if (entry->last_used < oldest) {
+        if (victim == UINT32_MAX || entry->last_used < oldest) {
             oldest = entry->last_used;
             victim = index;
         }
+    }
+    if (victim == UINT32_MAX) {
+        int unlock_err = rinfs_shared_cache_unlock(mount, &cache->lock);
+        return unlock_err != RINFS_OK ? unlock_err : RINFS_ERR_CORRUPT;
+    }
+    if (!empty_victim && !exact_victim && oldest == UINT64_MAX) {
+        uint32_t way = cache->replacement_cursor++ %
+                       RINFS_DENTRY_CACHE_WAYS;
+        victim = first + way;
     }
     RinFS_DentryCacheEntry* entry = &cache->entries[victim];
     rinfs_memset(entry, 0, sizeof(*entry));
@@ -5246,7 +5464,8 @@ static int rinfs_dentry_cache_store(RinFS_Mount* mount,
     entry->directory_lifetime_generation = directory->i_generation;
     entry->directory_content_generation = version;
     entry->child_inode = child_inode;
-    entry->last_used = ++cache->clock;
+    entry->key_hash = key_hash;
+    entry->last_used = rinfs_dentry_cache_touch(cache);
     entry->name_length = (uint16_t)name_length;
     entry->file_type = 0u;
     entry->negative = negative ? 1u : 0u;
@@ -12976,26 +13195,40 @@ static int rinfs_lookup_unscoped(RinFS_Mount* mount, uint64_t dir_ino,
                 return index_result;
             if (index_result == 0 && mount->directory_index != NULL &&
                 dir_inode.i_size >= (uint64_t)block_size * 4u) {
-                index_result = rinfs_directory_index_build(
-                    mount, dir_ino, &dir_inode, content_version);
-                if (index_result == RINFS_OK) {
-                    index_result = rinfs_directory_index_lookup(
-                        mount, dir_ino, &dir_inode, content_version, name,
-                        name_len, ino);
-                    if (index_result > 0) return RINFS_OK;
-                    if (index_result < 0 && index_result != RINFS_ERR_NOMEM)
-                        return index_result;
-                    if (index_result == 0) {
-                        int cache_err = rinfs_dentry_cache_store(
-                            mount, dir_ino, &dir_inode, name, name_len,
-                            0u, 1);
-                        return cache_err != RINFS_OK
-                                   ? cache_err : RINFS_ERR_NOENT;
+                uint32_t build_state = RINFS_DIRECTORY_INDEX_BUILD_EMPTY;
+                int state_err = rinfs_directory_index_build_state_begin(
+                    mount, dir_ino, &dir_inode, content_version,
+                    &build_state);
+                if (state_err == RINFS_OK &&
+                    build_state == RINFS_DIRECTORY_INDEX_BUILD_READY) {
+                    int cache_err = rinfs_dentry_cache_store(
+                        mount, dir_ino, &dir_inode, name, name_len, 0u, 1);
+                    return cache_err != RINFS_OK
+                               ? cache_err : RINFS_ERR_NOENT;
+                }
+                if (state_err == RINFS_OK &&
+                    build_state == RINFS_DIRECTORY_INDEX_BUILD_CLAIMED) {
+                    int build_result = rinfs_directory_index_build(
+                        mount, dir_ino, &dir_inode, content_version);
+                    (void)rinfs_directory_index_build_state_finish(
+                        mount, dir_ino, &dir_inode, content_version,
+                        build_result);
+                    if (build_result == RINFS_OK) {
+                        index_result = rinfs_directory_index_lookup(
+                            mount, dir_ino, &dir_inode, content_version,
+                            name, name_len, ino);
+                        if (index_result > 0) return RINFS_OK;
+                        if (index_result < 0 &&
+                            index_result != RINFS_ERR_NOMEM)
+                            return index_result;
+                        if (index_result == 0) {
+                            int cache_err = rinfs_dentry_cache_store(
+                                mount, dir_ino, &dir_inode, name, name_len,
+                                0u, 1);
+                            return cache_err != RINFS_OK
+                                       ? cache_err : RINFS_ERR_NOENT;
+                        }
                     }
-                } else if (index_result != RINFS_ERR_NOMEM &&
-                           index_result != RINFS_ERR_NOSPC &&
-                           index_result != RINFS_ERR_NOT_SUPPORTED) {
-                    return index_result;
                 }
             }
         }

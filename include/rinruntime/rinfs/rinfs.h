@@ -169,7 +169,10 @@ enum {
  * A caller may still observe smaller I/O when a file is sparse or fragmented;
  * this is a target, never an excuse to read a non-contiguous extent. */
 #define RINFS_READ_COALESCE_MAX_BYTES (128u * 1024u)
+#ifndef RINFS_DENTRY_CACHE_CAPACITY
 #define RINFS_DENTRY_CACHE_CAPACITY 256u
+#endif
+#define RINFS_DENTRY_CACHE_WAYS 4u
 #define RINFS_DEVICE_FLAG_REMOVABLE 0x00000001u
 #define RINFS_DEVICE_FLAG_SLOW      0x00000002u
 #define RINFS_DEVICE_FLAG_OFFLINE  0x00000004u
@@ -387,6 +390,7 @@ typedef struct {
     uint32_t directory_lifetime_generation;
     uint64_t directory_content_generation;
     uint64_t child_inode;
+    uint64_t key_hash;
     uint64_t last_used;
     uint16_t name_length;
     uint8_t file_type;
@@ -398,6 +402,7 @@ typedef struct {
 typedef struct {
     volatile uint32_t lock;
     uint64_t clock;
+    uint32_t replacement_cursor;
     uint64_t hits;
     uint64_t misses;
     RinFS_DentryCacheEntry entries[RINFS_DENTRY_CACHE_CAPACITY];
@@ -410,6 +415,9 @@ typedef struct {
  * without a global directory-cache invalidation walk. */
 #ifndef RINFS_DIRECTORY_INDEX_CAPACITY
 #define RINFS_DIRECTORY_INDEX_CAPACITY 1024u
+#endif
+#ifndef RINFS_DIRECTORY_INDEX_BUILD_CAPACITY
+#define RINFS_DIRECTORY_INDEX_BUILD_CAPACITY 128u
 #endif
 typedef struct {
     uint64_t hash;
@@ -424,10 +432,24 @@ typedef struct {
     uint8_t reserved[5];
 } RinFS_DirectoryIndexEntry;
 
+/* Build state distinguishes a complete index from an in-progress or bounded
+ * partial build.  Four-way sets keep negative lookup metadata bounded even
+ * when the directory index itself contains many entries. */
+typedef struct {
+    uint64_t mount_epoch;
+    uint64_t directory_inode;
+    uint64_t directory_content_generation;
+    uint32_t directory_lifetime_generation;
+    uint32_t state;
+} RinFS_DirectoryIndexBuildEntry;
+
 typedef struct {
     volatile uint32_t lock;
     uint32_t replacement_cursor;
+    uint32_t build_replacement_cursor;
     RinFS_DirectoryIndexEntry entries[RINFS_DIRECTORY_INDEX_CAPACITY];
+    RinFS_DirectoryIndexBuildEntry builds[
+        RINFS_DIRECTORY_INDEX_BUILD_CAPACITY];
 } RinFS_DirectoryIndex;
 
 /* RinFS-owned inode metadata cache. Entries are copies, never borrowed
