@@ -1356,6 +1356,28 @@ int rinfs_rmdir(RinFS_Mount* mount, uint64_t dir_ino, const char* name);
 int rinfs_rmdir_expected(RinFS_Mount* mount, uint64_t dir_ino,
                          const char* name, uint64_t expected_inode,
                          uint32_t expected_generation);
+/* Kernel event identity copied into a deferred delete owner. This is a
+ * transport-neutral snapshot; it deliberately contains no pointers. */
+typedef struct RinFS_DeleteOnCloseIdentityV1 {
+    uint64_t source_epoch;
+    uint64_t namespace_id;
+    uint64_t view_generation;
+    uint64_t root_mount_id;
+    uint64_t root_inode;
+    uint64_t inode;
+    uint32_t root_generation;
+    uint32_t generation;
+    uint32_t namespace_bound;
+    uint32_t valid;
+} RinFS_DeleteOnCloseIdentityV1;
+
+typedef struct RinFS_DeleteOnCloseWatchScopeV1 {
+    uint32_t version;
+    uint32_t valid;
+    RinFS_DeleteOnCloseIdentityV1 parent;
+    RinFS_DeleteOnCloseIdentityV1 target;
+} RinFS_DeleteOnCloseWatchScopeV1;
+
 /* Defer removal of an exact directory entry until every open reference to
  * the target inode generation has closed. This is kernel-owned state and
  * remains live across process teardown. */
@@ -1365,6 +1387,13 @@ int rinfs_delete_on_close_register(RinFS_Mount* mount,
                                    const char* name, uint64_t target_ino,
                                    uint32_t target_generation,
                                    int directory, const char* path);
+/* Versioned form retains the original watch scope for the final DELETE
+ * notification. Invalid or absent scope never falls back to path delivery. */
+int rinfs_delete_on_close_register_scoped_v1(
+    RinFS_Mount* mount, uint64_t parent_ino, uint32_t parent_generation,
+    const char* name, uint64_t target_ino, uint32_t target_generation,
+    int directory, const RinFS_DeleteOnCloseWatchScopeV1* watch_scope,
+    const char* path);
 /* Retry all process-exit-safe pending pathname removals for a mounted volume. */
 int rinfs_delete_on_close_reap(RinFS_Mount* mount);
 /* Attach Win32 access/share admission to this exact open-description owner.

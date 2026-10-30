@@ -530,8 +530,9 @@ extern void  platform_memset(void* dst, int val, uint32_t n);
 extern void* platform_memcpy(void* dst, const void* src, uint32_t n);
 extern int   platform_memcmp(const void* a, const void* b, uint32_t n);
 extern uint32_t platform_strlen(const char* s);
-extern void platform_rinfs_delete_on_close_notify(const char* path,
-                                                   int directory);
+extern void platform_rinfs_delete_on_close_notify_v1(
+    const RinFS_DeleteOnCloseWatchScopeV1* watch_scope, const char* name,
+    int directory);
 extern char* platform_strcpy(char* dst, const char* src);
 extern char* platform_strncpy(char* dst, const char* src, uint32_t n);
 extern int   platform_strcmp(const char* a, const char* b);
@@ -1612,6 +1613,7 @@ typedef struct RinFS_DeleteOnClosePath {
     uint32_t directory;
     uint64_t inode_num;
     uint32_t inode_generation;
+    RinFS_DeleteOnCloseWatchScopeV1 watch_scope;
     char name[RINFS_NAME_MAX + 1u];
     char path[1024];
 } RinFS_DeleteOnClosePath;
@@ -25643,10 +25645,55 @@ static int rinfs_dir_is_effectively_empty(RinFS_Mount* mount, uint64_t dir_ino,
     return RINFS_OK;
 }
 
+static int rinfs_delete_on_close_identity_scope_valid(
+    const RinFS_DeleteOnCloseIdentityV1* identity) {
+    if (!identity || identity->valid != 1u || identity->source_epoch == 0u ||
+        identity->inode == 0u || identity->generation == 0u ||
+        identity->namespace_bound > 1u)
+        return 0;
+    if (identity->namespace_bound != 0u)
+        return identity->namespace_id != 0u &&
+               identity->view_generation != 0u &&
+               identity->root_mount_id != 0u &&
+               identity->root_inode != 0u &&
+               identity->root_generation != 0u;
+    return identity->namespace_id == 0u &&
+           identity->view_generation == 0u &&
+           identity->root_mount_id == 0u && identity->root_inode == 0u &&
+           identity->root_generation == 0u;
+}
+
+static int rinfs_delete_on_close_watch_scope_valid(
+    const RinFS_DeleteOnCloseWatchScopeV1* scope, uint64_t parent_ino,
+    uint32_t parent_generation, uint64_t target_ino,
+    uint32_t target_generation) {
+    const RinFS_DeleteOnCloseIdentityV1* parent;
+    const RinFS_DeleteOnCloseIdentityV1* target;
+    if (!scope || scope->version != 1u || scope->valid != 1u) return 0;
+    parent = &scope->parent;
+    target = &scope->target;
+    if (!rinfs_delete_on_close_identity_scope_valid(parent) ||
+        !rinfs_delete_on_close_identity_scope_valid(target) ||
+        parent->inode != parent_ino ||
+        parent->generation != parent_generation ||
+        target->inode != target_ino ||
+        target->generation != target_generation ||
+        parent->source_epoch != target->source_epoch ||
+        parent->namespace_bound != target->namespace_bound ||
+        parent->namespace_id != target->namespace_id ||
+        parent->view_generation != target->view_generation ||
+        parent->root_mount_id != target->root_mount_id ||
+        parent->root_inode != target->root_inode ||
+        parent->root_generation != target->root_generation)
+        return 0;
+    return 1;
+}
+
 static int rinfs_delete_on_close_register_unscoped(
     RinFS_Mount* mount, uint64_t parent_ino, uint32_t parent_generation,
     const char* name, uint64_t target_ino, uint32_t target_generation,
-    int directory, const char* path) {
+    int directory, const RinFS_DeleteOnCloseWatchScopeV1* watch_scope,
+    const char* path) {
     int content_unlock_error = RINFS_OK;
     RinFS_DeleteOnClosePath* pending;
     RinFS_DeleteOnClosePath* existing;
@@ -25662,7 +25709,10 @@ static int rinfs_delete_on_close_register_unscoped(
     if (!mount || !name || !path || path[0] != '/' ||
         parent_ino == 0u || parent_generation == 0u ||
         target_ino == 0u || target_generation == 0u ||
-        (directory != 0 && directory != 1))
+        (directory != 0 && directory != 1) ||
+        (watch_scope && !rinfs_delete_on_close_watch_scope_valid(
+                            watch_scope, parent_ino, parent_generation,
+                            target_ino, target_generation)))
         return rinfs_content_unlock_status((RINFS_ERR_INVAL), content_unlock_error);
     name_length = rinfs_strlen(name);
     if (rinfs_strlen(path) >= sizeof(pending->path))
@@ -25688,6 +25738,9 @@ static int rinfs_delete_on_close_register_unscoped(
     pending->directory = (uint32_t)directory;
     pending->inode_num = target_ino;
     pending->inode_generation = target_generation;
+    if (watch_scope)
+        rinfs_memcpy(&pending->watch_scope, watch_scope,
+                     sizeof(pending->watch_scope));
     rinfs_memcpy(pending->name, name, name_length + 1u);
     rinfs_memcpy(pending->path, path, rinfs_strlen(path) + 1u);
 
@@ -25812,6 +25865,16 @@ int rinfs_delete_on_close_register(
     RinFS_Mount* mount, uint64_t parent_ino, uint32_t parent_generation,
     const char* name, uint64_t target_ino, uint32_t target_generation,
     int directory, const char* path) {
+    return rinfs_delete_on_close_register_scoped_v1(
+        mount, parent_ino, parent_generation, name, target_ino,
+        target_generation, directory, NULL, path);
+}
+
+int rinfs_delete_on_close_register_scoped_v1(
+    RinFS_Mount* mount, uint64_t parent_ino, uint32_t parent_generation,
+    const char* name, uint64_t target_ino, uint32_t target_generation,
+    int directory, const RinFS_DeleteOnCloseWatchScopeV1* watch_scope,
+    const char* path) {
     RinFS_MountOperationScope operation = {0};
     int error;
     if (!mount) return RINFS_ERR_INVAL;
@@ -25819,7 +25882,7 @@ int rinfs_delete_on_close_register(
     if (error != RINFS_OK) return error;
     error = rinfs_delete_on_close_register_unscoped(
         mount, parent_ino, parent_generation, name, target_ino,
-        target_generation, directory, path);
+        target_generation, directory, watch_scope, path);
     return rinfs_mount_operation_scope_finish(&operation, error);
 }
 
@@ -25952,6 +26015,7 @@ static int rinfs_delete_on_close_reap_inode(RinFS_Mount* mount,
     uint32_t directory;
     char name[RINFS_NAME_MAX + 1u];
     char path[1024];
+    RinFS_DeleteOnCloseWatchScopeV1 watch_scope;
     RinFS_Inode parent_inode;
     uint64_t found_ino = 0u;
     int result;
@@ -25988,6 +26052,8 @@ static int rinfs_delete_on_close_reap_inode(RinFS_Mount* mount,
         parent_ino = pending->parent_inode;
         parent_generation = pending->parent_generation;
         directory = pending->directory;
+        rinfs_memcpy(&watch_scope, &pending->watch_scope,
+                     sizeof(watch_scope));
         rinfs_memcpy(name, pending->name, sizeof(name));
         rinfs_memcpy(path, pending->path, sizeof(path));
         rinfs_keep_first_error(&content_unlock_error, rinfs_shared_content_unlock(mount));
@@ -26082,11 +26148,17 @@ static int rinfs_delete_on_close_reap_inode(RinFS_Mount* mount,
         }
         rinfs_keep_first_error(&content_unlock_error, rinfs_shared_content_unlock(mount));
 #if defined(RIN_KERNEL)
-        if (removed && path[0] == '/')
-            platform_rinfs_delete_on_close_notify(path, directory != 0u);
+        if (removed && watch_scope.version == 1u &&
+            watch_scope.valid == 1u &&
+            rinfs_delete_on_close_watch_scope_valid(
+                &watch_scope, parent_ino, parent_generation, target_ino,
+                target_generation))
+            platform_rinfs_delete_on_close_notify_v1(
+                &watch_scope, name, directory != 0u);
 #else
         (void)path;
         (void)removed;
+        (void)watch_scope;
 #endif
         if (free_error != RINFS_OK)
             return rinfs_content_unlock_status(free_error,
