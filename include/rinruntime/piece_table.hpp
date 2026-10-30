@@ -32,13 +32,15 @@ public:
 
     bool setOriginal(const std::string& original) {
         if (original.size() > kMaxBytes) return false;
+        std::string nextOriginal;
+        std::string nextAdded;
+        std::vector<Piece> nextPieces;
+        std::vector<size_t> nextLineStarts;
 #if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
         try {
 #endif
-            std::string nextOriginal = original;
-            std::string nextAdded;
-            std::vector<Piece> nextPieces;
-            std::vector<size_t> nextLineStarts;
+            nextOriginal.assign(original);
+            if (secureStorage_) nextAdded.reserve(kMaxBytes);
             if (!original.empty())
                 nextPieces.push_back({Source::Original, 0u, original.size()});
             rebuildLineIndex(nextOriginal, nextAdded, nextPieces,
@@ -48,9 +50,17 @@ public:
             pieces_.swap(nextPieces);
             lineStarts_.swap(nextLineStarts);
             size_ = original.size();
+            if (secureStorage_) {
+                eraseString(nextOriginal);
+                eraseString(nextAdded);
+            }
             return true;
 #if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
         } catch (const std::bad_alloc&) {
+            if (secureStorage_) {
+                eraseString(nextOriginal);
+                eraseString(nextAdded);
+            }
             return false;
         }
 #endif
@@ -63,6 +73,67 @@ public:
         size_ = 0u;
         lineStarts_.clear();
         lineStarts_.push_back(0u);
+    }
+
+    /* Erase owned text bytes before releasing their allocations. `clear()`
+     * remains the inexpensive ordinary-document reset path. */
+    void secureClear() {
+        eraseString(original_);
+        eraseString(added_);
+        std::vector<Piece>().swap(pieces_);
+        if (lineStarts_.empty()) lineStarts_.push_back(0u);
+        else {
+            lineStarts_[0] = 0u;
+            lineStarts_.resize(1u);
+        }
+        size_ = 0u;
+    }
+
+    /* Reserve the append-only edit buffer before protected editing starts.
+     * This prevents ordinary string growth from retiring earlier text
+     * allocations without giving the caller a chance to wipe them. */
+    bool reserveSecureAppend()
+    {
+        if (added_.capacity() >= kMaxBytes) {
+            secureStorage_ = true;
+            return true;
+        }
+        if (!added_.empty()) return false;
+        secureStorage_ = true;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
+            added_.reserve(kMaxBytes);
+            return added_.capacity() >= kMaxBytes;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (const std::bad_alloc&) {
+            return false;
+        }
+#endif
+    }
+
+    bool cloneForSecureMode(PieceTable& output) const
+    {
+        if (&output == this) return false;
+        output.secureClear();
+        output.secureStorage_ = true;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
+            output.added_.reserve(kMaxBytes);
+            output.original_.assign(original_);
+            output.added_.append(added_);
+            output.pieces_ = pieces_;
+            output.lineStarts_ = lineStarts_;
+            output.size_ = size_;
+            return true;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (const std::bad_alloc&) {
+            output.secureClear();
+            output.secureStorage_ = true;
+            return false;
+        }
+#endif
     }
 
     size_t size() const { return size_; }
@@ -112,7 +183,7 @@ public:
             }
             if (!placed) next.push_back(inserted);
             if (next.size() > kMaxPieces) {
-                added_.resize(addedOffset);
+                truncateAdded(addedOffset);
                 return false;
             }
             coalesce(next);
@@ -124,7 +195,7 @@ public:
             return true;
 #if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
         } catch (const std::bad_alloc&) {
-            added_.resize(addedOffset);
+            truncateAdded(addedOffset);
             return false;
         }
 #endif
@@ -229,6 +300,23 @@ public:
     }
 
 private:
+    void truncateAdded(size_t size) {
+        if (size > added_.size()) return;
+        if (secureStorage_) {
+            volatile char* bytes = added_.empty() ? nullptr : &added_[0];
+            for (size_t index = size; bytes && index < added_.size(); ++index)
+                bytes[index] = '\0';
+        }
+        added_.resize(size);
+    }
+
+    static void eraseString(std::string& value) {
+        volatile char* bytes = value.empty() ? nullptr : &value[0];
+        for (size_t index = 0u; bytes && index < value.size(); ++index)
+            bytes[index] = '\0';
+        std::string().swap(value);
+    }
+
     enum class Source : uint8_t { Original, Added };
     struct Piece {
         Source source;
@@ -283,6 +371,7 @@ private:
     std::vector<Piece> pieces_;
     std::vector<size_t> lineStarts_{0u};
     size_t size_ = 0u;
+    bool secureStorage_ = false;
 };
 
 } // namespace RinRuntime

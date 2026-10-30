@@ -37,6 +37,12 @@ extern "C" {
 int rin_keyring_client_status(void);
 int rin_keyring_client_put(const char* name, const void* secret,
                            uint32_t secret_size, uint64_t* generation);
+/* Conditional form for first-run and compare-and-replace publication.
+ * expected_generation may be CREATE_ONLY, ANY, or the generation returned
+ * by an earlier GET. */
+int rin_keyring_client_put_expected_generation(
+    const char* name, const void* secret, uint32_t secret_size,
+    uint64_t expected_generation, uint64_t* generation);
 /* Session-manager-only import boundary. The keyring daemon requires an
  * authenticated owner policy and accepts only the exact Kerberos scopes;
  * ordinary application PUT/GET cannot reach this path. */
