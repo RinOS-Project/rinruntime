@@ -106,6 +106,7 @@ set(RINRUNTIME_SOURCES
     src/session_recovery.c
     src/crash_service.c
     src/frame_copy.c
+    src/rin_resource.c
     ${RINRUNTIME_RINPATH_ROOT}/path.c
     src/serial_portal_protocol.c
     src/file_chooser_portal.c
