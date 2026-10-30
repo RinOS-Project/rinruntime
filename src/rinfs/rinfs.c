@@ -3070,6 +3070,7 @@ static int rinfs_shared_cache_lock(RinFS_Mount* mount,
         for (uint32_t index = 0u; index < RINFS_DIRECTORY_INDEX_CAPACITY;
              ++index)
             mount->directory_index->entries[index].valid = 0u;
+        mount->directory_index->replacement_cursor = 0u;
         break;
     case RINFS_SHARED_CACHE_INODE:
         for (uint32_t index = 0u; index < RINFS_INODE_CACHE_CAPACITY;
@@ -4983,6 +4984,8 @@ static int rinfs_directory_index_insert(
     uint64_t physical_block, uint32_t block_offset) {
     RinFS_DirectoryIndex* cache;
     RinFS_DirectoryIndexEntry entry;
+    RinFS_DirectoryIndexEntry* stale_slot = NULL;
+    RinFS_DirectoryIndexEntry* empty_slot = NULL;
     uint64_t key;
     uint32_t index;
     if (!mount || !directory || !mount->directory_index || !name ||
@@ -5012,8 +5015,8 @@ static int rinfs_directory_index_insert(
         RinFS_DirectoryIndexEntry* slot = &cache->entries[
             (uint32_t)((key + index) % RINFS_DIRECTORY_INDEX_CAPACITY)];
         if (!slot->valid) {
-            *slot = entry;
-            return rinfs_shared_cache_unlock(mount, &cache->lock);
+            empty_slot = slot;
+            break;
         }
         if (slot->hash == key &&
             slot->directory_inode == directory_inode &&
@@ -5024,11 +5027,39 @@ static int rinfs_directory_index_insert(
             *slot = entry;
             return rinfs_shared_cache_unlock(mount, &cache->lock);
         }
+        if (!stale_slot && slot->directory_inode == directory_inode &&
+            (slot->directory_lifetime_generation !=
+                 directory->i_generation ||
+             slot->directory_content_generation != content_generation))
+            stale_slot = slot;
     }
+
+    /* Reuse a stale entry for this directory before consuming another slot.
+     * Only consider entries before the first empty bucket, preserving the
+     * open-addressed lookup termination rule. An entry already copied by a
+     * concurrent reader remains a harmless snapshot; cache misses fall back
+     * to the checked directory walker. */
+    if (stale_slot) {
+        *stale_slot = entry;
+        return rinfs_shared_cache_unlock(mount, &cache->lock);
+    }
+    if (empty_slot) {
+        *empty_slot = entry;
+        return rinfs_shared_cache_unlock(mount, &cache->lock);
+    }
+
+    /* A full index is advisory storage, never a reason to force every lookup
+     * back to the linear walker. Replace entries in a bounded round-robin
+     * order; because the table is full, this cannot introduce probe holes. */
     {
-        int unlock_err = rinfs_shared_cache_unlock(mount, &cache->lock);
-        return unlock_err != RINFS_OK ? unlock_err : RINFS_ERR_NOSPC;
+        uint32_t victim = cache->replacement_cursor;
+        if (victim >= RINFS_DIRECTORY_INDEX_CAPACITY) victim = 0u;
+        cache->entries[victim] = entry;
+        cache->replacement_cursor = victim + 1u;
+        if (cache->replacement_cursor >= RINFS_DIRECTORY_INDEX_CAPACITY)
+            cache->replacement_cursor = 0u;
     }
+    return rinfs_shared_cache_unlock(mount, &cache->lock);
 }
 
 /* Populate only directories large enough for the flat dentry cache to become
@@ -5040,6 +5071,8 @@ static int rinfs_directory_index_build(RinFS_Mount* mount,
                                        uint64_t content_generation) {
     uint8_t* block;
     uint64_t position;
+    uint32_t indexed_count = 0u;
+    int index_incomplete = 0;
     if (!mount || !directory || !mount->directory_index ||
         mount->sb.s_block_size == 0u ||
         directory->i_size < (uint64_t)mount->sb.s_block_size * 4u)
@@ -5077,6 +5110,10 @@ static int rinfs_directory_index_build(RinFS_Mount* mount,
                 !(name_length == 1u && entry->d_name[0] == '.') &&
                 !(name_length == 2u && entry->d_name[0] == '.' &&
                   entry->d_name[1] == '.')) {
+                if (indexed_count < RINFS_DIRECTORY_INDEX_CAPACITY)
+                    ++indexed_count;
+                else
+                    index_incomplete = 1;
                 err = rinfs_directory_index_insert(
                     mount, directory_inode, directory, content_generation,
                     entry->d_name, name_length, entry->d_inode,
@@ -5093,7 +5130,11 @@ static int rinfs_directory_index_build(RinFS_Mount* mount,
             position = (file_block + 1u) * mount->sb.s_block_size;
     }
     rinfs_free(block);
-    return RINFS_OK;
+    /* A bounded cache cannot prove absence for a directory with more entries
+     * than it can hold. Keep its newest location hints, but let the caller use
+     * the checked walker for this lookup instead of treating a cache miss as
+     * a definite ENOENT. */
+    return index_incomplete ? RINFS_ERR_NOSPC : RINFS_OK;
 }
 
 static int rinfs_dentry_cache_eligible(const RinFS_Mount* mount,

@@ -408,7 +408,9 @@ typedef struct {
  * lookup re-reads that location and compares the complete name before
  * returning the child inode.  Content generation makes entries disposable
  * without a global directory-cache invalidation walk. */
+#ifndef RINFS_DIRECTORY_INDEX_CAPACITY
 #define RINFS_DIRECTORY_INDEX_CAPACITY 1024u
+#endif
 typedef struct {
     uint64_t hash;
     uint64_t directory_inode;
@@ -424,6 +426,7 @@ typedef struct {
 
 typedef struct {
     volatile uint32_t lock;
+    uint32_t replacement_cursor;
     RinFS_DirectoryIndexEntry entries[RINFS_DIRECTORY_INDEX_CAPACITY];
 } RinFS_DirectoryIndex;
 
