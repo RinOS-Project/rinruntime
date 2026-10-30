@@ -107,6 +107,14 @@ set(RINRUNTIME_SOURCES
     src/crash_service.c
     src/frame_copy.c
     src/rin_resource.c
+    src/performance_trace.c
+    src/rin_capture_policy.c
+    src/rin_desktop_model.c
+    src/rin_theme_palette.c
+    src/rin_dhcpv6_client.c
+    src/rin_dhcpv6_reconfigure.c
+    src/rin_dhcpv6_transport.c
+    src/rin_web_serial_portal.c
     ${RINRUNTIME_RINPATH_ROOT}/path.c
     src/serial_portal_protocol.c
     src/file_chooser_portal.c
@@ -218,7 +226,9 @@ install(TARGETS RinRuntime EXPORT RinRuntimeTargets
         RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 install(DIRECTORY include/rinruntime/
         DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/rinruntime
-        PATTERN "crypt" EXCLUDE)
+        PATTERN "crypt" EXCLUDE
+        PATTERN "pe_loader.h" EXCLUDE
+        PATTERN "rin_cursor.h" EXCLUDE)
 install(DIRECTORY include/rincompression/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/rincompression)
 install(DIRECTORY ${RINRUNTIME_RINPATH_ROOT}/include/rinpath/
         DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/rinpath)

@@ -66,6 +66,14 @@ runtime_sources = files('src/portal.c', 'src/crash.c',
                         'src/safe_save.c', 'src/safe_save_posix.c',
                         'src/session_recovery.c', 'src/crash_service.c',
                         'src/frame_copy.c', 'src/rin_resource.c',
+                        'src/performance_trace.c',
+                        'src/rin_capture_policy.c',
+                        'src/rin_desktop_model.c',
+                        'src/rin_theme_palette.c',
+                        'src/rin_dhcpv6_client.c',
+                        'src/rin_dhcpv6_reconfigure.c',
+                        'src/rin_dhcpv6_transport.c',
+                        'src/rin_web_serial_portal.c',
                         join_paths(rinpath_root, 'path.c'),
                         'src/serial_portal_protocol.c',
                         'src/file_chooser_portal.c',
@@ -138,7 +146,8 @@ runtime_dep = declare_dependency(link_with: runtime, include_directories: inc,
                                  dependencies: runtime_deps,
                                  link_args: runtime_link_args)
 install_subdir('include/rinruntime', install_dir: get_option('includedir'),
-               exclude_directories: ['crypt'])
+               exclude_directories: ['crypt'],
+               exclude_files: ['pe_loader.h', 'rin_cursor.h'])
 install_subdir('include/rincompression', install_dir: get_option('includedir'))
 license_install_dir = join_paths(get_option('datadir'), 'licenses', 'RinRuntime')
 install_data('LICENSE', install_dir: license_install_dir,

@@ -15,6 +15,10 @@ from pathlib import Path, PurePosixPath
 ROOT = Path(__file__).resolve().parents[1]
 MANIFEST = ROOT / "licenses" / "public-api-license-manifest.json"
 HEADER_SUFFIXES = {".h", ".hh", ".hpp", ".hxx", ".inc"}
+RUNTIME_TARGET_ONLY_HEADERS = {
+    "include/rinruntime/pe_loader.h",
+    "include/rinruntime/rin_cursor.h",
+}
 SPDX_RE = re.compile(r"SPDX-License-Identifier:\s*([A-Za-z0-9.+-]+)")
 LICENSE_URLS = {
     "MIT": "https://spdx.org/licenses/MIT.html",
@@ -50,7 +54,8 @@ def _root_license(path: Path) -> str:
 
 
 def _tracked_headers(repository: Path, include_root: str,
-                     exclude_crypt: bool = False) -> list[Path]:
+                     exclude_crypt: bool = False,
+                     exclude_paths: set[str] | None = None) -> list[Path]:
     output = _git(repository, "ls-files", "-z", "--", include_root)
     headers = []
     for item in output.split("\0"):
@@ -58,6 +63,8 @@ def _tracked_headers(repository: Path, include_root: str,
             continue
         relative = PurePosixPath(item)
         if relative.suffix.casefold() not in HEADER_SUFFIXES:
+            continue
+        if item in (exclude_paths or set()):
             continue
         if exclude_crypt and "crypt" in relative.parts[1:]:
             continue
@@ -138,11 +145,12 @@ def build_manifest(sdk_root: Path) -> dict[str, object]:
 
     headers = []
     runtime_public_roots = (
-        ("include/rinruntime", True),
-        ("include/rincompression", False),
+        ("include/rinruntime", True, RUNTIME_TARGET_ONLY_HEADERS),
+        ("include/rincompression", False, set()),
     )
-    for include_root, exclude_crypt in runtime_public_roots:
-        for path in _tracked_headers(ROOT, include_root, exclude_crypt):
+    for include_root, exclude_crypt, exclude_paths in runtime_public_roots:
+        for path in _tracked_headers(ROOT, include_root, exclude_crypt,
+                                     exclude_paths):
             source_path = _relative(path, ROOT)
             installed_path = "include/" + source_path.removeprefix("include/")
             headers.append({
@@ -217,6 +225,10 @@ def check_installed(prefix: Path) -> None:
             if not path.is_file() or path.suffix.casefold() not in HEADER_SUFFIXES:
                 continue
             if include_root == "include/rinruntime" and "crypt" in path.relative_to(root).parts:
+                continue
+            if include_root == "include/rinruntime" and \
+                    path.relative_to(prefix).as_posix() in \
+                    RUNTIME_TARGET_ONLY_HEADERS:
                 continue
             actual_headers.add(path.relative_to(prefix).as_posix())
     if actual_headers != expected_headers:

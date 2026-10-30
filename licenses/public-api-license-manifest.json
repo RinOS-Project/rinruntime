@@ -2033,13 +2033,6 @@
     },
     {
       "repository": "RinRuntime",
-      "sourcePath": "include/rinruntime/pe_loader.h",
-      "installedPath": "include/rinruntime/pe_loader.h",
-      "license": "MIT",
-      "licenseSource": "SPDX-License-Identifier"
-    },
-    {
-      "repository": "RinRuntime",
       "sourcePath": "include/rinruntime/performance_trace.h",
       "installedPath": "include/rinruntime/performance_trace.h",
       "license": "MIT",
@@ -2273,13 +2266,6 @@
       "repository": "RinRuntime",
       "sourcePath": "include/rinruntime/rin_container_network_portal.h",
       "installedPath": "include/rinruntime/rin_container_network_portal.h",
-      "license": "MIT",
-      "licenseSource": "SPDX-License-Identifier"
-    },
-    {
-      "repository": "RinRuntime",
-      "sourcePath": "include/rinruntime/rin_cursor.h",
-      "installedPath": "include/rinruntime/rin_cursor.h",
       "license": "MIT",
       "licenseSource": "SPDX-License-Identifier"
     },
