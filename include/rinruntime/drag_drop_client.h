@@ -36,6 +36,12 @@ enum {
     RINRUNTIME_DRAG_DROP_PAYLOAD_FILE = UINT32_C(2)
 };
 
+enum {
+    RINRUNTIME_DRAG_DROP_OWNER_RESULT_PENDING = UINT32_C(0),
+    RINRUNTIME_DRAG_DROP_OWNER_RESULT_SUCCEEDED = UINT32_C(1),
+    RINRUNTIME_DRAG_DROP_OWNER_RESULT_FAILED = UINT32_C(2)
+};
+
 /* A payload reference is an opaque File Portal capability produced by an
  * authenticated owner. The public ABI carries no file path or descriptor. */
 typedef struct RinRuntimeDragDropPayloadV1 {
