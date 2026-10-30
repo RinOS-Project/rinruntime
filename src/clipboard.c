@@ -81,7 +81,8 @@ RinRuntimeClipboardResult rinruntime_clipboard_set(
     request.data_size = data_size;
     result = clipboard_call(&request);
     if (result != RINRUNTIME_CLIPBOARD_OK ||
-        !clipboard_reply_reserved_zero(&request) || request.result0 == 0u ||
+        !clipboard_reply_reserved_zero(&request) ||
+        request.result0 == 0u ||
         request.result1 != 0u) {
         memset(&request, 0, sizeof(request));
         return result == RINRUNTIME_CLIPBOARD_OK
@@ -115,7 +116,7 @@ RinRuntimeClipboardResult rinruntime_clipboard_get(
     result = clipboard_call(&request);
     if ((result != RINRUNTIME_CLIPBOARD_OK &&
          result != RINRUNTIME_CLIPBOARD_BUFFER_TOO_SMALL) ||
-        !clipboard_reply_reserved_zero(&request) || request.result0 == 0u ||
+        !clipboard_reply_reserved_zero(&request) ||
         request.result0 > RINRUNTIME_CLIPBOARD_MAX_BYTES ||
         request.result1 == 0u ||
         (result == RINRUNTIME_CLIPBOARD_OK &&
@@ -138,4 +139,22 @@ RinRuntimeClipboardResult rinruntime_clipboard_get(
     }
     memset(&request, 0, sizeof(request));
     return result;
+}
+
+int rin_app_clipboard_set(uint32_t format, const void* data,
+                          size_t data_size, uint64_t* generation_out)
+{
+    return (int)rinruntime_clipboard_set(format, data,
+                                          (uint64_t)data_size,
+                                          generation_out);
+}
+
+int rin_app_clipboard_get(uint32_t format, void* data, size_t data_capacity,
+                          uint64_t* required_out,
+                          uint64_t* generation_out)
+{
+    if (required_out == NULL) return RIN_RESULT_INVALID_ARGUMENT;
+    return (int)rinruntime_clipboard_get(format, data,
+                                         (uint64_t)data_capacity,
+                                         required_out, generation_out);
 }

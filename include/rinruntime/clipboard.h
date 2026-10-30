@@ -3,6 +3,7 @@
 #ifndef RINRUNTIME_CLIPBOARD_H
 #define RINRUNTIME_CLIPBOARD_H
 
+#include <stddef.h>
 #include <stdint.h>
 
 #include <rin/contract_abi.h>
@@ -16,6 +17,11 @@ extern "C" {
  * broker and are not part of this general application contract. */
 #define RINRUNTIME_CLIPBOARD_FORMAT_UTF8_TEXT UINT32_C(1)
 #define RINRUNTIME_CLIPBOARD_MAX_BYTES UINT64_C(4096)
+
+/* Source-compatible application names live in the public base as well. */
+#define RIN_APP_CLIPBOARD_FORMAT_UTF8_TEXT \
+    RINRUNTIME_CLIPBOARD_FORMAT_UTF8_TEXT
+#define RIN_APP_CLIPBOARD_MAX_BYTES RINRUNTIME_CLIPBOARD_MAX_BYTES
 
 typedef enum RinRuntimeClipboardResult {
     RINRUNTIME_CLIPBOARD_OK = RIN_RESULT_OK,
@@ -39,6 +45,14 @@ RinRuntimeClipboardResult rinruntime_clipboard_set(
 RinRuntimeClipboardResult rinruntime_clipboard_get(
     uint32_t format, void* data, uint64_t data_capacity,
     uint64_t* required_out, uint64_t* generation_out);
+
+/* Compatibility names used by existing native applications.  These are
+ * implemented by this public-base client and share the same ABI contract. */
+int rin_app_clipboard_set(uint32_t format, const void* data,
+                          size_t data_size, uint64_t* generation_out);
+int rin_app_clipboard_get(uint32_t format, void* data, size_t data_capacity,
+                          uint64_t* required_out,
+                          uint64_t* generation_out);
 
 #ifdef __cplusplus
 }
