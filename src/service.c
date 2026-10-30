@@ -133,14 +133,30 @@ static int service_info_get(int scope, int index,
     return raw_result == 0 ? 0 : -1;
 }
 
-RinResult rin_service_start(int scope, const char* id)
+static RinResult service_control(uintptr_t syscall_number, int scope,
+                                 const char* id)
 {
     if ((scope != RIN_SERVICE_SCOPE_SYSTEM &&
-         scope != RIN_SERVICE_SCOPE_USER) || service_id_size(id) == 0u)
+         scope != RIN_SERVICE_SCOPE_USER) || id == NULL)
         return RIN_ERROR_INVALID_ARGUMENT;
     return service_status_result(_syscall2(
-        (uintptr_t)RIN_SYS_SERVICE_START, (uintptr_t)(unsigned int)scope,
+        syscall_number, (uintptr_t)(unsigned int)scope,
         (uintptr_t)id));
+}
+
+RinResult rin_service_start(int scope, const char* id)
+{
+    return service_control((uintptr_t)RIN_SYS_SERVICE_START, scope, id);
+}
+
+RinResult rin_service_stop(int scope, const char* id)
+{
+    return service_control((uintptr_t)RIN_SYS_SERVICE_STOP, scope, id);
+}
+
+RinResult rin_service_restart(int scope, const char* id)
+{
+    return service_control((uintptr_t)RIN_SYS_SERVICE_RESTART, scope, id);
 }
 
 int rin_service_find_system_slot(const char* service_id, uint32_t* slot_id)
