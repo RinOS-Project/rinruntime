@@ -1243,6 +1243,10 @@ int rinfs_page_cache_writeback_step(RinFS_Mount* mount, uint32_t max_entries,
  * returned and dirty data remains observable. */
 int rinfs_page_cache_set_pressure(RinFS_Mount* mount,
                                   RinFS_PageCachePressure pressure);
+/* Update cache readahead policy without issuing media I/O. Owners with a
+ * maintenance worker can pair this with bounded writeback steps. */
+int rinfs_page_cache_set_pressure_deferred(
+    RinFS_Mount* mount, RinFS_PageCachePressure pressure);
 
 /* Extended attributes use a compact [u16 name length][u32 value length]
  * record sequence after RinFS_XattrHeader. Names are byte strings rather than

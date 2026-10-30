@@ -7278,13 +7278,10 @@ int rinfs_page_cache_writeback_step(RinFS_Mount* mount, uint32_t max_entries,
     return rinfs_mount_operation_scope_finish(&operation, error);
 }
 
-static int rinfs_page_cache_set_pressure_unscoped(
+static int rinfs_page_cache_update_pressure_unscoped(
     RinFS_Mount* mount, RinFS_PageCachePressure pressure) {
     RinFS_PageCache* cache;
     uint32_t limit = RINFS_READAHEAD_MAX_PAGES;
-    uint32_t writeback_budget = 0u;
-    uint32_t written = 0u;
-    int writeback_error;
     if (!mount || !mount->mounted || !mount->page_cache ||
         pressure > RINFS_PAGE_CACHE_PRESSURE_OOM)
         return RINFS_ERR_INVAL;
@@ -7304,12 +7301,6 @@ static int rinfs_page_cache_set_pressure_unscoped(
         limit = 1u;
     else if (pressure == RINFS_PAGE_CACHE_PRESSURE_OOM)
         limit = 0u;
-    if (pressure == RINFS_PAGE_CACHE_PRESSURE_WARNING)
-        writeback_budget = 1u;
-    else if (pressure == RINFS_PAGE_CACHE_PRESSURE_CRITICAL)
-        writeback_budget = 8u;
-    else if (pressure == RINFS_PAGE_CACHE_PRESSURE_OOM)
-        writeback_budget = RINFS_PAGE_CACHE_CAPACITY;
     {
         int lock_error = rinfs_page_cache_lock(cache);
         if (lock_error != RINFS_OK) return lock_error;
@@ -7320,11 +7311,26 @@ static int rinfs_page_cache_set_pressure_unscoped(
         int unlock_error = rinfs_page_cache_unlock(cache);
         if (unlock_error != RINFS_OK) return unlock_error;
     }
+    return RINFS_OK;
+}
+
+static int rinfs_page_cache_set_pressure_unscoped(
+    RinFS_Mount* mount, RinFS_PageCachePressure pressure) {
+    uint32_t writeback_budget = 0u;
+    uint32_t written = 0u;
+    int writeback_error;
+    int error = rinfs_page_cache_update_pressure_unscoped(mount, pressure);
+    if (error != RINFS_OK) return error;
+    if (pressure == RINFS_PAGE_CACHE_PRESSURE_WARNING)
+        writeback_budget = 1u;
+    else if (pressure == RINFS_PAGE_CACHE_PRESSURE_CRITICAL)
+        writeback_budget = 8u;
+    else if (pressure == RINFS_PAGE_CACHE_PRESSURE_OOM)
+        writeback_budget = RINFS_PAGE_CACHE_CAPACITY;
     if (writeback_budget == 0u) return RINFS_OK;
     writeback_error = rinfs_page_cache_writeback_step(
         mount, writeback_budget, &written);
-    if (writeback_error != RINFS_OK) return writeback_error;
-    return RINFS_OK;
+    return writeback_error == RINFS_OK ? RINFS_OK : writeback_error;
 }
 
 int rinfs_page_cache_set_pressure(RinFS_Mount* mount,
@@ -7337,6 +7343,19 @@ int rinfs_page_cache_set_pressure(RinFS_Mount* mount,
     error = rinfs_mount_operation_scope_begin(mount, &operation);
     if (error != RINFS_OK) return error;
     error = rinfs_page_cache_set_pressure_unscoped(mount, pressure);
+    return rinfs_mount_operation_scope_finish(&operation, error);
+}
+
+int rinfs_page_cache_set_pressure_deferred(
+    RinFS_Mount* mount, RinFS_PageCachePressure pressure) {
+    RinFS_MountOperationScope operation = {0};
+    int error;
+    if (!mount || !mount->mounted || !mount->page_cache ||
+        pressure > RINFS_PAGE_CACHE_PRESSURE_OOM)
+        return RINFS_ERR_INVAL;
+    error = rinfs_mount_operation_scope_begin(mount, &operation);
+    if (error != RINFS_OK) return error;
+    error = rinfs_page_cache_update_pressure_unscoped(mount, pressure);
     return rinfs_mount_operation_scope_finish(&operation, error);
 }
 
