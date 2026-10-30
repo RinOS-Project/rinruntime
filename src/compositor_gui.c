@@ -7,6 +7,8 @@
  * buffer acquisition and presentation; it never owns drawing primitives.
  */
 #include <rinruntime/window.h>
+#include <rinruntime/drag_drop_client.h>
+#include <rinruntime/detail/drag_drop_owner_protocol.h>
 #include <rinruntime/poll_wait.h>
 #include "private_service_socket.h"
 #include "platform.h"
@@ -14,9 +16,18 @@
 #include <rin/contract_abi.h>
 #include <rin/ipc/shm_abi.h>
 #include <rin/net/socket_abi.h>
+#include <rin/file_portal_call.h>
 #include <errno.h>
+#include <fcntl.h>
+#include <limits.h>
+#include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/pidfd.h>
+#include <sys/socket.h>
+#include <sys/stat.h>
+#include <sys/un.h>
+#include <unistd.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <unistd.h>
@@ -31,6 +42,99 @@
 #define RIN_RUNTIME_GUI_IO_INTERRUPTION_LIMIT 32u
 #define RIN_RUNTIME_GUI_ASYNC_QUEUE_CAPACITY 32u
 #define RIN_RUNTIME_GUI_ASYNC_SECOND_PAYLOAD_MAX 512u
+
+#define RIN_RUNTIME_DRAG_DROP_PROTOCOL_VERSION UINT16_C(1)
+#define RIN_RUNTIME_DRAG_DROP_BEGIN UINT32_C(0x8001)
+#define RIN_RUNTIME_DRAG_DROP_ACCEPT UINT32_C(0x8002)
+#define RIN_RUNTIME_DRAG_DROP UINT32_C(0x8003)
+#define RIN_RUNTIME_DRAG_DROP_CANCEL UINT32_C(0x8004)
+#define RIN_RUNTIME_DRAG_DROP_POLL UINT32_C(0x8005)
+#define RIN_RUNTIME_DRAG_DROP_UPDATE UINT32_C(0x8009)
+#define RIN_RUNTIME_DRAG_DROP_MAX_PAYLOADS 16u
+#define RIN_RUNTIME_DRAG_DROP_MAX_PAYLOAD_BYTES (256u * 1024u)
+
+typedef struct RinRuntimeDragDropWireBeginV1 {
+    uint32_t struct_size;
+    uint16_t version;
+    uint16_t flags;
+    uint64_t session_id;
+    uint64_t generation;
+    uint32_t actions;
+    uint32_t payload_count;
+    uint64_t reserved[2];
+    RinRuntimeDragDropPayloadV1 payloads[RIN_RUNTIME_DRAG_DROP_MAX_PAYLOADS];
+} RinRuntimeDragDropWireBeginV1;
+
+typedef struct RinRuntimeDragDropWireAcceptV1 {
+    uint32_t struct_size;
+    uint16_t version;
+    uint16_t flags;
+    uint64_t offer_token;
+    uint64_t generation;
+    uint64_t target_handle;
+    uint32_t action;
+    uint32_t reserved0;
+} RinRuntimeDragDropWireAcceptV1;
+
+typedef struct RinRuntimeDragDropWireLeaseV1 {
+    uint32_t struct_size;
+    uint16_t version;
+    uint16_t flags;
+    uint64_t offer_token;
+    uint64_t generation;
+    uint64_t reserved[2];
+} RinRuntimeDragDropWireLeaseV1;
+
+typedef struct RinRuntimeDragDropWireUpdateV1 {
+    uint32_t struct_size;
+    uint16_t version;
+    uint16_t flags;
+    uint64_t offer_token;
+    uint64_t generation;
+    uint32_t action;
+    uint32_t reserved0;
+    uint64_t reserved[2];
+} RinRuntimeDragDropWireUpdateV1;
+
+typedef struct RinRuntimeDragDropWireUpdateResultV1 {
+    uint32_t struct_size;
+    uint16_t version;
+    uint16_t flags;
+    uint64_t target_handle;
+    uint32_t state;
+    uint32_t action;
+    uint64_t reserved[2];
+} RinRuntimeDragDropWireUpdateResultV1;
+
+typedef struct RinRuntimeDragDropWirePollV1 {
+    uint32_t struct_size;
+    uint16_t version;
+    uint16_t flags;
+    uint32_t surface_id;
+    uint32_t reserved[3];
+} RinRuntimeDragDropWirePollV1;
+
+typedef struct RinRuntimeDragDropWirePublicationV1 {
+    uint32_t struct_size;
+    uint16_t version;
+    uint16_t flags;
+    uint32_t has_publication;
+    uint32_t payload_count;
+    uint64_t offer_token;
+    uint64_t generation;
+    uint64_t origin_peer;
+    uint64_t target_handle;
+    uint32_t action;
+    uint32_t state;
+    RinRuntimeDragDropPayloadV1 payloads[RIN_RUNTIME_DRAG_DROP_MAX_PAYLOADS];
+} RinRuntimeDragDropWirePublicationV1;
+
+_Static_assert(sizeof(RinRuntimeDragDropPayloadV1) == 408u,
+               "drag/drop payload ABI drift");
+_Static_assert(sizeof(RinRuntimeDragDropWireBeginV1) == 6576u,
+               "drag/drop begin wire ABI drift");
+_Static_assert(sizeof(RinRuntimeDragDropWirePublicationV1) == 6584u,
+               "drag/drop publication wire ABI drift");
 
 #if defined(__GNUC__) || defined(__clang__)
 #define RIN_RUNTIME_OPTIONAL_WEAK __attribute__((weak))
@@ -3115,4 +3219,723 @@ int wnd_dispatch_compositor(uint32_t timeout_ms, uint32_t max_completions) {
 int wnd_reconnect_compositor(void) {
     if (g_async_requests.count != 0u) return RIN_RESULT_BUSY;
     return runtime_connect() == 0 ? RIN_RESULT_OK : RIN_RESULT_IO;
+}
+
+static int runtime_drag_drop_actions_valid(uint32_t actions) {
+    return actions != 0u && (actions & ~UINT32_C(7)) == 0u;
+}
+
+static int runtime_drag_drop_action_valid(uint32_t action) {
+    return runtime_drag_drop_actions_valid(action) &&
+           (action & (action - 1u)) == 0u;
+}
+
+static int runtime_drag_drop_payload_valid(
+    const RinRuntimeDragDropPayloadV1* payload) {
+    uint32_t index;
+    if (payload == NULL || payload->mime_size == 0u ||
+        payload->mime_size > RINRUNTIME_DRAG_DROP_MAX_MIME_BYTES ||
+        payload->label_size > RINRUNTIME_DRAG_DROP_MAX_LABEL_BYTES ||
+        payload->payload_size > RIN_RUNTIME_DRAG_DROP_MAX_PAYLOAD_BYTES ||
+        payload->reserved0 != 0u || payload->payload_capability == 0u ||
+        payload->mime[payload->mime_size] != '\0' ||
+        payload->label[payload->label_size] != '\0' ||
+        memchr(payload->mime, '\0', payload->mime_size) != NULL ||
+        memchr(payload->label, '\0', payload->label_size) != NULL)
+        return 0;
+    for (index = payload->mime_size + 1u;
+         index < sizeof(payload->mime); ++index)
+        if (payload->mime[index] != '\0') return 0;
+    for (index = payload->label_size + 1u;
+         index < sizeof(payload->label); ++index)
+        if (payload->label[index] != '\0') return 0;
+    return 1;
+}
+
+static int runtime_drag_drop_request(uint32_t type, const void* request,
+                                     uint32_t request_size, void* response,
+                                     uint32_t response_capacity,
+                                     uint32_t expected_response_size) {
+    uint32_t response_size = 0u;
+    int32_t status = -1;
+    if (runtime_request(type, request, request_size, response,
+                        response_capacity, &response_size, &status) != 0)
+        return RIN_RESULT_IO;
+    if (status != RIN_RESULT_OK) return status;
+    if (response_size != expected_response_size)
+        return RIN_RESULT_CORRUPT_DATA;
+    return RIN_RESULT_OK;
+}
+
+static int runtime_drag_drop_owner_bind_offer_v1(
+    uint64_t offer_token, uint64_t generation, uint32_t actions,
+    const RinRuntimeDragDropPayloadV1* payloads, uint32_t payload_count);
+
+int rinruntime_drag_drop_begin_v1(
+    RinRuntimeGuiHandle source, uint64_t session_id, uint64_t generation,
+    uint32_t actions, const RinRuntimeDragDropPayloadV1* payloads,
+    uint32_t payload_count, uint64_t* offer_token_out) {
+    RinRuntimeDragDropWireBeginV1 request;
+    RinRuntimeGuiSurface* surface = runtime_surface(source);
+    uint32_t response_size = 0u;
+    uint64_t offer_token = 0u;
+    int32_t status = -1;
+    int result;
+    uint32_t index;
+    if (offer_token_out != NULL) *offer_token_out = 0u;
+    if (surface == NULL || offer_token_out == NULL || session_id == 0u ||
+        session_id == UINT64_MAX || generation == 0u ||
+        generation == UINT64_MAX || !runtime_drag_drop_actions_valid(actions) ||
+        payloads == NULL || payload_count == 0u ||
+        payload_count > RIN_RUNTIME_DRAG_DROP_MAX_PAYLOADS)
+        return RIN_RESULT_INVALID_ARGUMENT;
+    memset(&request, 0, sizeof(request));
+    request.struct_size = sizeof(request);
+    request.version = RIN_RUNTIME_DRAG_DROP_PROTOCOL_VERSION;
+    request.session_id = session_id;
+    request.generation = generation;
+    request.actions = actions;
+    request.payload_count = payload_count;
+    for (index = 0u; index < payload_count; ++index) {
+        if (!runtime_drag_drop_payload_valid(&payloads[index]))
+            return RIN_RESULT_INVALID_ARGUMENT;
+        request.payloads[index] = payloads[index];
+    }
+    if (runtime_request(RIN_RUNTIME_DRAG_DROP_BEGIN, &request,
+                        sizeof(request), &offer_token, sizeof(offer_token),
+                        &response_size, &status) != 0)
+        return RIN_RESULT_IO;
+    if (status != RIN_RESULT_OK) return status;
+    if (response_size != sizeof(offer_token) || offer_token == 0u)
+        return RIN_RESULT_CORRUPT_DATA;
+    result = runtime_drag_drop_owner_bind_offer_v1(
+        offer_token, generation, actions, payloads, payload_count);
+    if (result != RIN_RESULT_OK) {
+        RinRuntimeDragDropWireLeaseV1 cancel;
+        uint32_t cancel_response_size = 0u;
+        int32_t cancel_status = -1;
+        memset(&cancel, 0, sizeof(cancel));
+        cancel.struct_size = sizeof(cancel);
+        cancel.version = RIN_RUNTIME_DRAG_DROP_PROTOCOL_VERSION;
+        cancel.offer_token = offer_token;
+        cancel.generation = generation;
+        (void)runtime_request(RIN_RUNTIME_DRAG_DROP_CANCEL, &cancel,
+                              sizeof(cancel), NULL, 0u,
+                              &cancel_response_size, &cancel_status);
+        return result;
+    }
+    *offer_token_out = offer_token;
+    return RIN_RESULT_OK;
+}
+
+int rinruntime_drag_drop_update_v1(
+    RinRuntimeGuiHandle source, uint64_t offer_token, uint64_t generation,
+    uint32_t action, uint64_t* target_handle_out, uint32_t* state_out) {
+    RinRuntimeDragDropWireUpdateV1 request;
+    RinRuntimeDragDropWireUpdateResultV1 response;
+    RinRuntimeGuiSurface* surface = runtime_surface(source);
+    int result;
+    if (target_handle_out != NULL) *target_handle_out = 0u;
+    if (state_out != NULL) *state_out = RINRUNTIME_DRAG_DROP_STATE_NONE;
+    if (surface == NULL || offer_token == 0u || generation == 0u ||
+        generation == UINT64_MAX || target_handle_out == NULL ||
+        state_out == NULL || !runtime_drag_drop_action_valid(action))
+        return RIN_RESULT_INVALID_ARGUMENT;
+    memset(&request, 0, sizeof(request));
+    request.struct_size = sizeof(request);
+    request.version = RIN_RUNTIME_DRAG_DROP_PROTOCOL_VERSION;
+    request.offer_token = offer_token;
+    request.generation = generation;
+    request.action = action;
+    memset(&response, 0, sizeof(response));
+    result = runtime_drag_drop_request(
+        RIN_RUNTIME_DRAG_DROP_UPDATE, &request, sizeof(request), &response,
+        sizeof(response), sizeof(response));
+    if (result != RIN_RESULT_OK) return result;
+    if (response.struct_size != sizeof(response) ||
+        response.version != RIN_RUNTIME_DRAG_DROP_PROTOCOL_VERSION ||
+        response.flags != 0u || response.reserved[0] != 0u ||
+        response.reserved[1] != 0u ||
+        response.state > RINRUNTIME_DRAG_DROP_STATE_ACCEPTED ||
+        (response.target_handle == 0u) !=
+            (response.state == RINRUNTIME_DRAG_DROP_STATE_NONE) ||
+        (response.target_handle != 0u &&
+         !runtime_drag_drop_action_valid(response.action)))
+        return RIN_RESULT_CORRUPT_DATA;
+    *target_handle_out = response.target_handle;
+    *state_out = response.state;
+    return RIN_RESULT_OK;
+}
+
+int rinruntime_drag_drop_accept_v1(
+    RinRuntimeGuiHandle target, uint64_t offer_token, uint64_t generation,
+    uint32_t action) {
+    RinRuntimeDragDropWireAcceptV1 request;
+    RinRuntimeGuiSurface* surface = runtime_surface(target);
+    if (surface == NULL || offer_token == 0u || generation == 0u ||
+        generation == UINT64_MAX || !runtime_drag_drop_action_valid(action))
+        return RIN_RESULT_INVALID_ARGUMENT;
+    memset(&request, 0, sizeof(request));
+    request.struct_size = sizeof(request);
+    request.version = RIN_RUNTIME_DRAG_DROP_PROTOCOL_VERSION;
+    request.offer_token = offer_token;
+    request.generation = generation;
+    request.target_handle = surface->id;
+    request.action = action;
+    return runtime_drag_drop_request(RIN_RUNTIME_DRAG_DROP_ACCEPT, &request,
+                                     sizeof(request), NULL, 0u, 0u);
+}
+
+static int runtime_drag_drop_finish_v1(RinRuntimeGuiHandle source,
+                                      uint32_t type, uint64_t offer_token,
+                                      uint64_t generation) {
+    RinRuntimeDragDropWireLeaseV1 request;
+    if (runtime_surface(source) == NULL || offer_token == 0u ||
+        generation == 0u || generation == UINT64_MAX ||
+        (type != RIN_RUNTIME_DRAG_DROP &&
+         type != RIN_RUNTIME_DRAG_DROP_CANCEL))
+        return RIN_RESULT_INVALID_ARGUMENT;
+    memset(&request, 0, sizeof(request));
+    request.struct_size = sizeof(request);
+    request.version = RIN_RUNTIME_DRAG_DROP_PROTOCOL_VERSION;
+    request.offer_token = offer_token;
+    request.generation = generation;
+    return runtime_drag_drop_request(type, &request, sizeof(request), NULL,
+                                     0u, 0u);
+}
+
+int rinruntime_drag_drop_drop_v1(
+    RinRuntimeGuiHandle source, uint64_t offer_token, uint64_t generation) {
+    return runtime_drag_drop_finish_v1(source, RIN_RUNTIME_DRAG_DROP,
+                                       offer_token, generation);
+}
+
+int rinruntime_drag_drop_cancel_v1(
+    RinRuntimeGuiHandle source, uint64_t offer_token, uint64_t generation) {
+    return runtime_drag_drop_finish_v1(source, RIN_RUNTIME_DRAG_DROP_CANCEL,
+                                       offer_token, generation);
+}
+
+int rinruntime_drag_drop_poll_v1(
+    RinRuntimeGuiHandle target, RinRuntimeDragDropOfferV1* offer_out) {
+    RinRuntimeDragDropWirePollV1 request;
+    RinRuntimeDragDropWirePublicationV1 publication;
+    RinRuntimeGuiSurface* surface = runtime_surface(target);
+    uint32_t index;
+    int result;
+    if (offer_out != NULL) memset(offer_out, 0, sizeof(*offer_out));
+    if (surface == NULL || offer_out == NULL)
+        return RIN_RESULT_INVALID_ARGUMENT;
+    memset(&request, 0, sizeof(request));
+    request.struct_size = sizeof(request);
+    request.version = RIN_RUNTIME_DRAG_DROP_PROTOCOL_VERSION;
+    request.surface_id = surface->id;
+    memset(&publication, 0, sizeof(publication));
+    result = runtime_drag_drop_request(
+        RIN_RUNTIME_DRAG_DROP_POLL, &request, sizeof(request), &publication,
+        sizeof(publication), sizeof(publication));
+    if (result != RIN_RESULT_OK) return result;
+    offer_out->struct_size = sizeof(*offer_out);
+    offer_out->version = RIN_RUNTIME_DRAG_DROP_VERSION;
+    if (publication.struct_size != sizeof(publication) ||
+        publication.version != RIN_RUNTIME_DRAG_DROP_PROTOCOL_VERSION ||
+        publication.flags != 0u || publication.has_publication > 1u)
+        return RIN_RESULT_CORRUPT_DATA;
+    if (publication.has_publication == 0u) {
+        if (publication.payload_count != 0u || publication.offer_token != 0u ||
+            publication.generation != 0u || publication.origin_peer != 0u ||
+            publication.target_handle != 0u || publication.action != 0u ||
+            publication.state != RINRUNTIME_DRAG_DROP_STATE_NONE)
+            return RIN_RESULT_CORRUPT_DATA;
+        for (index = 0u; index < RIN_RUNTIME_DRAG_DROP_MAX_PAYLOADS; ++index)
+            if (memcmp(&publication.payloads[index],
+                       &(RinRuntimeDragDropPayloadV1){0},
+                       sizeof(publication.payloads[index])) != 0)
+                return RIN_RESULT_CORRUPT_DATA;
+        return RIN_RESULT_OK;
+    }
+    if (publication.offer_token == 0u || publication.generation == 0u ||
+        publication.origin_peer == 0u ||
+        publication.target_handle != surface->id ||
+        publication.payload_count == 0u ||
+        publication.payload_count > RIN_RUNTIME_DRAG_DROP_MAX_PAYLOADS ||
+        !runtime_drag_drop_action_valid(publication.action) ||
+        (publication.state != RINRUNTIME_DRAG_DROP_STATE_OFFERED &&
+         publication.state != RINRUNTIME_DRAG_DROP_STATE_ACCEPTED &&
+         publication.state != RINRUNTIME_DRAG_DROP_STATE_DROPPED))
+        return RIN_RESULT_CORRUPT_DATA;
+    offer_out->offer_token = publication.offer_token;
+    offer_out->generation = publication.generation;
+    offer_out->origin_peer = publication.origin_peer;
+    offer_out->target_handle = publication.target_handle;
+    offer_out->action = publication.action;
+    offer_out->state = publication.state;
+    offer_out->payload_count = publication.payload_count;
+    for (index = 0u; index < publication.payload_count; ++index) {
+        if (!runtime_drag_drop_payload_valid(&publication.payloads[index])) {
+            memset(offer_out, 0, sizeof(*offer_out));
+            return RIN_RESULT_CORRUPT_DATA;
+        }
+        offer_out->payloads[index] = publication.payloads[index];
+    }
+    for (; index < RIN_RUNTIME_DRAG_DROP_MAX_PAYLOADS; ++index) {
+        if (memcmp(&publication.payloads[index],
+                   &(RinRuntimeDragDropPayloadV1){0},
+                   sizeof(publication.payloads[index])) != 0) {
+            memset(offer_out, 0, sizeof(*offer_out));
+            return RIN_RESULT_CORRUPT_DATA;
+        }
+    }
+    return RIN_RESULT_OK;
+}
+
+static int runtime_drag_drop_owner_connect(int* descriptor_out) {
+    struct sockaddr_un address;
+    rin_unix_peer_service_identity_v1 service;
+    socklen_t service_size = (socklen_t)sizeof(service);
+    char path[sizeof(address.sun_path)];
+    const uid_t uid = getuid();
+    int descriptor;
+    int written;
+    if (descriptor_out != NULL) *descriptor_out = -1;
+    if (descriptor_out == NULL || uid == 0u) return RIN_RESULT_ACCESS_DENIED;
+    written = snprintf(path, sizeof(path),
+                       "/run/rin/desktopd-drag-drop-%u.sock",
+                       (unsigned)uid);
+    if (written <= 0 || (size_t)written >= sizeof(path))
+        return RIN_RESULT_INVALID_ARGUMENT;
+    descriptor = socket(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0);
+    if (descriptor < 0) return RIN_RESULT_IO;
+    memset(&address, 0, sizeof(address));
+    address.sun_family = AF_UNIX;
+    memcpy(address.sun_path, path, (size_t)written + 1u);
+    if (connect(descriptor, (struct sockaddr*)&address, sizeof(address)) != 0 ||
+        getsockopt(descriptor, SOL_SOCKET, SO_RIN_UNIX_PEER_SERVICE_IDENTITY,
+                   &service, &service_size) != 0 ||
+        service_size != (socklen_t)sizeof(service) ||
+        !rin_unix_peer_service_identity_valid(&service) ||
+        service.scope != RIN_UNIX_SCOPE_USER || service.owner_uid != uid ||
+        strncmp(service.service_id, "desktopd",
+                sizeof(service.service_id)) != 0) {
+        close(descriptor);
+        return RIN_RESULT_ACCESS_DENIED;
+    }
+    *descriptor_out = descriptor;
+    return RIN_RESULT_OK;
+}
+
+static int runtime_drag_drop_owner_rpc(
+    const RinRuntimeDragDropOwnerRequestV1* request, const void* body,
+    uint32_t body_size, RinRuntimeDragDropOwnerResponseV1* response_out,
+    void* response_body, uint32_t response_body_capacity) {
+    uint8_t* packet = NULL;
+    uint8_t* reply = NULL;
+    int descriptor = -1;
+    int result;
+    ssize_t transferred;
+    const uint32_t max_body = RINRUNTIME_DRAG_DROP_OWNER_MAX_TEXT_BYTES +
+        RINRUNTIME_DRAG_DROP_OWNER_MAX_MIME_BYTES +
+        RINRUNTIME_DRAG_DROP_OWNER_MAX_LABEL_BYTES;
+    if (response_out != NULL) memset(response_out, 0, sizeof(*response_out));
+    if (request == NULL || response_out == NULL ||
+        request->body_size != body_size || body_size > max_body ||
+        (body == NULL && body_size != 0u) ||
+        (response_body == NULL && response_body_capacity != 0u))
+        return RIN_RESULT_INVALID_ARGUMENT;
+    result = runtime_drag_drop_owner_connect(&descriptor);
+    if (result != RIN_RESULT_OK) return result;
+    packet = (uint8_t*)malloc(sizeof(*request) + body_size);
+    reply = (uint8_t*)malloc(sizeof(*response_out) + max_body);
+    if (packet == NULL || reply == NULL) {
+        result = RIN_RESULT_NO_MEMORY;
+        goto done;
+    }
+    memcpy(packet, request, sizeof(*request));
+    if (body_size != 0u)
+        memcpy(packet + sizeof(*request), body, body_size);
+    transferred = send(descriptor, packet, sizeof(*request) + body_size,
+                       MSG_NOSIGNAL);
+    if (transferred != (ssize_t)(sizeof(*request) + body_size)) {
+        result = RIN_RESULT_IO;
+        goto done;
+    }
+    transferred = recv(descriptor, reply, sizeof(*response_out) + max_body,
+                       MSG_TRUNC);
+    if (transferred < (ssize_t)sizeof(*response_out) ||
+        (size_t)transferred > sizeof(*response_out) + max_body) {
+        result = RIN_RESULT_IO;
+        goto done;
+    }
+    memcpy(response_out, reply, sizeof(*response_out));
+    if (response_out->magic != RINRUNTIME_DRAG_DROP_OWNER_MAGIC ||
+        response_out->version != RINRUNTIME_DRAG_DROP_OWNER_VERSION ||
+        response_out->operation != request->operation ||
+        response_out->struct_size != sizeof(*response_out) ||
+        response_out->reserved0 != 0u ||
+        response_out->body_size > max_body ||
+        (size_t)transferred != sizeof(*response_out) +
+                                   response_out->body_size ||
+        response_out->body_size > response_body_capacity) {
+        result = response_out->body_size > response_body_capacity
+            ? RIN_RESULT_BUFFER_TOO_SMALL : RIN_RESULT_CORRUPT_DATA;
+        goto done;
+    }
+    if (response_out->body_size != 0u) {
+        if (response_body == NULL) {
+            result = RIN_RESULT_CORRUPT_DATA;
+            goto done;
+        }
+        memcpy(response_body, reply + sizeof(*response_out),
+               response_out->body_size);
+    }
+    result = response_out->result;
+done:
+    if (descriptor >= 0) close(descriptor);
+    if (packet != NULL) {
+        memset(packet, 0, sizeof(*request) + body_size);
+        free(packet);
+    }
+    if (reply != NULL) {
+        memset(reply, 0, sizeof(*response_out) + max_body);
+        free(reply);
+    }
+    return result;
+}
+
+static void runtime_drag_drop_owner_request_init(
+    RinRuntimeDragDropOwnerRequestV1* request, uint16_t operation) {
+    memset(request, 0, sizeof(*request));
+    request->magic = RINRUNTIME_DRAG_DROP_OWNER_MAGIC;
+    request->version = RINRUNTIME_DRAG_DROP_OWNER_VERSION;
+    request->operation = operation;
+    request->struct_size = sizeof(*request);
+}
+
+static int runtime_drag_drop_owner_string_size(const char* value,
+                                               uint32_t maximum,
+                                               uint32_t* size_out) {
+    size_t size;
+    if (size_out != NULL) *size_out = 0u;
+    if (value == NULL || size_out == NULL) return 0;
+    size = strlen(value);
+    if (size == 0u || size > maximum) return 0;
+    *size_out = (uint32_t)size;
+    return 1;
+}
+
+int rinruntime_drag_drop_payload_register_text_v1(
+    const char* mime, const char* label, const void* bytes,
+    uint32_t byte_count, uint64_t* payload_capability_out) {
+    RinRuntimeDragDropOwnerRequestV1 request;
+    RinRuntimeDragDropOwnerResponseV1 response;
+    uint32_t mime_size = 0u;
+    uint32_t label_size = 0u;
+    uint32_t body_size;
+    uint8_t* body;
+    int result;
+    if (payload_capability_out != NULL) *payload_capability_out = 0u;
+    if (payload_capability_out == NULL || bytes == NULL || byte_count == 0u ||
+        byte_count > RINRUNTIME_DRAG_DROP_OWNER_MAX_TEXT_BYTES ||
+        !runtime_drag_drop_owner_string_size(
+            mime, RINRUNTIME_DRAG_DROP_OWNER_MAX_MIME_BYTES, &mime_size) ||
+        !runtime_drag_drop_owner_string_size(
+            label, RINRUNTIME_DRAG_DROP_OWNER_MAX_LABEL_BYTES, &label_size) ||
+        byte_count > UINT32_MAX - mime_size - label_size)
+        return RIN_RESULT_INVALID_ARGUMENT;
+    body_size = mime_size + label_size + byte_count;
+    body = (uint8_t*)malloc(body_size);
+    if (body == NULL) return RIN_RESULT_NO_MEMORY;
+    memcpy(body, mime, mime_size);
+    memcpy(body + mime_size, label, label_size);
+    memcpy(body + mime_size + label_size, bytes, byte_count);
+    runtime_drag_drop_owner_request_init(
+        &request, RINRUNTIME_DRAG_DROP_OWNER_REGISTER_TEXT);
+    request.body_size = body_size;
+    request.mime_size = mime_size;
+    request.label_size = label_size;
+    memset(&response, 0, sizeof(response));
+    result = runtime_drag_drop_owner_rpc(&request, body, body_size,
+                                         &response, NULL, 0u);
+    if (result == RIN_RESULT_OK &&
+        (response.payload_type != RINRUNTIME_DRAG_DROP_PAYLOAD_TEXT ||
+         response.capability == 0u || response.body_size != 0u))
+        result = RIN_RESULT_CORRUPT_DATA;
+    if (result == RIN_RESULT_OK)
+        *payload_capability_out = response.capability;
+    memset(body, 0, body_size);
+    free(body);
+    memset(&request, 0, sizeof(request));
+    memset(&response, 0, sizeof(response));
+    return result;
+}
+
+static void runtime_drag_drop_revoke_file_object(uint64_t object_id) {
+    RinFilePortalCallV1 revoke;
+    if (object_id == 0u) return;
+    memset(&revoke, 0, sizeof(revoke));
+    revoke.struct_size = sizeof(revoke);
+    revoke.version = RIN_FILE_PORTAL_CALL_VERSION;
+    revoke.operation = RIN_FILE_PORTAL_OPERATION_REVOKE;
+    revoke.descriptor = -1;
+    revoke.process_fd = -1;
+    revoke.file_object_id = object_id;
+    (void)rin_file_portal_call(&revoke);
+    memset(&revoke, 0, sizeof(revoke));
+}
+
+int rinruntime_drag_drop_payload_register_file_v1(
+    int32_t source_fd, const char* mime, const char* label,
+    uint64_t* payload_capability_out) {
+    RinRuntimeDragDropOwnerRequestV1 request;
+    RinRuntimeDragDropOwnerResponseV1 response;
+    rin_unix_peer_service_identity_v1 service;
+    RinFilePortalCallV1 issue;
+    uint32_t mime_size = 0u;
+    uint32_t label_size = 0u;
+    uint8_t* body = NULL;
+    int owner_fd = -1;
+    int pidfd = -1;
+    int result;
+    uint64_t issued_object = 0u;
+    if (payload_capability_out != NULL) *payload_capability_out = 0u;
+    if (source_fd < 0 || payload_capability_out == NULL ||
+        !runtime_drag_drop_owner_string_size(
+            mime, RINRUNTIME_DRAG_DROP_OWNER_MAX_MIME_BYTES, &mime_size) ||
+        !runtime_drag_drop_owner_string_size(
+            label, RINRUNTIME_DRAG_DROP_OWNER_MAX_LABEL_BYTES, &label_size))
+        return RIN_RESULT_INVALID_ARGUMENT;
+    result = runtime_drag_drop_owner_connect(&owner_fd);
+    if (result != RIN_RESULT_OK) return result;
+    socklen_t service_size = (socklen_t)sizeof(service);
+    memset(&service, 0, sizeof(service));
+    if (getsockopt(owner_fd, SOL_SOCKET, SO_RIN_UNIX_PEER_SERVICE_IDENTITY,
+                   &service, &service_size) != 0 ||
+        service_size != (socklen_t)sizeof(service) ||
+        !rin_unix_peer_service_identity_valid(&service) ||
+        service.process_id > INT_MAX) {
+        result = RIN_RESULT_ACCESS_DENIED;
+        goto done;
+    }
+    pidfd = pidfd_open((pid_t)service.process_id, 0u);
+    if (pidfd < 0) {
+        result = RIN_RESULT_ACCESS_DENIED;
+        goto done;
+    }
+    memset(&issue, 0, sizeof(issue));
+    issue.struct_size = sizeof(issue);
+    issue.version = RIN_FILE_PORTAL_CALL_VERSION;
+    issue.operation = RIN_FILE_PORTAL_OPERATION_ISSUE;
+    issue.descriptor = source_fd;
+    issue.requested_rights = RIN_FILE_PORTAL_RIGHT_READ |
+                             RIN_FILE_PORTAL_RIGHT_METADATA;
+    issue.target_process_id = (uint32_t)service.process_id;
+    issue.target_process_cookie = service.process_instance_cookie;
+    issue.process_fd = pidfd;
+    result = rin_file_portal_call(&issue);
+    issued_object = issue.file_object_id;
+    (void)close(pidfd);
+    pidfd = -1;
+    if (result != RIN_RESULT_OK ||
+        issue.granted_rights != (RIN_FILE_PORTAL_RIGHT_READ |
+                                 RIN_FILE_PORTAL_RIGHT_METADATA) ||
+        issue.process_fd != -1 || issue.file_object_id == 0u ||
+        issue.expires_at_epoch == 0u ||
+        issue.token.magic != RIN_FILE_PORTAL_TOKEN_MAGIC ||
+        issue.token.rights != (RIN_FILE_PORTAL_RIGHT_READ |
+                               RIN_FILE_PORTAL_RIGHT_METADATA)) {
+        if (result == RIN_RESULT_OK) result = RIN_RESULT_CORRUPT_DATA;
+        goto done;
+    }
+    body = (uint8_t*)malloc(mime_size + label_size);
+    if (body == NULL) {
+        result = RIN_RESULT_NO_MEMORY;
+        goto done;
+    }
+    memcpy(body, mime, mime_size);
+    memcpy(body + mime_size, label, label_size);
+    runtime_drag_drop_owner_request_init(
+        &request, RINRUNTIME_DRAG_DROP_OWNER_REGISTER_FILE);
+    request.body_size = mime_size + label_size;
+    request.mime_size = mime_size;
+    request.label_size = label_size;
+    request.file_token = issue.token;
+    memset(&response, 0, sizeof(response));
+    close(owner_fd);
+    owner_fd = -1;
+    result = runtime_drag_drop_owner_rpc(&request, body,
+                                         request.body_size, &response, NULL,
+                                         0u);
+    if (result == RIN_RESULT_OK &&
+        (response.payload_type != RINRUNTIME_DRAG_DROP_PAYLOAD_FILE ||
+         response.capability == 0u || response.body_size != 0u))
+        result = RIN_RESULT_CORRUPT_DATA;
+    if (result == RIN_RESULT_OK) {
+        *payload_capability_out = response.capability;
+        issued_object = 0u;
+    }
+    memset(&request, 0, sizeof(request));
+    memset(&response, 0, sizeof(response));
+done:
+    if (pidfd >= 0) close(pidfd);
+    if (owner_fd >= 0) close(owner_fd);
+    if (body != NULL) {
+        memset(body, 0, mime_size + label_size);
+        free(body);
+    }
+    memset(&issue, 0, sizeof(issue));
+    runtime_drag_drop_revoke_file_object(issued_object);
+    return result;
+}
+
+static int runtime_drag_drop_owner_bind_offer_v1(
+    uint64_t offer_token, uint64_t generation, uint32_t actions,
+    const RinRuntimeDragDropPayloadV1* payloads, uint32_t payload_count) {
+    RinRuntimeDragDropOwnerRequestV1 request;
+    RinRuntimeDragDropOwnerResponseV1 response;
+    uint64_t capabilities[RIN_RUNTIME_DRAG_DROP_MAX_PAYLOADS] = {0u};
+    uint32_t index;
+    if (offer_token == 0u || generation == 0u ||
+        !runtime_drag_drop_actions_valid(actions) || payloads == NULL ||
+        payload_count == 0u ||
+        payload_count > RIN_RUNTIME_DRAG_DROP_MAX_PAYLOADS)
+        return RIN_RESULT_INVALID_ARGUMENT;
+    for (index = 0u; index < payload_count; ++index)
+        capabilities[index] = payloads[index].payload_capability;
+    runtime_drag_drop_owner_request_init(
+        &request, RINRUNTIME_DRAG_DROP_OWNER_BIND_OFFER);
+    request.offer_token = offer_token;
+    request.generation = generation;
+    request.action = actions;
+    request.body_size = payload_count * (uint32_t)sizeof(uint64_t);
+    memset(&response, 0, sizeof(response));
+    const int result = runtime_drag_drop_owner_rpc(
+        &request, capabilities, request.body_size, &response, NULL, 0u);
+    memset(capabilities, 0, sizeof(capabilities));
+    memset(&request, 0, sizeof(request));
+    memset(&response, 0, sizeof(response));
+    return result;
+}
+
+int rinruntime_drag_drop_receive_v1(
+    uint64_t offer_token, uint64_t generation, uint64_t payload_capability,
+    void* text_bytes, uint32_t text_capacity, uint32_t* text_size_out,
+    RinFilePortalTokenV1* file_token_out, uint32_t* payload_type_out) {
+    RinRuntimeDragDropOwnerRequestV1 request;
+    RinRuntimeDragDropOwnerResponseV1 response;
+    uint32_t body_capacity = text_capacity;
+    if (text_size_out != NULL) *text_size_out = 0u;
+    if (payload_type_out != NULL) *payload_type_out = 0u;
+    if (file_token_out != NULL) memset(file_token_out, 0, sizeof(*file_token_out));
+    if (offer_token == 0u || generation == 0u || payload_capability == 0u ||
+        text_size_out == NULL || payload_type_out == NULL ||
+        (text_bytes == NULL && text_capacity != 0u) ||
+        text_capacity > RINRUNTIME_DRAG_DROP_OWNER_MAX_TEXT_BYTES)
+        return RIN_RESULT_INVALID_ARGUMENT;
+    runtime_drag_drop_owner_request_init(
+        &request, RINRUNTIME_DRAG_DROP_OWNER_RECEIVE);
+    request.offer_token = offer_token;
+    request.generation = generation;
+    request.capability = payload_capability;
+    memset(&response, 0, sizeof(response));
+    const int result = runtime_drag_drop_owner_rpc(
+        &request, NULL, 0u, &response, text_bytes, body_capacity);
+    if (result == RIN_RESULT_BUFFER_TOO_SMALL &&
+        response.payload_type == RINRUNTIME_DRAG_DROP_PAYLOAD_TEXT) {
+        *text_size_out = response.body_size;
+        return result;
+    }
+    if (result != RIN_RESULT_OK) return result;
+    if (response.payload_type == RINRUNTIME_DRAG_DROP_PAYLOAD_TEXT) {
+        if (response.body_size == 0u || file_token_out != NULL &&
+                response.file_token.magic != 0u) {
+            memset(text_bytes, 0, response.body_size <= text_capacity
+                                      ? response.body_size : text_capacity);
+            return RIN_RESULT_CORRUPT_DATA;
+        }
+        *text_size_out = response.body_size;
+    } else if (response.payload_type ==
+               RINRUNTIME_DRAG_DROP_PAYLOAD_FILE) {
+        const RinFilePortalTokenV1* token = &response.file_token;
+        if (response.body_size != 0u || file_token_out == NULL ||
+            token->magic != RIN_FILE_PORTAL_TOKEN_MAGIC ||
+            token->version != RIN_FILE_PORTAL_TOKEN_VERSION ||
+            token->token_size != RIN_FILE_PORTAL_TOKEN_SIZE ||
+            token->rights != (RIN_FILE_PORTAL_RIGHT_READ |
+                              RIN_FILE_PORTAL_RIGHT_METADATA) ||
+            token->file_object_id == 0u || token->expires_at_epoch == 0u) {
+            return RIN_RESULT_CORRUPT_DATA;
+        }
+        *file_token_out = *token;
+    } else {
+        return RIN_RESULT_CORRUPT_DATA;
+    }
+    *payload_type_out = response.payload_type;
+    memset(&request, 0, sizeof(request));
+    memset(&response, 0, sizeof(response));
+    return RIN_RESULT_OK;
+}
+
+static int runtime_drag_drop_owner_simple_request(
+    uint16_t operation, uint64_t offer_token, uint64_t generation,
+    uint32_t value, uint32_t* value_out) {
+    RinRuntimeDragDropOwnerRequestV1 request;
+    RinRuntimeDragDropOwnerResponseV1 response;
+    if (offer_token == 0u || generation == 0u || generation == UINT64_MAX)
+        return RIN_RESULT_INVALID_ARGUMENT;
+    runtime_drag_drop_owner_request_init(&request, operation);
+    request.offer_token = offer_token;
+    request.generation = generation;
+    request.result = value;
+    memset(&response, 0, sizeof(response));
+    const int result = runtime_drag_drop_owner_rpc(&request, NULL, 0u,
+                                                   &response, NULL, 0u);
+    if (result == RIN_RESULT_OK && value_out != NULL)
+        *value_out = response.completion;
+    memset(&request, 0, sizeof(request));
+    memset(&response, 0, sizeof(response));
+    return result;
+}
+
+int rinruntime_drag_drop_complete_v1(uint64_t offer_token,
+                                     uint64_t generation,
+                                     uint32_t result) {
+    if (result != RINRUNTIME_DRAG_DROP_OWNER_RESULT_SUCCEEDED &&
+        result != RINRUNTIME_DRAG_DROP_OWNER_RESULT_FAILED)
+        return RIN_RESULT_INVALID_ARGUMENT;
+    return runtime_drag_drop_owner_simple_request(
+        RINRUNTIME_DRAG_DROP_OWNER_COMPLETE, offer_token, generation,
+        result, NULL);
+}
+
+int rinruntime_drag_drop_source_result_v1(uint64_t offer_token,
+                                         uint64_t generation,
+                                         uint32_t* result_out) {
+    if (result_out != NULL)
+        *result_out = RINRUNTIME_DRAG_DROP_OWNER_RESULT_PENDING;
+    if (result_out == NULL) return RIN_RESULT_INVALID_ARGUMENT;
+    return runtime_drag_drop_owner_simple_request(
+        RINRUNTIME_DRAG_DROP_OWNER_SOURCE_RESULT, offer_token, generation,
+        0u, result_out);
+}
+
+int rinruntime_drag_drop_release_v1(uint64_t offer_token,
+                                    uint64_t generation) {
+    return runtime_drag_drop_owner_simple_request(
+        RINRUNTIME_DRAG_DROP_OWNER_RELEASE, offer_token, generation,
+        0u, NULL);
+}
+
+int rinruntime_drag_drop_payload_release_v1(uint64_t payload_capability) {
+    RinRuntimeDragDropOwnerRequestV1 request;
+    RinRuntimeDragDropOwnerResponseV1 response;
+    if (payload_capability == 0u) return RIN_RESULT_INVALID_ARGUMENT;
+    runtime_drag_drop_owner_request_init(
+        &request, RINRUNTIME_DRAG_DROP_OWNER_RELEASE_PAYLOAD);
+    request.capability = payload_capability;
+    memset(&response, 0, sizeof(response));
+    const int result = runtime_drag_drop_owner_rpc(
+        &request, NULL, 0u, &response, NULL, 0u);
+    memset(&request, 0, sizeof(request));
+    memset(&response, 0, sizeof(response));
+    return result;
 }
