@@ -164,7 +164,7 @@ typedef struct RinRuntimeFileOperationServiceReplyV1 {
 
 typedef struct RinRuntimeFileOperationServiceClientV1 {
     int32_t socket_fd;
-    uint32_t reserved;
+    uint32_t reserved; /* private request/cancellation state; initialize via API */
     uint64_t next_request_id;
 } RinRuntimeFileOperationServiceClientV1;
 
@@ -178,6 +178,12 @@ typedef struct RinRuntimeFileOperationServiceBrokerClientV1 {
 
 void rinruntime_file_operation_service_client_init(
     RinRuntimeFileOperationServiceClientV1* client);
+/* Cancel an in-flight client RPC. Cancellation shuts down its private socket;
+ * the synchronous RPC returns UNAVAILABLE and owns final descriptor cleanup. */
+void rinruntime_file_operation_service_client_cancel(
+    RinRuntimeFileOperationServiceClientV1* client);
+/* Compatibility spelling for client_cancel(); it does not cancel the
+ * service-side file-operation job. Use the protocol CANCEL request for that. */
 void rinruntime_file_operation_service_client_close(
     RinRuntimeFileOperationServiceClientV1* client);
 RinRuntimeFileOperationServiceStatus rinruntime_file_operation_service_submit(
