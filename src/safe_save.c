@@ -120,8 +120,7 @@ RinRuntimeSafeSaveResult rinruntime_safe_save(
     if (backend->open_temporary(backend->context, target_path, temporary_path,
                                 sizeof(temporary_path), &handle) != 0)
         return RINRUNTIME_SAFE_SAVE_IO_FAILED;
-    if (handle == 0u ||
-        !safe_save_temporary_path_valid(temporary_path, parent) ||
+    if (!safe_save_temporary_path_valid(temporary_path, parent) ||
         strcmp(temporary_path, target_path) == 0 ||
         !rinruntime_file_operation_path_valid(target_path)) {
         (void)backend->close(backend->context, handle);
