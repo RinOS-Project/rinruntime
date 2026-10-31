@@ -132,6 +132,7 @@ static int client_result_valid(RinResultCode result)
 }
 
 static RinResultCode client_reply_header(
+    RinAccessibilityServiceClientV1* client,
     const RinAccessibilityServiceMessageHeaderV1* request,
     const RinAccessibilityServiceMessageHeaderV1* reply,
     uint16_t opcode, uint32_t expected_payload_size)
@@ -143,6 +144,7 @@ static RinResultCode client_reply_header(
         reply->flags != 0u || reply->reserved != 0u ||
         reply->payload_size != expected_payload_size ||
         !client_result_valid((RinResultCode)reply->status)) {
+        rin_accessibility_service_client_close(client);
         return RIN_RESULT_CORRUPT_DATA;
     }
     return (RinResultCode)reply->status;
@@ -184,6 +186,7 @@ void rin_accessibility_service_client_close(RinAccessibilityServiceClientV1* cli
     if (client == NULL) return;
     if (client->socket_fd >= 0) close(client->socket_fd);
     client->socket_fd = -1;
+    client->pending_service_action_id = 0u;
 }
 
 RinResultCode rin_accessibility_service_client_publish(
@@ -200,9 +203,10 @@ RinResultCode rin_accessibility_service_client_publish(
     if (!client_send_exact(client->socket_fd, &request, sizeof(request)) ||
         !client_send_exact(client->socket_fd, snapshot, sizeof(*snapshot)) ||
         !client_receive_exact(client->socket_fd, &reply, sizeof(reply))) {
+        rin_accessibility_service_client_close(client);
         return RIN_RESULT_IO;
     }
-    return client_reply_header(&request, &reply,
+    return client_reply_header(client, &request, &reply,
                                RIN_ACCESSIBILITY_SERVICE_OP_PUBLISH, 0u);
 }
 
@@ -222,17 +226,20 @@ RinResultCode rin_accessibility_service_client_query(
     if (!client_send_exact(client->socket_fd, &request, sizeof(request)) ||
         !client_send_exact(client->socket_fd, query, sizeof(*query)) ||
         !client_receive_exact(client->socket_fd, &reply, sizeof(reply))) {
+        rin_accessibility_service_client_close(client);
         return RIN_RESULT_IO;
     }
     if (reply.status != RIN_RESULT_OK)
-        return client_reply_header(&request, &reply,
+        return client_reply_header(client, &request, &reply,
                                    RIN_ACCESSIBILITY_SERVICE_OP_QUERY, 0u);
-    result = client_reply_header(&request, &reply,
+    result = client_reply_header(client, &request, &reply,
                                  RIN_ACCESSIBILITY_SERVICE_OP_QUERY,
                                  sizeof(*snapshot_out));
     if (result != RIN_RESULT_OK) return result;
-    if (!client_receive_exact(client->socket_fd, snapshot_out, sizeof(*snapshot_out)))
+    if (!client_receive_exact(client->socket_fd, snapshot_out, sizeof(*snapshot_out))) {
+        rin_accessibility_service_client_close(client);
         return RIN_RESULT_IO;
+    }
     return RIN_RESULT_OK;
 }
 
@@ -256,23 +263,30 @@ RinResultCode rin_accessibility_service_client_query_focused(
     if (!client_send_exact(client->socket_fd, &request, sizeof(request)) ||
         !client_send_exact(client->socket_fd, &query, sizeof(query)) ||
         !client_receive_exact(client->socket_fd, &reply, sizeof(reply)))
+    {
+        rin_accessibility_service_client_close(client);
         return RIN_RESULT_IO;
+    }
     if (reply.status != RIN_RESULT_OK)
-        return client_reply_header(&request, &reply,
+        return client_reply_header(client, &request, &reply,
                                    RIN_ACCESSIBILITY_SERVICE_OP_QUERY, 0u);
     result = client_reply_header(
+        client,
         &request, &reply, RIN_ACCESSIBILITY_SERVICE_OP_QUERY,
         sizeof(*snapshot_out));
     if (result != RIN_RESULT_OK) return result;
     if (!client_receive_exact(client->socket_fd, snapshot_out,
-                              sizeof(*snapshot_out)))
+                              sizeof(*snapshot_out))) {
+        rin_accessibility_service_client_close(client);
         return RIN_RESULT_IO;
+    }
     if (snapshot_out->process_id == 0u ||
         snapshot_out->process_instance_cookie == 0u ||
         snapshot_out->snapshot.window == 0u ||
         snapshot_out->snapshot.generation == 0u ||
         snapshot_out->snapshot.generation == UINT64_MAX) {
         memset(snapshot_out, 0, sizeof(*snapshot_out));
+        rin_accessibility_service_client_close(client);
         return RIN_RESULT_CORRUPT_DATA;
     }
     return RIN_RESULT_OK;
@@ -288,9 +302,10 @@ RinResultCode rin_accessibility_service_client_revoke(
     if (result != RIN_RESULT_OK) return result;
     if (!client_send_exact(client->socket_fd, &request, sizeof(request)) ||
         !client_receive_exact(client->socket_fd, &reply, sizeof(reply))) {
+        rin_accessibility_service_client_close(client);
         return RIN_RESULT_IO;
     }
-    return client_reply_header(&request, &reply,
+    return client_reply_header(client, &request, &reply,
                                RIN_ACCESSIBILITY_SERVICE_OP_REVOKE, 0u);
 }
 
@@ -308,9 +323,10 @@ RinResultCode rin_accessibility_service_client_request_action(
     if (!client_send_exact(client->socket_fd, &request, sizeof(request)) ||
         !client_send_exact(client->socket_fd, action, sizeof(*action)) ||
         !client_receive_exact(client->socket_fd, &reply, sizeof(reply))) {
+        rin_accessibility_service_client_close(client);
         return RIN_RESULT_IO;
     }
-    return client_reply_header(&request, &reply,
+    return client_reply_header(client, &request, &reply,
                                RIN_ACCESSIBILITY_SERVICE_OP_ACTION, 0u);
 }
 
@@ -324,7 +340,11 @@ RinResultCode rin_accessibility_service_client_receive_action(
         client->pending_service_action_id != 0u) return RIN_RESULT_INVALID_ARGUMENT;
     memset(action_out, 0, sizeof(*action_out));
     result = client_wait_readable(client->socket_fd, timeout_ms);
-    if (result != RIN_RESULT_OK) return result;
+    if (result != RIN_RESULT_OK) {
+        if (result != RIN_RESULT_TIMED_OUT)
+            rin_accessibility_service_client_close(client);
+        return result;
+    }
     memset(&request, 0, sizeof(request));
     if (!client_receive_exact(client->socket_fd, &request, sizeof(request)) ||
         request.struct_size != sizeof(request) ||
@@ -333,6 +353,8 @@ RinResultCode rin_accessibility_service_client_receive_action(
         request.request_id == 0u || request.payload_size != sizeof(*action_out) ||
         request.flags != 0u || request.status != 0 || request.reserved != 0u ||
         !client_receive_exact(client->socket_fd, action_out, sizeof(*action_out))) {
+        memset(action_out, 0, sizeof(*action_out));
+        rin_accessibility_service_client_close(client);
         return RIN_RESULT_CORRUPT_DATA;
     }
     client->pending_service_action_id = request.request_id;
@@ -353,8 +375,10 @@ RinResultCode rin_accessibility_service_client_complete_action(
     reply.opcode = RIN_ACCESSIBILITY_SERVICE_OP_ACTION;
     reply.request_id = client->pending_service_action_id;
     reply.status = action_status;
-    if (!client_send_exact(client->socket_fd, &reply, sizeof(reply)))
+    if (!client_send_exact(client->socket_fd, &reply, sizeof(reply))) {
+        rin_accessibility_service_client_close(client);
         return RIN_RESULT_IO;
+    }
     client->pending_service_action_id = 0u;
     return RIN_RESULT_OK;
 }
