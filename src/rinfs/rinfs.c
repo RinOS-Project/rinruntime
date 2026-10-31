@@ -22214,6 +22214,70 @@ int64_t rinfs_mmap_source_read(RinFS_MmapSource* source,
     return result;
 }
 
+static int rinfs_mmap_source_size_impl(
+    RinFS_MmapSource* source, uint64_t expected_inode,
+    uint64_t reference_generation, uint64_t reference_cookie,
+    uint64_t* size_out) {
+    int content_unlock_error = RINFS_OK;
+    RinFS_MmapSourceIdentity identity;
+    RinFS_ContentLeaseNode* lease = NULL;
+    RinFS_Inode inode;
+    uint64_t lease_token = 0u;
+    int err;
+
+    if (size_out) *size_out = 0u;
+    if (!source || !size_out || expected_inode == 0u)
+        return RINFS_ERR_INVAL;
+    err = rinfs_mmap_source_copy_identity(
+        source, reference_generation, reference_cookie, &identity);
+    if (err != RINFS_OK || identity.inode_num != expected_inode)
+        return err == RINFS_OK ? RINFS_ERR_STALE : err;
+    err = rinfs_content_lease_acquire(
+        identity.mount, identity.inode_num, identity.inode_generation, 0,
+        &lease, &lease_token);
+    if (err != RINFS_OK) return err;
+    if (lease_token != identity.pin_token) {
+        rinfs_keep_first_error(&content_unlock_error,
+            rinfs_content_lease_release(
+                identity.mount, identity.inode_num,
+                identity.inode_generation, lease_token, 0));
+        return rinfs_content_unlock_status(
+            RINFS_ERR_STALE, content_unlock_error);
+    }
+    err = rinfs_inode_read(identity.mount, identity.inode_num, &inode);
+    if (err == RINFS_OK &&
+        (inode.i_generation != identity.inode_generation ||
+         (inode.i_mode >> 12u) != RINFS_FT_REG))
+        err = RINFS_ERR_STALE;
+    if (err == RINFS_OK) *size_out = inode.i_size;
+    rinfs_keep_first_error(&content_unlock_error,
+        rinfs_content_lease_release(
+            identity.mount, identity.inode_num,
+            identity.inode_generation, lease_token, 0));
+    if (content_unlock_error != RINFS_OK) *size_out = 0u;
+    return rinfs_content_unlock_status(err, content_unlock_error);
+}
+
+int rinfs_mmap_source_size(RinFS_MmapSource* source,
+                           uint64_t expected_inode,
+                           uint64_t reference_generation,
+                           uint64_t reference_cookie,
+                           uint64_t* size_out) {
+    int result;
+    if (size_out) *size_out = 0u;
+    if (!source || !size_out || expected_inode == 0u)
+        return RINFS_ERR_INVAL;
+    result = rinfs_mmap_source_begin_operation(
+        source, reference_generation, reference_cookie);
+    if (result != RINFS_OK) return result;
+    result = rinfs_mmap_source_size_impl(
+        source, expected_inode, reference_generation, reference_cookie,
+        size_out);
+    rinfs_mmap_source_end_operation(
+        source, reference_generation, reference_cookie);
+    return result;
+}
+
 static int rinfs_mmap_source_sync_range_impl(RinFS_MmapSource* source,
                                 uint64_t expected_inode,
                                 uint64_t reference_generation,

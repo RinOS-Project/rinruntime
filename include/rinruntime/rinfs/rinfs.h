@@ -1238,6 +1238,13 @@ int64_t rinfs_mmap_source_read(RinFS_MmapSource* source,
                                uint64_t reference_cookie,
                                uint64_t offset, void* output,
                                uint32_t size);
+/* Read the current size through the retained inode identity and its content
+ * lease, so truncation cannot race the metadata snapshot. */
+int rinfs_mmap_source_size(RinFS_MmapSource* source,
+                           uint64_t expected_inode,
+                           uint64_t reference_generation,
+                           uint64_t reference_cookie,
+                           uint64_t* size_out);
 /* Write back dirty cache pages in the half-open file-page range and flush
  * the block device while holding the source inode's read lease. */
 int rinfs_mmap_source_sync_range(RinFS_MmapSource* source,
