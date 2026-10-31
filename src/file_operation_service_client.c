@@ -5,15 +5,282 @@
 #include <rin/capability.h>
 #include <rin/net/socket_abi.h>
 #include <rin/validation.h>
+#include <rinruntime/poll_wait.h>
 #include "private_service_socket.h"
+#include "platform.h"
 
 #include <errno.h>
+#include <fcntl.h>
+#include <limits.h>
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <unistd.h>
 
 #define RINRUNTIME_FILE_OPERATION_SERVICE_IO_INTERRUPTION_LIMIT 32u
+#define RINRUNTIME_FILE_OPERATION_SERVICE_TIMEOUT_MS 5000u
+#define RINRUNTIME_FILE_OPERATION_CLIENT_IDLE 0u
+#define RINRUNTIME_FILE_OPERATION_CLIENT_ACTIVE 1u
+#define RINRUNTIME_FILE_OPERATION_CLIENT_CANCELLED 2u
+
+/* This lock protects only the short client socket/state handoff. It is never
+ * held while waiting for readiness or transferring protocol bytes. */
+static volatile uint32_t g_file_operation_client_lock;
+static uint64_t g_file_operation_next_request_id = 1u;
+static uint64_t g_file_operation_pending_submit_id;
+static uint64_t g_file_operation_pending_submit_fingerprint;
+static uint64_t g_file_operation_request_owner_pid;
+
+static void service_client_lock(void);
+static void service_client_unlock(void);
+
+static void service_client_lock(void)
+{
+    while (__atomic_exchange_n(&g_file_operation_client_lock, 1u,
+                               __ATOMIC_ACQUIRE) != 0u) {
+#if defined(__i386__) || defined(__x86_64__)
+        __asm__ volatile("pause" ::: "memory");
+#else
+        __asm__ volatile("" ::: "memory");
+#endif
+    }
+}
+
+static void service_client_unlock(void)
+{
+    __atomic_store_n(&g_file_operation_client_lock, 0u, __ATOMIC_RELEASE);
+}
+
+static int service_client_request_id_valid(uint64_t request_id);
+
+static int service_client_allocate_request_id(uint64_t* request_id_out)
+{
+    uint64_t current;
+    if (request_id_out == 0) return 0;
+    service_client_lock();
+    current = g_file_operation_next_request_id;
+    if (!service_client_request_id_valid(current) ||
+        current >= UINT64_MAX - 1u) {
+        service_client_unlock();
+        return 0;
+    }
+    g_file_operation_next_request_id = current + 1u;
+    service_client_unlock();
+    *request_id_out = current;
+    return 1;
+}
+
+static uint64_t service_client_submit_fingerprint(
+    const RinRuntimeFileOperationServiceSubmitV1* request,
+    const RinRuntimeFileOperationServiceEntryV1* entries)
+{
+    const uint8_t* parts[2];
+    size_t sizes[2];
+    uint64_t hash = UINT64_C(14695981039346656037);
+    uint32_t part;
+    parts[0] = (const uint8_t*)request;
+    sizes[0] = sizeof(*request);
+    parts[1] = (const uint8_t*)entries;
+    sizes[1] = (size_t)request->entry_count * sizeof(*entries);
+    for (part = 0u; part < 2u; ++part) {
+        size_t index;
+        for (index = 0u; index < sizes[part]; ++index) {
+            hash ^= parts[part][index];
+            hash *= UINT64_C(1099511628211);
+        }
+    }
+    return hash == 0u ? 1u : hash;
+}
+
+static int service_client_prepare_submit(uint64_t* request_id_slot,
+                                         uint64_t* fingerprint_slot,
+                                         uint64_t* next_request_id,
+                                         const RinRuntimeFileOperationServiceSubmitV1* request,
+                                         const RinRuntimeFileOperationServiceEntryV1* entries)
+{
+    const uint64_t fingerprint =
+        service_client_submit_fingerprint(request, entries);
+    uint64_t request_id;
+    int result = 0;
+    if (request_id_slot == 0 || fingerprint_slot == 0 ||
+        next_request_id == 0)
+        return 0;
+    service_client_lock();
+    if (*request_id_slot != 0u) {
+        result = *fingerprint_slot == fingerprint &&
+                 service_client_request_id_valid(*request_id_slot) &&
+                 g_file_operation_pending_submit_id == *request_id_slot &&
+                 g_file_operation_pending_submit_fingerprint == fingerprint
+            ? 1 : -1;
+    } else if (g_file_operation_pending_submit_id == 0u) {
+        request_id = g_file_operation_next_request_id;
+        if (service_client_request_id_valid(request_id) &&
+            request_id < UINT64_MAX - 1u) {
+            g_file_operation_next_request_id = request_id + 1u;
+            g_file_operation_pending_submit_id = request_id;
+            g_file_operation_pending_submit_fingerprint = fingerprint;
+            *request_id_slot = request_id;
+            *fingerprint_slot = fingerprint;
+            *next_request_id = request_id + 1u;
+            result = 1;
+        }
+    } else result = -1;
+    service_client_unlock();
+    return result;
+}
+
+static void service_client_clear_pending_submit(uint64_t* request_id_slot,
+                                                uint64_t* fingerprint_slot)
+{
+    if (request_id_slot == 0 || fingerprint_slot == 0) return;
+    service_client_lock();
+    if (*request_id_slot != 0u &&
+        g_file_operation_pending_submit_id == *request_id_slot) {
+        g_file_operation_pending_submit_id = 0u;
+        g_file_operation_pending_submit_fingerprint = 0u;
+        *request_id_slot = 0u;
+        *fingerprint_slot = 0u;
+    }
+    service_client_unlock();
+}
+
+static int service_client_begin(
+    RinRuntimeFileOperationServiceClientV1* client)
+{
+    int result = 0;
+    const uint64_t process_id = (uint64_t)getpid();
+    if (client == 0) return 0;
+    service_client_lock();
+    if (g_file_operation_request_owner_pid != process_id) {
+        g_file_operation_request_owner_pid = process_id;
+        g_file_operation_next_request_id = 1u;
+        g_file_operation_pending_submit_id = 0u;
+        g_file_operation_pending_submit_fingerprint = 0u;
+    }
+    if (client->owner_process_id != process_id) {
+        if (client->socket_fd >= 0) (void)close(client->socket_fd);
+        client->socket_fd = -1;
+        client->reserved = RINRUNTIME_FILE_OPERATION_CLIENT_IDLE;
+        client->owner_process_id = process_id;
+        client->next_request_id = 1u;
+        client->pending_submit_request_id = 0u;
+        client->pending_submit_fingerprint = 0u;
+    }
+    if (client->reserved == RINRUNTIME_FILE_OPERATION_CLIENT_IDLE &&
+        client->socket_fd < 0 &&
+        service_client_request_id_valid(client->next_request_id)) {
+        client->reserved = RINRUNTIME_FILE_OPERATION_CLIENT_ACTIVE;
+        result = 1;
+    }
+    service_client_unlock();
+    return result;
+}
+
+static int service_broker_begin(
+    RinRuntimeFileOperationServiceBrokerClientV1* client)
+{
+    int result = 0;
+    const uint64_t process_id = (uint64_t)getpid();
+    if (client == 0) return 0;
+    service_client_lock();
+    if (g_file_operation_request_owner_pid != process_id) {
+        g_file_operation_request_owner_pid = process_id;
+        g_file_operation_next_request_id = 1u;
+        g_file_operation_pending_submit_id = 0u;
+        g_file_operation_pending_submit_fingerprint = 0u;
+    }
+    if (client->owner_process_id != process_id) {
+        if (client->socket_fd >= 0) (void)close(client->socket_fd);
+        client->socket_fd = -1;
+        client->reserved = RINRUNTIME_FILE_OPERATION_CLIENT_IDLE;
+        client->owner_process_id = process_id;
+        client->next_request_id = 1u;
+        client->pending_submit_request_id = 0u;
+        client->pending_submit_fingerprint = 0u;
+    }
+    if (client->reserved == RINRUNTIME_FILE_OPERATION_CLIENT_IDLE &&
+        client->socket_fd < 0 &&
+        service_client_request_id_valid(client->next_request_id)) {
+        client->reserved = RINRUNTIME_FILE_OPERATION_CLIENT_ACTIVE;
+        result = 1;
+    }
+    service_client_unlock();
+    return result;
+}
+
+static int service_client_cancelled(const uint32_t* operation_state)
+{
+    int cancelled;
+    if (operation_state == 0) return 0;
+    service_client_lock();
+    cancelled = *operation_state == RINRUNTIME_FILE_OPERATION_CLIENT_CANCELLED;
+    service_client_unlock();
+    return cancelled;
+}
+
+static void service_client_close_socket(int32_t* socket_slot,
+                                        uint32_t* operation_state,
+                                        int finish_operation)
+{
+    int32_t fd;
+    if (socket_slot == 0) return;
+    service_client_lock();
+    fd = *socket_slot;
+    *socket_slot = -1;
+    if (finish_operation && operation_state != 0)
+        *operation_state = RINRUNTIME_FILE_OPERATION_CLIENT_IDLE;
+    if (fd >= 0) (void)close(fd);
+    service_client_unlock();
+}
+
+static void service_client_cancel_socket(int32_t* socket_slot,
+                                         uint32_t* operation_state)
+{
+    if (socket_slot == 0 || operation_state == 0) return;
+    service_client_lock();
+    if (*operation_state == RINRUNTIME_FILE_OPERATION_CLIENT_ACTIVE) {
+        *operation_state = RINRUNTIME_FILE_OPERATION_CLIENT_CANCELLED;
+        if (*socket_slot >= 0) (void)shutdown(*socket_slot, SHUT_RDWR);
+    }
+    service_client_unlock();
+}
+
+static int service_client_deadline_start(uint64_t* deadline_out)
+{
+    const uint64_t now = rin_monotonic_ms();
+    const uint64_t timeout = RINRUNTIME_FILE_OPERATION_SERVICE_TIMEOUT_MS;
+    if (deadline_out == 0 || now == UINT64_MAX ||
+        now > UINT64_MAX - timeout)
+        return 0;
+    *deadline_out = now + timeout;
+    return 1;
+}
+
+static int service_client_wait(int fd, uint32_t events, uint64_t deadline_ms,
+                               const uint32_t* operation_state)
+{
+    for (;;) {
+        const uint64_t now = rin_monotonic_ms();
+        const uint64_t remaining = now < deadline_ms ? deadline_ms - now : 0u;
+        RinRuntimePollWaitResult ready;
+        uint32_t timeout_ms;
+        if (service_client_cancelled(operation_state) || now == UINT64_MAX ||
+            remaining == 0u)
+            return 0;
+        timeout_ms = remaining > UINT32_MAX
+            ? UINT32_MAX : (uint32_t)remaining;
+        ready = rinruntime_poll_wait(fd, events, timeout_ms);
+        if (ready == RINRUNTIME_POLL_WAIT_TIMEOUT) continue;
+        return ready == RINRUNTIME_POLL_WAIT_READY &&
+               !service_client_cancelled(operation_state);
+    }
+}
+
+static int service_client_nonblocking(int fd)
+{
+    const int flags = fcntl(fd, F_GETFL, 0);
+    return flags >= 0 && fcntl(fd, F_SETFL, flags | O_NONBLOCK) == 0;
+}
 
 static int service_client_request_id_valid(uint64_t request_id)
 {
@@ -37,12 +304,17 @@ static int service_client_identity_valid(int fd)
     return valid;
 }
 
-static int service_client_send_all(int fd, const void* input, uint32_t size)
+static int service_client_send_all(int fd, const void* input, uint32_t size,
+                                   uint64_t deadline_ms,
+                                   const uint32_t* operation_state)
 {
     const uint8_t* bytes = (const uint8_t*)input;
     uint32_t offset = 0u;
     uint32_t interrupted = 0u;
     while (offset < size) {
+        if (!service_client_wait(fd, RINRUNTIME_POLL_WAIT_WRITABLE,
+                                 deadline_ms, operation_state))
+            return 0;
         ssize_t result = send(fd, bytes + offset, size - offset, MSG_NOSIGNAL);
         if (result > 0) {
             if ((uint32_t)result > size - offset) return 0;
@@ -56,17 +328,24 @@ static int service_client_send_all(int fd, const void* input, uint32_t size)
                 return 0;
             continue;
         }
+        if (result < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))
+            continue;
         return 0;
     }
     return 1;
 }
 
-static int service_client_receive_all(int fd, void* output, uint32_t size)
+static int service_client_receive_all(int fd, void* output, uint32_t size,
+                                      uint64_t deadline_ms,
+                                      const uint32_t* operation_state)
 {
     uint8_t* bytes = (uint8_t*)output;
     uint32_t offset = 0u;
     uint32_t interrupted = 0u;
     while (offset < size) {
+        if (!service_client_wait(fd, RINRUNTIME_POLL_WAIT_READABLE,
+                                 deadline_ms, operation_state))
+            return 0;
         ssize_t result = recv(fd, bytes + offset, size - offset, 0);
         if (result > 0) {
             if ((uint32_t)result > size - offset) return 0;
@@ -80,6 +359,8 @@ static int service_client_receive_all(int fd, void* output, uint32_t size)
                 return 0;
             continue;
         }
+        if (result < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))
+            continue;
         return 0;
     }
     return 1;
@@ -159,70 +440,170 @@ static int service_client_control_valid(
 }
 
 static RinRuntimeFileOperationServiceStatus service_client_open_path(
-    int32_t* socket_fd, uint32_t reserved, uint64_t next_request_id,
-    const char* service_path)
+    int32_t* socket_fd, uint32_t* reserved, uint64_t next_request_id,
+    const char* service_path, uint64_t deadline_ms,
+    const uint32_t* operation_state)
 {
     struct sockaddr_un address;
+    socklen_t error_size;
+    int socket_error = 0;
+    int connect_result;
     int fd;
-    if (socket_fd == 0 || *socket_fd >= 0 || reserved != 0u ||
+    if (socket_fd == 0 || reserved == 0 ||
         !service_client_request_id_valid(next_request_id) || service_path == 0 ||
         strlen(service_path) + 1u > sizeof(address.sun_path))
         return RINRUNTIME_FILE_OPERATION_SERVICE_INVALID_ARGUMENT;
+    if ((operation_state == 0 && *reserved != 0u) ||
+        (operation_state != 0 &&
+         service_client_cancelled(operation_state)))
+        return RINRUNTIME_FILE_OPERATION_SERVICE_UNAVAILABLE;
     memset(&address, 0, sizeof(address));
     address.sun_family = AF_UNIX;
     memcpy(address.sun_path, service_path, strlen(service_path) + 1u);
     fd = rinruntime_create_private_unix_stream_socket();
-    if (fd < 0) return RINRUNTIME_FILE_OPERATION_SERVICE_UNAVAILABLE;
-    if (connect(fd, (const struct sockaddr*)&address, sizeof(address)) != 0 ||
-        !service_client_identity_valid(fd)) {
+    if (fd < 0 || !service_client_nonblocking(fd)) {
+        if (fd >= 0) (void)close(fd);
+        return RINRUNTIME_FILE_OPERATION_SERVICE_UNAVAILABLE;
+    }
+    service_client_lock();
+    if ((operation_state != 0 &&
+         *operation_state != RINRUNTIME_FILE_OPERATION_CLIENT_ACTIVE) ||
+        (operation_state == 0 && *reserved != 0u) || *socket_fd >= 0) {
+        service_client_unlock();
         (void)close(fd);
         return RINRUNTIME_FILE_OPERATION_SERVICE_UNAVAILABLE;
     }
     *socket_fd = fd;
+    service_client_unlock();
+
+    connect_result = connect(fd, (const struct sockaddr*)&address,
+                             sizeof(address));
+    if (connect_result != 0) {
+        if (errno != EINPROGRESS && errno != EALREADY && errno != EAGAIN &&
+            errno != EWOULDBLOCK)
+            goto open_failed;
+        if (!service_client_wait(fd, RINRUNTIME_POLL_WAIT_WRITABLE,
+                                 deadline_ms, operation_state))
+            goto open_failed;
+        error_size = (socklen_t)sizeof(socket_error);
+        if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &socket_error,
+                       &error_size) != 0 ||
+            error_size != (socklen_t)sizeof(socket_error) || socket_error != 0)
+            goto open_failed;
+    }
+    if (service_client_cancelled(operation_state) ||
+        !service_client_identity_valid(fd))
+        goto open_failed;
     return RINRUNTIME_FILE_OPERATION_SERVICE_OK;
+
+open_failed:
+    service_client_close_socket(socket_fd, 0, 0);
+    return RINRUNTIME_FILE_OPERATION_SERVICE_UNAVAILABLE;
 }
 
 static RinRuntimeFileOperationServiceStatus service_client_open(
-    RinRuntimeFileOperationServiceClientV1* client)
+    RinRuntimeFileOperationServiceClientV1* client, uint64_t deadline_ms)
 {
     if (client == 0) return RINRUNTIME_FILE_OPERATION_SERVICE_INVALID_ARGUMENT;
-    return service_client_open_path(&client->socket_fd, client->reserved,
+    return service_client_open_path(&client->socket_fd, &client->reserved,
                                     client->next_request_id,
-                                    RINRUNTIME_FILE_OPERATION_SERVICE_PATH);
+                                    RINRUNTIME_FILE_OPERATION_SERVICE_PATH,
+                                    deadline_ms, &client->reserved);
 }
+
+static RinRuntimeFileOperationServiceStatus service_client_begin_request(
+    RinRuntimeFileOperationServiceClientV1* client, uint64_t* deadline_out)
+{
+    if (!service_client_begin(client))
+        return client == 0
+            ? RINRUNTIME_FILE_OPERATION_SERVICE_INVALID_ARGUMENT
+            : RINRUNTIME_FILE_OPERATION_SERVICE_BUSY;
+    if (!service_client_deadline_start(deadline_out)) {
+        service_client_close_socket(&client->socket_fd, &client->reserved, 1);
+        return RINRUNTIME_FILE_OPERATION_SERVICE_UNAVAILABLE;
+    }
+    return RINRUNTIME_FILE_OPERATION_SERVICE_OK;
+}
+
+static void service_client_finish(
+    RinRuntimeFileOperationServiceClientV1* client)
+{
+    if (client == 0) return;
+    service_client_close_socket(&client->socket_fd, &client->reserved, 1);
+}
+
+static int service_client_broker_deadline_start(uint64_t* deadline_out)
+{
+    return service_client_deadline_start(deadline_out);
+}
+
+static RinRuntimeFileOperationServiceStatus service_client_broker_open(
+    RinRuntimeFileOperationServiceBrokerClientV1* client,
+    uint64_t deadline_ms)
+{
+    if (client == 0) return RINRUNTIME_FILE_OPERATION_SERVICE_INVALID_ARGUMENT;
+    return service_client_open_path(&client->socket_fd, &client->reserved,
+                                    client->next_request_id,
+                                    RINRUNTIME_FILE_OPERATION_SERVICE_BROKER_PATH,
+                                    deadline_ms, &client->reserved);
+}
+
+static void service_client_broker_finish(
+    RinRuntimeFileOperationServiceBrokerClientV1* client)
+{
+    if (client == 0) return;
+    service_client_close_socket(&client->socket_fd, &client->reserved, 1);
+}
+
 
 static RinRuntimeFileOperationServiceStatus service_client_header(
     RinRuntimeFileOperationServiceClientV1* client, uint16_t request_kind,
     uint32_t payload_size, RinRuntimeFileOperationServiceHeaderV1* header)
 {
+    uint64_t request_id;
     if (client == 0 || header == 0 || client->socket_fd < 0 ||
-        !service_client_request_id_valid(client->next_request_id))
+        !service_client_allocate_request_id(&request_id))
+        return RINRUNTIME_FILE_OPERATION_SERVICE_INVALID_ARGUMENT;
+    client->next_request_id = request_id + 1u;
+    memset(header, 0, sizeof(*header));
+    header->struct_size = sizeof(*header);
+    header->version = RINRUNTIME_FILE_OPERATION_SERVICE_VERSION;
+    header->request_kind = request_kind;
+    header->request_id = request_id;
+    header->payload_size = payload_size;
+    return RINRUNTIME_FILE_OPERATION_SERVICE_OK;
+}
+
+static RinRuntimeFileOperationServiceStatus service_client_header_with_id(
+    RinRuntimeFileOperationServiceClientV1* client, uint16_t request_kind,
+    uint32_t payload_size, uint64_t request_id,
+    RinRuntimeFileOperationServiceHeaderV1* header)
+{
+    if (client == 0 || header == 0 || client->socket_fd < 0 ||
+        !service_client_request_id_valid(request_id))
         return RINRUNTIME_FILE_OPERATION_SERVICE_INVALID_ARGUMENT;
     memset(header, 0, sizeof(*header));
     header->struct_size = sizeof(*header);
     header->version = RINRUNTIME_FILE_OPERATION_SERVICE_VERSION;
     header->request_kind = request_kind;
-    header->request_id = client->next_request_id++;
-    if (!service_client_request_id_valid(client->next_request_id))
-        client->next_request_id = 1u;
+    header->request_id = request_id;
     header->payload_size = payload_size;
     return RINRUNTIME_FILE_OPERATION_SERVICE_OK;
 }
 
 static RinRuntimeFileOperationServiceStatus service_broker_header(
     RinRuntimeFileOperationServiceBrokerClientV1* client, uint32_t payload_size,
+    uint64_t request_id,
     RinRuntimeFileOperationServiceHeaderV1* header)
 {
     if (client == 0 || header == 0 || client->socket_fd < 0 ||
-        !service_client_request_id_valid(client->next_request_id))
+        !service_client_request_id_valid(request_id))
         return RINRUNTIME_FILE_OPERATION_SERVICE_INVALID_ARGUMENT;
     memset(header, 0, sizeof(*header));
     header->struct_size = sizeof(*header);
     header->version = RINRUNTIME_FILE_OPERATION_SERVICE_VERSION;
     header->request_kind = RINRUNTIME_FILE_OPERATION_SERVICE_SUBMIT;
-    header->request_id = client->next_request_id++;
-    if (!service_client_request_id_valid(client->next_request_id))
-        client->next_request_id = 1u;
+    header->request_id = request_id;
     header->payload_size = payload_size;
     return RINRUNTIME_FILE_OPERATION_SERVICE_OK;
 }
@@ -273,8 +654,10 @@ static int service_client_status_valid(int32_t status)
 static RinRuntimeFileOperationServiceStatus service_client_reply(
     const RinRuntimeFileOperationServiceHeaderV1* request,
     const RinRuntimeFileOperationServiceHeaderV1* reply_header,
-    uint16_t request_kind, RinRuntimeFileOperationServiceReplyV1* reply)
+    uint16_t request_kind, RinRuntimeFileOperationServiceReplyV1* reply,
+    int* valid_out)
 {
+    if (valid_out != 0) *valid_out = 0;
     if (request == 0 || reply_header == 0 || reply == 0 ||
         !rin_wire_struct_version_valid(
             reply_header, sizeof(*reply_header), reply_header->struct_size,
@@ -292,6 +675,7 @@ static RinRuntimeFileOperationServiceStatus service_client_reply(
             RINRUNTIME_FILE_OPERATION_SERVICE_VERSION) ||
         !rin_wire_reserved_zero(&reply->reserved, sizeof(reply->reserved)))
         return RINRUNTIME_FILE_OPERATION_SERVICE_UNAVAILABLE;
+    if (valid_out != 0) *valid_out = 1;
     return (RinRuntimeFileOperationServiceStatus)reply_header->status;
 }
 
@@ -303,23 +687,34 @@ static RinRuntimeFileOperationServiceStatus service_client_control(
     RinRuntimeFileOperationServiceHeaderV1 header;
     RinRuntimeFileOperationServiceHeaderV1 reply_header;
     RinRuntimeFileOperationServiceStatus status;
+    uint64_t deadline_ms = 0u;
     if (reply_out != 0) memset(reply_out, 0, sizeof(*reply_out));
     if (!service_client_control_valid(request) || reply_out == 0)
         return RINRUNTIME_FILE_OPERATION_SERVICE_INVALID_ARGUMENT;
-    status = service_client_open(client);
+    status = service_client_begin_request(client, &deadline_ms);
+    if (status != RINRUNTIME_FILE_OPERATION_SERVICE_OK) return status;
+    status = service_client_open(client, deadline_ms);
     if (status == RINRUNTIME_FILE_OPERATION_SERVICE_OK)
         status = service_client_header(client, request_kind, sizeof(*request), &header);
     if (status == RINRUNTIME_FILE_OPERATION_SERVICE_OK &&
-        (!service_client_send_all(client->socket_fd, &header, sizeof(header)) ||
-         !service_client_send_all(client->socket_fd, request, sizeof(*request)) ||
+        (!service_client_send_all(client->socket_fd, &header, sizeof(header),
+                                  deadline_ms, &client->reserved) ||
+         !service_client_send_all(client->socket_fd, request, sizeof(*request),
+                                  deadline_ms, &client->reserved) ||
          !service_client_receive_all(client->socket_fd, &reply_header,
-                                     sizeof(reply_header)) ||
+                                     sizeof(reply_header), deadline_ms,
+                                     &client->reserved) ||
          !service_client_receive_all(client->socket_fd, reply_out,
-                                     sizeof(*reply_out))))
+                                     sizeof(*reply_out), deadline_ms,
+                                     &client->reserved)))
+        status = RINRUNTIME_FILE_OPERATION_SERVICE_UNAVAILABLE;
+    if (status == RINRUNTIME_FILE_OPERATION_SERVICE_OK &&
+        service_client_cancelled(&client->reserved))
         status = RINRUNTIME_FILE_OPERATION_SERVICE_UNAVAILABLE;
     if (status == RINRUNTIME_FILE_OPERATION_SERVICE_OK)
-        status = service_client_reply(&header, &reply_header, request_kind, reply_out);
-    rinruntime_file_operation_service_client_close(client);
+        status = service_client_reply(&header, &reply_header, request_kind,
+                                      reply_out, 0);
+    service_client_finish(client);
     return status;
 }
 
@@ -330,14 +725,20 @@ void rinruntime_file_operation_service_client_init(
     memset(client, 0, sizeof(*client));
     client->socket_fd = -1;
     client->next_request_id = 1u;
+    client->owner_process_id = (uint64_t)getpid();
 }
 
 void rinruntime_file_operation_service_client_close(
     RinRuntimeFileOperationServiceClientV1* client)
 {
+    rinruntime_file_operation_service_client_cancel(client);
+}
+
+void rinruntime_file_operation_service_client_cancel(
+    RinRuntimeFileOperationServiceClientV1* client)
+{
     if (client == 0) return;
-    if (client->socket_fd >= 0) (void)close(client->socket_fd);
-    client->socket_fd = -1;
+    service_client_cancel_socket(&client->socket_fd, &client->reserved);
 }
 
 RinRuntimeFileOperationServiceStatus rinruntime_file_operation_service_submit(
@@ -349,7 +750,11 @@ RinRuntimeFileOperationServiceStatus rinruntime_file_operation_service_submit(
     RinRuntimeFileOperationServiceHeaderV1 header;
     RinRuntimeFileOperationServiceHeaderV1 reply_header;
     RinRuntimeFileOperationServiceStatus status;
+    uint64_t deadline_ms = 0u;
     uint32_t payload_size;
+    uint64_t fingerprint;
+    int reply_valid = 0;
+    int prepare_result;
     if (reply_out != 0) memset(reply_out, 0, sizeof(*reply_out));
     if (reply_out == 0 || !service_client_submit_valid(request, entries) ||
         request->entry_count >
@@ -357,26 +762,57 @@ RinRuntimeFileOperationServiceStatus rinruntime_file_operation_service_submit(
         return RINRUNTIME_FILE_OPERATION_SERVICE_INVALID_ARGUMENT;
     payload_size = (uint32_t)sizeof(*request) +
                    request->entry_count * (uint32_t)sizeof(*entries);
-    status = service_client_open(client);
+    status = service_client_begin_request(client, &deadline_ms);
+    if (status != RINRUNTIME_FILE_OPERATION_SERVICE_OK) return status;
+    fingerprint = service_client_submit_fingerprint(request, entries);
+    if (client->pending_submit_request_id != 0u &&
+        client->pending_submit_fingerprint != fingerprint) {
+        service_client_finish(client);
+        return RINRUNTIME_FILE_OPERATION_SERVICE_CONFLICT;
+    }
+    prepare_result = service_client_prepare_submit(
+        &client->pending_submit_request_id,
+        &client->pending_submit_fingerprint, &client->next_request_id,
+        request, entries);
+    if (prepare_result != 1) {
+        service_client_finish(client);
+        return prepare_result < 0
+            ? RINRUNTIME_FILE_OPERATION_SERVICE_BUSY
+            : RINRUNTIME_FILE_OPERATION_SERVICE_UNAVAILABLE;
+    }
+    status = service_client_open(client, deadline_ms);
     if (status == RINRUNTIME_FILE_OPERATION_SERVICE_OK)
-        status = service_client_header(client,
-                                       RINRUNTIME_FILE_OPERATION_SERVICE_SUBMIT,
-                                       payload_size, &header);
+        status = service_client_header_with_id(
+            client, RINRUNTIME_FILE_OPERATION_SERVICE_SUBMIT, payload_size,
+            client->pending_submit_request_id, &header);
     if (status == RINRUNTIME_FILE_OPERATION_SERVICE_OK &&
-        (!service_client_send_all(client->socket_fd, &header, sizeof(header)) ||
-         !service_client_send_all(client->socket_fd, request, sizeof(*request)) ||
+        (!service_client_send_all(client->socket_fd, &header, sizeof(header),
+                                  deadline_ms, &client->reserved) ||
+         !service_client_send_all(client->socket_fd, request, sizeof(*request),
+                                  deadline_ms, &client->reserved) ||
          !service_client_send_all(client->socket_fd, entries,
-                                  request->entry_count * (uint32_t)sizeof(*entries)) ||
+                                  request->entry_count * (uint32_t)sizeof(*entries),
+                                  deadline_ms, &client->reserved) ||
          !service_client_receive_all(client->socket_fd, &reply_header,
-                                     sizeof(reply_header)) ||
+                                     sizeof(reply_header), deadline_ms,
+                                     &client->reserved) ||
          !service_client_receive_all(client->socket_fd, reply_out,
-                                     sizeof(*reply_out))))
+                                     sizeof(*reply_out), deadline_ms,
+                                     &client->reserved)))
+        status = RINRUNTIME_FILE_OPERATION_SERVICE_UNAVAILABLE;
+    if (status == RINRUNTIME_FILE_OPERATION_SERVICE_OK &&
+        service_client_cancelled(&client->reserved))
         status = RINRUNTIME_FILE_OPERATION_SERVICE_UNAVAILABLE;
     if (status == RINRUNTIME_FILE_OPERATION_SERVICE_OK)
         status = service_client_reply(&header, &reply_header,
                                       RINRUNTIME_FILE_OPERATION_SERVICE_SUBMIT,
-                                      reply_out);
-    rinruntime_file_operation_service_client_close(client);
+                                      reply_out, &reply_valid);
+    if (reply_valid) {
+        service_client_clear_pending_submit(
+            &client->pending_submit_request_id,
+            &client->pending_submit_fingerprint);
+    }
+    service_client_finish(client);
     return status;
 }
 
@@ -424,14 +860,20 @@ void rinruntime_file_operation_service_broker_client_init(
     memset(client, 0, sizeof(*client));
     client->socket_fd = -1;
     client->next_request_id = 1u;
+    client->owner_process_id = (uint64_t)getpid();
 }
 
 void rinruntime_file_operation_service_broker_client_close(
     RinRuntimeFileOperationServiceBrokerClientV1* client)
 {
+    rinruntime_file_operation_service_broker_client_cancel(client);
+}
+
+void rinruntime_file_operation_service_broker_client_cancel(
+    RinRuntimeFileOperationServiceBrokerClientV1* client)
+{
     if (client == 0) return;
-    if (client->socket_fd >= 0) (void)close(client->socket_fd);
-    client->socket_fd = -1;
+    service_client_cancel_socket(&client->socket_fd, &client->reserved);
 }
 
 RinRuntimeFileOperationServiceStatus
@@ -447,6 +889,10 @@ rinruntime_file_operation_service_submit_authorized(
     RinRuntimeFileOperationServiceHeaderV1 reply_header;
     RinRuntimeFileOperationServiceStatus status;
     uint32_t payload_size;
+    uint64_t deadline_ms = 0u;
+    uint64_t fingerprint;
+    int reply_valid = 0;
+    int prepare_result;
     if (reply_out != 0) memset(reply_out, 0, sizeof(*reply_out));
     if (client == 0 || reply_out == 0 ||
         !service_client_submit_valid(request, entries) ||
@@ -455,6 +901,26 @@ rinruntime_file_operation_service_submit_authorized(
             (UINT32_MAX - (uint32_t)sizeof(wire)) /
                 (uint32_t)sizeof(*entries))
         return RINRUNTIME_FILE_OPERATION_SERVICE_INVALID_ARGUMENT;
+    if (!service_broker_begin(client))
+        return client == 0
+            ? RINRUNTIME_FILE_OPERATION_SERVICE_INVALID_ARGUMENT
+            : RINRUNTIME_FILE_OPERATION_SERVICE_BUSY;
+    fingerprint = service_client_submit_fingerprint(request, entries);
+    if (client->pending_submit_request_id != 0u &&
+        client->pending_submit_fingerprint != fingerprint) {
+        service_client_broker_finish(client);
+        return RINRUNTIME_FILE_OPERATION_SERVICE_CONFLICT;
+    }
+    prepare_result = service_client_prepare_submit(
+        &client->pending_submit_request_id,
+        &client->pending_submit_fingerprint, &client->next_request_id,
+        request, entries);
+    if (prepare_result != 1) {
+        service_client_broker_finish(client);
+        return prepare_result < 0
+            ? RINRUNTIME_FILE_OPERATION_SERVICE_BUSY
+            : RINRUNTIME_FILE_OPERATION_SERVICE_UNAVAILABLE;
+    }
     memset(&wire, 0, sizeof(wire));
     wire.struct_size = sizeof(wire);
     wire.version = RINRUNTIME_FILE_OPERATION_SERVICE_AUTHORIZED_SUBMIT_VERSION;
@@ -462,26 +928,41 @@ rinruntime_file_operation_service_submit_authorized(
     wire.submit = *request;
     payload_size = (uint32_t)sizeof(wire) +
                    request->entry_count * (uint32_t)sizeof(*entries);
-    status = service_client_open_path(&client->socket_fd, client->reserved,
-                                      client->next_request_id,
-                                      RINRUNTIME_FILE_OPERATION_SERVICE_BROKER_PATH);
+    status = service_client_broker_deadline_start(&deadline_ms)
+        ? service_client_broker_open(client, deadline_ms)
+        : RINRUNTIME_FILE_OPERATION_SERVICE_UNAVAILABLE;
     if (status == RINRUNTIME_FILE_OPERATION_SERVICE_OK)
-        status = service_broker_header(client, payload_size, &header);
+        status = service_broker_header(client, payload_size,
+                                       client->pending_submit_request_id,
+                                       &header);
     if (status == RINRUNTIME_FILE_OPERATION_SERVICE_OK &&
-        (!service_client_send_all(client->socket_fd, &header, sizeof(header)) ||
-         !service_client_send_all(client->socket_fd, &wire, sizeof(wire)) ||
+        (!service_client_send_all(client->socket_fd, &header, sizeof(header),
+                                  deadline_ms, &client->reserved) ||
+         !service_client_send_all(client->socket_fd, &wire, sizeof(wire),
+                                  deadline_ms, &client->reserved) ||
          !service_client_send_all(client->socket_fd, entries,
-                                  request->entry_count * (uint32_t)sizeof(*entries)) ||
+                                  request->entry_count * (uint32_t)sizeof(*entries),
+                                  deadline_ms, &client->reserved) ||
          !service_client_receive_all(client->socket_fd, &reply_header,
-                                     sizeof(reply_header)) ||
+                                     sizeof(reply_header), deadline_ms,
+                                     &client->reserved) ||
          !service_client_receive_all(client->socket_fd, reply_out,
-                                     sizeof(*reply_out))))
+                                     sizeof(*reply_out), deadline_ms,
+                                     &client->reserved)))
+        status = RINRUNTIME_FILE_OPERATION_SERVICE_UNAVAILABLE;
+    if (status == RINRUNTIME_FILE_OPERATION_SERVICE_OK &&
+        service_client_cancelled(&client->reserved))
         status = RINRUNTIME_FILE_OPERATION_SERVICE_UNAVAILABLE;
     if (status == RINRUNTIME_FILE_OPERATION_SERVICE_OK)
         status = service_client_reply(&header, &reply_header,
                                       RINRUNTIME_FILE_OPERATION_SERVICE_SUBMIT,
-                                      reply_out);
+                                      reply_out, &reply_valid);
+    if (reply_valid) {
+        service_client_clear_pending_submit(
+            &client->pending_submit_request_id,
+            &client->pending_submit_fingerprint);
+    }
     memset(&wire, 0, sizeof(wire));
-    rinruntime_file_operation_service_broker_client_close(client);
+    service_client_broker_finish(client);
     return status;
 }
