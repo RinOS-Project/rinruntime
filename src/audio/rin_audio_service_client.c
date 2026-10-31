@@ -411,6 +411,7 @@ static int stream_create_kind_category(uint32_t sample_rate,
     uint64_t nonce;
     char name[64];
     int handle = -1;
+    int create_status;
     void* mapping = NULL;
     int result = -1;
     client_io_lock();
@@ -453,10 +454,16 @@ static int stream_create_kind_category(uint32_t sample_rate,
     request.category = category;
     memcpy(request.ring_name, name, strlen(name) + 1u);
     if (!rin_audio_service_create_stream_request_valid(&request)) goto done;
-    if (transact_locked(RIN_AUDIO_SERVICE_OP_CREATE_STREAM, 0u, &request,
-                 sizeof(request), &reply, sizeof(reply)) != 0 ||
-        !rin_audio_service_stream_reply_valid(&reply, capacity_frames,
+    create_status = transact_locked(RIN_AUDIO_SERVICE_OP_CREATE_STREAM, 0u,
+                                    &request, sizeof(request), &reply,
+                                    sizeof(reply));
+    if (create_status != RIN_AUDIO_SERVICE_OK) goto done;
+    if (!rin_audio_service_stream_reply_valid(&reply, capacity_frames,
                                               frame_bytes)) {
+        /* The server may have allocated the stream before returning a bad
+         * success payload.  Closing the connection lets it reclaim that
+         * stream and also invalidates any existing client-side handles. */
+        reset_after_connection_failure();
         goto done;
     }
     {
