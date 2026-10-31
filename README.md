@@ -382,6 +382,15 @@ rollback ownership, and private service authorization remain outside this
 public model, while ordinary applications and external toolkits may use the
 same plan/state contract.
 
+The operation copies the backend callback table but borrows its callback
+context, the entry array, and each `source_path` string. Keep them alive while
+the operation can be pumped, checkpointed, or recovered. The operation updates
+entry progress fields; callers may change only `SKIP`, between serialized
+calls. Paths and other plan fields must remain unchanged. Recovery restore
+binds a new caller-owned plan under the same rules. Release the borrowed data
+only after discarding the operation and making no further operation or
+recovery calls.
+
 The public TLS client-certificate transport keeps only the bounded TLS wire
 certificate list and opaque signer capability. `bind()` copies both into
 transport-owned storage, so the request retains no pointers into the caller's

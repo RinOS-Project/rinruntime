@@ -282,6 +282,17 @@ typedef struct RinRuntimeFileOperationRecoveryV1 {
 
 void rinruntime_file_operation_init(RinRuntimeFileOperationV1* operation);
 int rinruntime_file_operation_path_valid(const char* path);
+/*
+ * start() copies the backend callback table but borrows backend->context,
+ * entries, and every entry's source_path. Keep those objects and strings
+ * alive while the operation may be pumped, checkpointed, or recovered.
+ * Entries are in/out storage: the operation updates their progress fields.
+ * After start() returns, callers may change only the SKIP flag, and only
+ * between serialized operation calls; all paths and other plan fields must
+ * remain unchanged. Recovery restore binds a new caller-owned plan under the
+ * same rules. The caller may release the borrowed storage after it discards
+ * the operation and will make no further operation or recovery calls.
+ */
 RinRuntimeFileOperationResult rinruntime_file_operation_start(
     RinRuntimeFileOperationV1* operation,
     const RinRuntimeFileOperationBackendV1* backend,
