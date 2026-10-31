@@ -63,7 +63,8 @@ static inline int rin_webcontent_client_command_valid(uint32_t command)
 {
     return (command >= RIN_WEBCONTENT_CMD_CREATE_PAGE_V1 &&
             command <= RIN_WEBCONTENT_CMD_REVOKE_LOCATION_V1) ||
-           command == RIN_WEBCONTENT_CMD_TLS_IDENTITY_OWNER_V1;
+           command == RIN_WEBCONTENT_CMD_TLS_IDENTITY_OWNER_V1 ||
+           command == RIN_WEBCONTENT_CMD_CLIPBOARD_OWNER_V1;
 }
 
 /* Keep this declaration above the accessibility validators because the
@@ -1579,6 +1580,120 @@ static inline int rin_webcontent_client_download_resume_v2_valid(
     return 1;
 }
 
+static inline int rin_webcontent_client_clipboard_mime_valid(
+    const char* mime, uint32_t mime_size)
+{
+    return mime != NULL &&
+        ((mime_size == sizeof("text/plain") - 1u &&
+          memcmp(mime, "text/plain", sizeof("text/plain") - 1u) == 0) ||
+         (mime_size == sizeof("text/html") - 1u &&
+          memcmp(mime, "text/html", sizeof("text/html") - 1u) == 0) ||
+         (mime_size == sizeof("image/png") - 1u &&
+          memcmp(mime, "image/png", sizeof("image/png") - 1u) == 0));
+}
+
+static inline int rin_webcontent_client_clipboard_origin_valid(
+    const char* origin, size_t capacity)
+{
+    size_t length = 0u;
+    if (origin == NULL || capacity == 0u)
+        return 0;
+    while (length < capacity && origin[length] != '\0') {
+        const unsigned char byte = (unsigned char)origin[length];
+        if (byte < 0x21u || byte > 0x7eu)
+            return 0;
+        ++length;
+    }
+    if (length == 0u || length == capacity ||
+        !rin_webcontent_client_bytes_zero(origin + length + 1u,
+                                          capacity - length - 1u))
+        return 0;
+    return (length > sizeof("https://") - 1u &&
+            memcmp(origin, "https://", sizeof("https://") - 1u) == 0) ||
+           (length > sizeof("http://") - 1u &&
+            memcmp(origin, "http://", sizeof("http://") - 1u) == 0);
+}
+
+static inline int rin_webcontent_client_clipboard_owner_request_valid(
+    const RinWebContentClipboardOwnerRequestV1* request,
+    const void* payload, uint32_t payload_len)
+{
+    uint64_t total_data_size = 0u;
+    size_t expected_size;
+    uint32_t index;
+    if (request == NULL || payload == NULL ||
+        payload_len < sizeof(*request) ||
+        request->struct_size != sizeof(*request) ||
+        request->version != RIN_WEBCONTENT_CLIPBOARD_OWNER_VERSION ||
+        request->frame_identity == 0u || request->reserved0 != 0u ||
+        request->reserved1 != 0u ||
+        !rin_webcontent_client_clipboard_origin_valid(
+            request->origin, sizeof(request->origin)))
+        return 0;
+
+    if (request->operation == RIN_WEBCONTENT_CLIPBOARD_OWNER_QUERY) {
+        return payload_len == sizeof(*request) &&
+               request->format_count == 0u && request->format_index == 0u &&
+               request->chunk_size == 0u && request->generation == 0u &&
+               request->offset == 0u;
+    }
+    if (request->operation == RIN_WEBCONTENT_CLIPBOARD_OWNER_READ_CHUNK) {
+        return payload_len == sizeof(*request) &&
+               request->format_count == 0u &&
+               request->format_index < RIN_WEBCONTENT_CLIPBOARD_OWNER_MAX_FORMATS &&
+               request->chunk_size != 0u &&
+               request->chunk_size <= RIN_WEBCONTENT_CLIPBOARD_OWNER_MAX_CHUNK_BYTES &&
+               request->generation != 0u &&
+               request->offset <=
+                   RIN_WEBCONTENT_CLIPBOARD_OWNER_MAX_DATA_BYTES;
+    }
+    if (request->operation != RIN_WEBCONTENT_CLIPBOARD_OWNER_WRITE ||
+        request->format_count == 0u ||
+        request->format_count > RIN_WEBCONTENT_CLIPBOARD_OWNER_MAX_FORMATS ||
+        request->format_index != 0u || request->chunk_size != 0u ||
+        request->generation != 0u || request->offset != 0u ||
+        request->format_count >
+            (SIZE_MAX - sizeof(*request)) /
+                sizeof(RinWebContentClipboardOwnerFormatV1))
+        return 0;
+
+    expected_size = sizeof(*request) +
+        (size_t)request->format_count *
+            sizeof(RinWebContentClipboardOwnerFormatV1);
+    if (payload_len < expected_size)
+        return 0;
+    const RinWebContentClipboardOwnerFormatV1* formats =
+        (const RinWebContentClipboardOwnerFormatV1*)((const uint8_t*)payload +
+                                                     sizeof(*request));
+    for (index = 0u; index < request->format_count; ++index) {
+        const RinWebContentClipboardOwnerFormatV1* format = &formats[index];
+        uint32_t previous;
+        if (format->format_index != index || format->mime_size == 0u ||
+            format->mime_size > RIN_WEBCONTENT_CLIPBOARD_OWNER_MAX_MIME_BYTES ||
+            format->data_size > RIN_WEBCONTENT_CLIPBOARD_OWNER_MAX_DATA_BYTES ||
+            !rin_webcontent_client_clipboard_mime_valid(
+                format->mime, format->mime_size) ||
+            format->mime[format->mime_size] != '\0' ||
+            !rin_webcontent_client_bytes_zero(
+                format->mime + format->mime_size + 1u,
+                sizeof(format->mime) - format->mime_size - 1u) ||
+            total_data_size > RIN_WEBCONTENT_CLIPBOARD_OWNER_MAX_DATA_BYTES -
+                                  format->data_size)
+            return 0;
+        for (previous = 0u; previous < index; ++previous) {
+            if (formats[previous].mime_size == format->mime_size &&
+                memcmp(formats[previous].mime, format->mime,
+                       format->mime_size) == 0)
+                return 0;
+        }
+        total_data_size += format->data_size;
+    }
+    if (total_data_size > SIZE_MAX - expected_size)
+        return 0;
+    expected_size += (size_t)total_data_size;
+    return expected_size == payload_len;
+}
+
 static inline int rin_webcontent_client_call_valid(uint32_t command,
                                                    uint32_t page_id,
                                                    const void* payload,
@@ -1939,6 +2054,19 @@ static inline int rin_webcontent_client_call_valid(uint32_t command,
             return 0;
         expected_response_len =
             (uint32_t)sizeof(RinWebContentCameraCaptureOwnerResponseV1);
+        break;
+    }
+    case RIN_WEBCONTENT_CMD_CLIPBOARD_OWNER_V1: {
+        RinWebContentClipboardOwnerRequestV1 request;
+        if (payload == NULL || payload_len < sizeof(request) ||
+            response == NULL)
+            return 0;
+        memcpy(&request, payload, sizeof(request));
+        if (!rin_webcontent_client_clipboard_owner_request_valid(
+                &request, payload, payload_len))
+            return 0;
+        expected_response_len =
+            (uint32_t)sizeof(RinWebContentClipboardOwnerResponseV1);
         break;
     }
     case RIN_WEBCONTENT_CMD_REVOKE_CAMERA_V1: {
