@@ -582,12 +582,31 @@ static int portal_close(uint32_t handle)
             &response_generation) != RIN_SERIAL_PORTAL_OK ||
         !portal_session_matches(&response.frame, request.frame.request_id))
         return RIN_SERIAL_EIO;
-    if (result != RIN_SERIAL_PORTAL_OK) return portal_map_result(result);
     if (response_capability.object_id != slot->capability.object_id ||
         response_capability.generation != slot->capability.generation)
         return RIN_SERIAL_EBADF;
+    /* STALE is an authenticated acknowledgement that this capability no
+     * longer names an open backend handle in the server session. */
+    if (result != RIN_SERIAL_PORTAL_OK && result != RIN_SERIAL_PORTAL_STALE)
+        return portal_map_result(result);
     portal_release_slot(slot);
     return RIN_SERIAL_OK;
+}
+
+static int portal_drain_open_slots(void)
+{
+    uint32_t index;
+    int first_error = RIN_SERIAL_OK;
+
+    for (index = 0u; index < RIN_WEB_SERIAL_PORTAL_MAX_OPEN; ++index) {
+        RinWebSerialPortalOpenSlot* slot = &g_portal_open[index];
+        int result;
+        if (!slot->used) continue;
+        result = portal_close(slot->handle);
+        if (result != RIN_SERIAL_OK && first_error == RIN_SERIAL_OK)
+            first_error = result;
+    }
+    return first_error;
 }
 
 static uint64_t portal_next_request_id(void)
@@ -1000,25 +1019,36 @@ static void ensure_default_ops(void)
     g_ops_installed = 1;
 }
 
-void rin_web_serial_set_file_ops(const RinWebSerialFileOpsV1* ops)
+int rin_web_serial_try_set_file_ops(const RinWebSerialFileOpsV1* ops)
 {
+    int drain_result;
+    if (ops && (!ops->open || !ops->close || !ops->read || !ops->write ||
+                !ops->configure || !ops->set_signals || !ops->get_signals))
+        return RIN_SERIAL_EINVAL;
+    drain_result = portal_drain_open_slots();
+    if (drain_result != RIN_SERIAL_OK) return drain_result;
+
     g_portal_installed = 0;
     memset(&g_portal, 0, sizeof(g_portal));
     g_portal_page_exchange = NULL;
-    memset(g_portal_open, 0, sizeof(g_portal_open));
     portal_event_state_reset();
     g_identity_query = NULL;
     g_identity_query_context = NULL;
-    if (!ops || !ops->open || !ops->close || !ops->read || !ops->write ||
-        !ops->configure || !ops->set_signals || !ops->get_signals) {
+    if (!ops) {
         g_ops_installed = 0;
         g_custom_file_ops = 0;
         memset(&g_ops, 0, sizeof(g_ops));
-        return;
+        return RIN_SERIAL_OK;
     }
     g_ops = *ops;
     g_custom_file_ops = 1;
     g_ops_installed = 1;
+    return RIN_SERIAL_OK;
+}
+
+void rin_web_serial_set_file_ops(const RinWebSerialFileOpsV1* ops)
+{
+    (void)rin_web_serial_try_set_file_ops(ops);
 }
 
 void rin_web_serial_set_identity_query(
@@ -1028,25 +1058,37 @@ void rin_web_serial_set_identity_query(
     g_identity_query_context = query ? context : NULL;
 }
 
-void rin_web_serial_set_portal_transport(
+int rin_web_serial_try_set_portal_transport(
     const RinWebSerialPortalTransportV1* transport)
 {
+    int drain_result;
+    if (transport && (!transport->exchange || transport->session_id == 0u ||
+                      transport->session_generation == 0u))
+        return RIN_SERIAL_EINVAL;
+    drain_result = portal_drain_open_slots();
+    if (drain_result != RIN_SERIAL_OK) return drain_result;
+
     g_ops_installed = 0;
     g_custom_file_ops = 0;
     g_identity_query = NULL;
     g_identity_query_context = NULL;
     g_portal_page_exchange = NULL;
     memset(&g_ops, 0, sizeof(g_ops));
-    memset(g_portal_open, 0, sizeof(g_portal_open));
     portal_event_state_reset();
-    if (!transport || !transport->exchange || transport->session_id == 0u ||
-        transport->session_generation == 0u) {
+    if (!transport) {
         g_portal_installed = 0;
         memset(&g_portal, 0, sizeof(g_portal));
-        return;
+        return RIN_SERIAL_OK;
     }
     g_portal = *transport;
     g_portal_installed = 1;
+    return RIN_SERIAL_OK;
+}
+
+void rin_web_serial_set_portal_transport(
+    const RinWebSerialPortalTransportV1* transport)
+{
+    (void)rin_web_serial_try_set_portal_transport(transport);
 }
 
 void rin_web_serial_set_portal_page_exchange(

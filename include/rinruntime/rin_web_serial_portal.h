@@ -72,9 +72,14 @@ typedef struct RinWebSerialPortalTransportV1 {
 } RinWebSerialPortalTransportV1;
 
 void rin_web_serial_set_file_ops(const RinWebSerialFileOpsV1* ops);
+/* Return-valued variants keep the active owner installed when an open portal
+ * handle cannot be drained. A null argument removes the selected owner. */
+int rin_web_serial_try_set_file_ops(const RinWebSerialFileOpsV1* ops);
 void rin_web_serial_set_identity_query(
     RinWebSerialIdentityQueryV1 query, void* context);
 void rin_web_serial_set_portal_transport(
+    const RinWebSerialPortalTransportV1* transport);
+int rin_web_serial_try_set_portal_transport(
     const RinWebSerialPortalTransportV1* transport);
 /* Install the private authenticated owner-channel adapter used by
  * page-scoped Web Serial calls. Kept separate from the V1 transport structure
