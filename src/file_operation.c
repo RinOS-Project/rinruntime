@@ -1932,11 +1932,26 @@ int rinruntime_file_operation_recovery_restore(
 uint32_t rinruntime_file_operation_percent(const RinRuntimeFileOperationV1* operation)
 {
     uint64_t completed;
+    uint64_t total;
+    uint64_t quotient;
+    uint32_t remainder;
+    uint32_t percent;
     if (operation == 0 || operation->struct_size != sizeof(*operation) ||
         operation->version != RINRUNTIME_FILE_OPERATION_VERSION) return 0u;
     if (operation->total_bytes == 0u)
         return operation->active != 0u ? 0u : 100u;
     completed = operation->completed_bytes;
-    if (completed > operation->total_bytes) completed = operation->total_bytes;
-    return (uint32_t)((completed * 100u) / operation->total_bytes);
+    total = operation->total_bytes;
+    if (completed >= total) return 100u;
+
+    /* Compare against ceil(percent * total / 100) without multiplying the
+     * potentially near-UINT64_MAX byte counters by 100. */
+    quotient = total / 100u;
+    remainder = (uint32_t)(total % 100u);
+    for (percent = 99u; percent != 0u; --percent) {
+        uint64_t threshold = quotient * percent +
+            ((uint64_t)remainder * percent + 99u) / 100u;
+        if (completed >= threshold) return percent;
+    }
+    return 0u;
 }
