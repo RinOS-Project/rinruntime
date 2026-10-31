@@ -24634,6 +24634,20 @@ static int rinfs_publish_orphan_intent_inode(
     return RINFS_OK;
 }
 
+static uint32_t rinfs_inherited_gid(const RinFS_Inode* parent_inode,
+                                   uint32_t requested_gid) {
+    return parent_inode && (parent_inode->i_mode & 02000u) != 0u
+        ? parent_inode->i_gid : requested_gid;
+}
+
+static uint16_t rinfs_inherited_directory_mode(
+    const RinFS_Inode* parent_inode, uint16_t requested_mode) {
+    uint16_t mode = (uint16_t)(requested_mode & 0777u);
+    if (parent_inode && (parent_inode->i_mode & 02000u) != 0u)
+        mode |= 02000u;
+    return mode;
+}
+
 static int rinfs_createat_owned_unscoped(RinFS_Mount* mount,
                                          uint64_t parent_ino,
                                          const char* name, uint16_t mode,
@@ -24689,7 +24703,7 @@ static int rinfs_createat_owned_unscoped(RinFS_Mount* mount,
     }
     inode.i_mode = (RINFS_FT_REG << 12) | (mode & 0777);
     inode.i_uid = uid;
-    inode.i_gid = gid;
+    inode.i_gid = rinfs_inherited_gid(&parent_inode, gid);
     inode.i_size = 0;
     inode.i_blocks = 0;
     rinfs_inode_content_version_set_raw(&inode, 1u);
@@ -24767,7 +24781,7 @@ static int rinfs_mknodat_owned_unscoped(
     }
     inode.i_mode = (uint16_t)(((uint16_t)type << 12u) | (mode & 07777u));
     inode.i_uid = uid;
-    inode.i_gid = gid;
+    inode.i_gid = rinfs_inherited_gid(&parent_inode, gid);
     inode.i_size = 0u;
     inode.i_blocks = 0u;
     rinfs_inode_content_version_set_raw(&inode, 1u);
@@ -24818,7 +24832,7 @@ static int rinfs_create_tmpfile_owned_unscoped(
     }
     inode.i_mode = (RINFS_FT_REG << 12u) | (mode & 0777u);
     inode.i_uid = uid;
-    inode.i_gid = gid;
+    inode.i_gid = rinfs_inherited_gid(&parent_inode, gid);
     inode.i_size = 0u;
     inode.i_links = 0u;
     inode.i_blocks = 0u;
@@ -25036,9 +25050,10 @@ static int rinfs_mkdirat_owned_unscoped(
         rinfs_inode_free(mount, new_ino);
         return err;
     }
-    inode.i_mode = (RINFS_FT_DIR << 12) | (mode & 0777);
+    inode.i_mode = (RINFS_FT_DIR << 12) |
+        rinfs_inherited_directory_mode(&parent_inode, mode);
     inode.i_uid = uid;
-    inode.i_gid = gid;
+    inode.i_gid = rinfs_inherited_gid(&parent_inode, gid);
     inode.i_size = block_size;
     inode.i_links = 2;  /* . and parent link */
     inode.i_blocks = block_size / RINFS_SECTOR_SIZE;
@@ -29238,10 +29253,20 @@ int rinfs_link_tmpfile(RinFS_File* file, uint64_t dir_ino,
 static int rinfs_symlink_owned_unscoped(
     RinFS_Mount* mount, uint64_t dir_ino, const char* name,
     const char* target, uint32_t uid, uint32_t gid) {
+    RinFS_Inode parent_inode;
     RinFS_Inode link_inode;
-    if (!mount || !mount->mounted || !name || !target) return RINFS_ERR_INVAL;
+    if (!mount || !mount->mounted || !name || !target || dir_ino == 0u ||
+        dir_ino > mount->sb.s_inode_count)
+        return RINFS_ERR_INVAL;
     int prepare_error = rinfs_mount_prepare_write(mount);
     if (prepare_error != RINFS_OK) return prepare_error;
+
+    int err = rinfs_inode_read(mount, dir_ino, &parent_inode);
+    if (err != RINFS_OK) return err;
+    if ((parent_inode.i_mode >> 12u) != RINFS_FT_DIR)
+        return RINFS_ERR_NOTDIR;
+    if ((parent_inode.i_flags & (RINFS_IFLG_IMMUT | RINFS_IFLG_APPEND)) != 0u)
+        return RINFS_ERR_INVAL;
 
     uint32_t target_len = rinfs_strlen(target);
     if (target_len == 0 || target_len >= RINFS_SYMLINK_MAX) {
@@ -29255,13 +29280,13 @@ static int rinfs_symlink_owned_unscoped(
 
     /* Check if name already exists */
     uint64_t existing;
-    if (rinfs_lookup(mount, dir_ino, name, &existing) == RINFS_OK) {
-        return RINFS_ERR_EXIST;
-    }
+    err = rinfs_lookup(mount, dir_ino, name, &existing);
+    if (err == RINFS_OK) return RINFS_ERR_EXIST;
+    if (err != RINFS_ERR_NOENT) return err;
 
     /* Allocate new inode for symlink */
     uint64_t link_ino;
-    int err = rinfs_inode_alloc(mount, &link_ino);
+    err = rinfs_inode_alloc(mount, &link_ino);
     if (err != RINFS_OK) return err;
 
     /* Initialize symlink inode */
@@ -29272,7 +29297,7 @@ static int rinfs_symlink_owned_unscoped(
     }
     link_inode.i_mode = (RINFS_FT_LNK << 12) | 0777; /* lrwxrwxrwx */
     link_inode.i_uid = uid;
-    link_inode.i_gid = gid;
+    link_inode.i_gid = rinfs_inherited_gid(&parent_inode, gid);
     link_inode.i_links = 1;
     link_inode.i_size = target_len;
     rinfs_touch_created(&link_inode);
