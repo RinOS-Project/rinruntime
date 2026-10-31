@@ -112,14 +112,6 @@ static inline int rin_webcontent_service_request_payload_length_valid(
     case RIN_WEBCONTENT_CMD_CAMERA_CAPTURE_OWNER_V1:
         return header->payload_len ==
                sizeof(RinWebContentCameraCaptureOwnerRequestV1);
-    case RIN_WEBCONTENT_CMD_CLIPBOARD_OWNER_V1:
-        return header->payload_len >=
-                   sizeof(RinWebContentClipboardOwnerRequestV1) &&
-               header->payload_len <=
-                   sizeof(RinWebContentClipboardOwnerRequestV1) +
-                   RIN_WEBCONTENT_CLIPBOARD_OWNER_MAX_FORMATS *
-                       sizeof(RinWebContentClipboardOwnerFormatV1) +
-                   RIN_WEBCONTENT_CLIPBOARD_OWNER_MAX_DATA_BYTES;
     case RIN_WEBCONTENT_CMD_TLS_IDENTITY_OWNER_V1:
         return header->payload_len >=
                    sizeof(RinWebContentTlsIdentityOwnerRequestV1) &&
@@ -181,9 +173,6 @@ static inline int rin_webcontent_service_request_valid(
         break;
     case RIN_WEBCONTENT_CMD_CAMERA_CAPTURE_OWNER_V1:
         response_len = sizeof(RinWebContentCameraCaptureOwnerResponseV1);
-        break;
-    case RIN_WEBCONTENT_CMD_CLIPBOARD_OWNER_V1:
-        response_len = sizeof(RinWebContentClipboardOwnerResponseV1);
         break;
     case RIN_WEBCONTENT_CMD_TLS_IDENTITY_OWNER_V1:
         response_len = sizeof(RinWebContentTlsIdentityOwnerResponseV1);
