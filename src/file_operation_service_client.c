@@ -3,6 +3,7 @@
 #include <rinruntime/file_operation_service.h>
 #include <rinruntime/path.h>
 #include <rin/capability.h>
+#include <rin/net/socket_abi.h>
 #include <rin/validation.h>
 #include "private_service_socket.h"
 
@@ -17,6 +18,23 @@
 static int service_client_request_id_valid(uint64_t request_id)
 {
     return request_id != 0u && request_id != UINT64_MAX;
+}
+
+static int service_client_identity_valid(int fd)
+{
+    rin_unix_peer_service_identity_v1 identity;
+    socklen_t identity_size = (socklen_t)sizeof(identity);
+    int valid;
+    memset(&identity, 0, sizeof(identity));
+    valid = getsockopt(fd, SOL_SOCKET, SO_RIN_UNIX_PEER_SERVICE_IDENTITY,
+                       &identity, &identity_size) == 0 &&
+            identity_size == (socklen_t)sizeof(identity) &&
+            rin_unix_peer_service_identity_valid(&identity) &&
+            identity.scope == RIN_UNIX_SCOPE_USER &&
+            identity.owner_uid == (uint32_t)getuid() &&
+            strcmp(identity.service_id, "fileoperationd") == 0;
+    memset(&identity, 0, sizeof(identity));
+    return valid;
 }
 
 static int service_client_send_all(int fd, const void* input, uint32_t size)
@@ -155,7 +173,8 @@ static RinRuntimeFileOperationServiceStatus service_client_open_path(
     memcpy(address.sun_path, service_path, strlen(service_path) + 1u);
     fd = rinruntime_create_private_unix_stream_socket();
     if (fd < 0) return RINRUNTIME_FILE_OPERATION_SERVICE_UNAVAILABLE;
-    if (connect(fd, (const struct sockaddr*)&address, sizeof(address)) != 0) {
+    if (connect(fd, (const struct sockaddr*)&address, sizeof(address)) != 0 ||
+        !service_client_identity_valid(fd)) {
         (void)close(fd);
         return RINRUNTIME_FILE_OPERATION_SERVICE_UNAVAILABLE;
     }
