@@ -5,12 +5,11 @@
 
 #include <stdint.h>
 
-#include <rin/syscall_abi.h>
+#include "rin_private_power_syscall.h"
 
 /* Keep this outside the generated public syscall table. The only caller is
  * the signed private powerd image; ordinary applications use the RPI1 socket
  * and never receive this number. */
-#define RIN_SYS_POWER_INHIBIT_PRIVATE (RIN_SYS_PRIVATE_BASE + UINT32_C(0xF0))
 #define RIN_POWER_INHIBIT_KERNEL_VERSION UINT32_C(1)
 /* sched_timer_now_ticks() is the fixed 100 Hz PIT/APIC scheduler clock. */
 #define RIN_POWER_INHIBIT_KERNEL_LEASE_TICKS UINT64_C(300)
@@ -36,5 +35,7 @@ static_assert(sizeof(RinPowerInhibitKernelRequestV1) == 32u,
 _Static_assert(sizeof(RinPowerInhibitKernelRequestV1) == 32u,
                "private power inhibit kernel ABI drift");
 #endif
+
+#include "generated/rin_private_syscall_power_layout.h"
 
 #endif /* RIN_SHARED_POWER_INHIBIT_KERNEL_ABI_H */
