@@ -8,6 +8,7 @@
 #include <rin/socket_abi.h>
 
 #include <errno.h>
+#include <limits.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <string.h>
@@ -552,7 +553,8 @@ int rin_audio_service_stream_write(int stream, const void* samples,
     uint32_t retries = 0u;
     int result;
     client_io_lock();
-    if (!stream_index_valid(stream) || (bytes != 0u && samples == NULL)) {
+    if (!stream_index_valid(stream) || bytes > (uint32_t)INT_MAX ||
+        (bytes != 0u && samples == NULL)) {
         result = -1;
         goto done;
     }
