@@ -115,6 +115,61 @@ static int file_operation_descendant(const char* root, const char* path)
     return root[index] == '\0' && (path[index] == '\0' || path[index] == '/');
 }
 
+#ifdef _WIN32
+static char file_operation_ascii_upper(char value)
+{
+    return value >= 'a' && value <= 'z' ? (char)(value - ('a' - 'A')) : value;
+}
+
+static int file_operation_windows_reserved_device_component(
+    const char* path, uint32_t start, uint32_t size)
+{
+    static const char* const reserved[] = {"CON", "PRN", "AUX", "NUL"};
+    uint32_t base_size = 0u;
+    uint32_t index;
+    while (base_size < size && path[start + base_size] != '.') ++base_size;
+    while (base_size != 0u &&
+           (path[start + base_size - 1u] == ' ' ||
+            path[start + base_size - 1u] == '.'))
+        --base_size;
+    for (index = 0u; index < sizeof(reserved) / sizeof(reserved[0]); ++index) {
+        uint32_t character;
+        if (base_size != 3u) continue;
+        for (character = 0u; character < base_size; ++character) {
+            if (file_operation_ascii_upper(path[start + character]) !=
+                reserved[index][character])
+                break;
+        }
+        if (character == base_size) return 1;
+    }
+    if (base_size == 4u &&
+        (file_operation_ascii_upper(path[start]) == 'C' ||
+         file_operation_ascii_upper(path[start]) == 'L')) {
+        char family = file_operation_ascii_upper(path[start]);
+        char middle = file_operation_ascii_upper(path[start + 1u]);
+        char third = file_operation_ascii_upper(path[start + 2u]);
+        char number = path[start + 3u];
+        if (((family == 'C' && middle == 'O' && third == 'M') ||
+             (family == 'L' && middle == 'P' && third == 'T')) &&
+            number >= '1' && number <= '9')
+            return 1;
+    }
+    if (base_size == 5u &&
+        ((file_operation_ascii_upper(path[start]) == 'C' &&
+          file_operation_ascii_upper(path[start + 1u]) == 'O' &&
+          file_operation_ascii_upper(path[start + 2u]) == 'M') ||
+         (file_operation_ascii_upper(path[start]) == 'L' &&
+          file_operation_ascii_upper(path[start + 1u]) == 'P' &&
+          file_operation_ascii_upper(path[start + 2u]) == 'T')) &&
+        (unsigned char)path[start + 3u] == 0xc2u &&
+        ((unsigned char)path[start + 4u] == 0xb9u ||
+         (unsigned char)path[start + 4u] == 0xb2u ||
+         (unsigned char)path[start + 4u] == 0xb3u))
+        return 1;
+    return 0;
+}
+#endif
+
 int rinruntime_file_operation_path_valid(const char* path)
 {
     uint32_t index = 0u;
@@ -161,7 +216,9 @@ int rinruntime_file_operation_path_valid(const char* path)
                 return 0;
 #ifdef _WIN32
             if (component_size != 0u &&
-                (path[index - 1u] == '.' || path[index - 1u] == ' '))
+                (path[index - 1u] == '.' || path[index - 1u] == ' ' ||
+                 file_operation_windows_reserved_device_component(
+                     path, component_start, component_size)))
                 return 0;
 #endif
             component_start = index + 1u;
@@ -177,7 +234,10 @@ int rinruntime_file_operation_path_valid(const char* path)
              path[component_start + 1u] == '.'))
             return 0;
 #ifdef _WIN32
-        if (path[index - 1u] == '.' || path[index - 1u] == ' ') return 0;
+        if (path[index - 1u] == '.' || path[index - 1u] == ' ' ||
+            file_operation_windows_reserved_device_component(
+                path, component_start, component_size))
+            return 0;
 #endif
     }
     return index > 1u && path[index - 1u] != '/';
