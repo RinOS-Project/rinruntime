@@ -302,6 +302,19 @@ static RinCompositorInputRingEventV1
     g_input_ring_batch[RIN_RUNTIME_INPUT_BATCH_CAPACITY];
 static uint32_t g_input_ring_batch_count;
 static uint32_t g_input_ring_batch_index;
+enum {
+    RIN_RUNTIME_CLIPBOARD_WATCH_DISCONNECTED = 0u,
+    RIN_RUNTIME_CLIPBOARD_WATCH_CONNECTING = 1u,
+    RIN_RUNTIME_CLIPBOARD_WATCH_SEND_REQUEST = 2u,
+    RIN_RUNTIME_CLIPBOARD_WATCH_WAIT_INITIAL = 3u,
+    RIN_RUNTIME_CLIPBOARD_WATCH_ACTIVE = 4u
+};
+static int g_clipboard_watch_fd = -1;
+static uint32_t g_clipboard_watch_stage =
+    RIN_RUNTIME_CLIPBOARD_WATCH_DISCONNECTED;
+static uint64_t g_clipboard_watch_retry_after_ms;
+static uint64_t g_clipboard_watch_generation;
+static int g_clipboard_watch_generation_valid;
 
 static int runtime_request_id_valid(uint32_t request_id)
 {
@@ -327,6 +340,10 @@ static int runtime_async_pump(uint32_t timeout_ms);
 static int runtime_async_drain(void);
 static void runtime_async_abort_all(int32_t status);
 static uint32_t runtime_async_dispatch_callbacks(uint32_t maximum);
+static int runtime_clipboard_watch_pump(RinGuiNativeEventV1* event,
+                                        uint32_t* packed_out);
+static int runtime_clipboard_watch_subscribe(void);
+static void runtime_clipboard_watch_close(void);
 
 static int runtime_send_icon_path(uint32_t surface_id, const char* path) {
     RinCompositorSetIconV1 request;
@@ -1879,11 +1896,19 @@ static int runtime_rebind_surfaces(void) {
 }
 
 static void runtime_destroy_local_surface(RinRuntimeGuiSurface* surface) {
+    uint32_t index;
+    int any_active = 0;
     if (!surface) return;
     runtime_release_buffers(surface);
     memset(surface, 0, sizeof(*surface));
     surface->shm_handles[0] = -1;
     surface->shm_handles[1] = -1;
+    for (index = 0u; index < RIN_RUNTIME_GUI_MAX_SURFACES; ++index)
+        if (g_surfaces[index].active != 0u) {
+            any_active = 1;
+            break;
+        }
+    if (!any_active) runtime_clipboard_watch_close();
 }
 
 static RinRuntimeGuiSurface* runtime_new_surface(void) {
@@ -2228,6 +2253,7 @@ int wnd_poll_native(RinRuntimeGuiHandle handle, RinGuiNativeEventV1* event,
     runtime_async_dispatch_callbacks(8u);
     memset(event, 0, sizeof(*event));
     *packed_out = 0u;
+    if (runtime_clipboard_watch_pump(event, packed_out) > 0) return 1;
     memset(&ring_event, 0, sizeof(ring_event));
     if (g_input_ring_address) {
         int ring_result = runtime_ring_pop(&ring_event);
@@ -3589,6 +3615,10 @@ static int runtime_drag_drop_owner_rpc(
                response_out->body_size);
     }
     result = response_out->result;
+    if (result == RIN_RESULT_OK &&
+        request->operation >= RINRUNTIME_CLIPBOARD_OWNER_SET_BEGIN &&
+        request->operation <= RINRUNTIME_CLIPBOARD_OWNER_GET_FILE)
+        (void)runtime_clipboard_watch_subscribe();
 done:
     if (descriptor >= 0) close(descriptor);
     if (packet != NULL) {
@@ -3609,6 +3639,255 @@ static void runtime_drag_drop_owner_request_init(
     request->version = RINRUNTIME_DRAG_DROP_OWNER_VERSION;
     request->operation = operation;
     request->struct_size = sizeof(*request);
+}
+
+static int runtime_clipboard_watch_service_valid(int descriptor) {
+    rin_unix_peer_service_identity_v1 service;
+    socklen_t service_size = (socklen_t)sizeof(service);
+    const uid_t uid = getuid();
+    memset(&service, 0, sizeof(service));
+    return descriptor >= 0 && uid != 0u &&
+        getsockopt(descriptor, SOL_SOCKET,
+                   SO_RIN_UNIX_PEER_SERVICE_IDENTITY, &service,
+                   &service_size) == 0 &&
+        service_size == (socklen_t)sizeof(service) &&
+        rin_unix_peer_service_identity_valid(&service) &&
+        service.scope == RIN_UNIX_SCOPE_USER && service.owner_uid == uid &&
+        strncmp(service.service_id, "desktopd",
+                sizeof(service.service_id)) == 0;
+}
+
+static void runtime_clipboard_watch_drop(void) {
+    if (g_clipboard_watch_fd >= 0) close(g_clipboard_watch_fd);
+    g_clipboard_watch_fd = -1;
+    g_clipboard_watch_stage = RIN_RUNTIME_CLIPBOARD_WATCH_DISCONNECTED;
+    const uint64_t now = rin_monotonic_ms();
+    g_clipboard_watch_retry_after_ms =
+        now == 0u || now > UINT64_MAX - 1000u ? UINT64_MAX : now + 1000u;
+}
+
+static int runtime_clipboard_watch_start(void) {
+    struct sockaddr_un address;
+    char path[sizeof(address.sun_path)];
+    const uid_t uid = getuid();
+    int written;
+    if (uid == 0u) return RIN_RESULT_ACCESS_DENIED;
+    written = snprintf(path, sizeof(path),
+                       "/run/rin/desktopd-drag-drop-%u.sock",
+                       (unsigned)uid);
+    if (written <= 0 || (size_t)written >= sizeof(path))
+        return RIN_RESULT_INVALID_ARGUMENT;
+    const int descriptor = socket(
+        AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
+    if (descriptor < 0) return RIN_RESULT_IO;
+    memset(&address, 0, sizeof(address));
+    address.sun_family = AF_UNIX;
+    memcpy(address.sun_path, path, (size_t)written + 1u);
+    if (connect(descriptor, (struct sockaddr*)&address, sizeof(address)) == 0) {
+        if (!runtime_clipboard_watch_service_valid(descriptor)) {
+            close(descriptor);
+            return RIN_RESULT_ACCESS_DENIED;
+        }
+        g_clipboard_watch_stage = RIN_RUNTIME_CLIPBOARD_WATCH_SEND_REQUEST;
+    } else if (errno == EINPROGRESS || errno == EAGAIN ||
+               errno == EWOULDBLOCK) {
+        g_clipboard_watch_stage = RIN_RUNTIME_CLIPBOARD_WATCH_CONNECTING;
+    } else {
+        close(descriptor);
+        return RIN_RESULT_IO;
+    }
+    g_clipboard_watch_fd = descriptor;
+    return RIN_RESULT_OK;
+}
+
+static int runtime_clipboard_watch_subscribe(void) {
+    if (g_clipboard_watch_stage ==
+        RIN_RUNTIME_CLIPBOARD_WATCH_DISCONNECTED) {
+        const uint64_t now = rin_monotonic_ms();
+        if (now == 0u || now < g_clipboard_watch_retry_after_ms)
+            return 0;
+        if (runtime_clipboard_watch_start() != RIN_RESULT_OK) {
+            runtime_clipboard_watch_drop();
+            return 0;
+        }
+    }
+    if (g_clipboard_watch_stage == RIN_RUNTIME_CLIPBOARD_WATCH_CONNECTING) {
+        const RinRuntimePollWaitResult ready = rinruntime_poll_wait(
+            g_clipboard_watch_fd, RINRUNTIME_POLL_WAIT_WRITABLE, 0u);
+        int socket_error = 0;
+        socklen_t error_size = (socklen_t)sizeof(socket_error);
+        if (ready == RINRUNTIME_POLL_WAIT_TIMEOUT) return 0;
+        if (ready != RINRUNTIME_POLL_WAIT_READY ||
+            getsockopt(g_clipboard_watch_fd, SOL_SOCKET, SO_ERROR,
+                       &socket_error, &error_size) != 0 ||
+            error_size != (socklen_t)sizeof(socket_error) ||
+            socket_error != 0 ||
+            !runtime_clipboard_watch_service_valid(g_clipboard_watch_fd)) {
+            runtime_clipboard_watch_drop();
+            return 0;
+        }
+        g_clipboard_watch_stage = RIN_RUNTIME_CLIPBOARD_WATCH_SEND_REQUEST;
+    }
+    if (g_clipboard_watch_stage ==
+        RIN_RUNTIME_CLIPBOARD_WATCH_SEND_REQUEST) {
+        RinRuntimeDragDropOwnerRequestV1 request;
+        runtime_drag_drop_owner_request_init(
+            &request, RINRUNTIME_CLIPBOARD_OWNER_WATCH);
+        const ssize_t sent = send(g_clipboard_watch_fd, &request,
+                                  sizeof(request),
+                                  MSG_DONTWAIT | MSG_NOSIGNAL);
+        memset(&request, 0, sizeof(request));
+        if (sent < 0 && (errno == EINTR || errno == EAGAIN ||
+                         errno == EWOULDBLOCK))
+            return 0;
+        if (sent != (ssize_t)sizeof(request)) {
+            runtime_clipboard_watch_drop();
+            return 0;
+        }
+        g_clipboard_watch_stage = RIN_RUNTIME_CLIPBOARD_WATCH_WAIT_INITIAL;
+    }
+    return 0;
+}
+
+static int runtime_clipboard_watch_reply_valid(
+    const RinRuntimeDragDropOwnerResponseV1* response, ssize_t received) {
+    const uint8_t* token_bytes;
+    const uint8_t* label_bytes;
+    if (response == NULL || received != (ssize_t)sizeof(*response) ||
+        response->magic != RINRUNTIME_DRAG_DROP_OWNER_MAGIC ||
+        response->version != RINRUNTIME_DRAG_DROP_OWNER_VERSION ||
+        response->operation != RINRUNTIME_CLIPBOARD_OWNER_WATCH ||
+        response->struct_size != sizeof(*response) ||
+        response->result != RIN_RESULT_OK || response->payload_type != 0u ||
+        response->body_size != 0u || response->capability != 0u ||
+        response->completion != 0u || response->reserved0 != 0u ||
+        response->generation == UINT64_MAX || response->data_size != 0u ||
+        response->format_count != 0u || response->label_size != 0u)
+        return 0;
+    token_bytes = (const uint8_t*)&response->file_token;
+    for (size_t index = 0u; index < sizeof(response->file_token); ++index)
+        if (token_bytes[index] != 0u) return 0;
+    label_bytes = (const uint8_t*)response->label;
+    for (size_t index = 0u; index < sizeof(response->label); ++index)
+        if (label_bytes[index] != 0u) return 0;
+    return 1;
+}
+
+static int runtime_clipboard_watch_emit(
+    uint64_t generation, RinGuiNativeEventV1* event,
+    uint32_t* packed_out) {
+    const int changed = g_clipboard_watch_generation_valid
+        ? generation != g_clipboard_watch_generation
+        : generation != 0u;
+    g_clipboard_watch_generation = generation;
+    g_clipboard_watch_generation_valid = 1;
+    if (!changed) return 0;
+    memset(event, 0, sizeof(*event));
+    event->struct_size = sizeof(*event);
+    event->version = RIN_GUI_NATIVE_EVENT_VERSION;
+    event->type = RINRUNTIME_GUI_EVENT_CLIPBOARD_CHANGED;
+    event->data = (uint32_t)generation;
+    *packed_out = (event->type << 24u) |
+                  (event->data & UINT32_C(0x00ffffff));
+    return 1;
+}
+
+static int runtime_clipboard_watch_pump(RinGuiNativeEventV1* event,
+                                        uint32_t* packed_out) {
+    if (event == NULL || packed_out == NULL) return -1;
+    for (uint32_t step = 0u; step < 5u; ++step) {
+        if (g_clipboard_watch_stage ==
+            RIN_RUNTIME_CLIPBOARD_WATCH_DISCONNECTED) {
+            const uint64_t now = rin_monotonic_ms();
+            if (now == 0u || now < g_clipboard_watch_retry_after_ms)
+                return 0;
+            if (runtime_clipboard_watch_start() != RIN_RESULT_OK) {
+                runtime_clipboard_watch_drop();
+                return 0;
+            }
+            continue;
+        }
+        if (g_clipboard_watch_stage ==
+            RIN_RUNTIME_CLIPBOARD_WATCH_CONNECTING) {
+            const RinRuntimePollWaitResult ready = rinruntime_poll_wait(
+                g_clipboard_watch_fd, RINRUNTIME_POLL_WAIT_WRITABLE, 0u);
+            int socket_error = 0;
+            socklen_t error_size = (socklen_t)sizeof(socket_error);
+            if (ready == RINRUNTIME_POLL_WAIT_TIMEOUT) return 0;
+            if (ready != RINRUNTIME_POLL_WAIT_READY ||
+                getsockopt(g_clipboard_watch_fd, SOL_SOCKET, SO_ERROR,
+                           &socket_error, &error_size) != 0 ||
+                error_size != (socklen_t)sizeof(socket_error) ||
+                socket_error != 0 ||
+                !runtime_clipboard_watch_service_valid(
+                    g_clipboard_watch_fd)) {
+                runtime_clipboard_watch_drop();
+                return 0;
+            }
+            g_clipboard_watch_stage =
+                RIN_RUNTIME_CLIPBOARD_WATCH_SEND_REQUEST;
+            continue;
+        }
+        if (g_clipboard_watch_stage ==
+            RIN_RUNTIME_CLIPBOARD_WATCH_SEND_REQUEST) {
+            RinRuntimeDragDropOwnerRequestV1 request;
+            runtime_drag_drop_owner_request_init(
+                &request, RINRUNTIME_CLIPBOARD_OWNER_WATCH);
+            const ssize_t sent = send(
+                g_clipboard_watch_fd, &request, sizeof(request),
+                MSG_DONTWAIT | MSG_NOSIGNAL);
+            if (sent < 0 && (errno == EINTR || errno == EAGAIN ||
+                             errno == EWOULDBLOCK))
+                return 0;
+            if (sent != (ssize_t)sizeof(request)) {
+                runtime_clipboard_watch_drop();
+                return 0;
+            }
+            g_clipboard_watch_stage =
+                RIN_RUNTIME_CLIPBOARD_WATCH_WAIT_INITIAL;
+            continue;
+        }
+        if (g_clipboard_watch_stage ==
+                RIN_RUNTIME_CLIPBOARD_WATCH_WAIT_INITIAL ||
+            g_clipboard_watch_stage ==
+                RIN_RUNTIME_CLIPBOARD_WATCH_ACTIVE) {
+            RinRuntimeDragDropOwnerResponseV1 response;
+            const uint32_t previous_stage = g_clipboard_watch_stage;
+            const RinRuntimePollWaitResult ready = rinruntime_poll_wait(
+                g_clipboard_watch_fd, RINRUNTIME_POLL_WAIT_READABLE, 0u);
+            if (ready == RINRUNTIME_POLL_WAIT_TIMEOUT) return 0;
+            if (ready != RINRUNTIME_POLL_WAIT_READY) {
+                runtime_clipboard_watch_drop();
+                return 0;
+            }
+            memset(&response, 0, sizeof(response));
+            const ssize_t received = recv(
+                g_clipboard_watch_fd, &response, sizeof(response),
+                MSG_DONTWAIT | MSG_TRUNC);
+            if (!runtime_clipboard_watch_reply_valid(&response, received)) {
+                runtime_clipboard_watch_drop();
+                return 0;
+            }
+            g_clipboard_watch_stage = RIN_RUNTIME_CLIPBOARD_WATCH_ACTIVE;
+            const int emitted = runtime_clipboard_watch_emit(
+                response.generation, event, packed_out);
+            memset(&response, 0, sizeof(response));
+            if (emitted != 0) return emitted;
+            if (previous_stage == RIN_RUNTIME_CLIPBOARD_WATCH_WAIT_INITIAL)
+                return 0;
+            continue;
+        }
+        runtime_clipboard_watch_drop();
+        return 0;
+    }
+    return 0;
+}
+
+static void runtime_clipboard_watch_close(void) {
+    if (g_clipboard_watch_fd >= 0) close(g_clipboard_watch_fd);
+    g_clipboard_watch_fd = -1;
+    g_clipboard_watch_stage = RIN_RUNTIME_CLIPBOARD_WATCH_DISCONNECTED;
+    g_clipboard_watch_retry_after_ms = 0u;
 }
 
 static int runtime_drag_drop_owner_string_size(const char* value,

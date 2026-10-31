@@ -11,6 +11,11 @@
 #include <rin/gui/compositor_protocol.h>
 #include <rin/render_target.h>
 
+/* wnd_poll_native() and RinRuntime::Window::poll() may return this extension
+ * event when the session clipboard generation changes. data is an opaque
+ * low-word hint; applications query the clipboard owner for current formats. */
+#define RINRUNTIME_GUI_EVENT_CLIPBOARD_CHANGED UINT32_C(20)
+
 #ifdef __cplusplus
 extern "C" {
 #endif

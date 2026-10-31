@@ -23554,7 +23554,6 @@ typedef struct RinFS_PreallocateSnapshot {
 
 typedef struct RinFS_PreallocateAllocationBatch {
     uint64_t blocks[4];
-    uint8_t data_blocks[4];
     uint32_t count;
     struct RinFS_PreallocateAllocationBatch* next;
 } RinFS_PreallocateAllocationBatch;
@@ -23565,7 +23564,6 @@ typedef struct {
     uint64_t snapshot_count;
     RinFS_PreallocateSnapshot* snapshots;
     RinFS_PreallocateAllocationBatch* allocations;
-    RinFS_PreallocateAllocationBatch* retirements;
 } RinFS_PreallocateJournal;
 
 /* Capture the existing metadata path for one logical file block. When the
@@ -23723,52 +23721,6 @@ static int rinfs_preallocate_add_snapshot(
     return RINFS_OK;
 }
 
-static int rinfs_preallocate_snapshot_block(
-    RinFS_Mount* mount, RinFS_PreallocateJournal* journal, uint64_t block) {
-    uint8_t* contents;
-    int err;
-    if (!mount || !journal || block == 0u) return RINFS_ERR_INVAL;
-    if (rinfs_preallocate_find_snapshot(journal, block)) return RINFS_OK;
-    contents = (uint8_t*)rinfs_malloc(mount->sb.s_block_size);
-    if (!contents) return RINFS_ERR_NOMEM;
-    err = rinfs_block_read(mount, block, contents);
-    if (err == RINFS_OK)
-        err = rinfs_preallocate_add_snapshot(journal, block, contents);
-    if (err != RINFS_OK) rinfs_free(contents);
-    return err;
-}
-
-static int rinfs_preallocate_retire_add(
-    RinFS_PreallocateAllocationBatch* batch, uint64_t block, int data_block) {
-    if (!batch || block == 0u || batch->count >= 4u)
-        return RINFS_ERR_CORRUPT;
-    batch->blocks[batch->count] = block;
-    batch->data_blocks[batch->count] = data_block ? 1u : 0u;
-    ++batch->count;
-    return RINFS_OK;
-}
-
-/* Release blocks only after the inode no longer references them. If a bitmap
- * update fails, keep the mount read-only; any remaining blocks are safe leaks
- * because their former pointer tree is already durably detached. */
-static int rinfs_preallocate_release_retired(
-    RinFS_Mount* mount, RinFS_PreallocateJournal* journal) {
-    if (!mount || !journal) return RINFS_ERR_INVAL;
-    for (RinFS_PreallocateAllocationBatch* batch = journal->retirements;
-         batch; batch = batch->next) {
-        for (uint32_t index = 0u; index < batch->count; ++index) {
-            int err = batch->data_blocks[index]
-                ? rinfs_block_free_data(mount, batch->blocks[index])
-                : rinfs_block_free(mount, batch->blocks[index]);
-            if (err != RINFS_OK) {
-                rinfs_mount_force_readonly(mount);
-                return err;
-            }
-        }
-    }
-    return RINFS_OK;
-}
-
 static void rinfs_preallocate_journal_destroy(
     RinFS_PreallocateJournal* journal) {
     RinFS_PreallocateSnapshot* snapshot;
@@ -23782,12 +23734,6 @@ static void rinfs_preallocate_journal_destroy(
         snapshot = next;
     }
     allocation = journal->allocations;
-    while (allocation) {
-        RinFS_PreallocateAllocationBatch* next = allocation->next;
-        rinfs_free(allocation);
-        allocation = next;
-    }
-    allocation = journal->retirements;
     while (allocation) {
         RinFS_PreallocateAllocationBatch* next = allocation->next;
         rinfs_free(allocation);
@@ -23823,132 +23769,6 @@ static int rinfs_preallocate_rollback(
 failed:
     rinfs_mount_force_readonly(mount);
     rinfs_preallocate_journal_destroy(journal);
-    return err;
-}
-
-static int rinfs_fallocate_zero_data_range(
-    RinFS_Mount* mount, RinFS_PreallocateJournal* journal,
-    uint64_t physical, uint64_t block_start, uint64_t zero_start,
-    uint64_t zero_end) {
-    RinFS_PreallocateSnapshot* snapshot;
-    uint8_t* contents;
-    int err;
-    if (!mount || !journal || physical == 0u || zero_start < block_start ||
-        zero_start >= zero_end || zero_end - block_start > mount->sb.s_block_size)
-        return RINFS_ERR_INVAL;
-    err = rinfs_preallocate_snapshot_block(mount, journal, physical);
-    if (err != RINFS_OK) return err;
-    snapshot = rinfs_preallocate_find_snapshot(journal, physical);
-    if (!snapshot) return RINFS_ERR_CORRUPT;
-    contents = (uint8_t*)rinfs_malloc(mount->sb.s_block_size);
-    if (!contents) return RINFS_ERR_NOMEM;
-    rinfs_memcpy(contents, snapshot->contents, mount->sb.s_block_size);
-    rinfs_memset(contents + (zero_start - block_start), 0u,
-                 (uint32_t)(zero_end - zero_start));
-    err = rinfs_block_write_unprepared(mount, physical, contents);
-    rinfs_free(contents);
-    return err;
-}
-
-/* Remove one complete logical block from the sparse tree. Every modified
- * pointer block is snapshotted before its first write. Empty indirect nodes
- * are detached bottom-up and queued for release after the inode commit. */
-static int rinfs_fallocate_detach_data_block(
-    RinFS_Mount* mount, RinFS_Inode* inode, uint64_t logical,
-    RinFS_PreallocateJournal* journal,
-    RinFS_PreallocateAllocationBatch* retired) {
-    uint64_t indices[3] = {0u, 0u, 0u};
-    uint64_t tree_blocks[3] = {0u, 0u, 0u};
-    uint64_t current;
-    uint64_t* pointers;
-    uint32_t depth = 0u;
-    int err;
-    if (!mount || !inode || !journal || !retired)
-        return RINFS_ERR_INVAL;
-    err = rinfs_file_block_path(mount, logical, &depth, indices);
-    if (err != RINFS_OK) return err;
-    if (depth == 0u) {
-        uint64_t physical = inode->i_block[indices[0]];
-        if (physical == 0u) return RINFS_OK;
-        if (!rinfs_valid_allocated_block(mount, physical))
-            return RINFS_ERR_CORRUPT;
-        err = rinfs_preallocate_retire_add(retired, physical, 1);
-        if (err == RINFS_OK) inode->i_block[indices[0]] = 0u;
-        return err;
-    }
-
-    current = depth == 1u ? inode->i_indirect1
-        : depth == 2u ? inode->i_indirect2 : inode->i_indirect3;
-    if (current == 0u) return RINFS_OK;
-    pointers = (uint64_t*)rinfs_malloc(mount->sb.s_block_size);
-    if (!pointers) return RINFS_ERR_NOMEM;
-    for (uint32_t level = 0u; level < depth; ++level) {
-        uint64_t child;
-        if (!rinfs_valid_allocated_block(mount, current)) {
-            err = RINFS_ERR_CORRUPT;
-            goto out;
-        }
-        tree_blocks[level] = current;
-        err = rinfs_preallocate_snapshot_block(mount, journal, current);
-        if (err != RINFS_OK) goto out;
-        err = rinfs_block_read(mount, current, pointers);
-        if (err != RINFS_OK) goto out;
-        child = pointers[indices[level]];
-        if (child == 0u) {
-            err = RINFS_OK;
-            goto out;
-        }
-        if (!rinfs_valid_allocated_block(mount, child)) {
-            err = RINFS_ERR_CORRUPT;
-            goto out;
-        }
-        if (level + 1u == depth) break;
-        current = child;
-    }
-
-    err = rinfs_preallocate_retire_add(
-        retired, pointers[indices[depth - 1u]], 1);
-    if (err != RINFS_OK) goto out;
-    pointers[indices[depth - 1u]] = 0u;
-    err = rinfs_block_write_unprepared(
-        mount, tree_blocks[depth - 1u], pointers);
-    if (err != RINFS_OK) goto out;
-
-    for (uint32_t level = depth; level-- > 0u;) {
-        int empty = 1;
-        uint64_t* entries = (uint64_t*)pointers;
-        for (uint64_t index = 0u;
-             index < mount->sb.s_block_size / sizeof(uint64_t); ++index) {
-            if (entries[index] != 0u) {
-                empty = 0;
-                break;
-            }
-        }
-        if (!empty) break;
-        err = rinfs_preallocate_retire_add(retired, tree_blocks[level], 0);
-        if (err != RINFS_OK) goto out;
-        if (level == 0u) {
-            if (depth == 1u) inode->i_indirect1 = 0u;
-            else if (depth == 2u) inode->i_indirect2 = 0u;
-            else inode->i_indirect3 = 0u;
-            break;
-        }
-
-        err = rinfs_block_read(mount, tree_blocks[level - 1u], pointers);
-        if (err != RINFS_OK) goto out;
-        if (pointers[indices[level - 1u]] != tree_blocks[level]) {
-            err = RINFS_ERR_CORRUPT;
-            goto out;
-        }
-        pointers[indices[level - 1u]] = 0u;
-        err = rinfs_block_write_unprepared(
-            mount, tree_blocks[level - 1u], pointers);
-        if (err != RINFS_OK) goto out;
-    }
-    err = RINFS_OK;
-
-out:
-    rinfs_free(pointers);
     return err;
 }
 
@@ -24634,20 +24454,6 @@ static int rinfs_publish_orphan_intent_inode(
     return RINFS_OK;
 }
 
-static uint32_t rinfs_inherited_gid(const RinFS_Inode* parent_inode,
-                                   uint32_t requested_gid) {
-    return parent_inode && (parent_inode->i_mode & 02000u) != 0u
-        ? parent_inode->i_gid : requested_gid;
-}
-
-static uint16_t rinfs_inherited_directory_mode(
-    const RinFS_Inode* parent_inode, uint16_t requested_mode) {
-    uint16_t mode = (uint16_t)(requested_mode & 0777u);
-    if (parent_inode && (parent_inode->i_mode & 02000u) != 0u)
-        mode |= 02000u;
-    return mode;
-}
-
 static int rinfs_createat_owned_unscoped(RinFS_Mount* mount,
                                          uint64_t parent_ino,
                                          const char* name, uint16_t mode,
@@ -24703,7 +24509,7 @@ static int rinfs_createat_owned_unscoped(RinFS_Mount* mount,
     }
     inode.i_mode = (RINFS_FT_REG << 12) | (mode & 0777);
     inode.i_uid = uid;
-    inode.i_gid = rinfs_inherited_gid(&parent_inode, gid);
+    inode.i_gid = gid;
     inode.i_size = 0;
     inode.i_blocks = 0;
     rinfs_inode_content_version_set_raw(&inode, 1u);
@@ -24781,7 +24587,7 @@ static int rinfs_mknodat_owned_unscoped(
     }
     inode.i_mode = (uint16_t)(((uint16_t)type << 12u) | (mode & 07777u));
     inode.i_uid = uid;
-    inode.i_gid = rinfs_inherited_gid(&parent_inode, gid);
+    inode.i_gid = gid;
     inode.i_size = 0u;
     inode.i_blocks = 0u;
     rinfs_inode_content_version_set_raw(&inode, 1u);
@@ -24832,7 +24638,7 @@ static int rinfs_create_tmpfile_owned_unscoped(
     }
     inode.i_mode = (RINFS_FT_REG << 12u) | (mode & 0777u);
     inode.i_uid = uid;
-    inode.i_gid = rinfs_inherited_gid(&parent_inode, gid);
+    inode.i_gid = gid;
     inode.i_size = 0u;
     inode.i_links = 0u;
     inode.i_blocks = 0u;
@@ -25050,10 +24856,9 @@ static int rinfs_mkdirat_owned_unscoped(
         rinfs_inode_free(mount, new_ino);
         return err;
     }
-    inode.i_mode = (RINFS_FT_DIR << 12) |
-        rinfs_inherited_directory_mode(&parent_inode, mode);
+    inode.i_mode = (RINFS_FT_DIR << 12) | (mode & 0777);
     inode.i_uid = uid;
-    inode.i_gid = rinfs_inherited_gid(&parent_inode, gid);
+    inode.i_gid = gid;
     inode.i_size = block_size;
     inode.i_links = 2;  /* . and parent link */
     inode.i_blocks = block_size / RINFS_SECTOR_SIZE;
@@ -25506,9 +25311,7 @@ int64_t rinfs_pwrite(RinFS_File* file, const void* buf, uint64_t size,
     return release_result == RINFS_OK ? result : release_result;
 }
 
-static int rinfs_fallocate_internal(
-    RinFS_File* file, uint64_t offset, uint64_t length, int keep_size,
-    int zero_range, int punch_hole) {
+int rinfs_fallocate(RinFS_File* file, uint64_t offset, uint64_t length) {
     RinFS_CloseReferenceOperationLease operation;
     RinFS_ContentMutation mutation;
     RinFS_PreallocateJournal journal = {0};
@@ -25549,8 +25352,8 @@ static int rinfs_fallocate_internal(
     }
     end = offset + length;
     first_block = offset / block_size;
-    if (!punch_hole) {
-        last_block = (end - 1u) / block_size;
+    last_block = (end - 1u) / block_size;
+    {
         uint32_t depth;
         uint64_t indices[3];
         operation_error = rinfs_file_block_path(
@@ -25560,9 +25363,10 @@ static int rinfs_fallocate_internal(
         if (operation_error != RINFS_OK) goto done;
     }
 
-    /* Check already-satisfied ranges before invalidating cache pages. This
-     * keeps no-op requests usable with active mappings; a later truncate is
-     * ordered after the no-op operation. */
+    /* A fully allocated in-file range is already satisfied. Check it before
+     * invalidating cache pages so a harmless repeated request also works while
+     * that file has active mappings. A concurrent later truncate may still
+     * reclaim the range, which is ordered after this no-op operation. */
     operation_error = rinfs_inode_read(file->mount, file->inode_num,
                                        &observed);
     if (operation_error != RINFS_OK) goto done;
@@ -25570,44 +25374,7 @@ static int rinfs_fallocate_internal(
         operation_error = RINFS_ERR_INVAL;
         goto done;
     }
-    if (punch_hole) {
-        int range_allocated = 0;
-        last_block = (end - 1u) / block_size;
-        {
-            uint32_t depth;
-            uint64_t indices[3];
-            operation_error = rinfs_file_block_path(
-                file->mount, last_block, &depth, indices);
-            if (operation_error == RINFS_ERR_INVAL)
-                operation_error = RINFS_ERR_OVERFLOW;
-            if (operation_error != RINFS_OK) goto done;
-        }
-        for (uint64_t logical = first_block;; ++logical) {
-            uint64_t physical = 0u;
-            operation_error = get_file_block(
-                file->mount, &observed, logical, &physical);
-            if (operation_error != RINFS_OK) goto done;
-            if (physical != 0u) {
-                uint64_t block_start = logical * block_size;
-                uint64_t block_end = block_start + block_size;
-                uint64_t zero_start = offset > block_start
-                    ? offset : block_start;
-                uint64_t zero_end = end < block_end ? end : block_end;
-                if (zero_end > observed.i_size)
-                    zero_end = observed.i_size;
-                if ((offset <= block_start && end >= block_end) ||
-                    zero_start < zero_end) {
-                    range_allocated = 1;
-                    break;
-                }
-            }
-            if (logical == last_block) break;
-        }
-        if (!range_allocated) {
-            operation_error = RINFS_OK;
-            goto done;
-        }
-    } else if (!zero_range && (keep_size || end <= observed.i_size)) {
+    if (end <= observed.i_size) {
         int range_allocated = 1;
         for (uint64_t logical = first_block;; ++logical) {
             uint64_t physical = 0u;
@@ -25645,43 +25412,18 @@ static int rinfs_fallocate_internal(
     /* Avoid advancing the content version for an already allocated range
      * which is wholly inside the current file. The writer lease makes this
      * map scan stable against descriptor writes and truncation. */
-    if (punch_hole) {
-        for (uint64_t logical = first_block;; ++logical) {
-            uint64_t physical = 0u;
-            operation_error = get_file_block(
-                file->mount, &working, logical, &physical);
-            if (operation_error != RINFS_OK) goto before_prepare;
-            if (physical != 0u) {
-                uint64_t block_start = logical * block_size;
-                uint64_t block_end = block_start + block_size;
-                uint64_t zero_start = offset > block_start
-                    ? offset : block_start;
-                uint64_t zero_end = end < block_end ? end : block_end;
-                if (zero_end > working.i_size)
-                    zero_end = working.i_size;
-                if ((offset <= block_start && end >= block_end) ||
-                    zero_start < zero_end) {
-                    needs_change = 1;
-                    break;
-                }
-            }
-            if (logical == last_block) break;
+    for (uint64_t logical = first_block;; ++logical) {
+        uint64_t physical = 0u;
+        operation_error = get_file_block(
+            file->mount, &working, logical, &physical);
+        if (operation_error != RINFS_OK) goto before_prepare;
+        if (physical == 0u) {
+            needs_change = 1;
+            break;
         }
-    } else {
-        for (uint64_t logical = first_block;; ++logical) {
-            uint64_t physical = 0u;
-            operation_error = get_file_block(
-                file->mount, &working, logical, &physical);
-            if (operation_error != RINFS_OK) goto before_prepare;
-            if (physical == 0u) {
-                needs_change = 1;
-                break;
-            }
-            if (logical == last_block) break;
-        }
+        if (logical == last_block) break;
     }
-    if (!needs_change && (punch_hole ||
-        (!zero_range && (keep_size || end <= working.i_size)))) {
+    if (!needs_change && end <= working.i_size) {
         operation_error = RINFS_OK;
         goto before_prepare;
     }
@@ -25705,7 +25447,6 @@ static int rinfs_fallocate_internal(
     operation_error = rinfs_preallocate_journal_init(&journal);
     if (operation_error != RINFS_OK) goto rollback;
 
-    if (!punch_hole) {
     for (uint64_t logical = first_block;; ++logical) {
         uint64_t physical = 0u;
         uint64_t mutable_parent = 0u;
@@ -25777,116 +25518,8 @@ static int rinfs_fallocate_internal(
         }
         if (logical == last_block) break;
     }
-    }
 
-    if (punch_hole) {
-        for (uint64_t logical = first_block;; ++logical) {
-            uint64_t physical = 0u;
-            uint64_t block_start = logical * block_size;
-            uint64_t block_end = block_start + block_size;
-            uint64_t zero_start = offset > block_start
-                ? offset : block_start;
-            uint64_t zero_end = end < block_end ? end : block_end;
-            int full_block = offset <= block_start && end >= block_end;
-            if (zero_end > working.i_size) zero_end = working.i_size;
-
-            operation_error = get_file_block(
-                file->mount, &working, logical, &physical);
-            if (operation_error != RINFS_OK) goto rollback;
-            if (physical != 0u) {
-                if (full_block) {
-                    RinFS_PreallocateAllocationBatch* retired =
-                        (RinFS_PreallocateAllocationBatch*)rinfs_malloc(
-                            sizeof(*retired));
-                    if (!retired) {
-                        operation_error = RINFS_ERR_NOMEM;
-                        goto rollback;
-                    }
-                    rinfs_memset(retired, 0, sizeof(*retired));
-                    operation_error = rinfs_fallocate_detach_data_block(
-                        file->mount, &working, logical, &journal, retired);
-                    if (operation_error != RINFS_OK) {
-                        rinfs_free(retired);
-                        goto rollback;
-                    }
-                    if (retired->count == 0u) {
-                        rinfs_free(retired);
-                        operation_error = RINFS_ERR_CORRUPT;
-                        goto rollback;
-                    }
-                    retired->next = journal.retirements;
-                    journal.retirements = retired;
-                } else {
-                    if (zero_start < zero_end) {
-                        operation_error = rinfs_fallocate_zero_data_range(
-                            file->mount, &journal, physical, block_start,
-                            zero_start, zero_end);
-                        if (operation_error != RINFS_OK) goto rollback;
-                        needs_change = 1;
-                    }
-                }
-            }
-            if (logical == last_block) break;
-        }
-    } else if (zero_range) {
-        uint8_t* block = (uint8_t*)rinfs_malloc(block_size);
-        if (!block) {
-            operation_error = RINFS_ERR_NOMEM;
-            goto rollback;
-        }
-        for (uint64_t logical = first_block;; ++logical) {
-            uint64_t physical = 0u;
-            RinFS_PreallocateSnapshot* snapshot;
-            uint64_t block_start = logical * block_size;
-            uint64_t block_end = block_start + block_size;
-            uint64_t zero_start = offset > block_start
-                ? offset : block_start;
-            uint64_t zero_end = end < block_end ? end : block_end;
-
-            operation_error = get_file_block(
-                file->mount, &working, logical, &physical);
-            if (operation_error != RINFS_OK || physical == 0u) {
-                if (operation_error == RINFS_OK)
-                    operation_error = RINFS_ERR_CORRUPT;
-                break;
-            }
-            snapshot = rinfs_preallocate_find_snapshot(&journal, physical);
-            if (!snapshot) {
-                uint8_t* contents =
-                    (uint8_t*)rinfs_malloc(block_size);
-                if (!contents) {
-                    operation_error = RINFS_ERR_NOMEM;
-                    break;
-                }
-                operation_error = rinfs_block_read(
-                    file->mount, physical, contents);
-                if (operation_error == RINFS_OK)
-                    operation_error = rinfs_preallocate_add_snapshot(
-                        &journal, physical, contents);
-                if (operation_error != RINFS_OK) {
-                    rinfs_free(contents);
-                    break;
-                }
-                snapshot = rinfs_preallocate_find_snapshot(
-                    &journal, physical);
-            }
-            if (!snapshot || zero_start >= zero_end) {
-                operation_error = RINFS_ERR_CORRUPT;
-                break;
-            }
-            rinfs_memcpy(block, snapshot->contents, block_size);
-            rinfs_memset(block + (zero_start - block_start), 0u,
-                         (uint32_t)(zero_end - zero_start));
-            operation_error = rinfs_block_write_unprepared(
-                file->mount, physical, block);
-            if (operation_error != RINFS_OK || logical == last_block) break;
-        }
-        rinfs_free(block);
-        if (operation_error != RINFS_OK) goto rollback;
-        needs_change = 1;
-    }
-
-    if (!keep_size && end > working.i_size) {
+    if (end > working.i_size) {
         uint64_t old_size = working.i_size;
         if (old_size != 0u && (old_size % block_size) != 0u) {
             uint64_t old_tail_block = 0u;
@@ -25938,10 +25571,6 @@ static int rinfs_fallocate_internal(
         if (operation_error != RINFS_OK) goto rollback;
     }
     file->inode = mutation.inode;
-    if (punch_hole) {
-        operation_error = rinfs_preallocate_release_retired(
-            file->mount, &journal);
-    }
     rinfs_preallocate_journal_destroy(&journal);
     goto after_prepare;
 
@@ -26015,26 +25644,6 @@ done:
     release_error = rinfs_close_ref_end_operation(&operation);
     if (release_error != RINFS_OK) return release_error;
     return rinfs_content_unlock_status(operation_error, content_unlock_error);
-}
-
-int rinfs_fallocate(RinFS_File* file, uint64_t offset, uint64_t length) {
-    return rinfs_fallocate_internal(file, offset, length, 0, 0, 0);
-}
-
-int rinfs_fallocate_keep_size(
-    RinFS_File* file, uint64_t offset, uint64_t length) {
-    return rinfs_fallocate_internal(file, offset, length, 1, 0, 0);
-}
-
-int rinfs_fallocate_zero_range(
-    RinFS_File* file, uint64_t offset, uint64_t length, int keep_size) {
-    if (keep_size != 0 && keep_size != 1) return RINFS_ERR_INVAL;
-    return rinfs_fallocate_internal(file, offset, length, keep_size, 1, 0);
-}
-
-int rinfs_fallocate_punch_hole(
-    RinFS_File* file, uint64_t offset, uint64_t length) {
-    return rinfs_fallocate_internal(file, offset, length, 1, 0, 1);
 }
 
 /* Read directory entries */
@@ -29253,20 +28862,10 @@ int rinfs_link_tmpfile(RinFS_File* file, uint64_t dir_ino,
 static int rinfs_symlink_owned_unscoped(
     RinFS_Mount* mount, uint64_t dir_ino, const char* name,
     const char* target, uint32_t uid, uint32_t gid) {
-    RinFS_Inode parent_inode;
     RinFS_Inode link_inode;
-    if (!mount || !mount->mounted || !name || !target || dir_ino == 0u ||
-        dir_ino > mount->sb.s_inode_count)
-        return RINFS_ERR_INVAL;
+    if (!mount || !mount->mounted || !name || !target) return RINFS_ERR_INVAL;
     int prepare_error = rinfs_mount_prepare_write(mount);
     if (prepare_error != RINFS_OK) return prepare_error;
-
-    int err = rinfs_inode_read(mount, dir_ino, &parent_inode);
-    if (err != RINFS_OK) return err;
-    if ((parent_inode.i_mode >> 12u) != RINFS_FT_DIR)
-        return RINFS_ERR_NOTDIR;
-    if ((parent_inode.i_flags & (RINFS_IFLG_IMMUT | RINFS_IFLG_APPEND)) != 0u)
-        return RINFS_ERR_INVAL;
 
     uint32_t target_len = rinfs_strlen(target);
     if (target_len == 0 || target_len >= RINFS_SYMLINK_MAX) {
@@ -29280,13 +28879,13 @@ static int rinfs_symlink_owned_unscoped(
 
     /* Check if name already exists */
     uint64_t existing;
-    err = rinfs_lookup(mount, dir_ino, name, &existing);
-    if (err == RINFS_OK) return RINFS_ERR_EXIST;
-    if (err != RINFS_ERR_NOENT) return err;
+    if (rinfs_lookup(mount, dir_ino, name, &existing) == RINFS_OK) {
+        return RINFS_ERR_EXIST;
+    }
 
     /* Allocate new inode for symlink */
     uint64_t link_ino;
-    err = rinfs_inode_alloc(mount, &link_ino);
+    int err = rinfs_inode_alloc(mount, &link_ino);
     if (err != RINFS_OK) return err;
 
     /* Initialize symlink inode */
@@ -29297,7 +28896,7 @@ static int rinfs_symlink_owned_unscoped(
     }
     link_inode.i_mode = (RINFS_FT_LNK << 12) | 0777; /* lrwxrwxrwx */
     link_inode.i_uid = uid;
-    link_inode.i_gid = rinfs_inherited_gid(&parent_inode, gid);
+    link_inode.i_gid = gid;
     link_inode.i_links = 1;
     link_inode.i_size = target_len;
     rinfs_touch_created(&link_inode);

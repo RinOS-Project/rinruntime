@@ -164,7 +164,7 @@ typedef struct RinRuntimeFileOperationServiceReplyV1 {
 
 typedef struct RinRuntimeFileOperationServiceClientV1 {
     int32_t socket_fd;
-    uint32_t reserved; /* private request/cancellation state; initialize via API */
+    uint32_t reserved;
     uint64_t next_request_id;
 } RinRuntimeFileOperationServiceClientV1;
 
@@ -172,19 +172,12 @@ typedef struct RinRuntimeFileOperationServiceClientV1 {
  * accidentally select the privileged endpoint. */
 typedef struct RinRuntimeFileOperationServiceBrokerClientV1 {
     int32_t socket_fd;
-    uint32_t reserved; /* private request/cancellation state; initialize via API */
+    uint32_t reserved;
     uint64_t next_request_id;
 } RinRuntimeFileOperationServiceBrokerClientV1;
 
 void rinruntime_file_operation_service_client_init(
     RinRuntimeFileOperationServiceClientV1* client);
-/* Cancel an in-flight client RPC. Cancellation shuts down its private socket;
- * the synchronous RPC returns UNAVAILABLE and owns final descriptor cleanup.
- * Keep the client object alive until that RPC returns. */
-void rinruntime_file_operation_service_client_cancel(
-    RinRuntimeFileOperationServiceClientV1* client);
-/* Compatibility spelling for client_cancel(); it does not cancel the
- * service-side file-operation job. Use the protocol CANCEL request for that. */
 void rinruntime_file_operation_service_client_close(
     RinRuntimeFileOperationServiceClientV1* client);
 RinRuntimeFileOperationServiceStatus rinruntime_file_operation_service_submit(
@@ -210,9 +203,6 @@ RinRuntimeFileOperationServiceStatus rinruntime_file_operation_service_recover(
     RinRuntimeFileOperationServiceReplyV1* reply_out);
 
 void rinruntime_file_operation_service_broker_client_init(
-    RinRuntimeFileOperationServiceBrokerClientV1* client);
-/* Cancel an in-flight authorized SUBMIT; the caller owns final cleanup. */
-void rinruntime_file_operation_service_broker_client_cancel(
     RinRuntimeFileOperationServiceBrokerClientV1* client);
 void rinruntime_file_operation_service_broker_client_close(
     RinRuntimeFileOperationServiceBrokerClientV1* client);
