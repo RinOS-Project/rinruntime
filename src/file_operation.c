@@ -144,6 +144,14 @@ int rinruntime_file_operation_path_valid(const char* path)
             (unsigned char)value == 0x7fu ||
             index + 1u >= RINRUNTIME_FILE_OPERATION_PATH_MAX)
             return 0;
+#ifdef _WIN32
+        /* A colon inside a Win32 component selects an alternate data stream;
+         * the only colon allowed is the drive separator in C:/... paths. */
+        if ((value == ':' && !(drive_absolute && index == 1u)) ||
+            value == '"' || value == '<' || value == '>' || value == '|' ||
+            value == '?' || value == '*')
+            return 0;
+#endif
         if (value == '/') {
             uint32_t component_size = index - component_start;
             if (index != 0u && (component_size == 0u ||
@@ -151,6 +159,11 @@ int rinruntime_file_operation_path_valid(const char* path)
                 (component_size == 2u && path[component_start] == '.' &&
                  path[component_start + 1u] == '.')))
                 return 0;
+#ifdef _WIN32
+            if (component_size != 0u &&
+                (path[index - 1u] == '.' || path[index - 1u] == ' '))
+                return 0;
+#endif
             component_start = index + 1u;
         }
         ++index;
@@ -163,6 +176,9 @@ int rinruntime_file_operation_path_valid(const char* path)
             (component_size == 2u && path[component_start] == '.' &&
              path[component_start + 1u] == '.'))
             return 0;
+#ifdef _WIN32
+        if (path[index - 1u] == '.' || path[index - 1u] == ' ') return 0;
+#endif
     }
     return index > 1u && path[index - 1u] != '/';
 }
