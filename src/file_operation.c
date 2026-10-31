@@ -113,21 +113,31 @@ static int file_operation_parent(const char* path,
     return 1;
 }
 
-static int file_operation_descendant(const char* root, const char* path)
-{
-    uint32_t index = 0u;
-    if (root == 0 || path == 0) return 0;
-    if (root[0] == '/' && root[1] == '\0') return 1;
-    while (root[index] != '\0' && root[index] == path[index]) ++index;
-    return root[index] == '\0' && (path[index] == '\0' || path[index] == '/');
-}
-
 #ifdef _WIN32
 static char file_operation_ascii_upper(char value)
 {
     return value >= 'a' && value <= 'z' ? (char)(value - ('a' - 'A')) : value;
 }
+#endif
 
+static int file_operation_descendant(const char* root, const char* path)
+{
+    uint32_t index = 0u;
+    if (root == 0 || path == 0) return 0;
+    if (root[0] == '/' && root[1] == '\0') return 1;
+#ifdef _WIN32
+    if (((root[0] >= 'A' && root[0] <= 'Z') ||
+         (root[0] >= 'a' && root[0] <= 'z')) &&
+        root[1] == ':' && root[2] == '/' && root[3] == '\0')
+        return file_operation_ascii_upper(path[0]) ==
+                   file_operation_ascii_upper(root[0]) &&
+               path[1] == ':' && path[2] == '/';
+#endif
+    while (root[index] != '\0' && root[index] == path[index]) ++index;
+    return root[index] == '\0' && (path[index] == '\0' || path[index] == '/');
+}
+
+#ifdef _WIN32
 static int file_operation_windows_reserved_device_component(
     const char* path, uint32_t start, uint32_t size)
 {
