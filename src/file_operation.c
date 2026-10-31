@@ -99,6 +99,13 @@ static int file_operation_parent(const char* path,
         if (path[length] == '/') slash = length;
         ++length;
     }
+#ifdef _WIN32
+    if (slash == 2u && path[1] == ':') {
+        memcpy(output, path, 3u);
+        output[3] = '\0';
+        return 1;
+    }
+#endif
     if (slash == 0u) return file_operation_copy(output, RINRUNTIME_FILE_OPERATION_PATH_MAX, "/");
     if (slash >= RINRUNTIME_FILE_OPERATION_PATH_MAX) return 0;
     memcpy(output, path, slash);
