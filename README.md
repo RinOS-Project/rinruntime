@@ -373,23 +373,24 @@ explicit; paths and launcher authority are not passed through argv or the
 environment.
 
 `file_operation.h` provides the public bounded copy/move/restore plan and
-state model. `rinruntime_file_operation_start()` validates every plan entry
-before clearing caller-owned `SKIP` flags, so a rejected later entry cannot
-partially mutate an earlier plan entry. The public `CONFLICT_RENAME` callback
-also receives a separate candidate buffer; a renamed destination is copied
-into the plan only after it is valid and available. Filesystem mutation,
-rollback ownership, and private service authorization remain outside this
-public model, while ordinary applications and external toolkits may use the
-same plan/state contract.
+state model. `rinruntime_file_operation_start()` validates the complete plan,
+then snapshots entries and every source path into one bounded heap allocation.
+It does not clear or otherwise mutate caller-owned flags, so validation or
+allocation failure leaves the caller's plan unchanged. The public
+`CONFLICT_RENAME` callback also receives a separate candidate buffer; a renamed
+destination is copied into the owned plan only after it is valid and available.
+Filesystem mutation, rollback ownership, and private service authorization
+remain outside this public model.
 
-The operation copies the backend callback table but borrows its callback
-context, the entry array, and each `source_path` string. Keep them alive while
-the operation can be pumped, checkpointed, or recovered. The operation updates
-entry progress fields; callers may change only `SKIP`, between serialized
-calls. Paths and other plan fields must remain unchanged. Recovery restore
-binds a new caller-owned plan under the same rules. Release the borrowed data
-only after discarding the operation and making no further operation or
-recovery calls.
+`operation->entries` is the in/out snapshot and the only plan storage that may
+be changed during a running operation; callers may change only `SKIP`, between
+serialized calls. The original entry array and source strings may be modified
+or released after `start()` returns. Recovery restore takes the same snapshot.
+The backend callback table is copied, but `backend->context` remains borrowed
+until the operation is disposed. After a terminal result and any recovery
+checkpoint have been handled, call `rinruntime_file_operation_dispose()` before
+reinitializing the operation. Allocation failure returns
+`RINRUNTIME_FILE_OPERATION_NO_MEMORY` without starting filesystem work.
 
 The public TLS client-certificate transport keeps only the bounded TLS wire
 certificate list and opaque signer capability. `bind()` copies both into

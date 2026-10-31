@@ -5,6 +5,8 @@
 
 #include "file_operation_internal.h"
 
+#include <stddef.h>
+#include <stdlib.h>
 #include <string.h>
 
 static void file_operation_zero(void* output, uint32_t size)
@@ -269,12 +271,112 @@ int rinruntime_file_operation_path_valid(const char* path)
         path, RINRUNTIME_FILE_OPERATION_PATH_MAX);
 }
 
+/* The entry array and variable-length source paths share one bounded
+ * allocation. `entries_out` is published only after every byte is copied, so
+ * allocation failure leaves both the input plan and operation untouched. */
+static int file_operation_snapshot_create(
+    const RinRuntimeFileOperationEntryV1* entries, uint32_t entry_count,
+    RinRuntimeFileOperationEntryV1** entries_out)
+{
+    size_t entries_bytes;
+    size_t source_bytes = 0u;
+    size_t allocation_bytes;
+    uint16_t* source_lengths;
+    RinRuntimeFileOperationEntryV1* snapshot;
+    char* source_storage;
+
+    if (entries == 0 || entries_out == 0 || entry_count == 0u ||
+        entry_count > RINRUNTIME_FILE_OPERATION_ENTRY_LIMIT ||
+        (size_t)entry_count > SIZE_MAX / sizeof(*snapshot))
+        return -1;
+    if ((size_t)entry_count > SIZE_MAX / sizeof(*source_lengths))
+        return -1;
+    source_lengths = (uint16_t*)malloc(
+        (size_t)entry_count * sizeof(*source_lengths));
+    if (source_lengths == 0) return -2;
+    for (uint32_t index = 0u; index < entry_count; ++index) {
+        uint32_t path_size = 0u;
+        const char* path = entries[index].source_path;
+        if (path == 0) {
+            free(source_lengths);
+            return -1;
+        }
+        while (path_size < RINRUNTIME_FILE_OPERATION_PATH_MAX &&
+               path[path_size] != '\0')
+            ++path_size;
+        if (path_size == RINRUNTIME_FILE_OPERATION_PATH_MAX ||
+            source_bytes > SIZE_MAX - ((size_t)path_size + 1u)) {
+            free(source_lengths);
+            return -1;
+        }
+        source_lengths[index] = (uint16_t)path_size;
+        source_bytes += (size_t)path_size + 1u;
+    }
+    entries_bytes = (size_t)entry_count * sizeof(*snapshot);
+    if (entries_bytes > SIZE_MAX - source_bytes) {
+        free(source_lengths);
+        return -1;
+    }
+    allocation_bytes = entries_bytes + source_bytes;
+    snapshot = (RinRuntimeFileOperationEntryV1*)malloc(allocation_bytes);
+    if (snapshot == 0) {
+        free(source_lengths);
+        return -2;
+    }
+
+    source_storage = (char*)(snapshot + entry_count);
+    for (uint32_t index = 0u; index < entry_count; ++index) {
+        size_t copy_size = (size_t)source_lengths[index] + 1u;
+        if (entries[index].source_path == 0 ||
+            entries[index].source_path[source_lengths[index]] != '\0') {
+            free(snapshot);
+            free(source_lengths);
+            return -1;
+        }
+        snapshot[index] = entries[index];
+        memcpy(source_storage, entries[index].source_path, copy_size);
+        snapshot[index].source_path = source_storage;
+        if (!rinruntime_file_operation_path_valid(snapshot[index].source_path)) {
+            free(snapshot);
+            free(source_lengths);
+            return -1;
+        }
+        source_storage += copy_size;
+    }
+    free(source_lengths);
+    *entries_out = snapshot;
+    return 0;
+}
+
 void rinruntime_file_operation_init(RinRuntimeFileOperationV1* operation)
 {
     if (operation == 0) return;
     file_operation_zero(operation, sizeof(*operation));
     operation->struct_size = sizeof(*operation);
     operation->version = RINRUNTIME_FILE_OPERATION_VERSION;
+}
+
+int rinruntime_file_operation_dispose(RinRuntimeFileOperationV1* operation)
+{
+    if (operation == 0 || operation->struct_size != sizeof(*operation) ||
+        operation->version != RINRUNTIME_FILE_OPERATION_VERSION ||
+        operation->active != 0u)
+        return -1;
+    free(operation->entries);
+    operation->entries = 0;
+    operation->entry_count = 0u;
+    operation->entry_index = 0u;
+    operation->rollback_index = 0u;
+    operation->backend = (RinRuntimeFileOperationBackendV1){};
+    operation->recovery_required = 0u;
+    operation->rollback_active = 0u;
+    operation->replace_undo_active = 0u;
+    operation->file_open = 0u;
+    operation->temporary_created = 0u;
+    operation->temporary_handle = 0u;
+    operation->source_handle = 0u;
+    operation->temporary_path[0] = '\0';
+    return 0;
 }
 
 static int file_operation_backend_valid(const RinRuntimeFileOperationBackendV1* backend,
@@ -843,9 +945,15 @@ RinRuntimeFileOperationResult rinruntime_file_operation_start(
     uint32_t has_symlink = 0u;
     uint32_t has_hardlink = 0u;
     uint64_t total = 0u;
+    RinRuntimeFileOperationEntryV1* snapshot = 0;
+    int snapshot_result;
     if (operation == 0 || operation->struct_size != sizeof(*operation) ||
         operation->version != RINRUNTIME_FILE_OPERATION_VERSION ||
-        operation->active != 0u || operation->recovery_required != 0u ||
+        operation->active != 0u)
+        return RINRUNTIME_FILE_OPERATION_INVALID_ARGUMENT;
+    if (operation->recovery_required != 0u || operation->entries != 0)
+        return RINRUNTIME_FILE_OPERATION_BUSY;
+    if (
         entries == 0 || entry_count == 0u ||
         entry_count > RINRUNTIME_FILE_OPERATION_ENTRY_LIMIT ||
         !file_operation_operation_valid((uint16_t)kind) ||
@@ -904,10 +1012,16 @@ RinRuntimeFileOperationResult rinruntime_file_operation_start(
                                backend->create_symlink == 0)) ||
         (has_hardlink != 0u && backend->link_no_replace == 0))
         return RINRUNTIME_FILE_OPERATION_UNSUPPORTED;
+    snapshot_result = file_operation_snapshot_create(
+        entries, entry_count, &snapshot);
+    if (snapshot_result == -2)
+        return RINRUNTIME_FILE_OPERATION_NO_MEMORY;
+    if (snapshot_result != 0)
+        return RINRUNTIME_FILE_OPERATION_INVALID_ARGUMENT;
     for (index = 0u; index < entry_count; ++index)
-        entries[index].flags &= ~RINRUNTIME_FILE_OPERATION_ENTRY_FLAG_SKIP;
+        snapshot[index].flags &= ~RINRUNTIME_FILE_OPERATION_ENTRY_FLAG_SKIP;
     operation->backend = *backend;
-    operation->entries = entries;
+    operation->entries = snapshot;
     operation->entry_count = entry_count;
     operation->entry_index = 0u;
     operation->operation = (uint16_t)kind;
@@ -932,9 +1046,9 @@ RinRuntimeFileOperationResult rinruntime_file_operation_start(
     memset(&operation->temporary_identity, 0,
            sizeof(operation->temporary_identity));
     for (index = 0u; index < entry_count; ++index) {
-        entries[index].cleanup_state = RINRUNTIME_FILE_OPERATION_CLEANUP_NONE;
-        memset(&entries[index].object_identity, 0,
-               sizeof(entries[index].object_identity));
+        snapshot[index].cleanup_state = RINRUNTIME_FILE_OPERATION_CLEANUP_NONE;
+        memset(&snapshot[index].object_identity, 0,
+               sizeof(snapshot[index].object_identity));
     }
     operation->active = 1u;
     return RINRUNTIME_FILE_OPERATION_IN_PROGRESS;
@@ -953,18 +1067,21 @@ RinRuntimeFileOperationResult rinruntime_file_operation_start_replace_undo(
     RinRuntimeFileOperationEntryV1* entries, uint32_t entry_count,
     const RinRuntimeFileOperationRecoveryV1* recovery)
 {
+    int restore_result;
     if (!operation || !backend || !entries || !recovery ||
         operation->struct_size != sizeof(*operation) ||
         operation->version != RINRUNTIME_FILE_OPERATION_VERSION ||
         operation->active != 0u || operation->recovery_required != 0u ||
+        operation->entries != 0 ||
         recovery->operation != RINRUNTIME_FILE_OPERATION_COPY ||
         recovery->recovery_required != 0u || recovery->rollback_active != 0u ||
         recovery->replace_undo_active != 0u ||
-        file_operation_recovery_restore_internal(
-            operation, backend, entries, entry_count, recovery, 0) != 0)
+        recovery->entry_index != entry_count)
         return RINRUNTIME_FILE_OPERATION_INVALID_ARGUMENT;
-    if (recovery->entry_index != entry_count)
-        return RINRUNTIME_FILE_OPERATION_INVALID_ARGUMENT;
+    restore_result = file_operation_recovery_restore_internal(
+        operation, backend, entries, entry_count, recovery, 0);
+    if (restore_result == -2) return RINRUNTIME_FILE_OPERATION_NO_MEMORY;
+    if (restore_result != 0) return RINRUNTIME_FILE_OPERATION_INVALID_ARGUMENT;
     operation->entry_index = entry_count;
     operation->rollback_index = 0u;
     operation->active = 1u;
@@ -1818,10 +1935,14 @@ static int file_operation_recovery_restore_internal(
 {
     uint32_t index;
     RinRuntimeFileOperationResult pending_result;
+    RinRuntimeFileOperationEntryV1* snapshot = 0;
+    char temporary_path[RINRUNTIME_FILE_OPERATION_PATH_MAX] = {0};
+    int snapshot_result;
     if (!operation || !backend || !entries || !recovery ||
         operation->struct_size != sizeof(*operation) ||
         operation->version != RINRUNTIME_FILE_OPERATION_VERSION ||
         operation->active != 0u || operation->recovery_required != 0u ||
+        operation->entries != 0 ||
         recovery->struct_size != sizeof(*recovery) ||
         recovery->version != RINRUNTIME_FILE_OPERATION_RECOVERY_VERSION ||
         !file_operation_operation_valid(recovery->operation) ||
@@ -1850,6 +1971,10 @@ static int file_operation_recovery_restore_internal(
         (recovery->temporary_identity.device != 0u ||
          recovery->temporary_identity.inode != 0u ||
          recovery->temporary_identity.generation != 0u))
+        return -1;
+    if (recovery->temporary_created != 0u &&
+        !file_operation_copy(temporary_path, sizeof(temporary_path),
+                             recovery->temporary_path))
         return -1;
     if (!file_operation_bytes_zero(
             &recovery->entries[entry_count],
@@ -1885,32 +2010,32 @@ static int file_operation_recovery_restore_internal(
             return -1;
         }
     }
+    snapshot_result = file_operation_snapshot_create(
+        entries, entry_count, &snapshot);
+    if (snapshot_result != 0) return snapshot_result;
     rinruntime_file_operation_init(operation);
     operation->backend = *backend;
-    operation->entries = entries;
+    operation->entries = snapshot;
     operation->entry_count = entry_count;
     operation->operation = recovery->operation;
     operation->conflict_policy = recovery->conflict_policy;
     operation->temporary_created = recovery->temporary_created;
     operation->temporary_cleanup_state = recovery->temporary_cleanup_state;
     operation->temporary_identity = recovery->temporary_identity;
-    if (operation->temporary_created != 0u &&
-        !file_operation_copy(operation->temporary_path,
-                             sizeof(operation->temporary_path),
-                             recovery->temporary_path))
-        return -1;
+    memcpy(operation->temporary_path, temporary_path,
+           sizeof(operation->temporary_path));
     for (index = 0u; index < entry_count; ++index) {
-        entries[index].flags = recovery->entries[index].flags;
-        entries[index].cleanup_state = recovery->entries[index].cleanup_state;
-        entries[index].object_identity =
+        snapshot[index].flags = recovery->entries[index].flags;
+        snapshot[index].cleanup_state = recovery->entries[index].cleanup_state;
+        snapshot[index].object_identity =
             recovery->entries[index].object_identity;
-        entries[index].replacement_state =
+        snapshot[index].replacement_state =
             recovery->entries[index].replacement_state;
-        entries[index].reserved0 = recovery->entries[index].reserved0;
-        memcpy(entries[index].backup_path,
+        snapshot[index].reserved0 = recovery->entries[index].reserved0;
+        memcpy(snapshot[index].backup_path,
                recovery->entries[index].backup_path,
-               sizeof(entries[index].backup_path));
-        entries[index].backup_identity =
+               sizeof(snapshot[index].backup_path));
+        snapshot[index].backup_identity =
             recovery->entries[index].backup_identity;
     }
     pending_result = (RinRuntimeFileOperationResult)recovery->pending_result;

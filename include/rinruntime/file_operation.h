@@ -97,7 +97,8 @@ typedef enum RinRuntimeFileOperationResult {
     RINRUNTIME_FILE_OPERATION_DEVICE_REMOVED = -6,
     RINRUNTIME_FILE_OPERATION_CANCELLED = -7,
     RINRUNTIME_FILE_OPERATION_ROLLBACK_FAILED = -8,
-    RINRUNTIME_FILE_OPERATION_UNSUPPORTED = -9
+    RINRUNTIME_FILE_OPERATION_UNSUPPORTED = -9,
+    RINRUNTIME_FILE_OPERATION_NO_MEMORY = -10
 } RinRuntimeFileOperationResult;
 
 enum {
@@ -280,18 +281,22 @@ typedef struct RinRuntimeFileOperationRecoveryV1 {
         entries[RINRUNTIME_FILE_OPERATION_ENTRY_LIMIT];
 } RinRuntimeFileOperationRecoveryV1;
 
+/* Initialize new storage, or storage previously released with dispose(). */
 void rinruntime_file_operation_init(RinRuntimeFileOperationV1* operation);
+/* Release the operation-owned plan snapshot after the operation is terminal.
+ * Returns -1 while active. A recovery-required operation may be disposed only
+ * after its recovery state has been saved elsewhere. Idempotent after release. */
+int rinruntime_file_operation_dispose(RinRuntimeFileOperationV1* operation);
 int rinruntime_file_operation_path_valid(const char* path);
 /*
- * start() copies the backend callback table but borrows backend->context,
- * entries, and every entry's source_path. Keep those objects and strings
- * alive while the operation may be pumped, checkpointed, or recovered.
- * Entries are in/out storage: the operation updates their progress fields.
- * After start() returns, callers may change only the SKIP flag, and only
- * between serialized operation calls; all paths and other plan fields must
- * remain unchanged. Recovery restore binds a new caller-owned plan under the
- * same rules. The caller may release the borrowed storage after it discards
- * the operation and will make no further operation or recovery calls.
+ * start() copies the backend callback table and an owned snapshot of entries
+ * plus every source_path. It does not modify the input plan. While active,
+ * operation->entries is the in/out snapshot; callers may change only SKIP,
+ * between serialized operation calls. The original entries and source_path
+ * strings may be changed or released after start() returns. Recovery restore
+ * makes the same owned snapshot. backend->context remains borrowed until the
+ * operation is disposed. Call dispose() once the terminal result and any
+ * recovery checkpoint have been handled, before reinitializing the operation.
  */
 RinRuntimeFileOperationResult rinruntime_file_operation_start(
     RinRuntimeFileOperationV1* operation,
@@ -315,6 +320,8 @@ RinRuntimeFileOperationResult rinruntime_file_operation_retry_recovery(
 int rinruntime_file_operation_recovery_save(
     const RinRuntimeFileOperationV1* operation,
     RinRuntimeFileOperationRecoveryV1* recovery_out);
+/* recovery_restore returns -2 if it cannot allocate the owned plan snapshot;
+ * other nonzero results indicate an invalid checkpoint or plan. */
 int rinruntime_file_operation_recovery_restore(
     RinRuntimeFileOperationV1* operation,
     const RinRuntimeFileOperationBackendV1* backend,
