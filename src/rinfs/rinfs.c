@@ -25248,7 +25248,8 @@ int64_t rinfs_pwrite(RinFS_File* file, const void* buf, uint64_t size,
 }
 
 static int rinfs_fallocate_internal(
-    RinFS_File* file, uint64_t offset, uint64_t length, int keep_size) {
+    RinFS_File* file, uint64_t offset, uint64_t length, int keep_size,
+    int zero_range) {
     RinFS_CloseReferenceOperationLease operation;
     RinFS_ContentMutation mutation;
     RinFS_PreallocateJournal journal = {0};
@@ -25311,7 +25312,7 @@ static int rinfs_fallocate_internal(
         operation_error = RINFS_ERR_INVAL;
         goto done;
     }
-    if (keep_size || end <= observed.i_size) {
+    if (!zero_range && (keep_size || end <= observed.i_size)) {
         int range_allocated = 1;
         for (uint64_t logical = first_block;; ++logical) {
             uint64_t physical = 0u;
@@ -25360,7 +25361,8 @@ static int rinfs_fallocate_internal(
         }
         if (logical == last_block) break;
     }
-    if (!needs_change && (keep_size || end <= working.i_size)) {
+    if (!needs_change && !zero_range &&
+        (keep_size || end <= working.i_size)) {
         operation_error = RINFS_OK;
         goto before_prepare;
     }
@@ -25454,6 +25456,64 @@ static int rinfs_fallocate_internal(
             needs_change = 1;
         }
         if (logical == last_block) break;
+    }
+
+    if (zero_range) {
+        uint8_t* block = (uint8_t*)rinfs_malloc(block_size);
+        if (!block) {
+            operation_error = RINFS_ERR_NOMEM;
+            goto rollback;
+        }
+        for (uint64_t logical = first_block;; ++logical) {
+            uint64_t physical = 0u;
+            RinFS_PreallocateSnapshot* snapshot;
+            uint64_t block_start = logical * block_size;
+            uint64_t block_end = block_start + block_size;
+            uint64_t zero_start = offset > block_start
+                ? offset : block_start;
+            uint64_t zero_end = end < block_end ? end : block_end;
+
+            operation_error = get_file_block(
+                file->mount, &working, logical, &physical);
+            if (operation_error != RINFS_OK || physical == 0u) {
+                if (operation_error == RINFS_OK)
+                    operation_error = RINFS_ERR_CORRUPT;
+                break;
+            }
+            snapshot = rinfs_preallocate_find_snapshot(&journal, physical);
+            if (!snapshot) {
+                uint8_t* contents =
+                    (uint8_t*)rinfs_malloc(block_size);
+                if (!contents) {
+                    operation_error = RINFS_ERR_NOMEM;
+                    break;
+                }
+                operation_error = rinfs_block_read(
+                    file->mount, physical, contents);
+                if (operation_error == RINFS_OK)
+                    operation_error = rinfs_preallocate_add_snapshot(
+                        &journal, physical, contents);
+                if (operation_error != RINFS_OK) {
+                    rinfs_free(contents);
+                    break;
+                }
+                snapshot = rinfs_preallocate_find_snapshot(
+                    &journal, physical);
+            }
+            if (!snapshot || zero_start >= zero_end) {
+                operation_error = RINFS_ERR_CORRUPT;
+                break;
+            }
+            rinfs_memcpy(block, snapshot->contents, block_size);
+            rinfs_memset(block + (zero_start - block_start), 0u,
+                         (uint32_t)(zero_end - zero_start));
+            operation_error = rinfs_block_write_unprepared(
+                file->mount, physical, block);
+            if (operation_error != RINFS_OK || logical == last_block) break;
+        }
+        rinfs_free(block);
+        if (operation_error != RINFS_OK) goto rollback;
+        needs_change = 1;
     }
 
     if (!keep_size && end > working.i_size) {
@@ -25584,12 +25644,18 @@ done:
 }
 
 int rinfs_fallocate(RinFS_File* file, uint64_t offset, uint64_t length) {
-    return rinfs_fallocate_internal(file, offset, length, 0);
+    return rinfs_fallocate_internal(file, offset, length, 0, 0);
 }
 
 int rinfs_fallocate_keep_size(
     RinFS_File* file, uint64_t offset, uint64_t length) {
-    return rinfs_fallocate_internal(file, offset, length, 1);
+    return rinfs_fallocate_internal(file, offset, length, 1, 0);
+}
+
+int rinfs_fallocate_zero_range(
+    RinFS_File* file, uint64_t offset, uint64_t length, int keep_size) {
+    if (keep_size != 0 && keep_size != 1) return RINFS_ERR_INVAL;
+    return rinfs_fallocate_internal(file, offset, length, keep_size, 1);
 }
 
 /* Read directory entries */
