@@ -62,6 +62,22 @@ static int service_client_begin(
     return result;
 }
 
+static int service_broker_begin(
+    RinRuntimeFileOperationServiceBrokerClientV1* client)
+{
+    int result = 0;
+    if (client == 0) return 0;
+    service_client_lock();
+    if (client->reserved == RINRUNTIME_FILE_OPERATION_CLIENT_IDLE &&
+        client->socket_fd < 0 &&
+        service_client_request_id_valid(client->next_request_id)) {
+        client->reserved = RINRUNTIME_FILE_OPERATION_CLIENT_ACTIVE;
+        result = 1;
+    }
+    service_client_unlock();
+    return result;
+}
+
 static int service_client_cancelled(const uint32_t* operation_state)
 {
     int cancelled;
@@ -84,6 +100,18 @@ static void service_client_close_socket(int32_t* socket_slot,
     if (finish_operation && operation_state != 0)
         *operation_state = RINRUNTIME_FILE_OPERATION_CLIENT_IDLE;
     if (fd >= 0) (void)close(fd);
+    service_client_unlock();
+}
+
+static void service_client_cancel_socket(int32_t* socket_slot,
+                                         uint32_t* operation_state)
+{
+    if (socket_slot == 0 || operation_state == 0) return;
+    service_client_lock();
+    if (*operation_state == RINRUNTIME_FILE_OPERATION_CLIENT_ACTIVE) {
+        *operation_state = RINRUNTIME_FILE_OPERATION_CLIENT_CANCELLED;
+        if (*socket_slot >= 0) (void)shutdown(*socket_slot, SHUT_RDWR);
+    }
     service_client_unlock();
 }
 
@@ -387,14 +415,14 @@ static RinRuntimeFileOperationServiceStatus service_client_broker_open(
     return service_client_open_path(&client->socket_fd, &client->reserved,
                                     client->next_request_id,
                                     RINRUNTIME_FILE_OPERATION_SERVICE_BROKER_PATH,
-                                    deadline_ms, 0);
+                                    deadline_ms, &client->reserved);
 }
 
 static void service_client_broker_finish(
     RinRuntimeFileOperationServiceBrokerClientV1* client)
 {
     if (client == 0) return;
-    service_client_close_socket(&client->socket_fd, 0, 0);
+    service_client_close_socket(&client->socket_fd, &client->reserved, 1);
 }
 
 
@@ -559,13 +587,7 @@ void rinruntime_file_operation_service_client_cancel(
     RinRuntimeFileOperationServiceClientV1* client)
 {
     if (client == 0) return;
-    service_client_lock();
-    if (client->reserved == RINRUNTIME_FILE_OPERATION_CLIENT_ACTIVE) {
-        client->reserved = RINRUNTIME_FILE_OPERATION_CLIENT_CANCELLED;
-        if (client->socket_fd >= 0)
-            (void)shutdown(client->socket_fd, SHUT_RDWR);
-    }
-    service_client_unlock();
+    service_client_cancel_socket(&client->socket_fd, &client->reserved);
 }
 
 RinRuntimeFileOperationServiceStatus rinruntime_file_operation_service_submit(
@@ -668,7 +690,14 @@ void rinruntime_file_operation_service_broker_client_init(
 void rinruntime_file_operation_service_broker_client_close(
     RinRuntimeFileOperationServiceBrokerClientV1* client)
 {
-    service_client_broker_finish(client);
+    rinruntime_file_operation_service_broker_client_cancel(client);
+}
+
+void rinruntime_file_operation_service_broker_client_cancel(
+    RinRuntimeFileOperationServiceBrokerClientV1* client)
+{
+    if (client == 0) return;
+    service_client_cancel_socket(&client->socket_fd, &client->reserved);
 }
 
 RinRuntimeFileOperationServiceStatus
@@ -693,6 +722,10 @@ rinruntime_file_operation_service_submit_authorized(
             (UINT32_MAX - (uint32_t)sizeof(wire)) /
                 (uint32_t)sizeof(*entries))
         return RINRUNTIME_FILE_OPERATION_SERVICE_INVALID_ARGUMENT;
+    if (!service_broker_begin(client))
+        return client == 0
+            ? RINRUNTIME_FILE_OPERATION_SERVICE_INVALID_ARGUMENT
+            : RINRUNTIME_FILE_OPERATION_SERVICE_BUSY;
     memset(&wire, 0, sizeof(wire));
     wire.struct_size = sizeof(wire);
     wire.version = RINRUNTIME_FILE_OPERATION_SERVICE_AUTHORIZED_SUBMIT_VERSION;
@@ -707,22 +740,27 @@ rinruntime_file_operation_service_submit_authorized(
         status = service_broker_header(client, payload_size, &header);
     if (status == RINRUNTIME_FILE_OPERATION_SERVICE_OK &&
         (!service_client_send_all(client->socket_fd, &header, sizeof(header),
-                                  deadline_ms, 0) ||
+                                  deadline_ms, &client->reserved) ||
          !service_client_send_all(client->socket_fd, &wire, sizeof(wire),
-                                  deadline_ms, 0) ||
+                                  deadline_ms, &client->reserved) ||
          !service_client_send_all(client->socket_fd, entries,
                                   request->entry_count * (uint32_t)sizeof(*entries),
-                                  deadline_ms, 0) ||
+                                  deadline_ms, &client->reserved) ||
          !service_client_receive_all(client->socket_fd, &reply_header,
-                                     sizeof(reply_header), deadline_ms, 0) ||
+                                     sizeof(reply_header), deadline_ms,
+                                     &client->reserved) ||
          !service_client_receive_all(client->socket_fd, reply_out,
-                                     sizeof(*reply_out), deadline_ms, 0)))
+                                     sizeof(*reply_out), deadline_ms,
+                                     &client->reserved)))
+        status = RINRUNTIME_FILE_OPERATION_SERVICE_UNAVAILABLE;
+    if (status == RINRUNTIME_FILE_OPERATION_SERVICE_OK &&
+        service_client_cancelled(&client->reserved))
         status = RINRUNTIME_FILE_OPERATION_SERVICE_UNAVAILABLE;
     if (status == RINRUNTIME_FILE_OPERATION_SERVICE_OK)
         status = service_client_reply(&header, &reply_header,
                                       RINRUNTIME_FILE_OPERATION_SERVICE_SUBMIT,
                                       reply_out);
     memset(&wire, 0, sizeof(wire));
-    rinruntime_file_operation_service_broker_client_close(client);
+    service_client_broker_finish(client);
     return status;
 }
