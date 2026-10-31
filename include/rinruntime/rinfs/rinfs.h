@@ -1610,6 +1610,10 @@ int rinfs_fallocate_keep_size(
 /* Allocate and zero the range, optionally preserving EOF. */
 int rinfs_fallocate_zero_range(
     RinFS_File* file, uint64_t offset, uint64_t length, int keep_size);
+/* Deallocate fully covered blocks and zero partial boundaries without
+ * changing EOF, matching FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE. */
+int rinfs_fallocate_punch_hole(
+    RinFS_File* file, uint64_t offset, uint64_t length);
 /* Sparse extent positions share the POSIX SEEK_DATA/SEEK_HOLE values. */
 #define RINFS_SEEK_DATA 3
 #define RINFS_SEEK_HOLE 4
