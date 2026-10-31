@@ -7317,6 +7317,76 @@ int rinfs_page_cache_reclaim(RinFS_Mount* mount, uint32_t max_entries,
     return rinfs_mount_operation_scope_finish(&operation, error);
 }
 
+int rinfs_page_cache_snapshot_v1(
+    RinFS_Mount* mount, RinFS_PageCacheStatsV1* stats_out) {
+    RinFS_MountOperationScope operation = {0};
+    RinFS_PageCacheStatsV1 snapshot;
+    RinFS_PageCache* cache;
+    int error;
+    if (!mount || !stats_out) return RINFS_ERR_INVAL;
+    rinfs_memset(stats_out, 0, sizeof(*stats_out));
+    if (!mount->mounted) return RINFS_ERR_NOT_SUPPORTED;
+    error = rinfs_mount_operation_scope_begin(mount, &operation);
+    if (error != RINFS_OK) return error;
+    cache = mount->page_cache;
+    if (!cache) {
+        error = RINFS_ERR_NOT_SUPPORTED;
+    } else {
+        rinfs_memset(&snapshot, 0, sizeof(snapshot));
+        error = rinfs_page_cache_lock(cache);
+        if (error == RINFS_OK) {
+            snapshot.struct_size = sizeof(snapshot);
+            snapshot.version = RINFS_PAGE_CACHE_STATS_VERSION_V1;
+            snapshot.mount_epoch = mount->mount_epoch;
+            for (uint32_t index = 0u;
+                 index < RINFS_PAGE_CACHE_CAPACITY; ++index) {
+                const RinFS_PageCacheEntry* entry = &cache->entries[index];
+                if (!entry->valid) continue;
+                if (entry->state < RINFS_PAGE_CACHE_CLEAN ||
+                    entry->state > RINFS_PAGE_CACHE_WRITEBACK ||
+                    (entry->generation != RINFS_PAGE_CACHE_ACTIVE &&
+                     entry->generation != RINFS_PAGE_CACHE_INACTIVE)) {
+                    error = RINFS_ERR_CORRUPT;
+                    break;
+                }
+                ++snapshot.total_pages;
+                if (entry->references != 0u)
+                    ++snapshot.active_pages;
+                else
+                    ++snapshot.inactive_pages;
+                switch (entry->state) {
+                case RINFS_PAGE_CACHE_CLEAN:
+                    ++snapshot.clean_pages;
+                    if (entry->references == 0u)
+                        ++snapshot.reclaimable_pages;
+                    break;
+                case RINFS_PAGE_CACHE_DIRTY:
+                    ++snapshot.dirty_pages;
+                    break;
+                case RINFS_PAGE_CACHE_FILLING:
+                    ++snapshot.filling_pages;
+                    break;
+                case RINFS_PAGE_CACHE_WRITEBACK:
+                    ++snapshot.writeback_pages;
+                    break;
+                default:
+                    error = RINFS_ERR_CORRUPT;
+                    break;
+                }
+                if (error != RINFS_OK) break;
+            }
+            error = rinfs_page_cache_unlock_status(cache, error);
+        }
+    }
+    error = rinfs_mount_operation_scope_finish(&operation, error);
+    if (error != RINFS_OK) {
+        rinfs_memset(stats_out, 0, sizeof(*stats_out));
+        return error;
+    }
+    *stats_out = snapshot;
+    return RINFS_OK;
+}
+
 static int rinfs_page_cache_writeback_step_unscoped(
     RinFS_Mount* mount, uint32_t max_entries, uint32_t* written_out) {
     uint32_t before = 0u;

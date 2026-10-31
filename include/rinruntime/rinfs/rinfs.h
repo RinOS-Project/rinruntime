@@ -601,6 +601,23 @@ typedef struct {
     RinFS_PageCacheEntry entries[RINFS_PAGE_CACHE_CAPACITY];
 } RinFS_PageCache;
 
+/* Active pages have an outstanding reference; inactive pages have none.
+ * Reclaimable is the clean, unreferenced subset of inactive pages. */
+#define RINFS_PAGE_CACHE_STATS_VERSION_V1 UINT32_C(1)
+typedef struct RinFS_PageCacheStatsV1 {
+    uint32_t struct_size;
+    uint32_t version;
+    uint64_t mount_epoch;
+    uint64_t total_pages;
+    uint64_t clean_pages;
+    uint64_t dirty_pages;
+    uint64_t filling_pages;
+    uint64_t writeback_pages;
+    uint64_t reclaimable_pages;
+    uint64_t active_pages;
+    uint64_t inactive_pages;
+} RinFS_PageCacheStatsV1;
+
 /* Shared-mount owner accounting is a fixed SHM ABI so the kernel can mark an
  * exact process generation dead without interpreting userland pointers. The
  * runtime reconciles these per-handle deltas under content_lease_lock. */
@@ -1289,6 +1306,10 @@ int rinfs_read_stats_reset(RinFS_Mount* mount);
  * in-flight entries are never discarded. */
 int rinfs_page_cache_reclaim(RinFS_Mount* mount, uint32_t max_entries,
                              uint32_t* reclaimed_out);
+/* Return an allocation-free, locked snapshot of the mounted file cache.
+ * Reclaimable counts only clean entries with no outstanding references. */
+int rinfs_page_cache_snapshot_v1(
+    RinFS_Mount* mount, RinFS_PageCacheStatsV1* stats_out);
 /* Process at most max_entries dirty pages from the mounted file cache.
  * This is the bounded background-worker primitive; dirty data and the first
  * writeback error remain observable when the device rejects the request. */
