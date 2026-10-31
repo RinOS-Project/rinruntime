@@ -25247,7 +25247,8 @@ int64_t rinfs_pwrite(RinFS_File* file, const void* buf, uint64_t size,
     return release_result == RINFS_OK ? result : release_result;
 }
 
-int rinfs_fallocate(RinFS_File* file, uint64_t offset, uint64_t length) {
+static int rinfs_fallocate_internal(
+    RinFS_File* file, uint64_t offset, uint64_t length, int keep_size) {
     RinFS_CloseReferenceOperationLease operation;
     RinFS_ContentMutation mutation;
     RinFS_PreallocateJournal journal = {0};
@@ -25310,7 +25311,7 @@ int rinfs_fallocate(RinFS_File* file, uint64_t offset, uint64_t length) {
         operation_error = RINFS_ERR_INVAL;
         goto done;
     }
-    if (end <= observed.i_size) {
+    if (keep_size || end <= observed.i_size) {
         int range_allocated = 1;
         for (uint64_t logical = first_block;; ++logical) {
             uint64_t physical = 0u;
@@ -25359,7 +25360,7 @@ int rinfs_fallocate(RinFS_File* file, uint64_t offset, uint64_t length) {
         }
         if (logical == last_block) break;
     }
-    if (!needs_change && end <= working.i_size) {
+    if (!needs_change && (keep_size || end <= working.i_size)) {
         operation_error = RINFS_OK;
         goto before_prepare;
     }
@@ -25455,7 +25456,7 @@ int rinfs_fallocate(RinFS_File* file, uint64_t offset, uint64_t length) {
         if (logical == last_block) break;
     }
 
-    if (end > working.i_size) {
+    if (!keep_size && end > working.i_size) {
         uint64_t old_size = working.i_size;
         if (old_size != 0u && (old_size % block_size) != 0u) {
             uint64_t old_tail_block = 0u;
@@ -25580,6 +25581,15 @@ done:
     release_error = rinfs_close_ref_end_operation(&operation);
     if (release_error != RINFS_OK) return release_error;
     return rinfs_content_unlock_status(operation_error, content_unlock_error);
+}
+
+int rinfs_fallocate(RinFS_File* file, uint64_t offset, uint64_t length) {
+    return rinfs_fallocate_internal(file, offset, length, 0);
+}
+
+int rinfs_fallocate_keep_size(
+    RinFS_File* file, uint64_t offset, uint64_t length) {
+    return rinfs_fallocate_internal(file, offset, length, 1);
 }
 
 /* Read directory entries */

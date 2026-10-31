@@ -1604,6 +1604,9 @@ int64_t rinfs_pwrite(RinFS_File* file, const void* buf, uint64_t size,
 /* 指定範囲のブロックを事前確保する。既存データを保持し、EOFを越える範囲では
  * ファイルを拡張して未書込部分をゼロとして扱う。 */
 int rinfs_fallocate(RinFS_File* file, uint64_t offset, uint64_t length);
+/* Reserve blocks without changing EOF when keep_size is nonzero. */
+int rinfs_fallocate_keep_size(
+    RinFS_File* file, uint64_t offset, uint64_t length);
 /* Sparse extent positions share the POSIX SEEK_DATA/SEEK_HOLE values. */
 #define RINFS_SEEK_DATA 3
 #define RINFS_SEEK_HOLE 4
