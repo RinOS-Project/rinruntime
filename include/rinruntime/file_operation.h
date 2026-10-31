@@ -12,7 +12,7 @@ extern "C" {
 
 /* Metadata, link, and sparse-copy callbacks extend the backend layout; reject
  * clients compiled against an older layout instead of reading beyond it. */
-#define RINRUNTIME_FILE_OPERATION_VERSION 7u
+#define RINRUNTIME_FILE_OPERATION_VERSION 8u
 #define RINRUNTIME_FILE_OPERATION_PATH_MAX 512u
 #define RINRUNTIME_FILE_OPERATION_ENTRY_LIMIT 4096u
 #define RINRUNTIME_FILE_OPERATION_COPY_CHUNK_SIZE (64u * 1024u)
@@ -27,11 +27,16 @@ extern "C" {
 #define RINRUNTIME_FILE_OPERATION_BACKEND_SPARSE_UNSUPPORTED (-5)
 /* The pathname exists but no longer names the object recorded by the job. */
 #define RINRUNTIME_FILE_OPERATION_BACKEND_IDENTITY_MISMATCH (-6)
+/* Exclusive create found a name already present; no mutation occurred. */
+#define RINRUNTIME_FILE_OPERATION_BACKEND_PATH_EXISTS (-7)
 
 typedef struct RinRuntimeFileOperationObjectIdentityV1 {
     uint64_t device;
     uint64_t inode;
     uint64_t generation;
+    /* Opaque filesystem-persisted creation token. Zero for objects not
+     * created by this file-operation transaction. */
+    uint8_t operation_token[16];
 } RinRuntimeFileOperationObjectIdentityV1;
 
 typedef enum RinRuntimeFileOperationReplacementState {
@@ -134,6 +139,12 @@ typedef struct RinRuntimeFileOperationBackendV1 {
     int (*open_read)(void* context, const char* path, uintptr_t* handle_out);
     int (*open_create_exclusive)(void* context, const char* path,
                                  uintptr_t* handle_out);
+    /* These callbacks atomically attach the supplied token to the created
+     * filesystem object before its name is published. */
+    int (*random_operation_token)(void* context, uint8_t token_out[16]);
+    int (*open_create_exclusive_with_token)(
+        void* context, const char* path, const uint8_t operation_token[16],
+        uintptr_t* handle_out);
     int (*read)(void* context, uintptr_t handle, uint8_t* bytes,
                 uint32_t capacity, uint32_t* bytes_read_out);
     int (*write)(void* context, uintptr_t handle, const uint8_t* bytes,
@@ -141,6 +152,8 @@ typedef struct RinRuntimeFileOperationBackendV1 {
     int (*sync_file)(void* context, uintptr_t handle);
     int (*close)(void* context, uintptr_t handle);
     int (*mkdir)(void* context, const char* path);
+    int (*mkdir_with_token)(void* context, const char* path,
+                            const uint8_t operation_token[16]);
     /* Must publish without replacing an existing destination (for example,
      * a same-filesystem hard-link publication), then leave source cleanup to
      * remove_file. */
@@ -170,6 +183,9 @@ typedef struct RinRuntimeFileOperationBackendV1 {
     /* Creates the supplied symlink target without replacing destination. */
     int (*create_symlink)(void* context, const char* target,
                           const char* destination_path);
+    int (*create_symlink_with_token)(
+        void* context, const char* target, const char* destination_path,
+        const uint8_t operation_token[16]);
     /* Creates a hardlink without replacing destination. */
     int (*link_no_replace)(void* context, const char* source_path,
                            const char* destination_path);
@@ -248,7 +264,7 @@ struct RinRuntimeFileOperationV1 {
     uint8_t copy_buffer[RINRUNTIME_FILE_OPERATION_COPY_CHUNK_SIZE];
 };
 
-#define RINRUNTIME_FILE_OPERATION_RECOVERY_VERSION 1u
+#define RINRUNTIME_FILE_OPERATION_RECOVERY_VERSION 2u
 typedef struct RinRuntimeFileOperationRecoveryEntryV1 {
     uint32_t flags;
     uint32_t cleanup_state;

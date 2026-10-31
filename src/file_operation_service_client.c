@@ -51,6 +51,16 @@ static void service_client_unlock(void)
     __atomic_store_n(&g_file_operation_client_lock, 0u, __ATOMIC_RELEASE);
 }
 
+static int service_client_bytes_zero(const void* value, size_t size)
+{
+    const uint8_t* bytes = (const uint8_t*)value;
+    uint8_t combined = 0u;
+    size_t index;
+    if (value == 0) return 0;
+    for (index = 0u; index < size; ++index) combined |= bytes[index];
+    return combined == 0u;
+}
+
 static int service_client_request_id_valid(uint64_t request_id);
 
 static int service_client_allocate_request_id(uint64_t* request_id_out)
@@ -593,7 +603,7 @@ static RinRuntimeFileOperationServiceStatus service_client_header_with_id(
 
 static RinRuntimeFileOperationServiceStatus service_broker_header(
     RinRuntimeFileOperationServiceBrokerClientV1* client, uint32_t payload_size,
-    uint64_t request_id,
+    uint16_t request_kind, uint64_t request_id,
     RinRuntimeFileOperationServiceHeaderV1* header)
 {
     if (client == 0 || header == 0 || client->socket_fd < 0 ||
@@ -602,7 +612,7 @@ static RinRuntimeFileOperationServiceStatus service_broker_header(
     memset(header, 0, sizeof(*header));
     header->struct_size = sizeof(*header);
     header->version = RINRUNTIME_FILE_OPERATION_SERVICE_VERSION;
-    header->request_kind = RINRUNTIME_FILE_OPERATION_SERVICE_SUBMIT;
+    header->request_kind = request_kind;
     header->request_id = request_id;
     header->payload_size = payload_size;
     return RINRUNTIME_FILE_OPERATION_SERVICE_OK;
@@ -877,6 +887,84 @@ void rinruntime_file_operation_service_broker_client_cancel(
 }
 
 RinRuntimeFileOperationServiceStatus
+rinruntime_file_operation_service_recover_authorized(
+    RinRuntimeFileOperationServiceBrokerClientV1* client,
+    const RinRuntimeFileOperationServiceControlV1* request,
+    const RinRuntimeFileOperationServiceAuthorizationV1* authorizations,
+    RinRuntimeFileOperationServiceReplyV1* reply_out)
+{
+    RinRuntimeFileOperationServiceAuthorizedRecoverV1 wire;
+    RinRuntimeFileOperationServiceHeaderV1 header;
+    RinRuntimeFileOperationServiceHeaderV1 reply_header;
+    RinRuntimeFileOperationServiceStatus status;
+    uint64_t deadline_ms = 0u;
+    uint64_t request_id = 0u;
+    uint32_t index;
+    int reply_valid = 0;
+    if (reply_out != 0) memset(reply_out, 0, sizeof(*reply_out));
+    if (client == 0 || request == 0 || authorizations == 0 ||
+        reply_out == 0 || !service_client_control_valid(request))
+        return RINRUNTIME_FILE_OPERATION_SERVICE_INVALID_ARGUMENT;
+    for (index = 0u;
+         index < RINRUNTIME_FILE_OPERATION_SERVICE_ENTRY_LIMIT; ++index) {
+        const RinRuntimeFileOperationServiceAuthorizationV1* authorization =
+            &authorizations[index];
+        if (!service_client_bytes_zero(authorization,
+                                       sizeof(*authorization)) &&
+            !service_client_authorization_valid(
+                authorization, authorization->operation))
+            return RINRUNTIME_FILE_OPERATION_SERVICE_INVALID_ARGUMENT;
+    }
+    if (!service_broker_begin(client))
+        return RINRUNTIME_FILE_OPERATION_SERVICE_BUSY;
+    if (!service_client_allocate_request_id(&request_id)) {
+        service_client_broker_finish(client);
+        return RINRUNTIME_FILE_OPERATION_SERVICE_UNAVAILABLE;
+    }
+    client->next_request_id = request_id;
+    memset(&wire, 0, sizeof(wire));
+    wire.struct_size = sizeof(wire);
+    wire.version =
+        RINRUNTIME_FILE_OPERATION_SERVICE_AUTHORIZED_RECOVER_VERSION;
+    wire.control = *request;
+    memcpy(wire.authorization, authorizations,
+           sizeof(wire.authorization));
+    status = service_client_broker_deadline_start(&deadline_ms)
+        ? service_client_broker_open(client, deadline_ms)
+        : RINRUNTIME_FILE_OPERATION_SERVICE_UNAVAILABLE;
+    if (status == RINRUNTIME_FILE_OPERATION_SERVICE_OK)
+        status = service_broker_header(
+            client, sizeof(wire), RINRUNTIME_FILE_OPERATION_SERVICE_RECOVER,
+            request_id, &header);
+    if (status == RINRUNTIME_FILE_OPERATION_SERVICE_OK) {
+        client->next_request_id = request_id + 1u;
+        if (!service_client_send_all(client->socket_fd, &header,
+                                     sizeof(header), deadline_ms,
+                                     &client->reserved) ||
+            !service_client_send_all(client->socket_fd, &wire, sizeof(wire),
+                                     deadline_ms, &client->reserved) ||
+            !service_client_receive_all(client->socket_fd, &reply_header,
+                                        sizeof(reply_header), deadline_ms,
+                                        &client->reserved) ||
+            !service_client_receive_all(client->socket_fd, reply_out,
+                                        sizeof(*reply_out), deadline_ms,
+                                        &client->reserved))
+            status = RINRUNTIME_FILE_OPERATION_SERVICE_UNAVAILABLE;
+    }
+    if (status == RINRUNTIME_FILE_OPERATION_SERVICE_OK &&
+        service_client_cancelled(&client->reserved))
+        status = RINRUNTIME_FILE_OPERATION_SERVICE_UNAVAILABLE;
+    if (status == RINRUNTIME_FILE_OPERATION_SERVICE_OK)
+        status = service_client_reply(
+            &header, &reply_header,
+            RINRUNTIME_FILE_OPERATION_SERVICE_RECOVER, reply_out,
+            &reply_valid);
+    memset(&wire, 0, sizeof(wire));
+    service_client_broker_finish(client);
+    return status;
+}
+
+RinRuntimeFileOperationServiceStatus
 rinruntime_file_operation_service_submit_authorized(
     RinRuntimeFileOperationServiceBrokerClientV1* client,
     const RinRuntimeFileOperationServiceSubmitV1* request,
@@ -932,7 +1020,9 @@ rinruntime_file_operation_service_submit_authorized(
         ? service_client_broker_open(client, deadline_ms)
         : RINRUNTIME_FILE_OPERATION_SERVICE_UNAVAILABLE;
     if (status == RINRUNTIME_FILE_OPERATION_SERVICE_OK)
-        status = service_broker_header(client, payload_size,
+        status = service_broker_header(
+                                       client, payload_size,
+                                       RINRUNTIME_FILE_OPERATION_SERVICE_SUBMIT,
                                        client->pending_submit_request_id,
                                        &header);
     if (status == RINRUNTIME_FILE_OPERATION_SERVICE_OK &&

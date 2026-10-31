@@ -59,13 +59,19 @@
  * recovery finishes the persisted root-content switch. Older readers reject
  * a volume carrying this feature. */
 #define RINFS_FEATURE_INCOMPAT_RESTORE_PENDING 0x00000010u
+/* Inode bytes 0xE4-0xF7 hold an operation-recovery owner token when this bit
+ * is set. The token is committed before the inode becomes reachable. */
+#define RINFS_FEATURE_INCOMPAT_OPERATION_OWNER_TOKEN 0x00000020u
 #define RINFS_INODE_SPECIAL_DEVICE_OFFSET 24u
+#define RINFS_INODE_OPERATION_OWNER_TOKEN_OFFSET 28u
+#define RINFS_INODE_OPERATION_OWNER_TOKEN_BYTES 16u
 #define RINFS_FEATURE_INCOMPAT_SUPPORTED \
     (RINFS_FEATURE_INCOMPAT_NANO_TIMESTAMPS | \
      RINFS_FEATURE_INCOMPAT_CONTENT_VERSION64 | \
      RINFS_FEATURE_INCOMPAT_SPECIAL_INODES | \
      RINFS_FEATURE_INCOMPAT_DELETE_ON_CLOSE | \
-     RINFS_FEATURE_INCOMPAT_RESTORE_PENDING)
+     RINFS_FEATURE_INCOMPAT_RESTORE_PENDING | \
+     RINFS_FEATURE_INCOMPAT_OPERATION_OWNER_TOKEN)
 
 enum {
     RINFS_READ_ADVICE_NORMAL = 0,
@@ -1411,6 +1417,12 @@ int rinfs_createat_owned_identity(
     RinFS_Mount* mount, uint64_t parent_ino, const char* name,
     uint16_t mode, uint32_t uid, uint32_t gid, uint64_t* created_ino,
     uint32_t* created_generation);
+/* Stores the nonzero owner token in the inode before its directory entry is
+ * published, closing the create-to-journal crash window for rollback. */
+int rinfs_createat_owned_operation_token(
+    RinFS_Mount* mount, uint64_t parent_ino, const char* name,
+    uint16_t mode, uint32_t uid, uint32_t gid, const uint8_t token[16],
+    uint64_t* created_ino, uint32_t* created_generation);
 /* 解決済みparentの下にdevice、FIFOまたはsocket inodeを1つ作成する。
  * character/block device numberは公開8:8 dev_t形式を使い、FIFO、socket、
  * regular fileではdevice_number=0を指定する。公開前にSPECIAL_INODESを確定する。 */
@@ -1444,6 +1456,10 @@ int rinfs_mkdir_owned(RinFS_Mount* mount, const char* path, uint16_t mode,
 int rinfs_mkdirat_owned(RinFS_Mount* mount, uint64_t parent_ino,
                         const char* name, uint16_t mode, uint32_t uid,
                         uint32_t gid, uint64_t* created_ino);
+int rinfs_mkdirat_owned_operation_token(
+    RinFS_Mount* mount, uint64_t parent_ino, const char* name,
+    uint16_t mode, uint32_t uid, uint32_t gid, const uint8_t token[16],
+    uint64_t* created_ino, uint32_t* created_generation);
 /* Create one directory and return an open lifetime pinned to that exact
  * inode before releasing namespace mutation serialization. If an error
  * follows atomic owner publication, a nonzero close-reference
@@ -1564,6 +1580,15 @@ int rinfs_link_tmpfile(RinFS_File* file, uint64_t dir_ino,
 int rinfs_symlink(RinFS_Mount* mount, uint64_t dir_ino, const char* name, const char* target);
 int rinfs_symlink_owned(RinFS_Mount* mount, uint64_t dir_ino, const char* name,
                         const char* target, uint32_t uid, uint32_t gid);
+int rinfs_symlink_owned_operation_token(
+    RinFS_Mount* mount, uint64_t dir_ino, const char* name,
+    const char* target, uint32_t uid, uint32_t gid, const uint8_t token[16],
+    uint64_t* created_ino, uint32_t* created_generation);
+/* Returns 1 if a token is present, 0 if absent, or a negative RinFS error. */
+int rinfs_operation_owner_token_get(RinFS_Mount* mount,
+                                    uint64_t inode_number,
+                                    uint32_t expected_generation,
+                                    uint8_t token_out[16]);
 /* Copies at most size target bytes and never appends a terminator. */
 int rinfs_readlink(RinFS_Mount* mount, uint64_t ino, char* buf, uint32_t size);
 /* Truncate maps preflight page-cache/writeback contention to BUSY before
@@ -1622,6 +1647,10 @@ int rinfs_fallocate_zero_range(
 /* Deallocate fully covered blocks and zero partial boundaries without
  * changing EOF, matching FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE. */
 int rinfs_fallocate_punch_hole(
+    RinFS_File* file, uint64_t offset, uint64_t length);
+int rinfs_fallocate_collapse_range(
+    RinFS_File* file, uint64_t offset, uint64_t length);
+int rinfs_fallocate_insert_range(
     RinFS_File* file, uint64_t offset, uint64_t length);
 /* Sparse extent positions share the POSIX SEEK_DATA/SEEK_HOLE values. */
 #define RINFS_SEEK_DATA 3

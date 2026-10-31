@@ -327,6 +327,67 @@ static void* g_rinfs_time_context;
 #define RINFS_INODE_NANOTIME_BYTES 20u
 #define RINFS_INODE_CONTENT_VERSION_HIGH_OFFSET 20u
 #define RINFS_INODE_CONTENT_METADATA_BYTES 24u
+#define RINFS_INODE_OPERATION_OWNER_TOKEN_MAGIC UINT32_C(0x31504f52) /* "ROP1" */
+#define RINFS_INODE_OPERATION_OWNER_TOKEN_MAGIC_OFFSET \
+    RINFS_INODE_OPERATION_OWNER_TOKEN_OFFSET
+#define RINFS_INODE_OPERATION_OWNER_TOKEN_DATA_OFFSET \
+    (RINFS_INODE_OPERATION_OWNER_TOKEN_OFFSET + 4u)
+#define RINFS_INODE_OPERATION_OWNER_TOKEN_METADATA_BYTES \
+    (4u + RINFS_INODE_OPERATION_OWNER_TOKEN_BYTES)
+
+static uint32_t rinfs_inode_time_read_u32(const uint8_t* bytes);
+static void rinfs_inode_time_write_u32(uint8_t* bytes, uint32_t value);
+
+static int rinfs_mount_has_operation_owner_tokens(const RinFS_Mount* mount) {
+    return mount != NULL &&
+           (mount->sb.s_incompat_features &
+            RINFS_FEATURE_INCOMPAT_OPERATION_OWNER_TOKEN) != 0u;
+}
+
+static int rinfs_inode_set_operation_owner_token(
+    const RinFS_Mount* mount, RinFS_Inode* inode, const uint8_t* token) {
+    uint8_t nonzero = 0u;
+    uint32_t index;
+    if (mount == NULL || inode == NULL || token == NULL ||
+        !rinfs_mount_has_operation_owner_tokens(mount))
+        return RINFS_ERR_INVAL;
+    for (index = 0u; index < RINFS_INODE_OPERATION_OWNER_TOKEN_BYTES; ++index)
+        nonzero |= token[index];
+    if (nonzero == 0u) return RINFS_ERR_INVAL;
+    rinfs_inode_time_write_u32(
+        inode->i_reserved + RINFS_INODE_OPERATION_OWNER_TOKEN_MAGIC_OFFSET,
+        RINFS_INODE_OPERATION_OWNER_TOKEN_MAGIC);
+    for (index = 0u; index < RINFS_INODE_OPERATION_OWNER_TOKEN_BYTES; ++index)
+        inode->i_reserved[RINFS_INODE_OPERATION_OWNER_TOKEN_DATA_OFFSET +
+                          index] = token[index];
+    return RINFS_OK;
+}
+
+static int rinfs_inode_operation_owner_token_valid(
+    const RinFS_Mount* mount, const RinFS_Inode* inode) {
+    const uint8_t* bytes;
+    uint8_t nonzero = 0u;
+    uint32_t index;
+    uint32_t magic;
+    if (mount == NULL || inode == NULL) return 0;
+    bytes = inode->i_reserved;
+    magic = rinfs_inode_time_read_u32(
+        bytes + RINFS_INODE_OPERATION_OWNER_TOKEN_MAGIC_OFFSET);
+    if (!rinfs_mount_has_operation_owner_tokens(mount)) return magic == 0u;
+    if (magic == 0u) {
+        for (index = 0u; index < RINFS_INODE_OPERATION_OWNER_TOKEN_METADATA_BYTES;
+             ++index) {
+            if (bytes[RINFS_INODE_OPERATION_OWNER_TOKEN_MAGIC_OFFSET + index] !=
+                0u)
+                return 0;
+        }
+        return 1;
+    }
+    if (magic != RINFS_INODE_OPERATION_OWNER_TOKEN_MAGIC) return 0;
+    for (index = 0u; index < RINFS_INODE_OPERATION_OWNER_TOKEN_BYTES; ++index)
+        nonzero |= bytes[RINFS_INODE_OPERATION_OWNER_TOKEN_DATA_OFFSET + index];
+    return nonzero != 0u;
+}
 
 static uint32_t rinfs_inode_time_read_u32(const uint8_t* bytes) {
     return (uint32_t)bytes[0] |
@@ -463,9 +524,13 @@ static int rinfs_inode_time_metadata_valid(const RinFS_Mount* mount,
           (inode->i_mode >> 12u) != RINFS_FT_BLK))) {
         return 0;
     }
-    for (index = rinfs_mount_has_special_inodes(mount)
-                     ? RINFS_INODE_SPECIAL_DEVICE_OFFSET + 4u
-                     : RINFS_INODE_CONTENT_METADATA_BYTES;
+    if (!rinfs_inode_operation_owner_token_valid(mount, inode)) return 0;
+    for (index = rinfs_mount_has_operation_owner_tokens(mount)
+                     ? RINFS_INODE_OPERATION_OWNER_TOKEN_OFFSET +
+                           RINFS_INODE_OPERATION_OWNER_TOKEN_METADATA_BYTES
+                     : rinfs_mount_has_special_inodes(mount)
+                           ? RINFS_INODE_SPECIAL_DEVICE_OFFSET + 4u
+                           : RINFS_INODE_CONTENT_METADATA_BYTES;
          index < sizeof(inode->i_reserved); ++index) {
         if (bytes[index] != 0u) return 0;
     }
@@ -21670,6 +21735,11 @@ static int rinfs_enable_special_inodes(RinFS_Mount* mount) {
         mount, RINFS_FEATURE_INCOMPAT_SPECIAL_INODES);
 }
 
+static int rinfs_enable_operation_owner_tokens(RinFS_Mount* mount) {
+    return rinfs_enable_incompat_feature(
+        mount, RINFS_FEATURE_INCOMPAT_OPERATION_OWNER_TOKEN);
+}
+
 /* Sync filesystem to stable storage.  A mounted writable filesystem remains
  * dirty: CLEAN is an unmount record, not an fsync record. */
 static int rinfs_sync_unscoped(RinFS_Mount* mount) {
@@ -25033,6 +25103,7 @@ static int rinfs_createat_owned_unscoped(RinFS_Mount* mount,
                                          uint64_t parent_ino,
                                          const char* name, uint16_t mode,
                                          uint32_t uid, uint32_t gid,
+                                         const uint8_t* operation_token,
                                          uint64_t* created_ino,
                                          uint32_t* created_generation) {
     RinFS_Inode parent_inode;
@@ -25071,6 +25142,10 @@ static int rinfs_createat_owned_unscoped(RinFS_Mount* mount,
 
     err = rinfs_enable_content_versions(mount);
     if (err != RINFS_OK) return err;
+    if (operation_token != NULL) {
+        err = rinfs_enable_operation_owner_tokens(mount);
+        if (err != RINFS_OK) return err;
+    }
     err = rinfs_inode_alloc(mount, &new_ino);
     if (err != RINFS_OK) return err;
     err = rinfs_prepare_new_inode(mount, new_ino, &inode);
@@ -25089,6 +25164,18 @@ static int rinfs_createat_owned_unscoped(RinFS_Mount* mount,
     inode.i_blocks = 0;
     rinfs_inode_content_version_set_raw(&inode, 1u);
     rinfs_touch_created(&inode);
+    if (operation_token != NULL) {
+        err = rinfs_inode_set_operation_owner_token(
+            mount, &inode, operation_token);
+        if (err != RINFS_OK) {
+            int cleanup_error = rinfs_inode_free(mount, new_ino);
+            if (cleanup_error != RINFS_OK) {
+                rinfs_mount_force_readonly(mount);
+                return cleanup_error;
+            }
+            return err;
+        }
+    }
     return rinfs_publish_orphan_intent_inode(
         mount, parent_ino, name, new_ino, &inode, RINFS_FT_REG,
         created_ino, created_generation);
@@ -25334,12 +25421,15 @@ int rinfs_create(RinFS_Mount* mount, const char* path, uint16_t mode) {
 
 static int rinfs_mkdirat_owned_unscoped(
     RinFS_Mount* mount, uint64_t parent_ino, const char* name,
-    uint16_t mode, uint32_t uid, uint32_t gid, uint64_t* created_ino) {
+    uint16_t mode, uint32_t uid, uint32_t gid,
+    const uint8_t* operation_token, uint64_t* created_ino,
+    uint32_t* created_generation) {
     RinFS_Inode parent_inode;
     uint64_t existing_ino;
     uint32_t name_length;
     int err;
     if (created_ino) *created_ino = 0;
+    if (created_generation) *created_generation = 0u;
     if (!mount || !mount->mounted || !name || !created_ino ||
         parent_ino == 0 || parent_ino > mount->sb.s_inode_count) {
         return RINFS_ERR_INVAL;
@@ -25375,6 +25465,11 @@ static int rinfs_mkdirat_owned_unscoped(
     err = rinfs_lookup(mount, parent_ino, name, &existing_ino);
     if (err == RINFS_OK) return RINFS_ERR_EXIST;
     if (err != RINFS_ERR_NOENT) return err;
+
+    if (operation_token != NULL) {
+        err = rinfs_enable_operation_owner_tokens(mount);
+        if (err != RINFS_OK) return err;
+    }
 
     /* Allocate new inode */
     uint64_t new_ino;
@@ -25440,6 +25535,15 @@ static int rinfs_mkdirat_owned_unscoped(
     inode.i_blocks = block_size / RINFS_SECTOR_SIZE;
     inode.i_block[0] = data_block;
     rinfs_touch_created(&inode);
+    if (operation_token != NULL) {
+        err = rinfs_inode_set_operation_owner_token(
+            mount, &inode, operation_token);
+        if (err != RINFS_OK) {
+            rinfs_block_free(mount, data_block);
+            rinfs_inode_free(mount, new_ino);
+            return err;
+        }
+    }
     
     err = rinfs_inode_write(mount, new_ino, &inode);
     if (err != RINFS_OK) {
@@ -25447,7 +25551,6 @@ static int rinfs_mkdirat_owned_unscoped(
         rinfs_inode_free(mount, new_ino);
         return err;
     }
-
     err = rinfs_posix_acl_inherit_default(
         mount, parent_ino, new_ino, RINFS_FT_DIR, &inode);
     if (err != RINFS_OK) {
@@ -25459,6 +25562,8 @@ static int rinfs_mkdirat_owned_unscoped(
         rinfs_mount_force_readonly(mount);
         return err;
     }
+    *created_ino = new_ino;
+    if (created_generation) *created_generation = inode.i_generation;
     
     /* Add to parent directory */
     err = dir_add_entry(mount, parent_ino, name, new_ino, RINFS_FT_DIR);
@@ -25472,7 +25577,6 @@ static int rinfs_mkdirat_owned_unscoped(
      * creation/removal cannot lose a link-count update. */
     err = rinfs_dir_recount_links(mount, parent_ino);
     if (err != RINFS_OK) return err;
-    *created_ino = new_ino;
     return RINFS_OK;
 }
 
@@ -25897,6 +26001,284 @@ int64_t rinfs_pwrite(RinFS_File* file, const void* buf, uint64_t size,
     file->inode = positioned.inode;
     release_result = rinfs_close_ref_end_operation(&operation);
     return release_result == RINFS_OK ? result : release_result;
+}
+
+typedef struct RinFS_FallocateShiftVisited {
+    uint64_t block;
+    struct RinFS_FallocateShiftVisited* next;
+} RinFS_FallocateShiftVisited;
+
+typedef struct {
+    RinFS_Mount* mount;
+    RinFS_PreallocateJournal* journal;
+    RinFS_Inode* updated_inode;
+    RinFS_FallocateShiftVisited* visited;
+    uint64_t first_block;
+    uint64_t range_blocks;
+    int insert_range;
+} RinFS_FallocateShiftContext;
+
+static int rinfs_fallocate_shift_retire(
+    RinFS_PreallocateJournal* journal, uint64_t block, int data_block) {
+    RinFS_PreallocateAllocationBatch* retired;
+    int err;
+    if (!journal || block == 0u) return RINFS_ERR_INVAL;
+    retired = (RinFS_PreallocateAllocationBatch*)rinfs_malloc(
+        sizeof(*retired));
+    if (!retired) return RINFS_ERR_NOMEM;
+    rinfs_memset(retired, 0, sizeof(*retired));
+    err = rinfs_preallocate_retire_add(retired, block, data_block);
+    if (err != RINFS_OK) {
+        rinfs_free(retired);
+        return err;
+    }
+    retired->next = journal->retirements;
+    journal->retirements = retired;
+    return RINFS_OK;
+}
+
+static int rinfs_fallocate_shift_allocate_indirect(
+    RinFS_Mount* mount, RinFS_PreallocateJournal* journal,
+    uint64_t* block_out) {
+    RinFS_PreallocateAllocationBatch* allocation;
+    uint8_t* zeroes;
+    uint64_t block = 0u;
+    int err;
+    if (block_out) *block_out = 0u;
+    if (!mount || !journal || !block_out) return RINFS_ERR_INVAL;
+    allocation = (RinFS_PreallocateAllocationBatch*)rinfs_malloc(
+        sizeof(*allocation));
+    if (!allocation) return RINFS_ERR_NOMEM;
+    rinfs_memset(allocation, 0, sizeof(*allocation));
+    err = rinfs_block_alloc(mount, &block);
+    if (err != RINFS_OK) {
+        rinfs_free(allocation);
+        return err;
+    }
+    allocation->blocks[0] = block;
+    allocation->count = 1u;
+    allocation->next = journal->allocations;
+    journal->allocations = allocation;
+    zeroes = (uint8_t*)rinfs_malloc(mount->sb.s_block_size);
+    if (!zeroes) return RINFS_ERR_NOMEM;
+    rinfs_memset(zeroes, 0u, mount->sb.s_block_size);
+    err = rinfs_block_write_unprepared(mount, block, zeroes);
+    rinfs_free(zeroes);
+    if (err == RINFS_OK) *block_out = block;
+    return err;
+}
+
+static int rinfs_fallocate_shift_set_block(
+    RinFS_FallocateShiftContext* context, uint64_t logical,
+    uint64_t physical) {
+    RinFS_Mount* mount = context ? context->mount : NULL;
+    RinFS_Inode* inode = context ? context->updated_inode : NULL;
+    uint64_t indices[3] = {0u, 0u, 0u};
+    uint32_t depth = 0u;
+    uint8_t* contents;
+    size_t root_offset;
+    uint64_t current;
+    int err;
+    if (!mount || !inode || !context->journal || physical == 0u ||
+        !rinfs_valid_allocated_block(mount, physical))
+        return RINFS_ERR_INVAL;
+    err = rinfs_file_block_path(mount, logical, &depth, indices);
+    if (err != RINFS_OK) return RINFS_ERR_OVERFLOW;
+    if (depth == 0u) {
+        if (inode->i_block[indices[0]] != 0u) return RINFS_ERR_CORRUPT;
+        inode->i_block[indices[0]] = physical;
+        return RINFS_OK;
+    }
+    if (depth == 1u) root_offset = offsetof(RinFS_Inode, i_indirect1);
+    else if (depth == 2u) root_offset = offsetof(RinFS_Inode, i_indirect2);
+    else root_offset = offsetof(RinFS_Inode, i_indirect3);
+    rinfs_memcpy(&current, (const uint8_t*)inode + root_offset,
+                 sizeof(current));
+    if (current == 0u) {
+        err = rinfs_fallocate_shift_allocate_indirect(
+            mount, context->journal, &current);
+        if (err != RINFS_OK) return err;
+        rinfs_memcpy((uint8_t*)inode + root_offset, &current,
+                     sizeof(current));
+    }
+    contents = (uint8_t*)rinfs_malloc(mount->sb.s_block_size);
+    if (!contents) return RINFS_ERR_NOMEM;
+    for (uint32_t level = 0u; level < depth; ++level) {
+        uint64_t* pointers;
+        uint64_t child;
+        if (!rinfs_valid_allocated_block(mount, current)) {
+            err = RINFS_ERR_CORRUPT;
+            break;
+        }
+        err = rinfs_block_read(mount, current, contents);
+        if (err != RINFS_OK) break;
+        pointers = (uint64_t*)contents;
+        child = pointers[indices[level]];
+        if (level + 1u == depth) {
+            if (child != 0u) {
+                err = RINFS_ERR_CORRUPT;
+                break;
+            }
+            pointers[indices[level]] = physical;
+            err = rinfs_block_write_unprepared(mount, current, contents);
+            break;
+        }
+        if (child == 0u) {
+            err = rinfs_fallocate_shift_allocate_indirect(
+                mount, context->journal, &child);
+            if (err != RINFS_OK) break;
+            pointers[indices[level]] = child;
+            err = rinfs_block_write_unprepared(mount, current, contents);
+            if (err != RINFS_OK) break;
+        } else if (!rinfs_valid_allocated_block(mount, child)) {
+            err = RINFS_ERR_CORRUPT;
+            break;
+        }
+        current = child;
+    }
+    rinfs_free(contents);
+    return err;
+}
+
+static int rinfs_fallocate_shift_map_data(
+    RinFS_FallocateShiftContext* context, uint64_t old_logical,
+    uint64_t physical) {
+    uint64_t logical = old_logical;
+    uint64_t collapse_end;
+    uint32_t depth;
+    uint64_t indices[3];
+    int err;
+    if (!context || !context->mount || !context->journal || physical == 0u ||
+        !rinfs_valid_allocated_block(context->mount, physical))
+        return RINFS_ERR_CORRUPT;
+    collapse_end = context->first_block + context->range_blocks;
+    if (!context->insert_range && logical >= context->first_block &&
+        logical < collapse_end)
+        return rinfs_fallocate_shift_retire(
+            context->journal, physical, 1);
+    if (context->insert_range && logical >= context->first_block) {
+        if (logical > UINT64_MAX - context->range_blocks)
+            return RINFS_ERR_OVERFLOW;
+        logical += context->range_blocks;
+    } else if (!context->insert_range && logical >= collapse_end) {
+        logical -= context->range_blocks;
+    }
+    err = rinfs_file_block_path(
+        context->mount, logical, &depth, indices);
+    if (err != RINFS_OK) return RINFS_ERR_OVERFLOW;
+    return rinfs_fallocate_shift_set_block(context, logical, physical);
+}
+
+static int rinfs_fallocate_shift_walk_tree(
+    RinFS_FallocateShiftContext* context, uint64_t block,
+    uint32_t depth, uint64_t logical_base) {
+    RinFS_FallocateShiftVisited* visited;
+    uint32_t block_size;
+    uint64_t ptrs_per_block;
+    uint64_t child_capacity;
+    uint64_t* pointers;
+    int err;
+    if (!context || !context->mount || !context->journal ||
+        !context->updated_inode || depth == 0u || depth > 3u ||
+        !rinfs_valid_allocated_block(context->mount, block))
+        return RINFS_ERR_CORRUPT;
+    for (visited = context->visited; visited; visited = visited->next)
+        if (visited->block == block) return RINFS_ERR_CORRUPT;
+    visited = (RinFS_FallocateShiftVisited*)rinfs_malloc(sizeof(*visited));
+    if (!visited) return RINFS_ERR_NOMEM;
+    visited->block = block;
+    visited->next = context->visited;
+    context->visited = visited;
+    err = rinfs_fallocate_shift_retire(context->journal, block, 0);
+    if (err != RINFS_OK) return err;
+
+    block_size = context->mount->sb.s_block_size;
+    ptrs_per_block = block_size / sizeof(uint64_t);
+    child_capacity = depth == 1u ? 1u
+        : depth == 2u ? ptrs_per_block
+                      : ptrs_per_block * ptrs_per_block;
+    pointers = (uint64_t*)rinfs_malloc(block_size);
+    if (!pointers) return RINFS_ERR_NOMEM;
+    err = rinfs_block_read(context->mount, block, pointers);
+    if (err != RINFS_OK) {
+        rinfs_free(pointers);
+        return err;
+    }
+    for (uint64_t index = 0u; index < ptrs_per_block; ++index) {
+        uint64_t child = pointers[index];
+        uint64_t child_base;
+        if (child == 0u) continue;
+        if (!rinfs_valid_allocated_block(context->mount, child)) {
+            err = RINFS_ERR_CORRUPT;
+            break;
+        }
+        child_base = logical_base + index * child_capacity;
+        err = depth == 1u
+            ? rinfs_fallocate_shift_map_data(context, child_base, child)
+            : rinfs_fallocate_shift_walk_tree(
+                  context, child, depth - 1u, child_base);
+        if (err != RINFS_OK) break;
+    }
+    rinfs_free(pointers);
+    return err;
+}
+
+static int rinfs_fallocate_shift_build_map(
+    RinFS_Mount* mount, RinFS_Inode* source, RinFS_Inode* updated,
+    RinFS_PreallocateJournal* journal, uint64_t first_block,
+    uint64_t range_blocks, int insert_range) {
+    RinFS_FallocateShiftContext context;
+    uint64_t ptrs_per_block;
+    uint64_t double_base;
+    uint64_t triple_base;
+    int err;
+    if (!mount || !source || !updated || !journal || range_blocks == 0u)
+        return RINFS_ERR_INVAL;
+    rinfs_memset(&context, 0, sizeof(context));
+    context.mount = mount;
+    context.journal = journal;
+    context.updated_inode = updated;
+    context.first_block = first_block;
+    context.range_blocks = range_blocks;
+    context.insert_range = insert_range;
+    rinfs_memset(updated->i_block, 0, sizeof(updated->i_block));
+    updated->i_indirect1 = 0u;
+    updated->i_indirect2 = 0u;
+    updated->i_indirect3 = 0u;
+    updated->i_blocks = 0u;
+
+    for (uint64_t logical = 0u; logical < RINFS_DIRECT_BLOCKS; ++logical) {
+        if (source->i_block[logical] == 0u) continue;
+        err = rinfs_fallocate_shift_map_data(
+            &context, logical, source->i_block[logical]);
+        if (err != RINFS_OK) goto done;
+    }
+    ptrs_per_block = mount->sb.s_block_size / sizeof(uint64_t);
+    double_base = RINFS_DIRECT_BLOCKS + ptrs_per_block;
+    triple_base = double_base + ptrs_per_block * ptrs_per_block;
+    if (source->i_indirect1 != 0u) {
+        err = rinfs_fallocate_shift_walk_tree(
+            &context, source->i_indirect1, 1u, RINFS_DIRECT_BLOCKS);
+        if (err != RINFS_OK) goto done;
+    }
+    if (source->i_indirect2 != 0u) {
+        err = rinfs_fallocate_shift_walk_tree(
+            &context, source->i_indirect2, 2u, double_base);
+        if (err != RINFS_OK) goto done;
+    }
+    if (source->i_indirect3 != 0u) {
+        err = rinfs_fallocate_shift_walk_tree(
+            &context, source->i_indirect3, 3u, triple_base);
+        if (err != RINFS_OK) goto done;
+    }
+    err = RINFS_OK;
+done:
+    while (context.visited) {
+        RinFS_FallocateShiftVisited* next = context.visited->next;
+        rinfs_free(context.visited);
+        context.visited = next;
+    }
+    return err;
 }
 
 static int rinfs_fallocate_internal(
@@ -26409,6 +26791,254 @@ done:
     return rinfs_content_unlock_status(operation_error, content_unlock_error);
 }
 
+static int rinfs_fallocate_shift_internal(
+    RinFS_File* file, uint64_t offset, uint64_t length,
+    int insert_range) {
+    RinFS_CloseReferenceOperationLease operation;
+    RinFS_ContentMutation mutation;
+    RinFS_PreallocateJournal journal = {0};
+    RinFS_Inode observed;
+    RinFS_Inode working;
+    RinFS_Inode prepared_inode;
+    RinFS_Inode updated;
+    uint64_t end;
+    uint64_t new_size;
+    uint64_t first_block;
+    uint64_t range_blocks;
+    uint32_t block_size;
+    int operation_error;
+    int release_error;
+    int content_unlock_error = RINFS_OK;
+    int mutation_started = 0;
+    int journal_ready = 0;
+    int inode_write_attempted = 0;
+
+    if (insert_range != 0 && insert_range != 1) return RINFS_ERR_INVAL;
+    operation_error = rinfs_file_operation_begin(file, &operation);
+    if (operation_error != RINFS_OK) return operation_error;
+    if (length == 0u || offset > UINT64_MAX - length) {
+        operation_error = length == 0u
+            ? RINFS_ERR_INVAL : RINFS_ERR_OVERFLOW;
+        goto done;
+    }
+    if (!file->mount || !file->mount->mounted) {
+        operation_error = RINFS_ERR_INVAL;
+        goto done;
+    }
+    operation_error = rinfs_mount_prepare_write(file->mount);
+    if (operation_error != RINFS_OK) goto done;
+    block_size = file->mount->sb.s_block_size;
+    if (block_size == 0u) {
+        operation_error = RINFS_ERR_CORRUPT;
+        goto done;
+    }
+    if ((offset % block_size) != 0u || (length % block_size) != 0u) {
+        operation_error = RINFS_ERR_INVAL;
+        goto done;
+    }
+    end = offset + length;
+    first_block = offset / block_size;
+    range_blocks = length / block_size;
+    operation_error = rinfs_inode_read(
+        file->mount, file->inode_num, &observed);
+    if (operation_error != RINFS_OK) goto done;
+    if ((observed.i_mode >> 12u) != RINFS_FT_REG) {
+        operation_error = RINFS_ERR_INVAL;
+        goto done;
+    }
+    if (insert_range) {
+        if (offset >= observed.i_size) {
+            operation_error = RINFS_ERR_INVAL;
+            goto done;
+        }
+        if (length > UINT64_MAX - observed.i_size) {
+            operation_error = RINFS_ERR_OVERFLOW;
+            goto done;
+        }
+        new_size = observed.i_size + length;
+    } else {
+        if (offset >= observed.i_size || end >= observed.i_size) {
+            operation_error = RINFS_ERR_INVAL;
+            goto done;
+        }
+        new_size = observed.i_size - length;
+    }
+    {
+        uint32_t depth;
+        uint64_t indices[3];
+        operation_error = rinfs_file_block_path(
+            file->mount, (new_size - 1u) / block_size, &depth, indices);
+        if (operation_error == RINFS_ERR_INVAL)
+            operation_error = RINFS_ERR_OVERFLOW;
+        if (operation_error != RINFS_OK) goto done;
+    }
+
+    operation_error = rinfs_page_cache_sync(
+        file->mount, file->inode_num, 0u, 0u, 0u, 0u, 0u);
+    if (operation_error == RINFS_ERR_PENDING)
+        operation_error = RINFS_ERR_BUSY;
+    if (operation_error != RINFS_OK) goto done;
+    operation_error = rinfs_page_cache_invalidate_inode(
+        file->mount, file->inode_num);
+    if (operation_error == RINFS_ERR_PENDING)
+        operation_error = RINFS_ERR_BUSY;
+    if (operation_error != RINFS_OK) goto done;
+
+    operation_error = rinfs_content_mutation_begin(
+        file->mount, file->inode_num, RINFS_FT_REG, &mutation);
+    if (operation_error != RINFS_OK) goto done;
+    working = mutation.inode;
+    if (insert_range) {
+        if (offset >= working.i_size) {
+            operation_error = RINFS_ERR_INVAL;
+            goto before_prepare;
+        }
+        if (length > UINT64_MAX - working.i_size) {
+            operation_error = RINFS_ERR_OVERFLOW;
+            goto before_prepare;
+        }
+        new_size = working.i_size + length;
+    } else {
+        if (offset >= working.i_size || end >= working.i_size) {
+            operation_error = RINFS_ERR_INVAL;
+            goto before_prepare;
+        }
+        new_size = working.i_size - length;
+    }
+    {
+        uint32_t depth;
+        uint64_t indices[3];
+        operation_error = rinfs_file_block_path(
+            file->mount, (new_size - 1u) / block_size, &depth, indices);
+        if (operation_error == RINFS_ERR_INVAL)
+            operation_error = RINFS_ERR_OVERFLOW;
+        if (operation_error != RINFS_OK) goto before_prepare;
+    }
+    operation_error = rinfs_content_mutation_prepare(&mutation);
+    if (operation_error != RINFS_OK) goto before_prepare;
+    working = mutation.inode;
+    prepared_inode = mutation.inode;
+    operation_error = rinfs_page_cache_invalidate_stale(
+        file->mount, file->inode_num, working.i_generation,
+        rinfs_inode_content_version_raw(&working));
+    if (operation_error == RINFS_ERR_PENDING)
+        operation_error = RINFS_ERR_BUSY;
+    if (operation_error != RINFS_OK) {
+        rinfs_content_mutation_started(&mutation);
+        rinfs_content_mutation_poison(&mutation);
+        goto after_prepare;
+    }
+    rinfs_content_mutation_started(&mutation);
+    mutation_started = 1;
+    operation_error = rinfs_preallocate_journal_init(&journal);
+    if (operation_error != RINFS_OK) goto rollback;
+    journal_ready = 1;
+
+    updated = working;
+    operation_error = rinfs_fallocate_shift_build_map(
+        file->mount, &working, &updated, &journal, first_block,
+        range_blocks, insert_range);
+    if (operation_error != RINFS_OK) goto rollback;
+    updated.i_size = new_size;
+    rinfs_touch_modified(&updated);
+    operation_error = rinfs_inode_recount_blocks(file->mount, &updated);
+    if (operation_error != RINFS_OK) goto rollback;
+
+    inode_write_attempted = 1;
+    operation_error = rinfs_inode_write_content(
+        file->mount, file->inode_num, &updated);
+    if (operation_error != RINFS_OK) goto rollback;
+    operation_error = rinfs_content_mutation_finalize(&mutation, &updated);
+    if (operation_error != RINFS_OK) goto rollback;
+    if (((file->mount->mount_flags & RINFS_MNT_SYNC) != 0u) ||
+        ((updated.i_flags & RINFS_IFLG_SYNC) != 0u)) {
+        operation_error = rinfs_sync(file->mount);
+        if (operation_error != RINFS_OK) goto rollback;
+    }
+    file->inode = mutation.inode;
+    operation_error = rinfs_preallocate_release_retired(
+        file->mount, &journal);
+    rinfs_preallocate_journal_destroy(&journal);
+    journal_ready = 0;
+    goto after_prepare;
+
+rollback:
+    if (inode_write_attempted) {
+        RinFS_Inode verify;
+        int restore_error = rinfs_inode_write_content(
+            file->mount, file->inode_num, &prepared_inode);
+        if (restore_error == RINFS_OK)
+            restore_error = disk_flush(file->mount);
+        if (restore_error == RINFS_OK)
+            restore_error = rinfs_inode_read(
+                file->mount, file->inode_num, &verify);
+        if (restore_error == RINFS_OK &&
+            (verify.i_size != prepared_inode.i_size ||
+             verify.i_blocks != prepared_inode.i_blocks ||
+             verify.i_indirect1 != prepared_inode.i_indirect1 ||
+             verify.i_indirect2 != prepared_inode.i_indirect2 ||
+             verify.i_indirect3 != prepared_inode.i_indirect3 ||
+             rinfs_memcmp(verify.i_block, prepared_inode.i_block,
+                          sizeof(verify.i_block)) != 0))
+            restore_error = RINFS_ERR_IO;
+        if (restore_error != RINFS_OK) {
+            rinfs_mount_force_readonly(file->mount);
+            if (journal_ready) {
+                rinfs_preallocate_journal_destroy(&journal);
+                journal_ready = 0;
+            }
+            rinfs_content_mutation_poison(&mutation);
+            if (operation_error == RINFS_OK)
+                operation_error = restore_error;
+            goto after_prepare;
+        }
+    }
+    if (journal_ready) {
+        int rollback_error = rinfs_preallocate_rollback(
+            file->mount, &journal);
+        journal_ready = 0;
+        if (rollback_error != RINFS_OK) {
+            rinfs_content_mutation_poison(&mutation);
+            if (operation_error == RINFS_OK)
+                operation_error = rollback_error;
+            goto after_prepare;
+        }
+    }
+    if (mutation_started) {
+        int finalize_error = rinfs_content_mutation_finalize(
+            &mutation, &prepared_inode);
+        if (finalize_error != RINFS_OK) {
+            rinfs_mount_force_readonly(file->mount);
+            rinfs_content_mutation_poison(&mutation);
+            if (operation_error == RINFS_OK)
+                operation_error = finalize_error;
+        }
+    }
+
+after_prepare:
+    rinfs_keep_first_error(
+        &content_unlock_error, rinfs_content_mutation_end(&mutation));
+    if (operation_error != RINFS_OK) {
+        int refresh_error = rinfs_inode_read(
+            file->mount, file->inode_num, &file->inode);
+        if (refresh_error != RINFS_OK) {
+            rinfs_mount_force_readonly(file->mount);
+            operation_error = refresh_error;
+        }
+    }
+    goto done;
+
+before_prepare:
+    rinfs_keep_first_error(
+        &content_unlock_error, rinfs_content_mutation_end(&mutation));
+done:
+    if (operation_error == RINFS_ERR_PENDING)
+        operation_error = RINFS_ERR_BUSY;
+    release_error = rinfs_close_ref_end_operation(&operation);
+    if (release_error != RINFS_OK) return release_error;
+    return rinfs_content_unlock_status(operation_error, content_unlock_error);
+}
+
 int rinfs_fallocate(RinFS_File* file, uint64_t offset, uint64_t length) {
     return rinfs_fallocate_internal(file, offset, length, 0, 0, 0);
 }
@@ -26427,6 +27057,16 @@ int rinfs_fallocate_zero_range(
 int rinfs_fallocate_punch_hole(
     RinFS_File* file, uint64_t offset, uint64_t length) {
     return rinfs_fallocate_internal(file, offset, length, 1, 0, 1);
+}
+
+int rinfs_fallocate_collapse_range(
+    RinFS_File* file, uint64_t offset, uint64_t length) {
+    return rinfs_fallocate_shift_internal(file, offset, length, 0);
+}
+
+int rinfs_fallocate_insert_range(
+    RinFS_File* file, uint64_t offset, uint64_t length) {
+    return rinfs_fallocate_shift_internal(file, offset, length, 1);
 }
 
 /* Read directory entries */
@@ -29644,9 +30284,13 @@ int rinfs_link_tmpfile(RinFS_File* file, uint64_t dir_ino,
 /* Create a symbolic link */
 static int rinfs_symlink_owned_unscoped(
     RinFS_Mount* mount, uint64_t dir_ino, const char* name,
-    const char* target, uint32_t uid, uint32_t gid) {
+    const char* target, uint32_t uid, uint32_t gid,
+    const uint8_t* operation_token, uint64_t* created_ino,
+    uint32_t* created_generation) {
     RinFS_Inode parent_inode;
     RinFS_Inode link_inode;
+    if (created_ino) *created_ino = 0u;
+    if (created_generation) *created_generation = 0u;
     if (!mount || !mount->mounted || !name || !target || dir_ino == 0u ||
         dir_ino > mount->sb.s_inode_count)
         return RINFS_ERR_INVAL;
@@ -29655,6 +30299,7 @@ static int rinfs_symlink_owned_unscoped(
 
     int err = rinfs_inode_read(mount, dir_ino, &parent_inode);
     if (err != RINFS_OK) return err;
+
     if ((parent_inode.i_mode >> 12u) != RINFS_FT_DIR)
         return RINFS_ERR_NOTDIR;
     if ((parent_inode.i_flags & (RINFS_IFLG_IMMUT | RINFS_IFLG_APPEND)) != 0u)
@@ -29676,6 +30321,11 @@ static int rinfs_symlink_owned_unscoped(
     if (err == RINFS_OK) return RINFS_ERR_EXIST;
     if (err != RINFS_ERR_NOENT) return err;
 
+    if (operation_token != NULL) {
+        err = rinfs_enable_operation_owner_tokens(mount);
+        if (err != RINFS_OK) return err;
+    }
+
     /* Allocate new inode for symlink */
     uint64_t link_ino;
     err = rinfs_inode_alloc(mount, &link_ino);
@@ -29693,6 +30343,14 @@ static int rinfs_symlink_owned_unscoped(
     link_inode.i_links = 1;
     link_inode.i_size = target_len;
     rinfs_touch_created(&link_inode);
+    if (operation_token != NULL) {
+        err = rinfs_inode_set_operation_owner_token(
+            mount, &link_inode, operation_token);
+        if (err != RINFS_OK) {
+            rinfs_inode_free(mount, link_ino);
+            return err;
+        }
+    }
 
     /* Store symlink target in data blocks or inline */
     if (target_len < sizeof(link_inode.i_block)) {
@@ -29750,6 +30408,9 @@ static int rinfs_symlink_owned_unscoped(
         rinfs_inode_free(mount, link_ino);
         return err;
     }
+
+    if (created_ino) *created_ino = link_ino;
+    if (created_generation) *created_generation = link_inode.i_generation;
 
     return RINFS_OK;
 }
@@ -32518,7 +33179,7 @@ int rinfs_createat_owned(RinFS_Mount* mount, uint64_t parent_ino,
     error = rinfs_mount_operation_scope_begin(mount, &operation);
     if (error != RINFS_OK) return error;
     error = rinfs_createat_owned_unscoped(
-        mount, parent_ino, name, mode, uid, gid, created_ino, NULL);
+        mount, parent_ino, name, mode, uid, gid, NULL, created_ino, NULL);
     return rinfs_mount_operation_scope_finish(&operation, error);
 }
 
@@ -32537,7 +33198,27 @@ int rinfs_createat_owned_identity(
     error = rinfs_mount_operation_scope_begin(mount, &operation);
     if (error != RINFS_OK) return error;
     error = rinfs_createat_owned_unscoped(
-        mount, parent_ino, name, mode, uid, gid, created_ino,
+        mount, parent_ino, name, mode, uid, gid, NULL, created_ino,
+        created_generation);
+    return rinfs_mount_operation_scope_finish(&operation, error);
+}
+
+int rinfs_createat_owned_operation_token(
+    RinFS_Mount* mount, uint64_t parent_ino, const char* name,
+    uint16_t mode, uint32_t uid, uint32_t gid, const uint8_t token[16],
+    uint64_t* created_ino, uint32_t* created_generation) {
+    RinFS_MountOperationScope operation = {0};
+    int error;
+    if (created_ino) *created_ino = 0u;
+    if (created_generation) *created_generation = 0u;
+    if (!mount || !mount->mounted || !name || !token || !created_ino ||
+        !created_generation || parent_ino == 0u ||
+        parent_ino > mount->sb.s_inode_count)
+        return RINFS_ERR_INVAL;
+    error = rinfs_mount_operation_scope_begin(mount, &operation);
+    if (error != RINFS_OK) return error;
+    error = rinfs_createat_owned_unscoped(
+        mount, parent_ino, name, mode, uid, gid, token, created_ino,
         created_generation);
     return rinfs_mount_operation_scope_finish(&operation, error);
 }
@@ -32610,7 +33291,27 @@ int rinfs_mkdirat_owned(RinFS_Mount* mount, uint64_t parent_ino,
     error = rinfs_mount_operation_scope_begin(mount, &operation);
     if (error != RINFS_OK) return error;
     error = rinfs_mkdirat_owned_unscoped(
-        mount, parent_ino, name, mode, uid, gid, created_ino);
+        mount, parent_ino, name, mode, uid, gid, NULL, created_ino, NULL);
+    return rinfs_mount_operation_scope_finish(&operation, error);
+}
+
+int rinfs_mkdirat_owned_operation_token(
+    RinFS_Mount* mount, uint64_t parent_ino, const char* name,
+    uint16_t mode, uint32_t uid, uint32_t gid, const uint8_t token[16],
+    uint64_t* created_ino, uint32_t* created_generation) {
+    RinFS_MountOperationScope operation = {0};
+    int error;
+    if (created_ino) *created_ino = 0u;
+    if (created_generation) *created_generation = 0u;
+    if (!mount || !mount->mounted || !name || !token || !created_ino ||
+        !created_generation || parent_ino == 0u ||
+        parent_ino > mount->sb.s_inode_count)
+        return RINFS_ERR_INVAL;
+    error = rinfs_mount_operation_scope_begin(mount, &operation);
+    if (error != RINFS_OK) return error;
+    error = rinfs_mkdirat_owned_unscoped(
+        mount, parent_ino, name, mode, uid, gid, token, created_ino,
+        created_generation);
     return rinfs_mount_operation_scope_finish(&operation, error);
 }
 
@@ -32782,7 +33483,27 @@ int rinfs_symlink_owned(RinFS_Mount* mount, uint64_t dir_ino,
     error = rinfs_mount_operation_scope_begin(mount, &operation);
     if (error != RINFS_OK) return error;
     error = rinfs_symlink_owned_unscoped(
-        mount, dir_ino, name, target, uid, gid);
+        mount, dir_ino, name, target, uid, gid, NULL, NULL, NULL);
+    return rinfs_mount_operation_scope_finish(&operation, error);
+}
+
+int rinfs_symlink_owned_operation_token(
+    RinFS_Mount* mount, uint64_t dir_ino, const char* name,
+    const char* target, uint32_t uid, uint32_t gid, const uint8_t token[16],
+    uint64_t* created_ino, uint32_t* created_generation) {
+    RinFS_MountOperationScope operation = {0};
+    int error;
+    if (created_ino) *created_ino = 0u;
+    if (created_generation) *created_generation = 0u;
+    if (!mount || !mount->mounted || !name || !target || !token ||
+        !created_ino || !created_generation || dir_ino == 0u ||
+        dir_ino > mount->sb.s_inode_count)
+        return RINFS_ERR_INVAL;
+    error = rinfs_mount_operation_scope_begin(mount, &operation);
+    if (error != RINFS_OK) return error;
+    error = rinfs_symlink_owned_unscoped(
+        mount, dir_ino, name, target, uid, gid, token, created_ino,
+        created_generation);
     return rinfs_mount_operation_scope_finish(&operation, error);
 }
 
@@ -32910,6 +33631,39 @@ int rinfs_inode_read(RinFS_Mount* mount, uint64_t ino, RinFS_Inode* inode) {
     if (error != RINFS_OK && inode)
         rinfs_memset(inode, 0, sizeof(*inode));
     return error;
+}
+
+int rinfs_operation_owner_token_get(RinFS_Mount* mount,
+                                    uint64_t inode_number,
+                                    uint32_t expected_generation,
+                                    uint8_t token_out[16]) {
+    RinFS_Inode inode;
+    uint32_t magic;
+    int error;
+    if (token_out != NULL)
+        rinfs_memset(token_out, 0, RINFS_INODE_OPERATION_OWNER_TOKEN_BYTES);
+    if (mount == NULL || !mount->mounted || inode_number == 0u ||
+        inode_number > mount->sb.s_inode_count || expected_generation == 0u ||
+        token_out == NULL)
+        return RINFS_ERR_INVAL;
+    error = rinfs_inode_read(mount, inode_number, &inode);
+    if (error != RINFS_OK) return error;
+    if (inode.i_generation == 0u ||
+        inode.i_generation != expected_generation)
+        return RINFS_ERR_STALE;
+    if (!rinfs_inode_time_metadata_valid(mount, &inode))
+        return RINFS_ERR_CORRUPT;
+    magic = rinfs_inode_time_read_u32(
+        inode.i_reserved + RINFS_INODE_OPERATION_OWNER_TOKEN_MAGIC_OFFSET);
+    if (!rinfs_mount_has_operation_owner_tokens(mount) || magic == 0u)
+        return 0;
+    if (!rinfs_inode_operation_owner_token_valid(mount, &inode))
+        return RINFS_ERR_CORRUPT;
+    rinfs_memcpy(token_out,
+                 inode.i_reserved +
+                     RINFS_INODE_OPERATION_OWNER_TOKEN_DATA_OFFSET,
+                 RINFS_INODE_OPERATION_OWNER_TOKEN_BYTES);
+    return 1;
 }
 
 RINFS_MOUNT_SCOPE_WRAPPER(

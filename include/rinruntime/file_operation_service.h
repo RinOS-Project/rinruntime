@@ -148,6 +148,19 @@ typedef struct RinRuntimeFileOperationServiceControlV1 {
     char state_directory[RINRUNTIME_FILE_OPERATION_PATH_MAX];
 } RinRuntimeFileOperationServiceControlV1;
 
+/* The broker supplies one fresh ticket for each journal entry that needs
+ * protected-location authority. Entries that need none, and array slots past
+ * the journal's entry_count, must be all zero. */
+#define RINRUNTIME_FILE_OPERATION_SERVICE_AUTHORIZED_RECOVER_VERSION 1u
+typedef struct RinRuntimeFileOperationServiceAuthorizedRecoverV1 {
+    uint32_t struct_size;
+    uint16_t version;
+    uint16_t reserved;
+    RinRuntimeFileOperationServiceControlV1 control;
+    RinRuntimeFileOperationServiceAuthorizationV1
+        authorization[RINRUNTIME_FILE_OPERATION_SERVICE_ENTRY_LIMIT];
+} RinRuntimeFileOperationServiceAuthorizedRecoverV1;
+
 typedef struct RinRuntimeFileOperationServiceReplyV1 {
     uint32_t struct_size;
     uint16_t version;
@@ -230,6 +243,12 @@ rinruntime_file_operation_service_submit_authorized(
     const RinRuntimeFileOperationServiceSubmitV1* request,
     const RinRuntimeFileOperationServiceEntryV1* entries,
     const RinRuntimeFileOperationServiceAuthorizationV1* authorization,
+    RinRuntimeFileOperationServiceReplyV1* reply_out);
+RinRuntimeFileOperationServiceStatus
+rinruntime_file_operation_service_recover_authorized(
+    RinRuntimeFileOperationServiceBrokerClientV1* client,
+    const RinRuntimeFileOperationServiceControlV1* request,
+    const RinRuntimeFileOperationServiceAuthorizationV1* authorizations,
     RinRuntimeFileOperationServiceReplyV1* reply_out);
 
 #ifdef __cplusplus

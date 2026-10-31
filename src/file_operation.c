@@ -53,7 +53,20 @@ static RinRuntimeFileOperationResult file_operation_result(int result)
         return RINRUNTIME_FILE_OPERATION_DEVICE_REMOVED;
     if (result == RINRUNTIME_FILE_OPERATION_BACKEND_IDENTITY_MISMATCH)
         return RINRUNTIME_FILE_OPERATION_CONFLICT;
+    if (result == RINRUNTIME_FILE_OPERATION_BACKEND_PATH_EXISTS)
+        return RINRUNTIME_FILE_OPERATION_CONFLICT;
     return RINRUNTIME_FILE_OPERATION_IO_FAILED;
+}
+
+static int file_operation_token_valid(const uint8_t token[16]) {
+    return token != 0 && !file_operation_bytes_zero(token, 16u);
+}
+
+static int file_operation_token_matches(
+    const RinRuntimeFileOperationObjectIdentityV1* identity,
+    const uint8_t token[16]) {
+    return identity != 0 && file_operation_token_valid(token) &&
+           memcmp(identity->operation_token, token, 16u) == 0;
 }
 
 static int file_operation_identity_valid(
@@ -70,14 +83,33 @@ static int file_operation_identity_equal(
     return file_operation_identity_valid(left) &&
            file_operation_identity_valid(right) &&
            left->device == right->device && left->inode == right->inode &&
-           left->generation == right->generation;
+           left->generation == right->generation &&
+           memcmp(left->operation_token, right->operation_token,
+                  sizeof(left->operation_token)) == 0;
+}
+
+static int file_operation_identity_has_token(
+    const RinRuntimeFileOperationObjectIdentityV1* identity) {
+    return identity != 0 &&
+           !file_operation_bytes_zero(identity->operation_token,
+                                      sizeof(identity->operation_token));
+}
+
+static int file_operation_identity_intent_valid(
+    const RinRuntimeFileOperationObjectIdentityV1* identity) {
+    return file_operation_identity_valid(identity) ||
+           (identity != 0 && identity->device == 0u &&
+            identity->inode == 0u && identity->generation == 0u &&
+            file_operation_identity_has_token(identity));
 }
 
 static int file_operation_identity_empty(
     const RinRuntimeFileOperationObjectIdentityV1* identity)
 {
     return identity != 0 && identity->device == 0u && identity->inode == 0u &&
-           identity->generation == 0u;
+           identity->generation == 0u &&
+           file_operation_bytes_zero(identity->operation_token,
+                                     sizeof(identity->operation_token));
 }
 
 static int file_operation_copy(char* output, uint32_t capacity, const char* input)
@@ -393,9 +425,12 @@ static int file_operation_backend_valid(const RinRuntimeFileOperationBackendV1* 
         (backend->seek == 0) != (backend->file_size == 0)) return 0;
     if (kind == RINRUNTIME_FILE_OPERATION_COPY)
         return backend->open_read != 0 && backend->open_create_exclusive != 0 &&
+               backend->random_operation_token != 0 &&
+               backend->open_create_exclusive_with_token != 0 &&
                backend->read != 0 && backend->write != 0 &&
                backend->sync_file != 0 && backend->close != 0 &&
-               backend->mkdir != 0 && backend->publish_no_replace != 0 &&
+               backend->mkdir != 0 && backend->mkdir_with_token != 0 &&
+               backend->publish_no_replace != 0 &&
                backend->path_identity != 0 && backend->handle_identity != 0 &&
                backend->remove_file_expected != 0 &&
                backend->remove_directory_expected != 0;
@@ -431,6 +466,13 @@ static int file_operation_entry_valid(const RinRuntimeFileOperationEntryV1* entr
                !file_operation_identity_valid(&entry->backup_identity)) {
         return 0;
     }
+    if ((entry->flags & (RINRUNTIME_FILE_OPERATION_ENTRY_FLAG_CREATED |
+                         RINRUNTIME_FILE_OPERATION_ENTRY_FLAG_APPLIED)) != 0u &&
+        !file_operation_identity_valid(&entry->object_identity))
+        return 0;
+    if (!file_operation_identity_empty(&entry->object_identity) &&
+        !file_operation_identity_intent_valid(&entry->object_identity))
+        return 0;
     return 1;
 }
 
@@ -531,13 +573,13 @@ static int file_operation_close_files(RinRuntimeFileOperationV1* operation)
 
 static int file_operation_cleanup_created_path(
     RinRuntimeFileOperationV1* operation, const char* path, int directory,
-    const RinRuntimeFileOperationObjectIdentityV1* identity,
+    RinRuntimeFileOperationObjectIdentityV1* identity,
     uint32_t* cleanup_state)
 {
     int state;
     int result;
     if (!operation || !path || !identity || !cleanup_state ||
-        !file_operation_identity_valid(identity))
+        !file_operation_identity_intent_valid(identity))
         return 0;
     if (*cleanup_state == RINRUNTIME_FILE_OPERATION_CLEANUP_NONE)
         *cleanup_state = RINRUNTIME_FILE_OPERATION_CLEANUP_REMOVE_PENDING;
@@ -550,6 +592,20 @@ static int file_operation_cleanup_created_path(
                 RINRUNTIME_FILE_OPERATION_OK)
                 return 0;
         } else if (state == 1) {
+            if (!file_operation_identity_valid(identity)) {
+                RinRuntimeFileOperationObjectIdentityV1 current;
+                memset(&current, 0, sizeof(current));
+                result = operation->backend.path_identity(
+                    operation->backend.context, path, &current);
+                if (result != 0 || !file_operation_identity_valid(&current) ||
+                    memcmp(current.operation_token, identity->operation_token,
+                           sizeof(identity->operation_token)) != 0)
+                    return 0;
+                *identity = current;
+                if (file_operation_checkpoint(operation) !=
+                    RINRUNTIME_FILE_OPERATION_OK)
+                    return 0;
+            }
             *cleanup_state = RINRUNTIME_FILE_OPERATION_CLEANUP_REMOVE_IN_PROGRESS;
             if (file_operation_checkpoint(operation) !=
                 RINRUNTIME_FILE_OPERATION_OK)
@@ -732,6 +788,37 @@ static int file_operation_rollback_step(RinRuntimeFileOperationV1* operation)
             if (entry->replacement_state ==
                 RINRUNTIME_FILE_OPERATION_REPLACEMENT_NONE)
                 --operation->rollback_index;
+            return 1;
+        }
+        if (file_operation_identity_has_token(&entry->object_identity)) {
+            int destination_state = operation->backend.path_state(
+                operation->backend.context, entry->destination_path);
+            if (destination_state < 0) return -1;
+            if (destination_state == 0) {
+                memset(&entry->object_identity, 0,
+                       sizeof(entry->object_identity));
+                if (file_operation_checkpoint(operation) !=
+                    RINRUNTIME_FILE_OPERATION_OK)
+                    return -1;
+                --operation->rollback_index;
+                return 1;
+            }
+            memset(&current_identity, 0, sizeof(current_identity));
+            result = operation->backend.path_identity(
+                operation->backend.context, entry->destination_path,
+                &current_identity);
+            if (result != 0 || !file_operation_identity_valid(&current_identity) ||
+                !file_operation_token_matches(
+                    &current_identity, entry->object_identity.operation_token) ||
+                (file_operation_identity_valid(&entry->object_identity) &&
+                 !file_operation_identity_equal(
+                     &current_identity, &entry->object_identity)))
+                return -1;
+            entry->object_identity = current_identity;
+            entry->flags |= RINRUNTIME_FILE_OPERATION_ENTRY_FLAG_CREATED;
+            if (file_operation_checkpoint(operation) !=
+                RINRUNTIME_FILE_OPERATION_OK)
+                return -1;
             return 1;
         }
         if ((entry->flags & RINRUNTIME_FILE_OPERATION_ENTRY_FLAG_APPLIED) != 0u) {
@@ -1009,7 +1096,9 @@ RinRuntimeFileOperationResult rinruntime_file_operation_start(
         }
     }
     if ((has_symlink != 0u && (backend->read_symlink == 0 ||
-                               backend->create_symlink == 0)) ||
+                               backend->create_symlink == 0 ||
+                               backend->create_symlink_with_token == 0 ||
+                               backend->random_operation_token == 0)) ||
         (has_hardlink != 0u && backend->link_no_replace == 0))
         return RINRUNTIME_FILE_OPERATION_UNSUPPORTED;
     snapshot_result = file_operation_snapshot_create(
@@ -1097,8 +1186,6 @@ static RinRuntimeFileOperationResult file_operation_open_copy(
 {
     int result;
     uint64_t source_size = 0u;
-    if (!file_operation_temporary_path(operation, entry->destination_path))
-        return RINRUNTIME_FILE_OPERATION_INVALID_ARGUMENT;
     result = operation->backend.open_read(operation->backend.context,
                                           entry->source_path,
                                           &operation->source_handle);
@@ -1115,29 +1202,74 @@ static RinRuntimeFileOperationResult file_operation_open_copy(
                                : file_operation_result(result);
         }
     }
-    result = operation->backend.open_create_exclusive(operation->backend.context,
-                                                       operation->temporary_path,
-                                                       &operation->temporary_handle);
-    if (result != 0 || operation->temporary_handle == 0u) {
-        (void)file_operation_close_files(operation);
-        return result == 0 ? RINRUNTIME_FILE_OPERATION_IO_FAILED
-                           : file_operation_result(result);
+    for (uint32_t attempt = 0u; attempt < 16u; ++attempt) {
+        uint8_t token[16];
+        RinRuntimeFileOperationObjectIdentityV1 current_identity;
+        if (!file_operation_temporary_path(operation, entry->destination_path)) {
+            (void)file_operation_close_files(operation);
+            return RINRUNTIME_FILE_OPERATION_INVALID_ARGUMENT;
+        }
+        memset(token, 0, sizeof(token));
+        result = operation->backend.random_operation_token(
+            operation->backend.context, token);
+        if (result != 0 || !file_operation_token_valid(token)) {
+            (void)file_operation_close_files(operation);
+            return RINRUNTIME_FILE_OPERATION_IO_FAILED;
+        }
+        memset(&operation->temporary_identity, 0,
+               sizeof(operation->temporary_identity));
+        memcpy(operation->temporary_identity.operation_token, token,
+               sizeof(token));
+        operation->temporary_created = 1u;
+        result = file_operation_checkpoint(operation);
+        if (result != RINRUNTIME_FILE_OPERATION_OK) {
+            operation->temporary_created = 0u;
+            operation->temporary_path[0] = '\0';
+            memset(&operation->temporary_identity, 0,
+                   sizeof(operation->temporary_identity));
+            (void)file_operation_close_files(operation);
+            return result;
+        }
+        result = operation->backend.open_create_exclusive_with_token(
+            operation->backend.context, operation->temporary_path, token,
+            &operation->temporary_handle);
+        if (result == RINRUNTIME_FILE_OPERATION_BACKEND_PATH_EXISTS) {
+            operation->temporary_created = 0u;
+            operation->temporary_path[0] = '\0';
+            memset(&operation->temporary_identity, 0,
+                   sizeof(operation->temporary_identity));
+            if (file_operation_checkpoint(operation) !=
+                RINRUNTIME_FILE_OPERATION_OK) {
+                (void)file_operation_close_files(operation);
+                return RINRUNTIME_FILE_OPERATION_IO_FAILED;
+            }
+            continue;
+        }
+        if (result != 0 || operation->temporary_handle == 0u) {
+            (void)file_operation_close_files(operation);
+            return result == 0 ? RINRUNTIME_FILE_OPERATION_IO_FAILED
+                               : file_operation_result(result);
+        }
+        operation->file_open = 1u;
+        memset(&current_identity, 0, sizeof(current_identity));
+        result = operation->backend.handle_identity(
+            operation->backend.context, operation->temporary_handle,
+            &current_identity);
+        if (result != 0 || !file_operation_identity_valid(&current_identity) ||
+            !file_operation_token_matches(
+                &current_identity, token))
+            return result == 0 ? RINRUNTIME_FILE_OPERATION_IO_FAILED
+                               : file_operation_result(result);
+        operation->temporary_identity = current_identity;
+        result = file_operation_checkpoint(operation);
+        if (result != RINRUNTIME_FILE_OPERATION_OK) return result;
+        operation->sparse_file_enabled = operation->backend.seek != 0 ? 1u : 0u;
+        operation->sparse_output_sized = 0u;
+        operation->sparse_data_end = 0u;
+        return RINRUNTIME_FILE_OPERATION_IN_PROGRESS;
     }
-    operation->file_open = 1u;
-    operation->temporary_created = 1u;
-    result = operation->backend.handle_identity(
-        operation->backend.context, operation->temporary_handle,
-        &operation->temporary_identity);
-    if (result != 0 || !file_operation_identity_valid(
-                           &operation->temporary_identity))
-        return result == 0 ? RINRUNTIME_FILE_OPERATION_IO_FAILED
-                           : file_operation_result(result);
-    result = file_operation_checkpoint(operation);
-    if (result != RINRUNTIME_FILE_OPERATION_OK) return result;
-    operation->sparse_file_enabled = operation->backend.seek != 0 ? 1u : 0u;
-    operation->sparse_output_sized = 0u;
-    operation->sparse_data_end = 0u;
-    return RINRUNTIME_FILE_OPERATION_IN_PROGRESS;
+    (void)file_operation_close_files(operation);
+    return RINRUNTIME_FILE_OPERATION_CONFLICT;
 }
 
 static RinRuntimeFileOperationResult file_operation_entry_completed(
@@ -1241,6 +1373,7 @@ static RinRuntimeFileOperationResult file_operation_finish_copy(
     RinRuntimeFileOperationV1* operation, RinRuntimeFileOperationEntryV1* entry)
 {
     int result;
+    RinRuntimeFileOperationObjectIdentityV1 current_identity;
     RinRuntimeFileOperationResult sync_result;
     sync_result = file_operation_copy_metadata(operation, entry,
                                                 operation->temporary_path);
@@ -1265,15 +1398,17 @@ static RinRuntimeFileOperationResult file_operation_finish_copy(
     if (file_operation_checkpoint(operation) !=
         RINRUNTIME_FILE_OPERATION_OK)
         return RINRUNTIME_FILE_OPERATION_IO_FAILED;
+    memset(&current_identity, 0, sizeof(current_identity));
     result = operation->backend.path_identity(
         operation->backend.context, entry->destination_path,
-        &operation->temporary_identity);
+        &current_identity);
     if (result != 0 || !file_operation_identity_valid(&entry->object_identity))
         return result == 0 ? RINRUNTIME_FILE_OPERATION_IO_FAILED
                            : file_operation_result(result);
-    if (!file_operation_identity_equal(&operation->temporary_identity,
+    if (!file_operation_identity_equal(&current_identity,
                                        &entry->object_identity))
         return RINRUNTIME_FILE_OPERATION_CONFLICT;
+    operation->temporary_identity = current_identity;
     if (entry->replacement_state ==
         RINRUNTIME_FILE_OPERATION_REPLACEMENT_PUBLISH_IN_PROGRESS)
         entry->replacement_state =
@@ -1305,10 +1440,35 @@ static int file_operation_symlink_target_valid(const char* target, uint32_t size
     return 1;
 }
 
+static RinRuntimeFileOperationResult file_operation_prepare_entry_token(
+    RinRuntimeFileOperationV1* operation,
+    RinRuntimeFileOperationEntryV1* entry) {
+    uint8_t token[16];
+    int result;
+    if (file_operation_identity_has_token(&entry->object_identity))
+        return RINRUNTIME_FILE_OPERATION_OK;
+    if (!file_operation_identity_empty(&entry->object_identity))
+        return RINRUNTIME_FILE_OPERATION_IO_FAILED;
+    memset(token, 0, sizeof(token));
+    result = operation->backend.random_operation_token(
+        operation->backend.context, token);
+    if (result != 0 || !file_operation_token_valid(token))
+        return RINRUNTIME_FILE_OPERATION_IO_FAILED;
+    memcpy(entry->object_identity.operation_token, token, sizeof(token));
+    if (file_operation_checkpoint(operation) !=
+        RINRUNTIME_FILE_OPERATION_OK) {
+        memset(&entry->object_identity, 0, sizeof(entry->object_identity));
+        return RINRUNTIME_FILE_OPERATION_IO_FAILED;
+    }
+    return RINRUNTIME_FILE_OPERATION_OK;
+}
+
 static RinRuntimeFileOperationResult file_operation_create_symlink(
     RinRuntimeFileOperationV1* operation, RinRuntimeFileOperationEntryV1* entry)
 {
     char target[RINRUNTIME_FILE_OPERATION_PATH_MAX];
+    uint8_t owner_token[16];
+    RinRuntimeFileOperationObjectIdentityV1 current_identity;
     uint32_t target_size = 0u;
     int result;
     RinRuntimeFileOperationResult sync_result;
@@ -1322,16 +1482,30 @@ static RinRuntimeFileOperationResult file_operation_create_symlink(
     if (!file_operation_symlink_target_valid(target, target_size))
         return RINRUNTIME_FILE_OPERATION_IO_FAILED;
     target[target_size] = '\0';
-    result = operation->backend.create_symlink(operation->backend.context,
-        target, entry->destination_path);
+    sync_result = file_operation_prepare_entry_token(operation, entry);
+    if (sync_result != RINRUNTIME_FILE_OPERATION_OK) return sync_result;
+    memcpy(owner_token, entry->object_identity.operation_token,
+           sizeof(owner_token));
+    result = operation->backend.create_symlink_with_token(
+        operation->backend.context, target, entry->destination_path,
+        owner_token);
+    if (result == RINRUNTIME_FILE_OPERATION_BACKEND_PATH_EXISTS) {
+        memset(&entry->object_identity, 0, sizeof(entry->object_identity));
+        (void)file_operation_checkpoint(operation);
+        return RINRUNTIME_FILE_OPERATION_CONFLICT;
+    }
     if (result != 0) return file_operation_result(result);
-    entry->flags |= RINRUNTIME_FILE_OPERATION_ENTRY_FLAG_CREATED;
+    memset(&current_identity, 0, sizeof(current_identity));
     result = operation->backend.path_identity(
         operation->backend.context, entry->destination_path,
-        &entry->object_identity);
-    if (result != 0 || !file_operation_identity_valid(&entry->object_identity))
+        &current_identity);
+    if (result != 0 || !file_operation_identity_valid(&current_identity))
         return result == 0 ? RINRUNTIME_FILE_OPERATION_IO_FAILED
                            : file_operation_result(result);
+    if (!file_operation_token_matches(&current_identity, owner_token))
+        return RINRUNTIME_FILE_OPERATION_IO_FAILED;
+    entry->object_identity = current_identity;
+    entry->flags |= RINRUNTIME_FILE_OPERATION_ENTRY_FLAG_CREATED;
     if (file_operation_checkpoint(operation) !=
         RINRUNTIME_FILE_OPERATION_OK)
         return RINRUNTIME_FILE_OPERATION_IO_FAILED;
@@ -1346,22 +1520,40 @@ static RinRuntimeFileOperationResult file_operation_create_hardlink(
     RinRuntimeFileOperationV1* operation, RinRuntimeFileOperationEntryV1* entry)
 {
     const RinRuntimeFileOperationEntryV1* source;
+    RinRuntimeFileOperationObjectIdentityV1 current_identity;
     int result;
     RinRuntimeFileOperationResult sync_result;
     if (operation->backend.link_no_replace == 0 ||
         entry->link_source_index >= operation->entry_index)
         return RINRUNTIME_FILE_OPERATION_UNSUPPORTED;
     source = &operation->entries[entry->link_source_index];
+    if (!file_operation_identity_valid(&source->object_identity) ||
+        !file_operation_identity_has_token(&source->object_identity))
+        return RINRUNTIME_FILE_OPERATION_UNSUPPORTED;
+    entry->object_identity = source->object_identity;
+    if (file_operation_checkpoint(operation) !=
+        RINRUNTIME_FILE_OPERATION_OK)
+        return RINRUNTIME_FILE_OPERATION_IO_FAILED;
     result = operation->backend.link_no_replace(operation->backend.context,
         source->destination_path, entry->destination_path);
+    if (result == RINRUNTIME_FILE_OPERATION_BACKEND_PATH_EXISTS) {
+        memset(&entry->object_identity, 0, sizeof(entry->object_identity));
+        (void)file_operation_checkpoint(operation);
+        return RINRUNTIME_FILE_OPERATION_CONFLICT;
+    }
     if (result != 0) return file_operation_result(result);
-    entry->flags |= RINRUNTIME_FILE_OPERATION_ENTRY_FLAG_CREATED;
+    memset(&current_identity, 0, sizeof(current_identity));
     result = operation->backend.path_identity(
         operation->backend.context, entry->destination_path,
-        &entry->object_identity);
-    if (result != 0 || !file_operation_identity_valid(&entry->object_identity))
+        &current_identity);
+    if (result != 0 || !file_operation_identity_valid(&current_identity))
         return result == 0 ? RINRUNTIME_FILE_OPERATION_IO_FAILED
                            : file_operation_result(result);
+    if (!file_operation_identity_equal(&current_identity,
+                                      &source->object_identity))
+        return RINRUNTIME_FILE_OPERATION_CONFLICT;
+    entry->object_identity = current_identity;
+    entry->flags |= RINRUNTIME_FILE_OPERATION_ENTRY_FLAG_CREATED;
     if (file_operation_checkpoint(operation) !=
         RINRUNTIME_FILE_OPERATION_OK)
         return RINRUNTIME_FILE_OPERATION_IO_FAILED;
@@ -1430,20 +1622,40 @@ static RinRuntimeFileOperationResult file_operation_pump_copy(
         if (file_operation_skipped(operation, operation->entry_index))
             return RINRUNTIME_FILE_OPERATION_IN_PROGRESS;
         if (entry->kind == RINRUNTIME_FILE_OPERATION_ENTRY_DIRECTORY) {
-            int mkdir_result = operation->backend.mkdir(operation->backend.context,
-                                                        entry->destination_path);
+            uint8_t owner_token[16];
+            RinRuntimeFileOperationObjectIdentityV1 current_identity;
+            int mkdir_result = file_operation_prepare_entry_token(
+                operation, entry);
+            if (mkdir_result != RINRUNTIME_FILE_OPERATION_OK)
+                return file_operation_finish_failure(operation,
+                    (RinRuntimeFileOperationResult)mkdir_result, 1);
+            memcpy(owner_token, entry->object_identity.operation_token,
+                   sizeof(owner_token));
+            mkdir_result = operation->backend.mkdir_with_token(
+                operation->backend.context, entry->destination_path,
+                owner_token);
+            if (mkdir_result == RINRUNTIME_FILE_OPERATION_BACKEND_PATH_EXISTS) {
+                memset(&entry->object_identity, 0,
+                       sizeof(entry->object_identity));
+                (void)file_operation_checkpoint(operation);
+                return file_operation_finish_failure(operation,
+                    RINRUNTIME_FILE_OPERATION_CONFLICT, 1);
+            }
             if (mkdir_result != 0)
                 return file_operation_finish_failure(operation,
                     file_operation_result(mkdir_result), 1);
-            entry->flags |= RINRUNTIME_FILE_OPERATION_ENTRY_FLAG_CREATED;
+            memset(&current_identity, 0, sizeof(current_identity));
             mkdir_result = operation->backend.path_identity(
                 operation->backend.context, entry->destination_path,
-                &entry->object_identity);
+                &current_identity);
             if (mkdir_result != 0 ||
-                !file_operation_identity_valid(&entry->object_identity))
+                !file_operation_identity_valid(&current_identity) ||
+                !file_operation_token_matches(&current_identity, owner_token))
                 return file_operation_finish_failure(operation,
                     mkdir_result == 0 ? RINRUNTIME_FILE_OPERATION_IO_FAILED
                                       : file_operation_result(mkdir_result), 1);
+            entry->object_identity = current_identity;
+            entry->flags |= RINRUNTIME_FILE_OPERATION_ENTRY_FLAG_CREATED;
             if (file_operation_checkpoint(operation) !=
                 RINRUNTIME_FILE_OPERATION_OK)
                 return file_operation_finish_failure(operation,
@@ -1968,9 +2180,10 @@ static int file_operation_recovery_restore_internal(
               RINRUNTIME_FILE_OPERATION_CLEANUP_NONE)))
         return -1;
     if (recovery->temporary_created == 0u &&
-        (recovery->temporary_identity.device != 0u ||
-         recovery->temporary_identity.inode != 0u ||
-         recovery->temporary_identity.generation != 0u))
+        !file_operation_identity_empty(&recovery->temporary_identity))
+        return -1;
+    if (recovery->temporary_created != 0u &&
+        !file_operation_identity_intent_valid(&recovery->temporary_identity))
         return -1;
     if (recovery->temporary_created != 0u &&
         !file_operation_copy(temporary_path, sizeof(temporary_path),
@@ -2009,6 +2222,17 @@ static int file_operation_recovery_restore_internal(
                        &recovery->entries[index].backup_identity)) {
             return -1;
         }
+        if ((recovery->entries[index].flags &
+             (RINRUNTIME_FILE_OPERATION_ENTRY_FLAG_CREATED |
+              RINRUNTIME_FILE_OPERATION_ENTRY_FLAG_APPLIED)) != 0u &&
+            !file_operation_identity_valid(
+                &recovery->entries[index].object_identity))
+            return -1;
+        if (!file_operation_identity_empty(
+                &recovery->entries[index].object_identity) &&
+            !file_operation_identity_intent_valid(
+                &recovery->entries[index].object_identity))
+            return -1;
     }
     snapshot_result = file_operation_snapshot_create(
         entries, entry_count, &snapshot);
