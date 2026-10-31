@@ -236,6 +236,48 @@ RinResultCode rin_accessibility_service_client_query(
     return RIN_RESULT_OK;
 }
 
+RinResultCode rin_accessibility_service_client_query_focused(
+    RinAccessibilityServiceClientV1* client,
+    RinAccessibilityServiceFocusedSnapshotV1* snapshot_out)
+{
+    RinAccessibilityServiceQueryV1 query;
+    RinAccessibilityServiceMessageHeaderV1 request;
+    RinAccessibilityServiceMessageHeaderV1 reply;
+    RinResultCode result;
+    if (snapshot_out == NULL) return RIN_RESULT_INVALID_ARGUMENT;
+    memset(snapshot_out, 0, sizeof(*snapshot_out));
+    memset(&query, 0, sizeof(query));
+    query.struct_size = sizeof(query);
+    query.version = RIN_ACCESSIBILITY_SERVICE_ABI_VERSION;
+    query.flags = RIN_ACCESSIBILITY_SERVICE_QUERY_FOCUSED;
+    result = client_next_header(client, RIN_ACCESSIBILITY_SERVICE_OP_QUERY,
+                                sizeof(query), &request);
+    if (result != RIN_RESULT_OK) return result;
+    if (!client_send_exact(client->socket_fd, &request, sizeof(request)) ||
+        !client_send_exact(client->socket_fd, &query, sizeof(query)) ||
+        !client_receive_exact(client->socket_fd, &reply, sizeof(reply)))
+        return RIN_RESULT_IO;
+    if (reply.status != RIN_RESULT_OK)
+        return client_reply_header(&request, &reply,
+                                   RIN_ACCESSIBILITY_SERVICE_OP_QUERY, 0u);
+    result = client_reply_header(
+        &request, &reply, RIN_ACCESSIBILITY_SERVICE_OP_QUERY,
+        sizeof(*snapshot_out));
+    if (result != RIN_RESULT_OK) return result;
+    if (!client_receive_exact(client->socket_fd, snapshot_out,
+                              sizeof(*snapshot_out)))
+        return RIN_RESULT_IO;
+    if (snapshot_out->process_id == 0u ||
+        snapshot_out->process_instance_cookie == 0u ||
+        snapshot_out->snapshot.window == 0u ||
+        snapshot_out->snapshot.generation == 0u ||
+        snapshot_out->snapshot.generation == UINT64_MAX) {
+        memset(snapshot_out, 0, sizeof(*snapshot_out));
+        return RIN_RESULT_CORRUPT_DATA;
+    }
+    return RIN_RESULT_OK;
+}
+
 RinResultCode rin_accessibility_service_client_revoke(
     RinAccessibilityServiceClientV1* client)
 {

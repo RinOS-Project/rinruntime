@@ -31,6 +31,9 @@ RinResultCode rin_accessibility_service_client_query(
     RinAccessibilityServiceClientV1* client,
     const RinAccessibilityServiceQueryV1* query,
     RinAccessibilityWireSnapshotV1* snapshot_out);
+RinResultCode rin_accessibility_service_client_query_focused(
+    RinAccessibilityServiceClientV1* client,
+    RinAccessibilityServiceFocusedSnapshotV1* snapshot_out);
 RinResultCode rin_accessibility_service_client_revoke(
     RinAccessibilityServiceClientV1* client);
 RinResultCode rin_accessibility_service_client_request_action(
