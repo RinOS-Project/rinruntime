@@ -70,7 +70,8 @@
 enum {
     RINFS_READ_ADVICE_NORMAL = 0,
     RINFS_READ_ADVICE_RANDOM = 1,
-    RINFS_READ_ADVICE_SEQUENTIAL = 2
+    RINFS_READ_ADVICE_SEQUENTIAL = 2,
+    RINFS_READ_ADVICE_NOREUSE = 3
 };
 
 /* Internal descriptor flag enabling page-cache-bypassing aligned I/O. */
@@ -567,6 +568,8 @@ typedef struct {
     uint32_t dirty_intent_owner_row;
     uint32_t reserved_dirty_intent;
     uint64_t dirty_intent_owner_cookie;
+    /* Advisory replacement hint; this never changes dirty-page durability. */
+    uint8_t noreuse;
 } RinFS_PageCacheEntry;
 
 typedef struct {
@@ -1306,6 +1309,17 @@ int rinfs_read_stats_reset(RinFS_Mount* mount);
  * in-flight entries are never discarded. */
 int rinfs_page_cache_reclaim(RinFS_Mount* mount, uint32_t max_entries,
                              uint32_t* reclaimed_out);
+/* Apply an open-description cache hint to an inode byte range. length==0
+ * extends through EOF. DONTNEED writes dirty data back first, then discards
+ * only clean unreferenced pages; pages still in use remain valid. */
+enum {
+    RINFS_PAGE_CACHE_ADVICE_NORMAL = 0,
+    RINFS_PAGE_CACHE_ADVICE_NOREUSE = 1,
+    RINFS_PAGE_CACHE_ADVICE_DONTNEED = 2
+};
+int rinfs_page_cache_apply_advice(RinFS_Mount* mount, uint64_t inode_num,
+                                  uint64_t offset, uint64_t length,
+                                  uint32_t advice);
 /* Return an allocation-free, locked snapshot of the mounted file cache.
  * Reclaimable counts only clean entries with no outstanding references. */
 int rinfs_page_cache_snapshot_v1(

@@ -5912,8 +5912,10 @@ static void rinfs_page_cache_release_storage_locked(
 
 static int rinfs_page_cache_choose_victim_locked(RinFS_PageCache* cache) {
     uint32_t index;
+    int noreuse_victim = -1;
     int inactive_victim = -1;
     int active_victim = -1;
+    uint64_t oldest_noreuse = UINT64_MAX;
     uint64_t oldest_inactive = UINT64_MAX;
     uint64_t oldest_active = UINT64_MAX;
     for (index = 0u; index < RINFS_PAGE_CACHE_CAPACITY; ++index) {
@@ -5922,6 +5924,10 @@ static int rinfs_page_cache_choose_victim_locked(RinFS_PageCache* cache) {
             return (int)index;
         if (entry->state != RINFS_PAGE_CACHE_CLEAN ||
             entry->references != 0u) continue;
+        if (entry->noreuse && entry->last_used < oldest_noreuse) {
+            oldest_noreuse = entry->last_used;
+            noreuse_victim = (int)index;
+        }
         if (entry->generation == RINFS_PAGE_CACHE_ACTIVE &&
             cache->clock >= entry->last_used &&
             cache->clock - entry->last_used >=
@@ -5937,6 +5943,7 @@ static int rinfs_page_cache_choose_victim_locked(RinFS_PageCache* cache) {
             active_victim = (int)index;
         }
     }
+    if (noreuse_victim >= 0) return noreuse_victim;
     return inactive_victim >= 0 ? inactive_victim : active_victim;
 }
 
@@ -5970,6 +5977,7 @@ static void rinfs_page_cache_discard_locked(RinFS_PageCache* cache,
     entry->writeback_owner_cookie = 0u;
     entry->dirty_intent_owner_row = 0u;
     entry->dirty_intent_owner_cookie = 0u;
+    entry->noreuse = 0u;
     {
         uint32_t index = 0u;
         if (rinfs_page_cache_entry_index(cache, entry, &index)) {
@@ -6254,6 +6262,7 @@ static int rinfs_page_cache_acquire(RinFS_Mount* mount, uint64_t inode_num,
         entry->references = 0u;
         entry->writeback_owner_row = 0u;
         entry->writeback_owner_cookie = 0u;
+        entry->noreuse = 0u;
         {
             uint32_t* mapped_references =
                 rinfs_page_cache_mapping_reference_slot(cache, entry);
@@ -6267,6 +6276,7 @@ static int rinfs_page_cache_acquire(RinFS_Mount* mount, uint64_t inode_num,
         entry->valid = 1u;
         entry->generation = RINFS_PAGE_CACHE_INACTIVE;
         entry->readahead = 0u;
+        entry->noreuse = 0u;
         err = rinfs_page_cache_reference_add_locked(cache, entry, 0);
         if (err != RINFS_OK) {
             rinfs_page_cache_discard_locked(cache, entry);
@@ -6380,6 +6390,22 @@ static int rinfs_page_cache_read(RinFS_Mount* mount, uint64_t inode_num,
     if (err != RINFS_OK) return err;
     rinfs_memcpy(output, entry->data + offset, size);
     return rinfs_page_cache_release(mount, entry);
+}
+
+static void rinfs_page_cache_mark_noreuse_page(
+    RinFS_Mount* mount, uint64_t inode_num, uint64_t page_index) {
+    RinFS_PageCache* cache;
+    if (!mount || !mount->page_cache || inode_num == 0u) return;
+    cache = mount->page_cache;
+    if (rinfs_page_cache_lock(cache) != RINFS_OK) return;
+    for (uint32_t index = 0u; index < RINFS_PAGE_CACHE_CAPACITY; ++index) {
+        RinFS_PageCacheEntry* entry = &cache->entries[index];
+        if (entry->valid && entry->mount_epoch == mount->mount_epoch &&
+            entry->inode_num == inode_num &&
+            entry->page_index == page_index)
+            entry->noreuse = 1u;
+    }
+    (void)rinfs_page_cache_unlock(cache);
 }
 
 /* Track access direction on the open description itself.  A forward run is
@@ -6516,6 +6542,7 @@ static int rinfs_page_cache_reserve_fill(
         entry->valid = 1u;
         entry->generation = RINFS_PAGE_CACHE_INACTIVE;
         entry->readahead = 0u;
+        entry->noreuse = 0u;
         int reference_err = rinfs_page_cache_reference_add_locked(
             cache, entry, 0);
         if (reference_err != RINFS_OK) {
@@ -7116,6 +7143,73 @@ static int rinfs_page_cache_sync(RinFS_Mount* mount, uint64_t inode_num,
     }
 }
 
+static int rinfs_page_cache_apply_advice_unscoped(
+    RinFS_Mount* mount, uint64_t inode_num, uint64_t offset,
+    uint64_t length, uint32_t advice) {
+    RinFS_PageCache* cache;
+    uint64_t page_start;
+    uint64_t page_end = 0u;
+    int error;
+
+    if (!mount || !mount->mounted || inode_num == 0u ||
+        advice > RINFS_PAGE_CACHE_ADVICE_DONTNEED ||
+        (length != 0u && offset > UINT64_MAX - length))
+        return RINFS_ERR_INVAL;
+    if (!mount->page_cache) return RINFS_OK;
+    cache = mount->page_cache;
+    page_start = offset / RINFS_PAGE_CACHE_PAGE_SIZE;
+    if (length != 0u) {
+        uint64_t end = offset + length;
+        page_end = (end - 1u) / RINFS_PAGE_CACHE_PAGE_SIZE + 1u;
+    }
+
+    /* DONTNEED first makes dirty bytes durable. PENDING means an overlapping
+     * read/write is in flight; leave those pages intact and let later cache
+     * pressure reclaim them after their references drain. */
+    if (advice == RINFS_PAGE_CACHE_ADVICE_DONTNEED) {
+        error = rinfs_page_cache_sync(
+            mount, inode_num, 0u, 0u, page_start, page_end, 0u);
+        if (error != RINFS_OK && error != RINFS_ERR_PENDING)
+            return error;
+    }
+
+    error = rinfs_page_cache_lock(cache);
+    if (error != RINFS_OK) return error;
+    for (uint32_t index = 0u; index < RINFS_PAGE_CACHE_CAPACITY; ++index) {
+        RinFS_PageCacheEntry* entry = &cache->entries[index];
+        if (!entry->valid || entry->mount_epoch != mount->mount_epoch ||
+            entry->inode_num != inode_num || entry->page_index < page_start ||
+            (page_end != 0u && entry->page_index >= page_end))
+            continue;
+        if (advice == RINFS_PAGE_CACHE_ADVICE_NORMAL) {
+            entry->noreuse = 0u;
+        } else if (advice == RINFS_PAGE_CACHE_ADVICE_NOREUSE) {
+            entry->noreuse = 1u;
+        } else {
+            entry->noreuse = 1u;
+            if (entry->state == RINFS_PAGE_CACHE_CLEAN &&
+                entry->references == 0u) {
+                rinfs_page_cache_discard_locked(cache, entry);
+                ++cache->evictions;
+            }
+        }
+    }
+    return rinfs_page_cache_unlock(cache);
+}
+
+int rinfs_page_cache_apply_advice(RinFS_Mount* mount, uint64_t inode_num,
+                                  uint64_t offset, uint64_t length,
+                                  uint32_t advice) {
+    RinFS_MountOperationScope operation = {0};
+    int error;
+    if (!mount || !mount->mounted) return RINFS_ERR_INVAL;
+    error = rinfs_mount_operation_scope_begin(mount, &operation);
+    if (error != RINFS_OK) return error;
+    error = rinfs_page_cache_apply_advice_unscoped(
+        mount, inode_num, offset, length, advice);
+    return rinfs_mount_operation_scope_finish(&operation, error);
+}
+
 static int rinfs_page_cache_invalidate_inode(RinFS_Mount* mount,
                                              uint64_t inode_num) {
     RinFS_PageCache* cache;
@@ -7268,7 +7362,9 @@ static int rinfs_page_cache_reclaim_unscoped(
     cache = mount->page_cache;
     while (reclaimed < max_entries) {
         RinFS_PageCacheEntry* victim = NULL;
-        uint64_t oldest = UINT64_MAX;
+        uint64_t oldest_noreuse = UINT64_MAX;
+        uint64_t oldest_reusable = UINT64_MAX;
+        RinFS_PageCacheEntry* reusable_victim = NULL;
         uint32_t index;
         {
             int lock_error = rinfs_page_cache_lock(cache);
@@ -7277,11 +7373,18 @@ static int rinfs_page_cache_reclaim_unscoped(
         for (index = 0u; index < RINFS_PAGE_CACHE_CAPACITY; ++index) {
             RinFS_PageCacheEntry* entry = &cache->entries[index];
             if (entry->valid && entry->state == RINFS_PAGE_CACHE_CLEAN &&
-                entry->references == 0u && entry->last_used < oldest) {
-                oldest = entry->last_used;
-                victim = entry;
+                entry->references == 0u) {
+                if (entry->noreuse && entry->last_used < oldest_noreuse) {
+                    oldest_noreuse = entry->last_used;
+                    victim = entry;
+                } else if (!entry->noreuse &&
+                           entry->last_used < oldest_reusable) {
+                    oldest_reusable = entry->last_used;
+                    reusable_victim = entry;
+                }
             }
         }
+        if (!victim) victim = reusable_victim;
         if (!victim) {
             int unlock_error = rinfs_page_cache_unlock(cache);
             if (unlock_error != RINFS_OK) {
@@ -22832,11 +22935,15 @@ static int64_t rinfs_read_unleased(
                 if (block_buf) rinfs_free(block_buf);
                 return bytes_read > 0 ? (int64_t)bytes_read : cache_err;
             }
+            if (advice == RINFS_READ_ADVICE_NOREUSE)
+                rinfs_page_cache_mark_noreuse_page(
+                    mount, file->inode_num, file_block);
             dst += chunk;
             file->position += chunk;
             bytes_read += chunk;
             size -= chunk;
             if (advice != RINFS_READ_ADVICE_RANDOM &&
+                advice != RINFS_READ_ADVICE_NOREUSE &&
                 (advice == RINFS_READ_ADVICE_SEQUENTIAL ||
                  (file->read_pattern_kind == RINFS_READ_PATTERN_FORWARD &&
                   file->read_pattern_sequential_hits >=
@@ -23039,7 +23146,7 @@ int64_t rinfs_read_advised_range(
     RinFS_CloseReferenceOperationLease operation;
     int64_t result;
     int release_result;
-    if (!file || !buf || advice > RINFS_READ_ADVICE_SEQUENTIAL ||
+    if (!file || !buf || advice > RINFS_READ_ADVICE_NOREUSE ||
         (readahead_end_valid != 0 && readahead_end_valid != 1))
         return RINFS_ERR_INVAL;
     result = rinfs_file_operation_begin(file, &operation);
@@ -23065,7 +23172,7 @@ int64_t rinfs_pread_advised_range(
     RinFS_CloseReferenceOperationLease operation;
     int release_result;
 
-    if (!file || !buf || advice > RINFS_READ_ADVICE_SEQUENTIAL ||
+    if (!file || !buf || advice > RINFS_READ_ADVICE_NOREUSE ||
         (readahead_end_valid != 0 && readahead_end_valid != 1))
         return RINFS_ERR_INVAL;
     result = rinfs_file_operation_begin(file, &operation);
