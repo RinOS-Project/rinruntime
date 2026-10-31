@@ -73,6 +73,7 @@ runtime_sources = files('src/portal.c', 'src/crash.c',
                         'src/rin_dhcpv6_client.c',
                         'src/rin_dhcpv6_reconfigure.c',
                         'src/rin_dhcpv6_transport.c',
+                        'src/rin_dhcpv4_wire.c',
                         'src/rin_web_serial_portal.c',
                         join_paths(rinpath_root, 'path.c'),
                         'src/serial_portal_protocol.c',
@@ -145,9 +146,16 @@ runtime = library('RinRuntime', runtime_sources, include_directories: inc,
 runtime_dep = declare_dependency(link_with: runtime, include_directories: inc,
                                  dependencies: runtime_deps,
                                  link_args: runtime_link_args)
+rinruntime_header_excludes = ['pe_loader.h', 'rin_cursor.h']
+if host_machine.system() == 'windows'
+  # These headers expose POSIX-only implementations omitted from the Windows
+  # library target. Do not publish declarations that installed consumers
+  # cannot link against.
+  rinruntime_header_excludes += ['rin_installer_runtime.h', 'pty.h']
+endif
 install_subdir('include/rinruntime', install_dir: get_option('includedir'),
                exclude_directories: ['crypt'],
-               exclude_files: ['pe_loader.h', 'rin_cursor.h'])
+               exclude_files: rinruntime_header_excludes)
 install_subdir('include/rincompression', install_dir: get_option('includedir'))
 license_install_dir = join_paths(get_option('datadir'), 'licenses', 'RinRuntime')
 install_data('LICENSE', install_dir: license_install_dir,

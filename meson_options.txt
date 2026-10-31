@@ -30,6 +30,7 @@ option('rll_sources', type: 'array', value: [
   'src/file_operation_service_client.c',
   'src/accessibility_service_client.c',
   'src/audio/rin_audio_service_client.c',
+  'src/rin_dhcpv4_wire.c',
   'src/compositor_gui.c', 'src/compositor_gpu_bridge.c',
   'src/sdk_gui_v1.c',
   '../aquamarine/aq_blend.c', '../aquamarine/aq_color.c',

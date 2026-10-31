@@ -21,7 +21,7 @@ set(RINRUNTIME_RLL_TARGET "x86_64-unknown-rinos" CACHE STRING
 set(RINRUNTIME_RLL_SIGN_PROFILE "release" CACHE STRING
     "RinCompiler signing profile used by the target .rll route")
 set(RINRUNTIME_RLL_SOURCES
-    "src/portal.c;src/crash.c;src/rin_crash_record.c;src/rin_crash_summary.c;src/rin_crash_consent.c;src/backup_restore.c;src/known_folders.c;src/file_operation.c;src/safe_save.c;src/safe_save_posix.c;src/session_recovery.c;src/crash_service.c;src/frame_copy.c;src/serial_portal_protocol.c;src/unicode_grapheme.c;src/unicode.c;src/platform.c;src/service.c;src/clipboard.c;src/crash_service_client.c;src/file_portal.c;src/file_portal_startup.c;src/durable_file_portal.c;src/file_chooser_portal.c;src/file_operation_service_client.c;src/accessibility_service_client.c;src/audio/rin_audio_service_client.c;src/compositor_gui.c;src/compositor_gpu_bridge.c;src/sdk_gui_v1.c;../aquamarine/aq_blend.c;../aquamarine/aq_color.c;../aquamarine/aq_draw.c;../aquamarine/aq_surface.c;../aquamarine/aq_text.c;src/firewall/rule_engine.c;src/firewall/namespace_policy.c;src/firewall/profile.c;src/firewall/application.c;src/firewall/conntrack_query.c"
+    "src/portal.c;src/crash.c;src/rin_crash_record.c;src/rin_crash_summary.c;src/rin_crash_consent.c;src/backup_restore.c;src/known_folders.c;src/file_operation.c;src/safe_save.c;src/safe_save_posix.c;src/session_recovery.c;src/crash_service.c;src/frame_copy.c;src/serial_portal_protocol.c;src/unicode_grapheme.c;src/unicode.c;src/platform.c;src/service.c;src/clipboard.c;src/crash_service_client.c;src/file_portal.c;src/file_portal_startup.c;src/durable_file_portal.c;src/file_chooser_portal.c;src/file_operation_service_client.c;src/accessibility_service_client.c;src/audio/rin_audio_service_client.c;src/compositor_gui.c;src/compositor_gpu_bridge.c;src/sdk_gui_v1.c;src/rin_dhcpv4_wire.c;../aquamarine/aq_blend.c;../aquamarine/aq_color.c;../aquamarine/aq_draw.c;../aquamarine/aq_surface.c;../aquamarine/aq_text.c;src/firewall/rule_engine.c;src/firewall/namespace_policy.c;src/firewall/profile.c;src/firewall/application.c;src/firewall/conntrack_query.c"
     CACHE STRING "semicolon-separated RinRuntime sources for the target .rll route")
 set(RINRUNTIME_RLL_DEPENDENCIES "" CACHE STRING
     "semicolon-separated dependency .rll images for the target .rll route")
@@ -114,6 +114,7 @@ set(RINRUNTIME_SOURCES
     src/rin_dhcpv6_client.c
     src/rin_dhcpv6_reconfigure.c
     src/rin_dhcpv6_transport.c
+    src/rin_dhcpv4_wire.c
     src/rin_web_serial_portal.c
     ${RINRUNTIME_RINPATH_ROOT}/path.c
     src/serial_portal_protocol.c
@@ -224,11 +225,21 @@ install(TARGETS RinRuntime EXPORT RinRuntimeTargets
         ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
         LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
         RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
-install(DIRECTORY include/rinruntime/
-        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/rinruntime
+set(RINRUNTIME_HEADER_INSTALL_EXCLUDES
         PATTERN "crypt" EXCLUDE
         PATTERN "pe_loader.h" EXCLUDE
         PATTERN "rin_cursor.h" EXCLUDE)
+if(WIN32)
+    # These headers expose POSIX-only implementations omitted from the Windows
+    # library target. Do not publish declarations that installed consumers
+    # cannot link against.
+    list(APPEND RINRUNTIME_HEADER_INSTALL_EXCLUDES
+         PATTERN "rin_installer_runtime.h" EXCLUDE
+         PATTERN "pty.h" EXCLUDE)
+endif()
+install(DIRECTORY include/rinruntime/
+        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/rinruntime
+        ${RINRUNTIME_HEADER_INSTALL_EXCLUDES})
 install(DIRECTORY include/rincompression/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/rincompression)
 install(DIRECTORY ${RINRUNTIME_RINPATH_ROOT}/include/rinpath/
         DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/rinpath)
