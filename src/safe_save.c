@@ -2,6 +2,8 @@
 
 #include <rinruntime/safe_save.h>
 
+#include "file_operation_internal.h"
+
 #include <stddef.h>
 #include <string.h>
 
@@ -65,6 +67,8 @@ static int safe_save_temporary_path_valid(const char* temporary_path,
     }
     parent_length = strlen(expected_parent);
     if (path_length >= RINRUNTIME_SAFE_SAVE_TEMP_PATH_MAX ||
+        !rinruntime_file_operation_path_valid_limit_internal(
+            temporary_path, RINRUNTIME_SAFE_SAVE_TEMP_PATH_MAX) ||
         parent_length == 0u || path_length <= parent_length)
         return 0;
     if (expected_parent[parent_length - 1u] == '/') {

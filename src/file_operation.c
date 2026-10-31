@@ -3,6 +3,8 @@
 #include <rinruntime/file_operation.h>
 #include <rinruntime/cancellation.h>
 
+#include "file_operation_internal.h"
+
 #include <string.h>
 
 static void file_operation_zero(void* output, uint32_t size)
@@ -187,21 +189,22 @@ static int file_operation_windows_reserved_device_component(
 }
 #endif
 
-int rinruntime_file_operation_path_valid(const char* path)
+int rinruntime_file_operation_path_valid_limit_internal(
+    const char* path, uint32_t capacity)
 {
     uint32_t index = 0u;
     uint32_t component_start = 1u;
 #ifdef _WIN32
-    const int drive_absolute = path != 0 &&
+    const int drive_absolute = path != 0 && capacity >= 4u &&
         ((path[0] >= 'A' && path[0] <= 'Z') ||
          (path[0] >= 'a' && path[0] <= 'z')) &&
         path[1] == ':' && path[2] == '/';
 #endif
-    if (path == 0) return 0;
+    if (path == 0 || capacity < 2u) return 0;
 #ifdef _WIN32
     if (path[0] != '/' && !drive_absolute) return 0;
     if (drive_absolute) {
-        if (path[3] == '\0') return 1;
+        if (capacity > 3u && path[3] == '\0') return 1;
         index = 3u;
         component_start = 3u;
     }
@@ -209,12 +212,12 @@ int rinruntime_file_operation_path_valid(const char* path)
     if (path[0] != '/') return 0;
 #endif
     if (path[1] == '\0') return 1;
-    while (index < RINRUNTIME_FILE_OPERATION_PATH_MAX &&
+    while (index < capacity &&
            path[index] != '\0') {
         char value = path[index];
         if (value == '\\' || (unsigned char)value < 0x20u ||
             (unsigned char)value == 0x7fu ||
-            index + 1u >= RINRUNTIME_FILE_OPERATION_PATH_MAX)
+            index + 1u >= capacity)
             return 0;
 #ifdef _WIN32
         /* A colon inside a Win32 component selects an alternate data stream;
@@ -242,7 +245,7 @@ int rinruntime_file_operation_path_valid(const char* path)
         }
         ++index;
     }
-    if (index >= RINRUNTIME_FILE_OPERATION_PATH_MAX) return 0;
+    if (index >= capacity) return 0;
     {
         uint32_t component_size = index - component_start;
         if (component_size == 0u ||
@@ -258,6 +261,12 @@ int rinruntime_file_operation_path_valid(const char* path)
 #endif
     }
     return index > 1u && path[index - 1u] != '/';
+}
+
+int rinruntime_file_operation_path_valid(const char* path)
+{
+    return rinruntime_file_operation_path_valid_limit_internal(
+        path, RINRUNTIME_FILE_OPERATION_PATH_MAX);
 }
 
 void rinruntime_file_operation_init(RinRuntimeFileOperationV1* operation)
