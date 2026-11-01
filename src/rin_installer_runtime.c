@@ -9,6 +9,7 @@
 #include <stdint.h>
 
 #include <rin/syscall_abi.h>
+#include <rin/syscall_contract.h>
 
 #if !defined(_WIN32)
 #include <libc/sys/syscall.h>
@@ -268,6 +269,302 @@ RinResultCode rin_app_block_physical_device_id(
     *physical_device_id_out = info.physical_device_id;
     installer_runtime_zero(&info, sizeof(info));
     return RIN_RESULT_OK;
+}
+
+static int installer_runtime_path_size(const char* path, uint32_t maximum,
+                                       uint32_t* size_out)
+{
+    uint32_t index;
+    if (size_out != NULL) *size_out = 0u;
+    if (path == NULL || size_out == NULL || maximum < 2u) return 0;
+    for (index = 0u; index < maximum; ++index) {
+        if (path[index] == '\0') {
+            if (index == 0u) return 0;
+            *size_out = index + 1u;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int installer_runtime_ranges_overlap(const void* left,
+                                             uint64_t left_size,
+                                             const void* right,
+                                             uint64_t right_size)
+{
+    uintptr_t left_start = (uintptr_t)left;
+    uintptr_t right_start = (uintptr_t)right;
+    if (left == NULL || right == NULL || left_size == 0u || right_size == 0u)
+        return 0;
+    if (left_size > UINTPTR_MAX - left_start ||
+        right_size > UINTPTR_MAX - right_start) {
+        return 1;
+    }
+    return left_start < right_start + (uintptr_t)right_size &&
+           right_start < left_start + (uintptr_t)left_size;
+}
+
+RinResultCode rin_app_install_source_query(
+    const char* path, uint64_t minimum_release_sequence,
+    RinInstallSourceInfoV1* info_out)
+{
+    uint32_t path_size;
+#if !defined(_WIN32)
+    intptr_t syscall_result;
+#endif
+    if (info_out == NULL) return RIN_RESULT_INVALID_ARGUMENT;
+    if (installer_runtime_path_size(
+            path, RIN_SYSCALL_INSTALL_SOURCE_QUERY_ARG_PATH_MAX_BYTES,
+            &path_size) &&
+        installer_runtime_ranges_overlap(
+            path, path_size, info_out, sizeof(*info_out))) {
+        return RIN_RESULT_INVALID_ARGUMENT;
+    }
+    installer_runtime_zero(info_out, sizeof(*info_out));
+    if (!installer_runtime_path_size(
+            path, RIN_SYSCALL_INSTALL_SOURCE_QUERY_ARG_PATH_MAX_BYTES,
+            &path_size) || minimum_release_sequence == 0u) {
+        return RIN_RESULT_INVALID_ARGUMENT;
+    }
+    info_out->struct_size = (uint32_t)sizeof(*info_out);
+    info_out->version = RIN_CONTRACT_STRUCT_VERSION_1;
+#if defined(_WIN32)
+    installer_runtime_zero(info_out, sizeof(*info_out));
+    return RIN_RESULT_NOT_SUPPORTED;
+#else
+    {
+        const uint64_t arguments[3] = {
+            (uintptr_t)path, minimum_release_sequence, (uintptr_t)info_out
+        };
+        syscall_result = installer_runtime_syscall(
+            (uintptr_t)RIN_SYS_INSTALL_SOURCE_QUERY, arguments, 3u,
+            1u << 1, 0, NULL);
+    }
+    if (installer_runtime_result(syscall_result) != RIN_RESULT_OK) {
+        installer_runtime_zero(info_out, sizeof(*info_out));
+        return installer_runtime_result(syscall_result);
+    }
+    if (info_out->struct_size != sizeof(*info_out) ||
+        info_out->version != RIN_CONTRACT_STRUCT_VERSION_1) {
+        installer_runtime_zero(info_out, sizeof(*info_out));
+        return RIN_RESULT_CORRUPT_DATA;
+    }
+    return RIN_RESULT_OK;
+#endif
+}
+
+RinResultCode rin_app_install_source_open(
+    const char* path, uint64_t minimum_release_sequence,
+    RinInstallSourceSessionV1* session_out)
+{
+    uint32_t path_size;
+#if !defined(_WIN32)
+    intptr_t syscall_result;
+#endif
+    if (session_out == NULL) return RIN_RESULT_INVALID_ARGUMENT;
+    if (installer_runtime_path_size(
+            path, RIN_SYSCALL_INSTALL_SOURCE_OPEN_ARG_PATH_MAX_BYTES,
+            &path_size) &&
+        installer_runtime_ranges_overlap(
+            path, path_size, session_out, sizeof(*session_out))) {
+        return RIN_RESULT_INVALID_ARGUMENT;
+    }
+    installer_runtime_zero(session_out, sizeof(*session_out));
+    if (!installer_runtime_path_size(
+            path, RIN_SYSCALL_INSTALL_SOURCE_OPEN_ARG_PATH_MAX_BYTES,
+            &path_size) || minimum_release_sequence == 0u) {
+        return RIN_RESULT_INVALID_ARGUMENT;
+    }
+    session_out->struct_size = (uint32_t)sizeof(*session_out);
+    session_out->version = RIN_CONTRACT_STRUCT_VERSION_1;
+#if defined(_WIN32)
+    installer_runtime_zero(session_out, sizeof(*session_out));
+    return RIN_RESULT_NOT_SUPPORTED;
+#else
+    {
+        const uint64_t arguments[3] = {
+            (uintptr_t)path, minimum_release_sequence,
+            (uintptr_t)session_out
+        };
+        syscall_result = installer_runtime_syscall(
+            (uintptr_t)RIN_SYS_INSTALL_SOURCE_OPEN, arguments, 3u,
+            1u << 1, 0, NULL);
+    }
+    if (installer_runtime_result(syscall_result) != RIN_RESULT_OK) {
+        installer_runtime_zero(session_out, sizeof(*session_out));
+        return installer_runtime_result(syscall_result);
+    }
+    if (session_out->struct_size != sizeof(*session_out) ||
+        session_out->version != RIN_CONTRACT_STRUCT_VERSION_1 ||
+        session_out->handle == 0u) {
+        installer_runtime_zero(session_out, sizeof(*session_out));
+        return RIN_RESULT_CORRUPT_DATA;
+    }
+    return RIN_RESULT_OK;
+#endif
+}
+
+RinResultCode rin_app_install_source_read(uint64_t handle, uint64_t offset,
+                                          uint32_t size, void* output)
+{
+    RinInstallSourceReadV1 request;
+    RinResultCode result;
+    if (handle == 0u) return RIN_RESULT_INVALID_HANDLE;
+    if (output == NULL || size == 0u || size > 64u * 1024u ||
+        offset > UINT64_MAX - size ||
+        size > UINTPTR_MAX - (uintptr_t)output) {
+        return RIN_RESULT_INVALID_ARGUMENT;
+    }
+    installer_runtime_zero(&request, sizeof(request));
+    request.struct_size = (uint32_t)sizeof(request);
+    request.version = RIN_CONTRACT_STRUCT_VERSION_1;
+    request.handle = handle;
+    request.offset = offset;
+    request.buffer = (uint64_t)(uintptr_t)output;
+    request.read_size = size;
+#if defined(_WIN32)
+    result = RIN_RESULT_NOT_SUPPORTED;
+#else
+    {
+        const uint64_t arguments[2] = {
+            (uintptr_t)&request, sizeof(request)
+        };
+        result = installer_runtime_result(installer_runtime_syscall(
+            (uintptr_t)RIN_SYS_INSTALL_SOURCE_READ, arguments, 2u,
+            1u << 1, 0, NULL));
+    }
+#endif
+    installer_runtime_zero(&request, sizeof(request));
+    if (result != RIN_RESULT_OK) installer_runtime_zero(output, size);
+    return result;
+}
+
+RinResultCode rin_app_install_source_validate(uint64_t handle)
+{
+    if (handle == 0u) return RIN_RESULT_INVALID_HANDLE;
+#if defined(_WIN32)
+    return RIN_RESULT_NOT_SUPPORTED;
+#else
+    {
+        const uint64_t arguments[1] = {handle};
+        return installer_runtime_result(installer_runtime_syscall(
+            (uintptr_t)RIN_SYS_INSTALL_SOURCE_VALIDATE,
+            arguments, 1u, 1u, 0, NULL));
+    }
+#endif
+}
+
+RinResultCode rin_app_install_source_close(uint64_t handle)
+{
+    if (handle == 0u) return RIN_RESULT_INVALID_HANDLE;
+#if defined(_WIN32)
+    return RIN_RESULT_NOT_SUPPORTED;
+#else
+    {
+        const uint64_t arguments[1] = {handle};
+        return installer_runtime_result(installer_runtime_syscall(
+            (uintptr_t)RIN_SYS_INSTALL_SOURCE_CLOSE,
+            arguments, 1u, 1u, 0, NULL));
+    }
+#endif
+}
+
+RinResultCode rin_app_install_source_payloads_query(
+    uint64_t source_handle, uint64_t target_handle,
+    RinInstallSourcePayloadSetV1* payloads_out)
+{
+    RinResultCode result;
+    if (payloads_out == NULL) return RIN_RESULT_INVALID_ARGUMENT;
+    installer_runtime_zero(payloads_out, sizeof(*payloads_out));
+    if (source_handle == 0u || target_handle == 0u)
+        return RIN_RESULT_INVALID_HANDLE;
+    payloads_out->struct_size = (uint32_t)sizeof(*payloads_out);
+    payloads_out->version = RIN_CONTRACT_STRUCT_VERSION_1;
+#if defined(_WIN32)
+    result = RIN_RESULT_NOT_SUPPORTED;
+#else
+    {
+        const uint64_t arguments[3] = {
+            source_handle, target_handle, (uintptr_t)payloads_out
+        };
+        result = installer_runtime_result(installer_runtime_syscall(
+            (uintptr_t)RIN_SYS_INSTALL_SOURCE_PAYLOADS_QUERY,
+            arguments, 3u, (1u << 0) | (1u << 1), 0, NULL));
+    }
+#endif
+    if (result != RIN_RESULT_OK) {
+        installer_runtime_zero(payloads_out, sizeof(*payloads_out));
+        return result;
+    }
+    if (payloads_out->struct_size != sizeof(*payloads_out) ||
+        payloads_out->version != RIN_CONTRACT_STRUCT_VERSION_1 ||
+        payloads_out->payload_count == 0u ||
+        payloads_out->payload_count > RIN_INSTALL_SOURCE_PAYLOAD_COUNT ||
+        payloads_out->flags != 0u || payloads_out->reserved0 != 0u) {
+        installer_runtime_zero(payloads_out, sizeof(*payloads_out));
+        return RIN_RESULT_CORRUPT_DATA;
+    }
+    return RIN_RESULT_OK;
+}
+
+RinResultCode rin_app_install_source_payload_read(
+    uint64_t source_handle, uint64_t target_handle, uint32_t payload_id,
+    uint64_t offset, uint32_t size, void* output)
+{
+    RinInstallSourcePayloadReadV1 request;
+    RinResultCode result;
+    if (source_handle == 0u || target_handle == 0u)
+        return RIN_RESULT_INVALID_HANDLE;
+    if (payload_id >= RIN_INSTALL_SOURCE_PAYLOAD_COUNT || output == NULL ||
+        size == 0u || size > 64u * 1024u || offset > UINT64_MAX - size ||
+        size > UINTPTR_MAX - (uintptr_t)output) {
+        return RIN_RESULT_INVALID_ARGUMENT;
+    }
+    installer_runtime_zero(&request, sizeof(request));
+    request.struct_size = (uint32_t)sizeof(request);
+    request.version = RIN_CONTRACT_STRUCT_VERSION_1;
+    request.source_handle = source_handle;
+    request.target_handle = target_handle;
+    request.payload_id = payload_id;
+    request.read_size = size;
+    request.offset = offset;
+    request.buffer = (uint64_t)(uintptr_t)output;
+#if defined(_WIN32)
+    result = RIN_RESULT_NOT_SUPPORTED;
+#else
+    {
+        const uint64_t arguments[2] = {
+            (uintptr_t)&request, sizeof(request)
+        };
+        result = installer_runtime_result(installer_runtime_syscall(
+            (uintptr_t)RIN_SYS_INSTALL_SOURCE_PAYLOAD_READ,
+            arguments, 2u, 1u << 1, 0, NULL));
+    }
+#endif
+    installer_runtime_zero(&request, sizeof(request));
+    if (result != RIN_RESULT_OK) installer_runtime_zero(output, size);
+    return result;
+}
+
+RinResultCode rin_app_install_source_payload_validate(
+    uint64_t source_handle, uint64_t target_handle, uint32_t payload_id)
+{
+    if (source_handle == 0u || target_handle == 0u)
+        return RIN_RESULT_INVALID_HANDLE;
+    if (payload_id >= RIN_INSTALL_SOURCE_PAYLOAD_COUNT)
+        return RIN_RESULT_INVALID_ARGUMENT;
+#if defined(_WIN32)
+    return RIN_RESULT_NOT_SUPPORTED;
+#else
+    {
+        const uint64_t arguments[3] = {
+            source_handle, target_handle, payload_id
+        };
+        return installer_runtime_result(installer_runtime_syscall(
+            (uintptr_t)RIN_SYS_INSTALL_SOURCE_PAYLOAD_VALIDATE,
+            arguments, 3u, (1u << 0) | (1u << 1), 0, NULL));
+    }
+#endif
 }
 
 static RinResultCode installer_target_open_with_syscall(

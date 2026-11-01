@@ -36,6 +36,26 @@ RinResultCode rin_app_block_get_info_v3(uint32_t block_id,
 RinResultCode rin_app_block_physical_device_id(
     uint32_t block_id, uint32_t* physical_device_id_out);
 
+/* 署名済みSystem imageを問い合わせ、generation付きread-only source sessionを開く。 */
+RinResultCode rin_app_install_source_query(
+    const char* path, uint64_t minimum_release_sequence,
+    RinInstallSourceInfoV1* info_out);
+RinResultCode rin_app_install_source_open(
+    const char* path, uint64_t minimum_release_sequence,
+    RinInstallSourceSessionV1* session_out);
+RinResultCode rin_app_install_source_read(uint64_t handle, uint64_t offset,
+                                          uint32_t size, void* output);
+RinResultCode rin_app_install_source_validate(uint64_t handle);
+RinResultCode rin_app_install_source_close(uint64_t handle);
+RinResultCode rin_app_install_source_payloads_query(
+    uint64_t source_handle, uint64_t target_handle,
+    RinInstallSourcePayloadSetV1* payloads_out);
+RinResultCode rin_app_install_source_payload_read(
+    uint64_t source_handle, uint64_t target_handle, uint32_t payload_id,
+    uint64_t offset, uint32_t size, void* output);
+RinResultCode rin_app_install_source_payload_validate(
+    uint64_t source_handle, uint64_t target_handle, uint32_t payload_id);
+
 RinResultCode rin_app_install_target_open(
     uint32_t block_id, uint64_t minimum_blocks,
     RinInstallTargetSessionV1* session_out);
