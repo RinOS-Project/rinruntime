@@ -11522,7 +11522,8 @@ static int rinfs_xattr_set_flags_internal(
     uint32_t name_length, const void* value, uint32_t value_length,
     uint32_t flags, int mode_override_valid, uint32_t mode_override,
     int expected_inode_valid, uint64_t expected_inode_version,
-    uint64_t expected_xattr_block) {
+    uint64_t expected_xattr_block,
+    int allow_default_acl_on_regular_overlay) {
     RinFS_MountOperationScope operation = {0};
     RinFS_ContentLeaseNode* inode_lease = NULL;
     RinFS_Inode inode;
@@ -11548,6 +11549,9 @@ static int rinfs_xattr_set_flags_internal(
         (value_length != 0u && value == NULL) ||
         (flags & ~RINFS_XATTR_SET_FLAGS) != 0u ||
         flags == RINFS_XATTR_SET_FLAGS ||
+        (allow_default_acl_on_regular_overlay != 0 &&
+         allow_default_acl_on_regular_overlay != 1) ||
+        (allow_default_acl_on_regular_overlay != 0 && !is_default_acl) ||
         (is_posix_acl && !rinfs_posix_acl_wire_valid(
              value, value_length, is_default_acl))) {
         return RINFS_ERR_INVAL;
@@ -11575,7 +11579,9 @@ static int rinfs_xattr_set_flags_internal(
         result = RINFS_ERR_STALE;
         goto done;
     }
-    if (is_default_acl && (inode.i_mode >> 12u) != RINFS_FT_DIR) {
+    if (is_default_acl && (inode.i_mode >> 12u) != RINFS_FT_DIR &&
+        (allow_default_acl_on_regular_overlay == 0 ||
+         (inode.i_mode >> 12u) != RINFS_FT_REG)) {
         result = RINFS_ERR_NOTDIR;
         goto done;
     }
@@ -11684,7 +11690,21 @@ int rinfs_xattr_set_flags(RinFS_Mount* mount, uint64_t ino, const char* name,
                           uint32_t value_length, uint32_t flags) {
     return rinfs_xattr_set_flags_internal(
         mount, ino, name, name_length, value, value_length, flags,
-        0, 0u, 0, 0u, 0u);
+        0, 0u, 0, 0u, 0u, 0);
+}
+
+int rinfs_xattr_set_flags_layerfs_directory_overlay(
+    RinFS_Mount* mount, uint64_t ino, const char* name,
+    uint32_t name_length, const void* value, uint32_t value_length,
+    uint32_t flags) {
+    static const char default_acl_name[] = "system.posix_acl_default";
+    if (name == NULL || name_length != sizeof(default_acl_name) - 1u ||
+        rinfs_memcmp(name, default_acl_name, sizeof(default_acl_name) - 1u) !=
+            0)
+        return RINFS_ERR_INVAL;
+    return rinfs_xattr_set_flags_internal(
+        mount, ino, name, name_length, value, value_length, flags,
+        0, 0u, 0, 0u, 0u, 1);
 }
 
 static int rinfs_inode_read_unscoped(RinFS_Mount* mount, uint64_t ino,
@@ -11751,7 +11771,7 @@ int rinfs_inode_set_mode(RinFS_Mount* mount, uint64_t ino,
         result = rinfs_xattr_set_flags_internal(
             mount, ino, access_name, (uint32_t)sizeof(access_name) - 1u,
             acl, acl_size, RINFS_XATTR_REPLACE, 1, mode, 1,
-            observed.i_version, observed.i_xattr_block);
+            observed.i_version, observed.i_xattr_block, 0);
 done:
     if (acl) rinfs_free(acl);
     if (inode_lease != NULL) {

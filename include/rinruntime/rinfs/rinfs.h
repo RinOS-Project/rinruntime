@@ -1383,6 +1383,13 @@ int rinfs_xattr_set_flags(RinFS_Mount* mount, uint64_t ino,
                           const char* name, uint32_t name_length,
                           const void* value, uint32_t value_length,
                           uint32_t flags);
+/* Update a copied POSIX default ACL held by a regular O_TMPFILE that backs an
+ * unlinked LayerFS directory descriptor. Ordinary regular inodes must use
+ * rinfs_xattr_set_flags(), which continues to reject default ACLs. */
+int rinfs_xattr_set_flags_layerfs_directory_overlay(
+    RinFS_Mount* mount, uint64_t ino, const char* name,
+    uint32_t name_length, const void* value, uint32_t value_length,
+    uint32_t flags);
 int rinfs_xattr_get(RinFS_Mount* mount, uint64_t ino, const char* name,
                     uint32_t name_length, void* value,
                     uint32_t value_capacity, uint32_t* value_length_out);
