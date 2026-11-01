@@ -3397,8 +3397,7 @@ int rinruntime_drag_drop_accept_v1(
     RinRuntimeGuiHandle target, uint64_t offer_token, uint64_t generation,
     uint32_t action) {
     RinRuntimeDragDropWireAcceptV1 request;
-    RinRuntimeGuiSurface* surface = runtime_surface(target);
-    if (surface == NULL || offer_token == 0u || generation == 0u ||
+    if (target == 0u || offer_token == 0u || generation == 0u ||
         generation == UINT64_MAX || !runtime_drag_drop_action_valid(action))
         return RIN_RESULT_INVALID_ARGUMENT;
     memset(&request, 0, sizeof(request));
@@ -3406,7 +3405,10 @@ int rinruntime_drag_drop_accept_v1(
     request.version = RIN_RUNTIME_DRAG_DROP_PROTOCOL_VERSION;
     request.offer_token = offer_token;
     request.generation = generation;
-    request.target_handle = surface->id;
+    /* The compositor authenticates this handle against the calling process.
+     * It may be a native WinCompat HWND that is not in RinRuntime's local
+     * surface table. */
+    request.target_handle = target;
     request.action = action;
     return runtime_drag_drop_request(RIN_RUNTIME_DRAG_DROP_ACCEPT, &request,
                                      sizeof(request), NULL, 0u, 0u);
@@ -3446,16 +3448,17 @@ int rinruntime_drag_drop_poll_v1(
     RinRuntimeGuiHandle target, RinRuntimeDragDropOfferV1* offer_out) {
     RinRuntimeDragDropWirePollV1 request;
     RinRuntimeDragDropWirePublicationV1 publication;
-    RinRuntimeGuiSurface* surface = runtime_surface(target);
     uint32_t index;
     int result;
     if (offer_out != NULL) memset(offer_out, 0, sizeof(*offer_out));
-    if (surface == NULL || offer_out == NULL)
+    if (target == 0u || offer_out == NULL)
         return RIN_RESULT_INVALID_ARGUMENT;
     memset(&request, 0, sizeof(request));
     request.struct_size = sizeof(request);
     request.version = RIN_RUNTIME_DRAG_DROP_PROTOCOL_VERSION;
-    request.surface_id = surface->id;
+    /* Native windows such as WinCompat HWNDs are authenticated by the
+     * compositor and need not have a RinRuntimeGuiSurface object here. */
+    request.surface_id = target;
     memset(&publication, 0, sizeof(publication));
     result = runtime_drag_drop_request(
         RIN_RUNTIME_DRAG_DROP_POLL, &request, sizeof(request), &publication,
@@ -3482,7 +3485,7 @@ int rinruntime_drag_drop_poll_v1(
     }
     if (publication.offer_token == 0u || publication.generation == 0u ||
         publication.origin_peer == 0u ||
-        publication.target_handle != surface->id ||
+        publication.target_handle != target ||
         publication.payload_count == 0u ||
         publication.payload_count > RIN_RUNTIME_DRAG_DROP_MAX_PAYLOADS ||
         !runtime_drag_drop_action_valid(publication.action) ||
