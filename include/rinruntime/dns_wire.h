@@ -892,6 +892,7 @@ static inline int rin_dns_wire_parse_response_answers_chain_ex(
                 if (ttl < chain_candidate.minimum_ttl)
                     chain_candidate.minimum_ttl = ttl;
             } else if (record_type == expected_type) {
+                uint32_t effective_ttl;
                 if (expected_type == RIN_DNS_WIRE_TYPE_A) {
                     if (data_length != 4u) goto fail;
                     if (answer_set->address_count >=
@@ -928,10 +929,11 @@ static inline int rin_dns_wire_parse_response_answers_chain_ex(
                            record_data_name[0] == '\0') {
                     goto fail;
                 }
+                effective_ttl = ttl < chain_candidate.minimum_ttl
+                    ? ttl : chain_candidate.minimum_ttl;
                 if (!result_found) {
                     answer->type = expected_type;
-                    answer->ttl = ttl < chain_candidate.minimum_ttl
-                        ? ttl : chain_candidate.minimum_ttl;
+                    answer->ttl = effective_ttl;
                     if (expected_type == RIN_DNS_WIRE_TYPE_PTR &&
                         rin_dns_wire_copy_name(answer->name,
                                                sizeof(answer->name),
@@ -942,6 +944,10 @@ static inline int rin_dns_wire_parse_response_answers_chain_ex(
                         answer_set->address_count = 1u;
                     }
                     result_found = 1;
+                } else if (effective_ttl < answer->ttl) {
+                    /* Malformed RRsets can carry different TTLs. Keep the
+                     * cache lifetime no longer than the shortest member. */
+                    answer->ttl = effective_ttl;
                 }
                 record_data_name[0] = '\0';
             }
