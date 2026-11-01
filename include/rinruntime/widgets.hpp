@@ -1130,6 +1130,7 @@ class Tree : public Widget {
     static constexpr size_t kMaxItems = 4096u;
     static constexpr size_t kMaxLabelBytes = 4096u;
     std::vector<TreeItem> roots_;
+    size_t itemCount_ = 0u;
     uint64_t nextId_ = 1u;
     uint64_t selectedId_ = 0u;
     ScrollModel scroll_;
@@ -1200,27 +1201,12 @@ class Tree : public Widget {
         notifySelection(selectedId_);
         return true;
     }
-    size_t itemCount() const {
-        size_t count = 0u;
-        std::vector<const std::vector<TreeItem>*> pending;
-        pending.push_back(&roots_);
-        while (!pending.empty()) {
-            const auto* values = pending.back();
-            pending.pop_back();
-            for (const auto& value : *values) {
-                ++count;
-                pending.push_back(&value.children);
-            }
-        }
-        return count;
-    }
-
 public:
     uint64_t addRoot(const std::string& label) {
 #if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
         try {
 #endif
-            if (itemCount() >= kMaxItems || !validLabel(label) ||
+            if (itemCount_ >= kMaxItems || !validLabel(label) ||
                 nextId_ == 0u)
                 return 0u;
             TreeItem value;
@@ -1228,6 +1214,7 @@ public:
             value.label = label;
             if (!widget_detail::appendMove(roots_, std::move(value)))
                 return 0u;
+            ++itemCount_;
             const uint64_t id = nextId_;
             ++nextId_;
             return id;
@@ -1241,7 +1228,7 @@ public:
 #if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
         try {
 #endif
-            if (itemCount() >= kMaxItems || !validLabel(label) ||
+            if (itemCount_ >= kMaxItems || !validLabel(label) ||
                 nextId_ == 0u)
                 return 0u;
             TreeItem* parent = findIn(roots_, parentId);
@@ -1251,6 +1238,7 @@ public:
             value.label = label;
             if (!widget_detail::appendMove(parent->children, std::move(value)))
                 return 0u;
+            ++itemCount_;
             const uint64_t id = nextId_;
             ++nextId_;
             return id;
@@ -1271,7 +1259,7 @@ public:
     int32_t rowHeight() const { return rowHeight_; }
     int32_t scrollOffset() const { return scroll_.offset(); }
     int32_t maxScrollOffset() const { return scroll_.maxOffset(); }
-    void updateLayout() { syncScroll(itemCount()); }
+    void updateLayout() { syncScroll(itemCount_); }
     void setOnSelect(std::function<void(uint64_t)> callback) {
         onSelect_ = std::move(callback);
     }
