@@ -100,6 +100,23 @@ class ContextMenuModel {
         return -1;
     }
 
+    bool menuTreeValid(uint64_t id, uint64_t* path, size_t depth) const {
+        const int32_t index = menuIndex(id);
+        if (index < 0 || !path || depth >= kMaximumDepth) return false;
+        for (size_t ancestor = 0u; ancestor < depth; ++ancestor)
+            if (path[ancestor] == id) return false;
+        path[depth] = id;
+        const MenuLevel& level = menus_[(size_t)index];
+        for (size_t item_index = 0u; item_index < level.items.size();
+             ++item_index) {
+            const uint64_t submenu_id = level.items[item_index].submenu_id;
+            if (submenu_id != 0u &&
+                !menuTreeValid(submenu_id, path, depth + 1u))
+                return false;
+        }
+        return true;
+    }
+
     const MenuLevel* currentMenu() const {
         if (depth_ == 0u) return nullptr;
         int32_t index = menuIndex(menu_path_[depth_ - 1u]);
@@ -302,6 +319,8 @@ public:
                                 item.submenu_id != 0u)))
             return false;
         if (item.submenu_id != 0u && item.action_id != 0u) return false;
+        if (!item.separator && item.enabled && item.submenu_id == 0u &&
+            item.action_id == 0u) return false;
 #if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
         try {
 #endif
@@ -346,8 +365,10 @@ public:
               uint64_t owner_generation, int32_t anchor_x, int32_t anchor_y,
               int32_t screen_width, int32_t screen_height, int32_t width,
               int32_t row_height, int32_t padding) {
+        uint64_t candidate_path[kMaximumDepth] = {};
         close();
-        if (menuIndex(menu_id) < 0 || owner_cookie == 0u ||
+        if (!menuTreeValid(menu_id, candidate_path, 0u) ||
+            owner_cookie == 0u ||
             owner_generation == 0u || screen_width <= 0 ||
             screen_height <= 0 || width <= 0 || row_height <= 0 ||
             padding < 0 || screen_width > 32768 || screen_height > 32768 ||
