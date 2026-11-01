@@ -576,6 +576,8 @@ typedef struct {
     uint64_t dirty_intent_owner_cookie;
     /* Advisory replacement hint; this never changes dirty-page durability. */
     uint8_t noreuse;
+    /* VMM is replacing this resident page and temporarily refuses faults. */
+    uint8_t migrating;
 } RinFS_PageCacheEntry;
 
 typedef struct {
@@ -1231,6 +1233,21 @@ int rinfs_mmap_source_retain_page(RinFS_MmapSource* source,
                                   uint64_t reference_cookie,
                                   uint64_t page_index,
                                   uint64_t physical_address);
+int rinfs_mmap_source_numa_migration_begin(
+    RinFS_MmapSource* source, uint64_t expected_inode,
+    uint64_t reference_generation, uint64_t reference_cookie,
+    uint64_t page_index, uint64_t old_physical,
+    uint32_t* mapping_count_out);
+int rinfs_mmap_source_numa_migration_query(
+    RinFS_MmapSource* source, uint64_t expected_inode,
+    uint64_t reference_generation, uint64_t reference_cookie,
+    uint64_t page_index, uint64_t old_physical,
+    uint32_t* mapping_count_out);
+int rinfs_mmap_source_numa_migration_finish(
+    RinFS_MmapSource* source, uint64_t expected_inode,
+    uint64_t reference_generation, uint64_t reference_cookie,
+    uint64_t page_index, uint64_t old_physical,
+    uint64_t new_physical, int commit);
 /* Release a mapping reference by its exact physical page. */
 int rinfs_page_cache_release_mapped_page(RinFS_Mount* mount,
                                          uint64_t physical_address);
