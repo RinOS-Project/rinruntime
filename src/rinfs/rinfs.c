@@ -295,9 +295,22 @@ static inline void rinfs_spin_preempt_enter(void) {}
 static inline void rinfs_spin_preempt_leave(void) {}
 #endif
 
-#if defined(RIN_KERNEL) && defined(RIN_FREESTANDING) && defined(__x86_64__)
+#if defined(RIN_KERNEL) && defined(RIN_FREESTANDING) && \
+    (defined(__x86_64__) || defined(__i386__))
+#define RINFS_KERNEL_PHYSICAL_PAGE_CACHE 1
+#if defined(__i386__)
+#define RINFS_FREE_KERNEL_CACHE_PAGE(address) \
+    platform_pmm_free_page((uint32_t)(address))
+#else
+#define RINFS_FREE_KERNEL_CACHE_PAGE(address) \
+    platform_pmm_free_page((uint64_t)(address))
+#endif
 extern uint64_t platform_pmm_alloc_file_cache_page(void);
+#if defined(__x86_64__)
 extern void platform_pmm_free_page(uint64_t address);
+#else
+extern void platform_pmm_free_page(uint32_t address);
+#endif
 #endif
 
 #define RINFS_READAHEAD_MAX_PAGES 32u
@@ -5971,9 +5984,9 @@ static int rinfs_page_cache_key_matches(
 static void rinfs_page_cache_release_storage_locked(
     RinFS_PageCacheEntry* entry) {
     if (!entry) return;
-#if defined(RIN_KERNEL) && defined(RIN_FREESTANDING) && defined(__x86_64__)
+#if defined(RINFS_KERNEL_PHYSICAL_PAGE_CACHE)
     if (entry->physical_address != 0u) {
-        platform_pmm_free_page(entry->physical_address);
+        RINFS_FREE_KERNEL_CACHE_PAGE(entry->physical_address);
         entry->physical_address = 0u;
     }
 #else
@@ -6029,7 +6042,7 @@ static void rinfs_page_cache_discard_locked(RinFS_PageCache* cache,
                                             RinFS_PageCacheEntry* entry) {
     rinfs_page_cache_release_storage_locked(entry);
     rinfs_page_cache_account_readahead_waste_locked(cache, entry);
-#if defined(RIN_KERNEL) && defined(RIN_FREESTANDING) && defined(__x86_64__)
+#if defined(RINFS_KERNEL_PHYSICAL_PAGE_CACHE)
     entry->data = NULL;
 #endif
     entry->mount_epoch = 0u;
@@ -6073,13 +6086,19 @@ static void rinfs_page_cache_discard_locked(RinFS_PageCache* cache,
 
 static int rinfs_page_cache_ensure_storage(RinFS_PageCacheEntry* entry) {
     if (!entry) return RINFS_ERR_INVAL;
-#if defined(RIN_KERNEL) && defined(RIN_FREESTANDING) && defined(__x86_64__)
+#if defined(RINFS_KERNEL_PHYSICAL_PAGE_CACHE)
     if (entry->physical_address == 0u) {
         uint64_t physical = platform_pmm_alloc_file_cache_page();
+        uint8_t* data;
         if (physical == 0u) return RINFS_ERR_NOMEM;
-        entry->physical_address = physical;
-        entry->data = (uint8_t*)
+        data = (uint8_t*)
             rinfs_kernel_port_physical_to_virtual_v1(physical);
+        if (!data) {
+            RINFS_FREE_KERNEL_CACHE_PAGE(physical);
+            return RINFS_ERR_NOMEM;
+        }
+        entry->physical_address = physical;
+        entry->data = data;
         rinfs_memset(entry->data, 0, RINFS_PAGE_CACHE_PAGE_SIZE);
     }
     return entry->data != NULL ? RINFS_OK : RINFS_ERR_NOMEM;
@@ -18489,7 +18508,7 @@ static int rinfs_mount_free_runtime_buffers(RinFS_Mount* mount) {
     int error;
     if (!mount) return RINFS_ERR_INVAL;
     if (mount->page_cache) {
-#if defined(RIN_KERNEL) && defined(RIN_FREESTANDING) && defined(__x86_64__)
+#if defined(RINFS_KERNEL_PHYSICAL_PAGE_CACHE)
         for (uint32_t index = 0u; index < RINFS_PAGE_CACHE_CAPACITY; ++index)
             rinfs_page_cache_release_storage_locked(
                 &mount->page_cache->entries[index]);
@@ -18920,7 +18939,7 @@ static int rinfs_mount_sized_io_unleased(
         if ((mount->page_cache->device_flags & (RINFS_DEVICE_FLAG_REMOVABLE |
                                                 RINFS_DEVICE_FLAG_SLOW)) != 0u)
             mount->page_cache->readahead_limit_pages = 2u;
-#if defined(RIN_KERNEL) && defined(RIN_FREESTANDING) && defined(__x86_64__)
+#if defined(RINFS_KERNEL_PHYSICAL_PAGE_CACHE)
         mount->page_cache->storage = (uint8_t*)rinfs_mount_runtime_alloc(
             mount,
             mapped_reference_bytes, 0u, &allocation_error);
@@ -18934,14 +18953,20 @@ static int rinfs_mount_sized_io_unleased(
          * itself while keeping the PMM lifetime separate from metadata. */
         for (index = 0u; index < RINFS_PAGE_CACHE_CAPACITY; ++index) {
             uint64_t physical = platform_pmm_alloc_file_cache_page();
+            uint8_t* data;
             if (physical == 0u) {
                 return rinfs_mount_abort_with_cleanup(mount,
                                                       RINFS_ERR_NOMEM);
             }
+            data = (uint8_t*)
+                rinfs_kernel_port_physical_to_virtual_v1(physical);
+            if (!data) {
+                RINFS_FREE_KERNEL_CACHE_PAGE(physical);
+                return rinfs_mount_abort_with_cleanup(mount,
+                                                      RINFS_ERR_NOMEM);
+            }
             mount->page_cache->entries[index].physical_address = physical;
-            mount->page_cache->entries[index].data =
-                (uint8_t*)
-                    rinfs_kernel_port_physical_to_virtual_v1(physical);
+            mount->page_cache->entries[index].data = data;
             rinfs_memset(mount->page_cache->entries[index].data, 0,
                          RINFS_PAGE_CACHE_PAGE_SIZE);
         }
@@ -22647,8 +22672,7 @@ static int rinfs_mmap_source_numa_migration_impl(
          (new_physical == 0u || new_physical == old_physical ||
           (new_physical & (RINFS_PAGE_CACHE_PAGE_SIZE - 1u)) != 0u)))
         return RINFS_ERR_INVAL;
-#if !defined(RIN_KERNEL) || !defined(RIN_FREESTANDING) || \
-    !defined(__x86_64__)
+#if !defined(RINFS_KERNEL_PHYSICAL_PAGE_CACHE)
     (void)reference_generation;
     (void)reference_cookie;
     (void)new_physical;
@@ -22738,7 +22762,7 @@ static int rinfs_mmap_source_numa_migration_impl(
     }
     err = rinfs_page_cache_unlock_status(cache, err);
     if (err == RINFS_OK && retired_physical != 0u)
-        platform_pmm_free_page(retired_physical);
+        RINFS_FREE_KERNEL_CACHE_PAGE(retired_physical);
 migration_done:
     if (lease) {
         int release_error = rinfs_content_lease_release(
