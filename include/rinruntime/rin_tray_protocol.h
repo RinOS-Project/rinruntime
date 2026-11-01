@@ -60,7 +60,8 @@ typedef struct RinTrayMenuItemV1 {
     uint64_t item_id;
     uint64_t parent_id;
     uint32_t flags;
-    uint32_t reserved;
+    /* Opaque icon ID for the common menu renderer; never a path or command. */
+    uint32_t icon_id;
     char label[64];
     char accessibility_label[64];
 } RinTrayMenuItemV1;
@@ -161,7 +162,7 @@ static inline int rin_tray_descriptor_valid(const RinTrayItemDescriptorV1* item)
         !rin_tray_resource_valid(item->icon_resource)) return 0;
     for (i = 0u; i < item->menu_count; ++i) {
         const RinTrayMenuItemV1* menu = &item->menu[i];
-        if (!menu->item_id || menu->reserved != 0u ||
+        if (!menu->item_id ||
             (menu->flags & ~(RIN_TRAY_MENU_ENABLED | RIN_TRAY_MENU_CHECKED |
                              RIN_TRAY_MENU_SEPARATOR | RIN_TRAY_MENU_DESTRUCTIVE |
                              RIN_TRAY_MENU_SUBMENU)) != 0u ||
