@@ -81,11 +81,13 @@ static int rinfs_mount_operation_pair_scope_begin(
     RinFS_MountOperationPairScope* scope);
 static int rinfs_mount_operation_pair_scope_end(
     RinFS_MountOperationPairScope* scope);
+#if defined(RIN_KERNEL)
 static int rinfs_discard_operation_begin(RinFS_Mount* mount);
 static int rinfs_discard_operation_end(RinFS_Mount* mount, int success);
+static void rinfs_discard_queue_drain(RinFS_Mount* mount);
+#endif
 static int rinfs_discard_block_is_queued(RinFS_Mount* mount, uint64_t block);
 static int rinfs_block_free_data(RinFS_Mount* mount, uint64_t block);
-static void rinfs_discard_queue_drain(RinFS_Mount* mount);
 
 typedef struct {
     RinFS_ForkPrepareCallback prepare;
@@ -2970,6 +2972,7 @@ done:
 #endif
 }
 
+#if defined(RIN_KERNEL)
 static int rinfs_discard_operation_begin(RinFS_Mount* mount) {
 #if defined(RIN_KERNEL)
     if (!mount) return RINFS_ERR_INVAL;
@@ -3023,6 +3026,7 @@ static int rinfs_discard_operation_end(RinFS_Mount* mount, int success) {
 #endif
     return RINFS_OK;
 }
+#endif
 
 static int rinfs_discard_block_is_queued(RinFS_Mount* mount, uint64_t block) {
 #if defined(RIN_KERNEL)
@@ -10089,6 +10093,7 @@ static int device_flush(const RinFS_DeviceOps* ops, int dev_id) {
 #endif
 }
 
+#if defined(RIN_KERNEL)
 static int device_discard(const RinFS_DeviceOps* ops, int dev_id,
                           uint64_t lba, uint32_t count) {
     if (ops && (ops->flags & RINFS_DEVICE_FLAG_OFFLINE) != 0u) return -1;
@@ -10106,6 +10111,7 @@ static int device_discard(const RinFS_DeviceOps* ops, int dev_id,
     return -1;
 #endif
 }
+#endif
 
 /* Single-record write-ahead log used to make namespace rename recoverable.
  * The record fits in every supported RinFS block size. */
@@ -10765,6 +10771,7 @@ static int rinfs_block_free_unscoped(RinFS_Mount* mount, uint64_t block) {
     return err;
 }
 
+#if defined(RIN_KERNEL)
 static void rinfs_discard_queue_enqueue(RinFS_Mount* mount, uint64_t block) {
 #if defined(RIN_KERNEL)
     RinFS_DiscardExtent candidate;
@@ -10976,6 +10983,7 @@ static void rinfs_discard_queue_drain(RinFS_Mount* mount) {
     (void)mount;
 #endif
 }
+#endif
 
 static int rinfs_block_free_data(RinFS_Mount* mount, uint64_t block) {
 #if defined(RIN_KERNEL)
