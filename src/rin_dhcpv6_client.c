@@ -18,12 +18,28 @@
 #define DHCPV6_OPTION_RECONFIGURE_ACCEPT 20u
 #define DHCPV6_OPTION_DNS_SERVERS 23u
 #define DHCPV6_OPTION_INFORMATION_REFRESH_TIME 32u
+#define DHCPV6_OPTION_SOL_MAX_RT 82u
+#define DHCPV6_OPTION_INF_MAX_RT 83u
 
 #define DHCPV6_DNS_OPTION_CODE 23u
 #define DHCPV6_MIN_VALID_SECONDS 60u
 #define DHCPV6_MAX_VALID_SECONDS (30u * 24u * 60u * 60u)
-#define DHCPV6_INITIAL_RETRY_MS UINT64_C(1000)
-#define DHCPV6_MAX_RETRY_MS UINT64_C(120000)
+#define DHCPV6_SOL_TIMEOUT_MS UINT64_C(1000)
+#define DHCPV6_SOL_MAX_RT_DEFAULT_SECONDS 3600u
+#define DHCPV6_INF_MAX_RT_DEFAULT_SECONDS 3600u
+#define DHCPV6_REQUEST_TIMEOUT_MS UINT64_C(1000)
+#define DHCPV6_REQUEST_MAX_RT_MS UINT64_C(30000)
+#define DHCPV6_REQUEST_MAX_RETRANSMISSIONS 10u
+#define DHCPV6_RENEW_TIMEOUT_MS UINT64_C(10000)
+#define DHCPV6_RENEW_MAX_RT_MS UINT64_C(600000)
+#define DHCPV6_REBIND_TIMEOUT_MS UINT64_C(10000)
+#define DHCPV6_REBIND_MAX_RT_MS UINT64_C(600000)
+#define DHCPV6_INFORMATION_TIMEOUT_MS UINT64_C(1000)
+#define DHCPV6_MAX_RT_OPTION_MIN_SECONDS 60u
+#define DHCPV6_MAX_RT_OPTION_MAX_SECONDS 86400u
+#define DHCPV6_MAX_RANDOMIZED_RT_MS UINT64_C(95040000)
+#define DHCPV6_STARTUP_DELAY_MAX_MS UINT64_C(1000)
+#define DHCPV6_RETRANSMISSION_NOT_STARTED UINT32_MAX
 #define DHCPV6_MAX_OPTIONS 32u
 #define DHCPV6_MAX_NESTED_OPTIONS 16u
 #define DHCPV6_INFORMATION_REFRESH_DEFAULT_SECONDS (24u * 60u * 60u)
@@ -67,6 +83,11 @@ typedef struct ParsedMessage {
     uint32_t preference_seen;
     uint32_t information_refresh_seconds;
     uint32_t information_refresh_seen;
+    uint32_t sol_max_rt_seconds;
+    uint32_t sol_max_rt_seen;
+    uint32_t inf_max_rt_seconds;
+    uint32_t inf_max_rt_seen;
+    uint32_t structural_valid;
 } ParsedMessage;
 
 static void byte_zero(void* value, size_t size) {
@@ -239,13 +260,11 @@ static int append_ia_na(MessageWriter* writer, const RinDhcpv6ClientV1* client,
     byte_zero(option, sizeof(option));
     store_be32(option, client->iaid);
     if (include_address) {
-        store_be32(option + 4u, client->offer_t1_seconds);
-        store_be32(option + 8u, client->offer_t2_seconds);
         store_be16(option + 12u, DHCPV6_OPTION_IA_ADDRESS);
         store_be16(option + 14u, 24u);
         byte_copy(option + 16u, client->address, 16u);
-        store_be32(option + 32u, client->offer_preferred_seconds);
-        store_be32(option + 36u, client->offer_valid_seconds);
+        /* RFC 9915 §21.4 and §21.6 recommend zero in client-sent lifetime
+         * hints; the server must ignore these fields. */
         size = 40u;
     }
     return append_option(writer, DHCPV6_OPTION_IA_NA, option, size);
@@ -255,7 +274,8 @@ static int build_message(const RinDhcpv6ClientV1* client, uint32_t kind,
                          uint32_t transaction_id, uint64_t now_ms,
                          RinDhcpv6TransmitV1* transmit) {
     uint8_t elapsed[2];
-    uint8_t oro[2];
+    uint8_t oro[6];
+    uint32_t oro_count = 1u;
     uint64_t elapsed_centiseconds;
     MessageWriter writer;
     int include_server;
@@ -288,6 +308,8 @@ static int build_message(const RinDhcpv6ClientV1* client, uint32_t kind,
                        (uint16_t)client->server_duid_size))
         return RIN_DHCPV6_RANGE_EXHAUSTED;
     elapsed_centiseconds = transaction_id == client->transaction_id &&
+            client->offer_t1_seconds !=
+                DHCPV6_RETRANSMISSION_NOT_STARTED &&
             now_ms >= client->transaction_started_ms
         ? (now_ms - client->transaction_started_ms) / UINT64_C(10) : 0u;
     if (elapsed_centiseconds > UINT16_MAX) elapsed_centiseconds = UINT16_MAX;
@@ -301,9 +323,23 @@ static int build_message(const RinDhcpv6ClientV1* client, uint32_t kind,
         !append_ia_na(&writer, client, include_address))
         return RIN_DHCPV6_RANGE_EXHAUSTED;
     store_be16(oro, DHCPV6_DNS_OPTION_CODE);
-    if (!append_option(&writer, DHCPV6_OPTION_ORO, oro, sizeof(oro)))
+    if (kind == RIN_DHCPV6_TRANSMIT_SOLICIT ||
+        kind == RIN_DHCPV6_TRANSMIT_REQUEST ||
+        kind == RIN_DHCPV6_TRANSMIT_RENEW ||
+        kind == RIN_DHCPV6_TRANSMIT_REBIND) {
+        store_be16(oro + oro_count * 2u, DHCPV6_OPTION_SOL_MAX_RT);
+        oro_count++;
+    } else if (kind == RIN_DHCPV6_TRANSMIT_INFORMATION_REQUEST) {
+        store_be16(oro + oro_count * 2u,
+                   DHCPV6_OPTION_INFORMATION_REFRESH_TIME);
+        oro_count++;
+        store_be16(oro + oro_count * 2u, DHCPV6_OPTION_INF_MAX_RT);
+        oro_count++;
+    }
+    if (!append_option(&writer, DHCPV6_OPTION_ORO, oro,
+                       (uint16_t)(oro_count * 2u)))
         return RIN_DHCPV6_RANGE_EXHAUSTED;
-    /* RFC 8415 defaults a client to unwilling to receive Reconfigure.  We
+    /* RFC 9915 defaults a client to unwilling to receive Reconfigure.  We
      * advertise acceptance only because the product owner validates RKAP
      * before it can request a follow-up exchange. */
     if (!append_option(&writer, DHCPV6_OPTION_RECONFIGURE_ACCEPT, NULL, 0u))
@@ -425,11 +461,24 @@ static int parse_message(const uint8_t* message, uint32_t size,
                 return RIN_DHCPV6_MALFORMED_PACKET;
             parsed->information_refresh_seen = 1u;
             parsed->information_refresh_seconds = load_be32(value);
+        } else if (code == DHCPV6_OPTION_SOL_MAX_RT) {
+            if (parsed->sol_max_rt_seen || length != 4u)
+                return RIN_DHCPV6_MALFORMED_PACKET;
+            parsed->sol_max_rt_seen = 1u;
+            parsed->sol_max_rt_seconds = load_be32(value);
+        } else if (code == DHCPV6_OPTION_INF_MAX_RT) {
+            if (parsed->inf_max_rt_seen || length != 4u)
+                return RIN_DHCPV6_MALFORMED_PACKET;
+            parsed->inf_max_rt_seen = 1u;
+            parsed->inf_max_rt_seconds = load_be32(value);
         }
         offset += length;
     }
-    if (offset != size || !parsed->client_seen || !parsed->server_seen ||
-        (require_ia && (!parsed->ia_seen || !parsed->address_seen)) ||
+    if (offset != size || !parsed->client_seen || !parsed->server_seen)
+        return RIN_DHCPV6_MALFORMED_PACKET;
+    parsed->structural_valid = 1u;
+    if ((require_ia && !parsed->ia_seen) ||
+        (require_ia && !parsed->address_seen && parsed->status_code == 0u) ||
         (!require_ia && (parsed->ia_seen || parsed->address_seen)))
         return RIN_DHCPV6_MALFORMED_PACKET;
     return parsed->status_code == 0u ? RIN_DHCPV6_OK
@@ -442,6 +491,8 @@ static void clear_pending(RinDhcpv6ClientV1* client) {
 }
 
 static void clear_dynamic(RinDhcpv6ClientV1* client) {
+    uint32_t sol_max_rt = client->offer_preferred_seconds;
+    uint32_t inf_max_rt = client->offer_valid_seconds;
     client->state = RIN_DHCPV6_STATE_IDLE;
     client->transaction_started_ms = 0u;
     client->next_transmit_ms = 0u;
@@ -454,8 +505,8 @@ static void clear_dynamic(RinDhcpv6ClientV1* client) {
     client->transaction_id = 0u;
     client->server_duid_size = 0u;
     client->dns_server_count = 0u;
-    client->offer_preferred_seconds = 0u;
-    client->offer_valid_seconds = 0u;
+    client->offer_preferred_seconds = sol_max_rt;
+    client->offer_valid_seconds = inf_max_rt;
     client->offer_t1_seconds = 0u;
     client->offer_t2_seconds = 0u;
     byte_zero(client->server_duid, sizeof(client->server_duid));
@@ -514,6 +565,12 @@ static int client_state_retransmits(uint32_t state) {
            state == RIN_DHCPV6_STATE_RECONFIGURE_REBINDING;
 }
 
+static int client_startup_delayed(const RinDhcpv6ClientV1* client) {
+    return client->state == RIN_DHCPV6_STATE_IDLE &&
+           client->transaction_id != 0u &&
+           client->offer_t1_seconds == DHCPV6_RETRANSMISSION_NOT_STARTED;
+}
+
 static int pending_valid(const RinDhcpv6ClientV1* client) {
     const RinDhcpv6TransmitV1* pending = &client->pending;
     uint32_t transaction_id;
@@ -541,13 +598,37 @@ static int pending_valid(const RinDhcpv6ClientV1* client) {
     return transaction_id != 0u;
 }
 
+static uint64_t retransmission_irt_ms(uint32_t kind);
+static uint64_t retransmission_mrt_ms(const RinDhcpv6ClientV1* client,
+                                      uint32_t kind);
+
+static uint32_t retransmission_kind_for_state(uint32_t state) {
+    switch (state) {
+        case RIN_DHCPV6_STATE_SOLICITING:
+            return RIN_DHCPV6_TRANSMIT_SOLICIT;
+        case RIN_DHCPV6_STATE_REQUESTING:
+            return RIN_DHCPV6_TRANSMIT_REQUEST;
+        case RIN_DHCPV6_STATE_RENEWING:
+            return RIN_DHCPV6_TRANSMIT_RENEW;
+        case RIN_DHCPV6_STATE_REBINDING:
+        case RIN_DHCPV6_STATE_RECONFIGURE_REBINDING:
+            return RIN_DHCPV6_TRANSMIT_REBIND;
+        case RIN_DHCPV6_STATE_INFORMATION_REQUESTING:
+        case RIN_DHCPV6_STATE_RECONFIGURE_INFORMATION_REQUESTING:
+            return RIN_DHCPV6_TRANSMIT_INFORMATION_REQUEST;
+        default:
+            return RIN_DHCPV6_TRANSMIT_NONE;
+    }
+}
+
 static int client_valid(const RinDhcpv6ClientV1* client) {
-    uint32_t t1;
-    uint32_t t2;
     uint32_t index;
     int has_server;
     int has_address;
     int has_lease;
+    int retransmitting;
+    int first_send_pending;
+    uint32_t retransmission_kind;
     if (!client || client->version != RIN_DHCPV6_CLIENT_VERSION ||
         client->struct_size != sizeof(*client) || client->initialized != 1u ||
         client->state > RIN_DHCPV6_STATE_RECONFIGURE_REBINDING ||
@@ -559,6 +640,13 @@ static int client_valid(const RinDhcpv6ClientV1* client) {
         client->dns_server_count > RIN_DHCPV6_MAX_DNS_SERVERS ||
         client->pending_present > 1u ||
         client->reserved > RIN_DHCPV6_CLIENT_MODE_INFORMATION ||
+        client->offer_preferred_seconds <
+            DHCPV6_MAX_RT_OPTION_MIN_SECONDS ||
+        client->offer_preferred_seconds >
+            DHCPV6_MAX_RT_OPTION_MAX_SECONDS ||
+        client->offer_valid_seconds < DHCPV6_MAX_RT_OPTION_MIN_SECONDS ||
+        client->offer_valid_seconds > DHCPV6_MAX_RT_OPTION_MAX_SECONDS ||
+        client->offer_t2_seconds != 0u ||
         !pending_valid(client))
         return 0;
     if ((client_information_mode(client) &&
@@ -586,19 +674,12 @@ static int client_valid(const RinDhcpv6ClientV1* client) {
                         sizeof(client->server_duid)) ||
         has_address != address_usable(client->address))
         return 0;
-    if ((client->state == RIN_DHCPV6_STATE_IDLE) !=
-        (client->transaction_id == 0u))
-        return 0;
-    t1 = client->offer_t1_seconds;
-    t2 = client->offer_t2_seconds;
-    if (has_address &&
-        !lifetimes_normalize(client->offer_valid_seconds,
-                             client->offer_preferred_seconds, &t1, &t2))
-        return 0;
-    if (!has_address && (client->offer_valid_seconds != 0u ||
-                         client->offer_preferred_seconds != 0u ||
-                         client->offer_t1_seconds != 0u ||
-                         client->offer_t2_seconds != 0u))
+    if ((client->state == RIN_DHCPV6_STATE_IDLE &&
+         client->transaction_id == 0u && client->offer_t1_seconds != 0u) ||
+        (client->state != RIN_DHCPV6_STATE_IDLE &&
+         client->transaction_id == 0u) ||
+        (client->state == RIN_DHCPV6_STATE_IDLE &&
+         client->transaction_id != 0u && !client_startup_delayed(client)))
         return 0;
     if (has_lease) {
         if (client->lease_generation == 0u ||
@@ -622,13 +703,40 @@ static int client_valid(const RinDhcpv6ClientV1* client) {
             return 0;
         }
     }
-    if (client_state_retransmits(client->state)) {
-        if (client->next_transmit_ms < client->transaction_started_ms ||
-            client->retry_ms < DHCPV6_INITIAL_RETRY_MS ||
-            client->retry_ms > DHCPV6_MAX_RETRY_MS)
+    retransmitting = client_state_retransmits(client->state);
+    retransmission_kind = retransmission_kind_for_state(client->state);
+    first_send_pending = client_startup_delayed(client) ||
+        ((client->state ==
+              RIN_DHCPV6_STATE_RECONFIGURE_INFORMATION_REQUESTING ||
+          client->state == RIN_DHCPV6_STATE_RECONFIGURE_REBINDING) &&
+         client->offer_t1_seconds == DHCPV6_RETRANSMISSION_NOT_STARTED);
+    if (retransmitting || first_send_pending) {
+        if (client->offer_t1_seconds ==
+            DHCPV6_RETRANSMISSION_NOT_STARTED) {
+            if (!first_send_pending || client->transaction_started_ms != 0u ||
+                client->retry_ms != 0u)
+                return 0;
+        } else {
+            uint64_t minimum_rt;
+            uint64_t maximum_rt;
+            if (retransmission_kind == RIN_DHCPV6_TRANSMIT_NONE ||
+                client->next_transmit_ms < client->transaction_started_ms)
+                return 0;
+            minimum_rt = retransmission_irt_ms(retransmission_kind);
+            minimum_rt -= minimum_rt / 10u;
+            maximum_rt = retransmission_mrt_ms(client, retransmission_kind);
+            maximum_rt += maximum_rt / 10u;
+            if (client->retry_ms < minimum_rt ||
+                client->retry_ms > maximum_rt)
+                return 0;
+        }
+        if (client->state == RIN_DHCPV6_STATE_REQUESTING &&
+            client->offer_t1_seconds >=
+                DHCPV6_REQUEST_MAX_RETRANSMISSIONS)
             return 0;
     } else if (client->transaction_started_ms != 0u ||
-               client->next_transmit_ms != 0u || client->retry_ms != 0u) {
+               client->next_transmit_ms != 0u || client->retry_ms != 0u ||
+               client->offer_t1_seconds != 0u) {
         return 0;
     }
     return 1;
@@ -652,23 +760,124 @@ static uint64_t earlier_deadline(uint64_t deadline, uint64_t phase_end) {
     return phase_end != 0u && phase_end < deadline ? phase_end : deadline;
 }
 
-static void schedule_initial_retry(RinDhcpv6ClientV1* client,
-                                   uint64_t now_ms, uint64_t phase_end) {
-    client->transaction_started_ms = now_ms;
-    client->next_transmit_ms = earlier_deadline(
-        now_ms + DHCPV6_INITIAL_RETRY_MS, phase_end);
-    client->retry_ms = DHCPV6_INITIAL_RETRY_MS * UINT64_C(2);
+static uint32_t random_next(uint32_t* state) {
+    uint32_t value = *state;
+    value ^= value << 13;
+    value ^= value >> 17;
+    value ^= value << 5;
+    if (value == 0u) value = UINT32_C(0x6d2b79f5);
+    *state = value;
+    return value;
 }
 
-static void schedule_later_retry(RinDhcpv6ClientV1* client,
-                                 uint64_t now_ms, uint64_t phase_end) {
-    uint64_t delay = client->retry_ms;
-    client->next_transmit_ms = earlier_deadline(now_ms + delay, phase_end);
-    if (delay < DHCPV6_MAX_RETRY_MS) {
-        delay *= 2u;
-        if (delay > DHCPV6_MAX_RETRY_MS) delay = DHCPV6_MAX_RETRY_MS;
-        client->retry_ms = delay;
+static uint32_t random_bounded(uint32_t* state, uint32_t bound) {
+    return (uint32_t)(((uint64_t)random_next(state) * bound) >> 32);
+}
+
+static uint32_t random_event_seed(const RinDhcpv6ClientV1* client,
+                                  uint32_t transaction_id,
+                                  uint32_t sequence, uint32_t purpose) {
+    uint32_t value = UINT32_C(2166136261) ^ transaction_id ^
+                     (sequence * UINT32_C(0x9e3779b9)) ^ client->iaid ^
+                     (uint32_t)client->interface_generation ^
+                     (uint32_t)(client->interface_generation >> 32) ^
+                     (uint32_t)client->generation ^
+                     (uint32_t)(client->generation >> 32) ^ purpose;
+    uint32_t index;
+    for (index = 0u; index < client->duid_size; ++index)
+        value = (value ^ client->duid[index]) * UINT32_C(16777619);
+    if (value == 0u) value = UINT32_C(0x6d2b79f5);
+    value ^= value << 13;
+    value ^= value >> 17;
+    value ^= value << 5;
+    return value != 0u ? value : UINT32_C(0x6d2b79f5);
+}
+
+static uint64_t retransmission_irt_ms(uint32_t kind) {
+    switch (kind) {
+        case RIN_DHCPV6_TRANSMIT_RENEW:
+            return DHCPV6_RENEW_TIMEOUT_MS;
+        case RIN_DHCPV6_TRANSMIT_REBIND:
+            return DHCPV6_REBIND_TIMEOUT_MS;
+        case RIN_DHCPV6_TRANSMIT_INFORMATION_REQUEST:
+            return DHCPV6_INFORMATION_TIMEOUT_MS;
+        case RIN_DHCPV6_TRANSMIT_SOLICIT:
+            return DHCPV6_SOL_TIMEOUT_MS;
+        case RIN_DHCPV6_TRANSMIT_REQUEST:
+        default:
+            return DHCPV6_REQUEST_TIMEOUT_MS;
     }
+}
+
+static uint64_t retransmission_mrt_ms(const RinDhcpv6ClientV1* client,
+                                      uint32_t kind) {
+    switch (kind) {
+        case RIN_DHCPV6_TRANSMIT_SOLICIT:
+            return (uint64_t)client->offer_preferred_seconds * UINT64_C(1000);
+        case RIN_DHCPV6_TRANSMIT_REQUEST:
+            return DHCPV6_REQUEST_MAX_RT_MS;
+        case RIN_DHCPV6_TRANSMIT_RENEW:
+            return DHCPV6_RENEW_MAX_RT_MS;
+        case RIN_DHCPV6_TRANSMIT_REBIND:
+            return DHCPV6_REBIND_MAX_RT_MS;
+        case RIN_DHCPV6_TRANSMIT_INFORMATION_REQUEST:
+            return (uint64_t)client->offer_valid_seconds * UINT64_C(1000);
+        default:
+            return retransmission_irt_ms(kind);
+    }
+}
+
+static uint32_t retransmission_mrc(uint32_t kind) {
+    return kind == RIN_DHCPV6_TRANSMIT_REQUEST
+        ? DHCPV6_REQUEST_MAX_RETRANSMISSIONS : 0u;
+}
+
+static uint64_t randomized_rt(RinDhcpv6ClientV1* client, uint64_t base_ms,
+                              int first_solicit_rt, uint32_t kind,
+                              uint32_t transaction_id,
+                              uint32_t sequence) {
+    uint32_t random_state = random_event_seed(client, transaction_id,
+                                               sequence,
+                                               UINT32_C(0x52540000) ^ kind);
+    int32_t signed_factor;
+    uint64_t magnitude;
+    if (first_solicit_rt) {
+        signed_factor = (int32_t)(random_bounded(&random_state, 1000u) + 1u);
+    } else {
+        signed_factor = (int32_t)random_bounded(&random_state, 2001u) - 1000;
+    }
+    magnitude = (base_ms * (uint32_t)(signed_factor < 0
+                    ? -signed_factor : signed_factor)) / UINT64_C(10000);
+    return signed_factor < 0 ? base_ms - magnitude : base_ms + magnitude;
+}
+
+static void schedule_initial_retry(RinDhcpv6ClientV1* client,
+                                   uint32_t kind, uint32_t transaction_id,
+                                   uint32_t sequence, uint64_t now_ms,
+                                   uint64_t phase_end) {
+    uint64_t retry_ms = randomized_rt(
+        client, retransmission_irt_ms(kind),
+        kind == RIN_DHCPV6_TRANSMIT_SOLICIT,
+        kind, transaction_id, sequence);
+    client->transaction_started_ms = now_ms;
+    client->next_transmit_ms = earlier_deadline(now_ms + retry_ms, phase_end);
+    client->retry_ms = retry_ms;
+    client->offer_t1_seconds = 0u;
+    client->offer_t2_seconds = 0u;
+}
+
+static void schedule_later_retry(RinDhcpv6ClientV1* client, uint32_t kind,
+                                 uint32_t transaction_id, uint32_t sequence,
+                                 uint64_t now_ms, uint64_t phase_end) {
+    uint64_t mrt_ms = retransmission_mrt_ms(client, kind);
+    uint64_t base_ms = client->retry_ms > UINT64_MAX / 2u
+        ? mrt_ms : client->retry_ms * UINT64_C(2);
+    uint64_t retry_ms;
+    if (base_ms > mrt_ms) base_ms = mrt_ms;
+    retry_ms = randomized_rt(client, base_ms, 0, kind,
+                             transaction_id, sequence);
+    client->next_transmit_ms = earlier_deadline(now_ms + retry_ms, phase_end);
+    client->retry_ms = retry_ms;
 }
 
 static int expire_lease(RinDhcpv6ClientV1* client) {
@@ -696,6 +905,8 @@ int rin_dhcpv6_client_init(
     client->generation = 1u;
     client->next_lease_generation = 1u;
     client->next_transmit_sequence = 1u;
+    client->offer_preferred_seconds = DHCPV6_SOL_MAX_RT_DEFAULT_SECONDS;
+    client->offer_valid_seconds = DHCPV6_INF_MAX_RT_DEFAULT_SECONDS;
     client->iaid = iaid;
     client->duid_size = duid_size;
     byte_copy(client->duid, snapshot, duid_size);
@@ -708,7 +919,8 @@ int rin_dhcpv6_client_set_mode(RinDhcpv6ClientV1* client,
     if (!client_valid(client) ||
         (mode != RIN_DHCPV6_CLIENT_MODE_STATEFUL &&
          mode != RIN_DHCPV6_CLIENT_MODE_INFORMATION) ||
-        client->state != RIN_DHCPV6_STATE_IDLE || client->pending_present)
+        client->state != RIN_DHCPV6_STATE_IDLE ||
+        client->transaction_id != 0u || client->pending_present)
         return RIN_DHCPV6_INVALID_ARGUMENT;
     client->reserved = (uint32_t)mode;
     return RIN_DHCPV6_OK;
@@ -732,11 +944,11 @@ int rin_dhcpv6_client_request_reconfigure(
         (requested_kind == RIN_DHCPV6_TRANSMIT_INFORMATION_REQUEST &&
          client->state == RIN_DHCPV6_STATE_INFORMATION_BOUND &&
          client_information_mode(client))) {
-        if (client->generation == UINT64_MAX ||
+        if (client->generation >= UINT64_MAX - 3u ||
             ((requested_kind == RIN_DHCPV6_TRANSMIT_REBIND ||
               (requested_kind == RIN_DHCPV6_TRANSMIT_INFORMATION_REQUEST &&
                !client_information_mode(client))) &&
-             now_ms > UINT64_MAX - DHCPV6_INITIAL_RETRY_MS))
+             now_ms > UINT64_MAX - DHCPV6_MAX_RANDOMIZED_RT_MS))
             return RIN_DHCPV6_RANGE_EXHAUSTED;
         if (now_ms >= client->expires_at_ms) {
             client->last_now_ms = now_ms;
@@ -748,18 +960,24 @@ int rin_dhcpv6_client_request_reconfigure(
          * the immutable prepare/complete send rule. */
         if (requested_kind == RIN_DHCPV6_TRANSMIT_REBIND) {
             client->state = RIN_DHCPV6_STATE_RECONFIGURE_REBINDING;
-            /* Force a new Rebind XID even before a successful send moves the
-             * normal state machine; failed sends leave this exact retryable
-             * state intact. */
-            schedule_initial_retry(client, now_ms, client->expires_at_ms);
+            /* The authenticated instruction starts one normal Rebind
+             * transaction.  Its first XID is allocated by prepare; later
+             * retransmissions retain that XID. */
+            client->transaction_started_ms = 0u;
             client->next_transmit_ms = now_ms;
+            client->retry_ms = 0u;
+            client->offer_t1_seconds =
+                DHCPV6_RETRANSMISSION_NOT_STARTED;
         } else if (requested_kind ==
                    RIN_DHCPV6_TRANSMIT_INFORMATION_REQUEST &&
                    !client_information_mode(client)) {
             client->state =
                 RIN_DHCPV6_STATE_RECONFIGURE_INFORMATION_REQUESTING;
-            schedule_initial_retry(client, now_ms, client->expires_at_ms);
+            client->transaction_started_ms = 0u;
             client->next_transmit_ms = now_ms;
+            client->retry_ms = 0u;
+            client->offer_t1_seconds =
+                DHCPV6_RETRANSMISSION_NOT_STARTED;
         } else {
             client->renew_at_ms = now_ms;
         }
@@ -793,10 +1011,17 @@ int rin_dhcpv6_client_prepare(
     if (client->pending_present) return RIN_DHCPV6_BUSY;
     switch (client->state) {
         case RIN_DHCPV6_STATE_IDLE:
-            kind = client_information_mode(client)
-                ? RIN_DHCPV6_TRANSMIT_INFORMATION_REQUEST
-                : RIN_DHCPV6_TRANSMIT_SOLICIT;
-            needs_new_transaction = 1;
+            if (client_startup_delayed(client)) {
+                if (now_ms >= client->next_transmit_ms)
+                    kind = client_information_mode(client)
+                        ? RIN_DHCPV6_TRANSMIT_INFORMATION_REQUEST
+                        : RIN_DHCPV6_TRANSMIT_SOLICIT;
+            } else {
+                kind = client_information_mode(client)
+                    ? RIN_DHCPV6_TRANSMIT_INFORMATION_REQUEST
+                    : RIN_DHCPV6_TRANSMIT_SOLICIT;
+                needs_new_transaction = 1;
+            }
             break;
         case RIN_DHCPV6_STATE_SOLICITING:
             if (now_ms >= client->next_transmit_ms)
@@ -844,13 +1069,15 @@ int rin_dhcpv6_client_prepare(
         case RIN_DHCPV6_STATE_RECONFIGURE_INFORMATION_REQUESTING:
             if (now_ms >= client->next_transmit_ms) {
                 kind = RIN_DHCPV6_TRANSMIT_INFORMATION_REQUEST;
-                needs_new_transaction = 1;
+                needs_new_transaction = client->offer_t1_seconds ==
+                    DHCPV6_RETRANSMISSION_NOT_STARTED;
             }
             break;
         case RIN_DHCPV6_STATE_RECONFIGURE_REBINDING:
             if (now_ms >= client->next_transmit_ms) {
                 kind = RIN_DHCPV6_TRANSMIT_REBIND;
-                needs_new_transaction = 1;
+                needs_new_transaction = client->offer_t1_seconds ==
+                    DHCPV6_RETRANSMISSION_NOT_STARTED;
             }
             break;
         default:
@@ -860,15 +1087,39 @@ int rin_dhcpv6_client_prepare(
         client->last_now_ms = now_ms;
         return RIN_DHCPV6_OK;
     }
-    if (now_ms > UINT64_MAX - DHCPV6_MAX_RETRY_MS ||
+    if (now_ms > UINT64_MAX - DHCPV6_MAX_RANDOMIZED_RT_MS ||
         client->next_transmit_sequence == 0u ||
-        (needs_new_transaction && client->generation == UINT64_MAX))
+        (needs_new_transaction && client->generation == UINT64_MAX) ||
+        (client->state == RIN_DHCPV6_STATE_IDLE &&
+         client->transaction_id == 0u &&
+         client->generation >= UINT64_MAX - 1u))
         return RIN_DHCPV6_RANGE_EXHAUSTED;
     transaction_id = needs_new_transaction ? new_transaction_id
                                            : client->transaction_id;
     if (transaction_id == 0u || transaction_id > UINT32_C(0x00ffffff) ||
         (needs_new_transaction && transaction_id == client->transaction_id))
         return RIN_DHCPV6_INVALID_ARGUMENT;
+    if (client->state == RIN_DHCPV6_STATE_IDLE &&
+        client->transaction_id == 0u) {
+        uint64_t startup_delay_ms;
+        client->transaction_id = transaction_id;
+        client->offer_t1_seconds = DHCPV6_RETRANSMISSION_NOT_STARTED;
+        {
+            uint32_t random_state = random_event_seed(
+                client, transaction_id, client->next_transmit_sequence,
+                UINT32_C(0x53544152));
+            startup_delay_ms = random_bounded(
+                &random_state,
+                (uint32_t)DHCPV6_STARTUP_DELAY_MAX_MS + 1u);
+        }
+        client->next_transmit_ms = now_ms + startup_delay_ms;
+        client->generation++;
+        needs_new_transaction = 0;
+        if (startup_delay_ms != 0u) {
+            client->last_now_ms = now_ms;
+            return RIN_DHCPV6_OK;
+        }
+    }
     status = build_message(client, kind, transaction_id, now_ms, &transmit);
     if (status != RIN_DHCPV6_OK) return status;
     transmit.sequence = client->next_transmit_sequence;
@@ -887,7 +1138,6 @@ int rin_dhcpv6_client_complete_transmit(
     uint32_t transaction_id;
     uint64_t phase_end = 0u;
     int transition = 0;
-    int initial_retry = 0;
     if (!client_valid(client) || !transmit ||
         memory_overlaps(client, sizeof(*client), transmit, sizeof(*transmit)) ||
         !client->pending_present ||
@@ -902,10 +1152,13 @@ int rin_dhcpv6_client_complete_transmit(
                      ((uint32_t)transmit->message[2] << 8) |
                      transmit->message[3];
     if (client->state == RIN_DHCPV6_STATE_IDLE &&
+        client->offer_t1_seconds == DHCPV6_RETRANSMISSION_NOT_STARTED &&
         transmit->kind == RIN_DHCPV6_TRANSMIT_SOLICIT) {
         client->state = RIN_DHCPV6_STATE_SOLICITING;
         transition = 1;
     } else if (client->state == RIN_DHCPV6_STATE_IDLE &&
+               client->offer_t1_seconds ==
+                   DHCPV6_RETRANSMISSION_NOT_STARTED &&
                transmit->kind == RIN_DHCPV6_TRANSMIT_INFORMATION_REQUEST) {
         client->state = RIN_DHCPV6_STATE_INFORMATION_REQUESTING;
         transition = 1;
@@ -953,22 +1206,47 @@ int rin_dhcpv6_client_complete_transmit(
     } else if (client->state ==
                    RIN_DHCPV6_STATE_RECONFIGURE_INFORMATION_REQUESTING &&
                transmit->kind == RIN_DHCPV6_TRANSMIT_INFORMATION_REQUEST) {
+        if (client->offer_t1_seconds !=
+                DHCPV6_RETRANSMISSION_NOT_STARTED &&
+            transaction_id != client->transaction_id)
+            return RIN_DHCPV6_INVALID_STATE;
         phase_end = client->expires_at_ms;
-        initial_retry = 1;
+        transition = client->offer_t1_seconds ==
+                     DHCPV6_RETRANSMISSION_NOT_STARTED;
     } else if (client->state == RIN_DHCPV6_STATE_RECONFIGURE_REBINDING &&
                transmit->kind == RIN_DHCPV6_TRANSMIT_REBIND) {
+        if (client->offer_t1_seconds !=
+                DHCPV6_RETRANSMISSION_NOT_STARTED &&
+            transaction_id != client->transaction_id)
+            return RIN_DHCPV6_INVALID_STATE;
         phase_end = client->expires_at_ms;
-        initial_retry = 1;
+        transition = client->offer_t1_seconds ==
+                     DHCPV6_RETRANSMISSION_NOT_STARTED;
     } else {
         return RIN_DHCPV6_INVALID_STATE;
     }
     if (transition && !advance_generation(client))
         return RIN_DHCPV6_RANGE_EXHAUSTED;
     client->transaction_id = transaction_id;
-    if (transition || initial_retry) {
-        schedule_initial_retry(client, transmit->prepared_at_ms, phase_end);
+    if (transition) {
+        schedule_initial_retry(client, transmit->kind,
+                               transaction_id, transmit->sequence,
+                               transmit->prepared_at_ms, phase_end);
     } else {
-        schedule_later_retry(client, transmit->prepared_at_ms, phase_end);
+        uint32_t retransmissions = retransmission_mrc(transmit->kind);
+        if (retransmissions != 0u &&
+            client->offer_t1_seconds < retransmissions &&
+            client->offer_t1_seconds + 1u >= retransmissions) {
+            if (client->generation != UINT64_MAX)
+                (void)advance_generation(client);
+            clear_dynamic(client);
+            return RIN_DHCPV6_OK;
+        }
+        if (client->offer_t1_seconds < UINT32_MAX - 1u)
+            client->offer_t1_seconds++;
+        schedule_later_retry(client, transmit->kind, transaction_id,
+                             transmit->sequence,
+                             transmit->prepared_at_ms, phase_end);
     }
     clear_pending(client);
     return RIN_DHCPV6_OK;
@@ -988,6 +1266,52 @@ static int parsed_client_identity_matches(const RinDhcpv6ClientV1* client,
                       client->duid_size);
 }
 
+static int parsed_server_identity_matches(const RinDhcpv6ClientV1* client,
+                                          const ParsedMessage* parsed) {
+    return parsed->server_duid_size == client->server_duid_size &&
+           byte_equal(parsed->server_duid, client->server_duid,
+                      client->server_duid_size);
+}
+
+static int apply_retransmission_overrides(RinDhcpv6ClientV1* client,
+                                          const ParsedMessage* parsed,
+                                          uint64_t now_ms) {
+    uint32_t sol_max_rt = client->offer_preferred_seconds;
+    uint32_t inf_max_rt = client->offer_valid_seconds;
+    int requires_selected_server =
+        client->state == RIN_DHCPV6_STATE_REQUESTING ||
+        client->state == RIN_DHCPV6_STATE_RENEWING ||
+        client->state ==
+            RIN_DHCPV6_STATE_RECONFIGURE_INFORMATION_REQUESTING;
+    int allows_information_reply = client_information_mode(client) ||
+        client->state ==
+            RIN_DHCPV6_STATE_RECONFIGURE_INFORMATION_REQUESTING;
+    if (!parsed->structural_valid || !parsed->server_seen ||
+        !parsed_client_identity_matches(client, parsed))
+        return RIN_DHCPV6_OK;
+    if ((parsed->ia_seen && parsed->iaid != client->iaid) ||
+        (!parsed->ia_seen && !allows_information_reply) ||
+        (requires_selected_server &&
+         !parsed_server_identity_matches(client, parsed)))
+        return RIN_DHCPV6_OK;
+    if (parsed->sol_max_rt_seen &&
+        parsed->sol_max_rt_seconds >= DHCPV6_MAX_RT_OPTION_MIN_SECONDS &&
+        parsed->sol_max_rt_seconds <= DHCPV6_MAX_RT_OPTION_MAX_SECONDS)
+        sol_max_rt = parsed->sol_max_rt_seconds;
+    if (parsed->inf_max_rt_seen &&
+        parsed->inf_max_rt_seconds >= DHCPV6_MAX_RT_OPTION_MIN_SECONDS &&
+        parsed->inf_max_rt_seconds <= DHCPV6_MAX_RT_OPTION_MAX_SECONDS)
+        inf_max_rt = parsed->inf_max_rt_seconds;
+    if (sol_max_rt == client->offer_preferred_seconds &&
+        inf_max_rt == client->offer_valid_seconds)
+        return RIN_DHCPV6_OK;
+    if (!advance_generation(client)) return RIN_DHCPV6_RANGE_EXHAUSTED;
+    client->offer_preferred_seconds = sol_max_rt;
+    client->offer_valid_seconds = inf_max_rt;
+    client->last_now_ms = now_ms;
+    return RIN_DHCPV6_OK;
+}
+
 static int commit_offer(RinDhcpv6ClientV1* client,
                         const ParsedMessage* parsed) {
     uint32_t t1 = parsed->t1_seconds;
@@ -1004,10 +1328,8 @@ static int commit_offer(RinDhcpv6ClientV1* client,
               parsed->server_duid_size);
     client->server_duid_size = parsed->server_duid_size;
     byte_copy(client->address, parsed->address, sizeof(client->address));
-    client->offer_preferred_seconds = parsed->preferred_seconds;
-    client->offer_valid_seconds = parsed->valid_seconds;
-    client->offer_t1_seconds = t1;
-    client->offer_t2_seconds = t2;
+    client->offer_t1_seconds = 0u;
+    client->offer_t2_seconds = 0u;
     client->transaction_started_ms = 0u;
     client->next_transmit_ms = 0u;
     client->retry_ms = 0u;
@@ -1059,10 +1381,8 @@ static int commit_lease(RinDhcpv6ClientV1* client,
     for (index = 0u; index < parsed->dns_server_count; ++index)
         byte_copy(client->dns_servers[index], parsed->dns_servers[index], 16u);
     client->dns_server_count = parsed->dns_server_count;
-    client->offer_preferred_seconds = parsed->preferred_seconds;
-    client->offer_valid_seconds = parsed->valid_seconds;
-    client->offer_t1_seconds = t1;
-    client->offer_t2_seconds = t2;
+    client->offer_t1_seconds = 0u;
+    client->offer_t2_seconds = 0u;
     client->preferred_until_ms = preferred_until;
     client->renew_at_ms = renew_at;
     client->rebind_at_ms = rebind_at;
@@ -1106,8 +1426,6 @@ static int commit_information(RinDhcpv6ClientV1* client,
     for (index = 0u; index < parsed->dns_server_count; ++index)
         byte_copy(client->dns_servers[index], parsed->dns_servers[index], 16u);
     client->dns_server_count = parsed->dns_server_count;
-    client->offer_preferred_seconds = 0u;
-    client->offer_valid_seconds = 0u;
     client->offer_t1_seconds = 0u;
     client->offer_t2_seconds = 0u;
     client->preferred_until_ms = expires_at;
@@ -1146,6 +1464,8 @@ static int commit_reconfigure_information(RinDhcpv6ClientV1* client,
     for (index = 0u; index < parsed->dns_server_count; ++index)
         byte_copy(client->dns_servers[index], parsed->dns_servers[index], 16u);
     client->dns_server_count = parsed->dns_server_count;
+    client->offer_t1_seconds = 0u;
+    client->offer_t2_seconds = 0u;
     client->lease_generation = client->next_lease_generation;
     client->next_lease_generation = client->lease_generation == UINT64_MAX
         ? 0u : client->lease_generation + 1u;
@@ -1164,6 +1484,7 @@ int rin_dhcpv6_client_receive(
     ParsedMessage parsed;
     uint32_t transaction_id;
     uint8_t expected_type;
+    int override_status;
     int status;
     if (!client_valid(client) || !message || message_size < 4u ||
         message_size > sizeof(snapshot) ||
@@ -1188,6 +1509,7 @@ int rin_dhcpv6_client_receive(
         return RIN_DHCPV6_INVALID_STATE;
     }
     byte_copy(snapshot, message, message_size);
+    byte_zero(&parsed, sizeof(parsed));
     transaction_id = ((uint32_t)snapshot[1] << 16) |
                      ((uint32_t)snapshot[2] << 8) | snapshot[3];
     if (transaction_id != client->transaction_id)
@@ -1198,6 +1520,15 @@ int rin_dhcpv6_client_receive(
             client->state !=
                 RIN_DHCPV6_STATE_RECONFIGURE_INFORMATION_REQUESTING,
         &parsed);
+    override_status = status == RIN_DHCPV6_OK ||
+            status == RIN_DHCPV6_SERVER_REJECTED
+        ? apply_retransmission_overrides(client, &parsed, now_ms)
+        : RIN_DHCPV6_OK;
+    if (override_status != RIN_DHCPV6_OK) status = override_status;
+    else if (status == RIN_DHCPV6_SERVER_REJECTED &&
+             parsed.structural_valid &&
+             parsed_client_identity_matches(client, &parsed))
+        client->last_now_ms = now_ms;
     if (status != RIN_DHCPV6_OK) {
         byte_zero(snapshot, sizeof(snapshot));
         byte_zero(&parsed, sizeof(parsed));
@@ -1254,7 +1585,8 @@ int rin_dhcpv6_client_get_lease(
 
 int rin_dhcpv6_client_stop(RinDhcpv6ClientV1* client) {
     if (!client_valid(client)) return RIN_DHCPV6_INVALID_ARGUMENT;
-    if (client->state == RIN_DHCPV6_STATE_IDLE && !client->pending_present)
+    if (client->state == RIN_DHCPV6_STATE_IDLE &&
+        client->transaction_id == 0u && !client->pending_present)
         return RIN_DHCPV6_OK;
     if (!advance_generation(client)) return RIN_DHCPV6_RANGE_EXHAUSTED;
     clear_dynamic(client);

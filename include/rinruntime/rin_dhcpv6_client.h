@@ -110,6 +110,8 @@ typedef struct RinDhcpv6ClientV1 {
     uint32_t duid_size;
     uint32_t server_duid_size;
     uint32_t dns_server_count;
+    /* v1 layout is fixed: these former offer slots retain the interface's
+     * SOL_MAX_RT/INF_MAX_RT values and the current exchange retry count. */
     uint32_t offer_preferred_seconds;
     uint32_t offer_valid_seconds;
     uint32_t offer_t1_seconds;

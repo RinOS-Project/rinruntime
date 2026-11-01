@@ -188,9 +188,9 @@ static int transmit_needs_new_transaction(const RinDhcpv6ClientV1* client,
                                           uint64_t now_ms)
 {
     if (!client) return 0;
-    if (client->state == RIN_DHCPV6_STATE_IDLE ||
-        client->state == RIN_DHCPV6_STATE_ADVERTISED)
-        return 1;
+    if (client->state == RIN_DHCPV6_STATE_IDLE)
+        return client->transaction_id == 0u;
+    if (client->state == RIN_DHCPV6_STATE_ADVERTISED) return 1;
     if (client->state == RIN_DHCPV6_STATE_BOUND)
         return now_ms >= client->renew_at_ms;
     if (client->state == RIN_DHCPV6_STATE_INFORMATION_BOUND)
@@ -198,7 +198,8 @@ static int transmit_needs_new_transaction(const RinDhcpv6ClientV1* client,
     if (client->state ==
             RIN_DHCPV6_STATE_RECONFIGURE_INFORMATION_REQUESTING ||
         client->state == RIN_DHCPV6_STATE_RECONFIGURE_REBINDING)
-        return now_ms >= client->next_transmit_ms;
+        return client->offer_t1_seconds == UINT32_MAX &&
+               now_ms >= client->next_transmit_ms;
     return client->state == RIN_DHCPV6_STATE_RENEWING &&
            now_ms >= client->rebind_at_ms;
 }
