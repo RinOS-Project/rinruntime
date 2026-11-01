@@ -70,9 +70,13 @@ static int rinfs_restore_internal_scope_allows(const RinFS_Mount* mount);
 #endif
 static uint64_t rinfs_restore_current_process_id(void);
 static int rinfs_restore_operation_gate_check(RinFS_Mount* mount);
+static int rinfs_inode_read_cached_unscoped(
+    RinFS_Mount* mount, uint64_t ino, RinFS_Inode* inode);
 static int rinfs_mount_operation_scope_begin(
     RinFS_Mount* mount, RinFS_MountOperationScope* scope);
 static int rinfs_mount_operation_scope_end(
+    RinFS_MountOperationScope* scope);
+static int rinfs_mount_operation_scope_end_cached(
     RinFS_MountOperationScope* scope);
 static int rinfs_mount_operation_scope_finish(
     RinFS_MountOperationScope* scope, int operation_error);
@@ -3151,6 +3155,34 @@ static int rinfs_mount_operation_scope_end(
 #endif
 }
 
+/* A cache-only lookup may join the kernel's discard scope, but its successful
+ * exit must leave queued discard work for the next ordinary I/O operation. */
+static int rinfs_mount_operation_scope_end_cached(
+    RinFS_MountOperationScope* scope) {
+#if defined(RIN_KERNEL)
+    RinFS_Mount* mount;
+    int result = RINFS_OK;
+    if (!scope) return RINFS_ERR_INVAL;
+    if (scope->discard_scope_active == 0u) {
+        rinfs_memset(scope, 0, sizeof(*scope));
+        return RINFS_OK;
+    }
+    if (scope->discard_scope_active != 1u || !scope->mount)
+        return RINFS_ERR_CORRUPT;
+    mount = scope->mount;
+    rinfs_spin_lock(&mount->discard_queue_lock);
+    if (mount->discard_operation_depth == 0u)
+        result = RINFS_ERR_CORRUPT;
+    else
+        --mount->discard_operation_depth;
+    rinfs_spin_unlock(&mount->discard_queue_lock);
+    rinfs_memset(scope, 0, sizeof(*scope));
+    return result;
+#else
+    return rinfs_mount_operation_scope_end(scope);
+#endif
+}
+
 static int rinfs_mount_operation_pair_scope_begin(
     RinFS_Mount* first_mount, RinFS_Mount* second_mount,
     RinFS_MountOperationPairScope* scope) {
@@ -3193,6 +3225,12 @@ static int rinfs_mount_operation_scope_finish(
     if (scope) scope->discard_scope_success = operation_error == RINFS_OK;
 #endif
     int release_error = rinfs_mount_operation_scope_end(scope);
+    return release_error == RINFS_OK ? operation_error : release_error;
+}
+
+static int rinfs_mount_operation_scope_finish_cached(
+    RinFS_MountOperationScope* scope, int operation_error) {
+    int release_error = rinfs_mount_operation_scope_end_cached(scope);
     return release_error == RINFS_OK ? operation_error : release_error;
 }
 
@@ -9146,7 +9184,8 @@ static int rinfs_content_pin_acquire(RinFS_Mount* mount, uint64_t ino,
                                      uint64_t close_mount_epoch,
                                      uint32_t close_kind,
                                      uint64_t* token_out,
-                                     uint64_t* close_cookie_out) {
+                                     uint64_t* close_cookie_out,
+                                     int cached_only) {
     int content_unlock_error = RINFS_OK;
     RinFS_Inode observed;
     RinFS_ContentLeaseNode* node;
@@ -9167,7 +9206,9 @@ static int rinfs_content_pin_acquire(RinFS_Mount* mount, uint64_t ino,
     err = rinfs_shared_owner_query_row(mount, &shared_owner_row);
     if (err != RINFS_OK) return rinfs_content_unlock_status((err), content_unlock_error);
     for (;;) {
-        err = rinfs_inode_read(mount, ino, &observed);
+        err = cached_only
+                  ? rinfs_inode_read_cached_unscoped(mount, ino, &observed)
+                  : rinfs_inode_read(mount, ino, &observed);
         if (err != RINFS_OK) return rinfs_content_unlock_status((err), content_unlock_error);
         if (!rinfs_check_inode_type(observed.i_mode))
             return rinfs_content_unlock_status((RINFS_ERR_CORRUPT), content_unlock_error);
@@ -9183,7 +9224,9 @@ static int rinfs_content_pin_acquire(RinFS_Mount* mount, uint64_t ino,
                         shared_owner_row));
             return rinfs_content_unlock_status((err), content_unlock_error);
         }
-        err = rinfs_inode_read(mount, ino, inode_out);
+        err = cached_only
+                  ? rinfs_inode_read_cached_unscoped(mount, ino, inode_out)
+                  : rinfs_inode_read(mount, ino, inode_out);
         if (err != RINFS_OK ||
             inode_out->i_generation != observed.i_generation ||
             !rinfs_check_inode_type(inode_out->i_mode)) {
@@ -12333,6 +12376,25 @@ static int rinfs_inode_read_unscoped(RinFS_Mount* mount, uint64_t ino,
     return RINFS_OK;
 }
 
+/* Cached-only metadata reads must never allocate a block buffer or fall back
+ * to the inode table. RESOLVE_CACHED callers translate a cold entry to
+ * EAGAIN at the VFS boundary. */
+static int rinfs_inode_read_cached_unscoped(
+    RinFS_Mount* mount, uint64_t ino, RinFS_Inode* inode) {
+    int cache_hit = 0;
+    int err;
+    if (inode != NULL) rinfs_memset(inode, 0, sizeof(*inode));
+    if (!mount || !mount->mounted || !inode || ino == 0u ||
+        ino > mount->sb.s_inode_count)
+        return RINFS_ERR_INVAL;
+    err = rinfs_restore_operation_gate_check(mount);
+    if (err != RINFS_OK) return err;
+    err = rinfs_inode_cache_lookup(mount, ino, inode, &cache_hit);
+    if (err != RINFS_OK) return err;
+    if (!cache_hit) return RINFS_ERR_BUSY;
+    return RINFS_OK;
+}
+
 /* tracking_mode: 0 writes an allocator/tombstone image verbatim; 1 preserves
  * monotonic version/poison across stale metadata writers; 2 atomically clears
  * only a transient poison after matching generation+version; 3 merges only
@@ -14425,6 +14487,42 @@ static int rinfs_lookup_unscoped(RinFS_Mount* mount, uint64_t dir_ino,
             mount, dir_ino, &dir_inode, name, name_len, 0u, 1);
         return cache_err != RINFS_OK ? cache_err : RINFS_ERR_NOENT;
     }
+}
+
+static int rinfs_lookup_cached_unscoped(RinFS_Mount* mount,
+                                        uint64_t dir_ino,
+                                        const char* name, uint64_t* ino) {
+    RinFS_Inode directory;
+    uint32_t name_length;
+    int cached;
+    int err;
+    if (ino != NULL) *ino = 0u;
+    if (!mount || !mount->mounted || !name || !ino)
+        return RINFS_ERR_INVAL;
+    err = rinfs_restore_operation_gate_check(mount);
+    if (err != RINFS_OK) return err;
+    err = rinfs_inode_read_cached_unscoped(mount, dir_ino, &directory);
+    if (err != RINFS_OK) return err;
+    if ((directory.i_mode >> 12u) != RINFS_FT_DIR)
+        return RINFS_ERR_NOTDIR;
+    name_length = rinfs_strlen(name);
+    if (name_length == 0u || name_length > RINFS_NAME_MAX)
+        return name_length == 0u ? RINFS_ERR_INVAL
+                                 : RINFS_ERR_NAMETOOLONG;
+    if (name_length == 1u && name[0] == '.') {
+        *ino = dir_ino;
+        return RINFS_OK;
+    }
+    if (dir_ino == RINFS_INODE_ROOT && name_length == 2u &&
+        name[0] == '.' && name[1] == '.') {
+        *ino = RINFS_INODE_ROOT;
+        return RINFS_OK;
+    }
+    cached = rinfs_dentry_cache_lookup(
+        mount, dir_ino, &directory, name, name_length, ino);
+    if (cached == 1) return RINFS_OK;
+    if (cached == 0) return RINFS_ERR_BUSY;
+    return cached;
 }
 
 /* Forward declaration: reads a symlink's target (defined later in this file) */
@@ -23314,7 +23412,7 @@ static int rinfs_open_unscoped(
     err = rinfs_content_pin_acquire(
         mount, ino, &file->inode, close_generation, close_mount_epoch,
         RINFS_CLOSE_REF_FILE, &file->content_pin_token,
-        &close_cookie);
+        &close_cookie, 0);
     if (file->content_pin_token == 0u) {
         int abort_error = rinfs_close_ref_abort_reservation(close_generation);
         rinfs_memset(file, 0, sizeof(*file));
@@ -23359,6 +23457,31 @@ static int rinfs_open_file_scope_finish(
     }
 }
 
+static int rinfs_open_file_scope_finish_cached(
+    RinFS_MountOperationScope* operation, int operation_error,
+    RinFS_File* file) {
+    int release_error = rinfs_mount_operation_scope_end_cached(operation);
+    int result = release_error == RINFS_OK ? operation_error : release_error;
+    if (result == RINFS_OK) return RINFS_OK;
+    if (operation_error != RINFS_OK) return result;
+    if (!file || file->in_use == 0u) {
+        if (file) rinfs_memset(file, 0, sizeof(*file));
+        return result;
+    }
+    {
+        int consumed = 0;
+        int retryable = 0;
+        int cleanup_error = rinfs_close_with_disposition(
+            file, &consumed, &retryable);
+        if (consumed) {
+            rinfs_memset(file, 0, sizeof(*file));
+            return cleanup_error == RINFS_OK ? result : cleanup_error;
+        }
+        (void)retryable;
+        return cleanup_error == RINFS_OK ? result : cleanup_error;
+    }
+}
+
 int rinfs_open(RinFS_Mount* mount, const char* path, int flags,
                RinFS_File* file) {
     RinFS_MountOperationScope operation = {0};
@@ -23373,7 +23496,8 @@ int rinfs_open(RinFS_Mount* mount, const char* path, int flags,
 }
 
 static int rinfs_open_ino_unscoped(
-    RinFS_Mount* mount, uint64_t ino, int flags, RinFS_File* file) {
+    RinFS_Mount* mount, uint64_t ino, int flags, RinFS_File* file,
+    int cached_only) {
     uint64_t close_generation = 0u;
     uint64_t close_mount_epoch = 0u;
     uint64_t close_cookie = 0u;
@@ -23381,9 +23505,13 @@ static int rinfs_open_ino_unscoped(
 
     if (!mount || !mount->mounted || !file) return RINFS_ERR_INVAL;
     rinfs_memset(file, 0, sizeof(RinFS_File));
-    err = rinfs_delete_on_close_reap(mount);
-    if (err != RINFS_OK) return err;
-    err = rinfs_inode_read(mount, ino, &file->inode);
+    if (!cached_only) {
+        err = rinfs_delete_on_close_reap(mount);
+        if (err != RINFS_OK) return err;
+    }
+    err = cached_only
+              ? rinfs_inode_read_cached_unscoped(mount, ino, &file->inode)
+              : rinfs_inode_read(mount, ino, &file->inode);
     if (err != RINFS_OK) return err;
     err = rinfs_close_ref_reserve(mount, ino, file->inode.i_generation,
                                   RINFS_CLOSE_REF_FILE, &close_generation,
@@ -23392,7 +23520,7 @@ static int rinfs_open_ino_unscoped(
     err = rinfs_content_pin_acquire(
         mount, ino, &file->inode, close_generation, close_mount_epoch,
         RINFS_CLOSE_REF_FILE, &file->content_pin_token,
-        &close_cookie);
+        &close_cookie, cached_only);
     if (file->content_pin_token == 0u) {
         int abort_error = rinfs_close_ref_abort_reservation(close_generation);
         rinfs_memset(file, 0, sizeof(*file));
@@ -23415,8 +23543,20 @@ int rinfs_open_ino(RinFS_Mount* mount, uint64_t ino, int flags,
     rinfs_memset(file, 0, sizeof(*file));
     error = rinfs_mount_operation_scope_begin(mount, &operation);
     if (error != RINFS_OK) return error;
-    error = rinfs_open_ino_unscoped(mount, ino, flags, file);
+    error = rinfs_open_ino_unscoped(mount, ino, flags, file, 0);
     return rinfs_open_file_scope_finish(&operation, error, file);
+}
+
+int rinfs_open_ino_cached(RinFS_Mount* mount, uint64_t ino, int flags,
+                          RinFS_File* file) {
+    RinFS_MountOperationScope operation = {0};
+    int error;
+    if (!mount || !mount->mounted || !file) return RINFS_ERR_INVAL;
+    rinfs_memset(file, 0, sizeof(*file));
+    error = rinfs_mount_operation_scope_begin(mount, &operation);
+    if (error != RINFS_OK) return error;
+    error = rinfs_open_ino_unscoped(mount, ino, flags, file, 1);
+    return rinfs_open_file_scope_finish_cached(&operation, error, file);
 }
 
 static int rinfs_close_core(RinFS_File* file) {
@@ -27616,7 +27756,7 @@ static int rinfs_opendir_unscoped(
     err = rinfs_content_pin_acquire(
         mount, ino, &dir->inode, close_generation, close_mount_epoch,
         RINFS_CLOSE_REF_DIRECTORY, &dir->content_pin_token,
-        &close_cookie);
+        &close_cookie, 0);
     if (dir->content_pin_token == 0u) {
         int abort_error = rinfs_close_ref_abort_reservation(close_generation);
         rinfs_memset(dir, 0, sizeof(*dir));
@@ -27689,7 +27829,7 @@ static int rinfs_opendir_ino_unscoped(
     err = rinfs_content_pin_acquire(
         mount, ino, &dir->inode, close_generation, close_mount_epoch,
         RINFS_CLOSE_REF_DIRECTORY, &dir->content_pin_token,
-        &close_cookie);
+        &close_cookie, 0);
     if (dir->content_pin_token == 0u) {
         int abort_error = rinfs_close_ref_abort_reservation(close_generation);
         rinfs_memset(dir, 0, sizeof(*dir));
@@ -33906,6 +34046,20 @@ int rinfs_inode_read(RinFS_Mount* mount, uint64_t ino, RinFS_Inode* inode) {
     return error;
 }
 
+int rinfs_inode_read_cached(RinFS_Mount* mount, uint64_t ino,
+                            RinFS_Inode* inode) {
+    RinFS_MountOperationScope operation = {0};
+    int error;
+    if (inode != NULL) rinfs_memset(inode, 0, sizeof(*inode));
+    if (!mount || !mount->mounted || !inode) return RINFS_ERR_INVAL;
+    error = rinfs_mount_operation_scope_begin(mount, &operation);
+    if (error != RINFS_OK) return error;
+    error = rinfs_inode_read_cached_unscoped(mount, ino, inode);
+    error = rinfs_mount_operation_scope_finish_cached(&operation, error);
+    if (error != RINFS_OK) rinfs_memset(inode, 0, sizeof(*inode));
+    return error;
+}
+
 int rinfs_operation_owner_token_get(RinFS_Mount* mount,
                                     uint64_t inode_number,
                                     uint32_t expected_generation,
@@ -33978,6 +34132,20 @@ int rinfs_lookup(RinFS_Mount* mount, uint64_t dir_ino, const char* name,
     error = rinfs_lookup_unscoped(mount, dir_ino, name, ino);
     error = rinfs_mount_operation_scope_finish(&operation, error);
     if (error != RINFS_OK && ino) *ino = 0u;
+    return error;
+}
+
+int rinfs_lookup_cached(RinFS_Mount* mount, uint64_t dir_ino,
+                        const char* name, uint64_t* ino) {
+    RinFS_MountOperationScope operation = {0};
+    int error;
+    if (ino != NULL) *ino = 0u;
+    if (!mount || !mount->mounted) return RINFS_ERR_INVAL;
+    error = rinfs_mount_operation_scope_begin(mount, &operation);
+    if (error != RINFS_OK) return error;
+    error = rinfs_lookup_cached_unscoped(mount, dir_ino, name, ino);
+    error = rinfs_mount_operation_scope_finish_cached(&operation, error);
+    if (error != RINFS_OK && ino != NULL) *ino = 0u;
     return error;
 }
 
