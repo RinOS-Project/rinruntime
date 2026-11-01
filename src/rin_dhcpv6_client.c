@@ -370,12 +370,44 @@ static int parse_ia_na(const uint8_t* value, uint32_t size,
             return RIN_DHCPV6_MALFORMED_PACKET;
         option = value + offset;
         if (code == DHCPV6_OPTION_IA_ADDRESS) {
-            if (parsed->address_seen || length != 24u)
+            uint32_t nested_offset = 24u;
+            uint32_t nested_count = 0u;
+            uint32_t address_status_seen = 0u;
+            if (parsed->address_seen || length < 24u)
                 return RIN_DHCPV6_MALFORMED_PACKET;
             byte_copy(parsed->address, option, 16u);
             parsed->preferred_seconds = load_be32(option + 16u);
             parsed->valid_seconds = load_be32(option + 20u);
             parsed->address_seen = 1u;
+            while (nested_offset < length) {
+                uint16_t nested_code;
+                uint16_t nested_length;
+                const uint8_t* nested_option;
+                if (++nested_count > DHCPV6_MAX_NESTED_OPTIONS ||
+                    (uint32_t)length - nested_offset < 4u)
+                    return RIN_DHCPV6_MALFORMED_PACKET;
+                nested_code = load_be16(option + nested_offset);
+                nested_length = load_be16(option + nested_offset + 2u);
+                nested_offset += 4u;
+                if ((uint32_t)nested_length >
+                    (uint32_t)length - nested_offset)
+                    return RIN_DHCPV6_MALFORMED_PACKET;
+                nested_option = option + nested_offset;
+                if (nested_code == DHCPV6_OPTION_STATUS_CODE) {
+                    uint32_t address_status;
+                    if (address_status_seen || nested_length < 2u)
+                        return RIN_DHCPV6_MALFORMED_PACKET;
+                    address_status_seen = 1u;
+                    address_status = load_be16(nested_option);
+                    if (address_status != 0u && parsed->status_code == 0u)
+                        parsed->status_code = address_status;
+                }
+                /* Unknown IAaddr suboptions are optional to this client and
+                 * were already bounded by the enclosing option length. */
+                nested_offset += nested_length;
+            }
+            if (nested_offset != length)
+                return RIN_DHCPV6_MALFORMED_PACKET;
         } else if (code == DHCPV6_OPTION_STATUS_CODE) {
             if (nested_status_seen || length < 2u)
                 return RIN_DHCPV6_MALFORMED_PACKET;
