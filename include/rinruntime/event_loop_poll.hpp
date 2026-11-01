@@ -47,6 +47,7 @@ private:
     std::uint64_t lastNow_ = 0u;
     bool haveLastNow_ = false;
     bool waitInFlight_ = false;
+    Size nextReadyIndex_ = 0u;
 
     static short pollEvents(std::uint32_t events) noexcept {
         short result = 0;
@@ -173,7 +174,9 @@ public:
         }
         if (result <= 0) return false;
 
-        for (Size index = 0u; index < count; ++index) {
+        const Size startIndex = nextReadyIndex_ % count;
+        for (Size offset = 0u; offset < count; ++offset) {
+            const Size index = (startIndex + offset) % count;
             const short revents = descriptors[index].revents;
             if ((revents & POLLNVAL) != 0) return false;
             const std::uint32_t observed = loopEvents(revents);
@@ -182,6 +185,7 @@ public:
             if (matched == 0u) continue;
             ready->id = requests[index].id;
             ready->events = matched;
+            nextReadyIndex_ = (index + 1u) % count;
             return true;
         }
         return false;
