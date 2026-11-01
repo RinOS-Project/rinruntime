@@ -1202,6 +1202,45 @@ class Tree : public Widget {
         return true;
     }
 public:
+    Tree() = default;
+    Tree(const Tree&) = default;
+    Tree& operator=(const Tree&) = default;
+
+    Tree(Tree&& other)
+        : Widget(static_cast<const Widget&>(other)),
+          roots_(std::move(other.roots_)), itemCount_(other.itemCount_),
+          nextId_(other.nextId_), selectedId_(other.selectedId_),
+          scroll_(std::move(other.scroll_)), rowHeight_(other.rowHeight_),
+          selectionCallbackInFlight_(other.selectionCallbackInFlight_),
+          onSelect_(std::move(other.onSelect_)) {
+        other.itemCount_ = 0u;
+        other.nextId_ = 1u;
+        other.selectedId_ = 0u;
+        other.scroll_ = ScrollModel{};
+        other.selectionCallbackInFlight_ = false;
+        other.onSelect_ = nullptr;
+    }
+
+    Tree& operator=(Tree&& other) {
+        if (this == &other) return *this;
+        Widget::operator=(static_cast<const Widget&>(other));
+        roots_ = std::move(other.roots_);
+        itemCount_ = other.itemCount_;
+        nextId_ = other.nextId_;
+        selectedId_ = other.selectedId_;
+        scroll_ = std::move(other.scroll_);
+        rowHeight_ = other.rowHeight_;
+        selectionCallbackInFlight_ = other.selectionCallbackInFlight_;
+        onSelect_ = std::move(other.onSelect_);
+        other.itemCount_ = 0u;
+        other.nextId_ = 1u;
+        other.selectedId_ = 0u;
+        other.scroll_ = ScrollModel{};
+        other.selectionCallbackInFlight_ = false;
+        other.onSelect_ = nullptr;
+        return *this;
+    }
+
     uint64_t addRoot(const std::string& label) {
 #if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
         try {
