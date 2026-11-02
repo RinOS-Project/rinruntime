@@ -179,6 +179,7 @@ int rin_firewall_rule_validate(const RinFirewallRuleV1* rule)
                           RIN_FIREWALL_RULE_FLAG_SYSTEM_CRITICAL |
                           RIN_FIREWALL_RULE_FLAG_POLICY_BYPASS)) != 0u ||
           (rule->flags & RIN_FIREWALL_RULE_FLAG_MATCH_NAMESPACE) == 0u ||
+          (rule->flags & RIN_FIREWALL_RULE_FLAG_MATCH_NAMESPACE_IDENTITY) != 0u ||
           rule->reserved[0] == RIN_FIREWALL_CONTAINER_OWNER_UNKNOWN)) ||
         ((rule->flags & RIN_FIREWALL_RULE_FLAG_POLICY_BYPASS) != 0u &&
          (rule->rule_class != RIN_FIREWALL_RULE_CLASS_SYSTEM ||
@@ -212,6 +213,22 @@ int rin_firewall_rule_validate(const RinFirewallRuleV1* rule)
     } else if (rule->namespace_id != 0u) {
         return RIN_FIREWALL_MALFORMED;
     }
+    if ((rule->flags & RIN_FIREWALL_RULE_FLAG_MATCH_NAMESPACE_IDENTITY) != 0u) {
+        if ((rule->flags & (RIN_FIREWALL_RULE_FLAG_MATCH_NAMESPACE |
+                            RIN_FIREWALL_RULE_FLAG_MATCH_PROCESS |
+                            RIN_FIREWALL_RULE_FLAG_UNRESOLVED_NAMESPACE)) != 0u ||
+            rule->rule_class == RIN_FIREWALL_RULE_CLASS_CONTAINER ||
+            rule->namespace_id != 0u ||
+            firewall_bytes_zero((const uint8_t*)rule->reserved,
+                                sizeof(rule->reserved)))
+            return RIN_FIREWALL_MALFORMED;
+    }
+    if ((rule->flags & RIN_FIREWALL_RULE_FLAG_UNRESOLVED_NAMESPACE) != 0u &&
+        ((rule->flags & RIN_FIREWALL_RULE_FLAG_MATCH_NAMESPACE) == 0u ||
+         (rule->flags & (RIN_FIREWALL_RULE_FLAG_ENABLED |
+                         RIN_FIREWALL_RULE_FLAG_MATCH_NAMESPACE_IDENTITY)) != 0u ||
+         rule->namespace_id <= RIN_FIREWALL_NAMESPACE_POLICY_HOST_ID))
+        return RIN_FIREWALL_MALFORMED;
     if ((rule->flags & RIN_FIREWALL_RULE_FLAG_MATCH_PROFILE) != 0u) {
         if (rule->network_profile == RIN_FIREWALL_PROFILE_ANY)
             return RIN_FIREWALL_MALFORMED;
@@ -265,6 +282,9 @@ int rin_firewall_rule_validate(const RinFirewallRuleV1* rule)
         if (!firewall_process_identity_valid(
                 firewall_rule_process_id(rule),
                 firewall_rule_process_cookie(rule)))
+            return RIN_FIREWALL_MALFORMED;
+    } else if ((rule->flags & RIN_FIREWALL_RULE_FLAG_MATCH_NAMESPACE_IDENTITY) != 0u) {
+        if (rule->rule_class == RIN_FIREWALL_RULE_CLASS_CONTAINER)
             return RIN_FIREWALL_MALFORMED;
     } else if (rule->rule_class == RIN_FIREWALL_RULE_CLASS_CONTAINER) {
         for (index = 1u; index < 4u; ++index) {
@@ -404,6 +424,15 @@ int rin_firewall_packet_validate(const RinFirewallPacketV1* packet)
     if ((packet->flags & RIN_FIREWALL_PACKET_FLAG_USER_IDENTITY) != 0u &&
         (packet->flags & RIN_FIREWALL_PACKET_FLAG_PROCESS_IDENTITY) == 0u)
         return RIN_FIREWALL_MALFORMED;
+    if ((packet->flags & RIN_FIREWALL_PACKET_FLAG_NAMESPACE_IDENTITY) != 0u) {
+        if (packet->namespace_id <= RIN_FIREWALL_NAMESPACE_POLICY_HOST_ID ||
+            firewall_bytes_zero(packet->namespace_identity,
+                                sizeof(packet->namespace_identity)))
+            return RIN_FIREWALL_MALFORMED;
+    } else if (!firewall_bytes_zero(packet->namespace_identity,
+                                    sizeof(packet->namespace_identity))) {
+        return RIN_FIREWALL_MALFORMED;
+    }
     return RIN_FIREWALL_OK;
 }
 
@@ -413,9 +442,12 @@ static int firewall_rule_matches(const RinFirewallRuleV1* rule,
     int transport;
     if (packet->namespace_id != RIN_FIREWALL_NAMESPACE_POLICY_HOST_ID &&
         rule->rule_class != RIN_FIREWALL_RULE_CLASS_SYSTEM &&
-        (rule->flags & RIN_FIREWALL_RULE_FLAG_MATCH_NAMESPACE) == 0u)
+        (rule->flags & (RIN_FIREWALL_RULE_FLAG_MATCH_NAMESPACE |
+                        RIN_FIREWALL_RULE_FLAG_MATCH_NAMESPACE_IDENTITY)) == 0u)
         return 0;
-    if ((rule->flags & RIN_FIREWALL_RULE_FLAG_ENABLED) == 0u ||
+    if ((rule->flags & (RIN_FIREWALL_RULE_FLAG_ENABLED |
+                        RIN_FIREWALL_RULE_FLAG_UNRESOLVED_NAMESPACE)) !=
+            RIN_FIREWALL_RULE_FLAG_ENABLED ||
         rule->direction != packet->direction ||
         (rule->family != RIN_FIREWALL_FAMILY_ANY &&
          rule->family != packet->family) ||
@@ -432,6 +464,11 @@ static int firewall_rule_matches(const RinFirewallRuleV1* rule,
         rule->interface_id != packet->interface_id) return 0;
     if ((rule->flags & RIN_FIREWALL_RULE_FLAG_MATCH_NAMESPACE) != 0u &&
         rule->namespace_id != packet->namespace_id) return 0;
+    if ((rule->flags & RIN_FIREWALL_RULE_FLAG_MATCH_NAMESPACE_IDENTITY) != 0u &&
+        ((packet->flags & RIN_FIREWALL_PACKET_FLAG_NAMESPACE_IDENTITY) == 0u ||
+         !firewall_bytes_equal((const uint8_t*)rule->reserved,
+                               packet->namespace_identity,
+                               sizeof(packet->namespace_identity)))) return 0;
     if ((rule->flags & RIN_FIREWALL_RULE_FLAG_MATCH_PROFILE) != 0u &&
         rule->network_profile != packet->network_profile) return 0;
     if ((rule->flags & RIN_FIREWALL_RULE_FLAG_MATCH_APPLICATION) != 0u &&
