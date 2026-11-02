@@ -8,6 +8,7 @@
 #define RIN_DHCPV6_MAX_MESSAGE_SIZE 512u
 #define RIN_DHCPV6_MAX_DUID_SIZE 32u
 #define RIN_DHCPV6_MAX_DNS_SERVERS 3u
+#define RIN_DHCPV6_MAX_IA_ADDRESSES 4u
 
 typedef enum RinDhcpv6Status {
     RIN_DHCPV6_OK = 0,
@@ -126,6 +127,47 @@ typedef struct RinDhcpv6ClientV1 {
     RinDhcpv6TransmitV1 pending;
 } RinDhcpv6ClientV1;
 
+typedef struct RinDhcpv6AddressBindingV2 {
+    uint8_t address[16];
+    uint32_t reserved;
+    uint64_t preferred_until_ms;
+    uint64_t valid_until_ms;
+    uint64_t generation;
+} RinDhcpv6AddressBindingV2;
+
+/* V2 retains the V1 exchange engine as its first member while tracking each
+ * IAADDR independently. The per-address generation fences stale DAD and
+ * lifetime callbacks after an address is renewed, withdrawn, or reused. */
+typedef struct RinDhcpv6ClientV2 {
+    uint32_t version;
+    uint32_t struct_size;
+    RinDhcpv6ClientV1 exchange;
+    uint32_t address_count;
+    uint32_t reserved;
+    uint64_t next_address_generation;
+    RinDhcpv6AddressBindingV2 addresses[RIN_DHCPV6_MAX_IA_ADDRESSES];
+} RinDhcpv6ClientV2;
+
+typedef struct RinDhcpv6LeaseV2 {
+    uint32_t version;
+    uint32_t struct_size;
+    uint64_t interface_generation;
+    uint64_t lease_generation;
+    uint64_t renew_at_ms;
+    uint64_t rebind_at_ms;
+    uint64_t expires_at_ms;
+    uint32_t address_count;
+    uint32_t dns_server_count;
+    uint32_t state;
+    uint32_t reserved;
+    RinDhcpv6AddressBindingV2 addresses[RIN_DHCPV6_MAX_IA_ADDRESSES];
+    uint8_t dns_servers[RIN_DHCPV6_MAX_DNS_SERVERS][16];
+} RinDhcpv6LeaseV2;
+
+enum {
+    RIN_DHCPV6_CLIENT_V2_VERSION = 2u
+};
+
 int rin_dhcpv6_client_init(
     RinDhcpv6ClientV1* client, const uint8_t* duid, uint32_t duid_size,
     uint32_t iaid, uint64_t interface_generation);
@@ -159,5 +201,29 @@ int rin_dhcpv6_client_get_lease(
     RinDhcpv6LeaseV1* lease_out);
 int rin_dhcpv6_client_stop(RinDhcpv6ClientV1* client);
 void rin_dhcpv6_client_destroy(RinDhcpv6ClientV1* client);
+
+int rin_dhcpv6_client_v2_state_valid(const RinDhcpv6ClientV2* client);
+int rin_dhcpv6_client_v2_init(
+    RinDhcpv6ClientV2* client, const uint8_t* duid, uint32_t duid_size,
+    uint32_t iaid, uint64_t interface_generation);
+int rin_dhcpv6_client_v2_set_mode(
+    RinDhcpv6ClientV2* client, RinDhcpv6ClientMode mode);
+int rin_dhcpv6_client_v2_request_reconfigure(
+    RinDhcpv6ClientV2* client, RinDhcpv6TransmitKind requested_kind,
+    uint64_t now_ms);
+int rin_dhcpv6_client_v2_prepare(
+    RinDhcpv6ClientV2* client, uint32_t new_transaction_id,
+    uint64_t now_ms, RinDhcpv6TransmitV1* transmit_out);
+int rin_dhcpv6_client_v2_complete_transmit(
+    RinDhcpv6ClientV2* client, const RinDhcpv6TransmitV1* transmit,
+    int sent_successfully);
+int rin_dhcpv6_client_v2_receive(
+    RinDhcpv6ClientV2* client, const uint8_t* message,
+    uint32_t message_size, uint64_t now_ms);
+int rin_dhcpv6_client_v2_get_lease(
+    RinDhcpv6ClientV2* client, uint64_t now_ms,
+    RinDhcpv6LeaseV2* lease_out);
+int rin_dhcpv6_client_v2_stop(RinDhcpv6ClientV2* client);
+void rin_dhcpv6_client_v2_destroy(RinDhcpv6ClientV2* client);
 
 #endif /* RIN_SHARED_RIN_DHCPV6_CLIENT_H */

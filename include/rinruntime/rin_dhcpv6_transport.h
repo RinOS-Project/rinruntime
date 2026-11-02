@@ -96,6 +96,13 @@ int rin_dhcpv6_transport_receive_datagram(
     uint16_t source_port, const uint8_t destination_address[16],
     uint16_t destination_port, const uint8_t* message,
     uint32_t message_size, uint64_t now_ms);
+/* Validate only the UDP/IP envelope.  Callers with an extended client state
+ * can then apply the payload with their own versioned DHCP parser. */
+int rin_dhcpv6_transport_validate_datagram(
+    const RinDhcpv6TransportV1* state, const uint8_t source_address[16],
+    uint16_t source_port, const uint8_t destination_address[16],
+    uint16_t destination_port, const uint8_t* message,
+    uint32_t message_size);
 /* Validate the complete Ethernet/IPv6/UDP envelope of an RKAP Reconfigure
  * without passing it to the Reply-only client parser.  The message pointer is
  * borrowed from frame and remains valid only while frame remains unchanged. */

@@ -546,6 +546,17 @@ int rin_dhcpv6_transport_receive_datagram(
     return status;
 }
 
+int rin_dhcpv6_transport_validate_datagram(
+    const RinDhcpv6TransportV1* state, const uint8_t source_address[16],
+    uint16_t source_port, const uint8_t destination_address[16],
+    uint16_t destination_port, const uint8_t* message,
+    uint32_t message_size)
+{
+    return datagram_envelope_valid(state, source_address, source_port,
+                                   destination_address, destination_port,
+                                   message, message_size);
+}
+
 int rin_dhcpv6_transport_validate_reconfigure_frame(
     const RinDhcpv6TransportV1* state, const uint8_t* frame,
     uint32_t frame_size, const uint8_t** message_out,

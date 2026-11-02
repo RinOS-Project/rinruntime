@@ -53,6 +53,12 @@ _Static_assert(sizeof(RinDhcpv6LeaseV1) == 128u,
                "DHCPv6 lease ABI drift");
 _Static_assert(sizeof(RinDhcpv6ClientV1) == 840u,
                "DHCPv6 client ABI drift");
+_Static_assert(sizeof(RinDhcpv6AddressBindingV2) == 48u,
+               "DHCPv6 address binding ABI drift");
+_Static_assert(sizeof(RinDhcpv6ClientV2) == 1056u,
+               "DHCPv6 client V2 ABI drift");
+_Static_assert(sizeof(RinDhcpv6LeaseV2) == 304u,
+               "DHCPv6 lease V2 ABI drift");
 
 typedef struct MessageWriter {
     uint8_t* bytes;
@@ -60,12 +66,21 @@ typedef struct MessageWriter {
     uint32_t capacity;
 } MessageWriter;
 
+typedef struct ParsedIaAddress {
+    uint8_t address[16];
+    uint32_t preferred_seconds;
+    uint32_t valid_seconds;
+    uint32_t status_code;
+} ParsedIaAddress;
+
 typedef struct ParsedMessage {
     const uint8_t* client_duid;
     uint32_t client_duid_size;
     const uint8_t* server_duid;
     uint32_t server_duid_size;
     uint8_t address[16];
+    ParsedIaAddress ia_addresses[RIN_DHCPV6_MAX_IA_ADDRESSES];
+    uint32_t ia_address_count;
     uint8_t dns_servers[RIN_DHCPV6_MAX_DNS_SERVERS][16];
     uint32_t dns_server_count;
     uint32_t preferred_seconds;
@@ -373,11 +388,27 @@ static int parse_ia_na(const uint8_t* value, uint32_t size,
             uint32_t nested_offset = 24u;
             uint32_t nested_count = 0u;
             uint32_t address_status_seen = 0u;
-            if (parsed->address_seen || length < 24u)
+            ParsedIaAddress candidate;
+            uint32_t prior;
+            if (parsed->ia_address_count >= RIN_DHCPV6_MAX_IA_ADDRESSES ||
+                length < 24u)
                 return RIN_DHCPV6_MALFORMED_PACKET;
-            byte_copy(parsed->address, option, 16u);
-            parsed->preferred_seconds = load_be32(option + 16u);
-            parsed->valid_seconds = load_be32(option + 20u);
+            byte_zero(&candidate, sizeof(candidate));
+            byte_copy(candidate.address, option, sizeof(candidate.address));
+            candidate.preferred_seconds = load_be32(option + 16u);
+            candidate.valid_seconds = load_be32(option + 20u);
+            if (!address_usable(candidate.address) ||
+                candidate.valid_seconds > DHCPV6_MAX_VALID_SECONDS ||
+                candidate.preferred_seconds > candidate.valid_seconds ||
+                (candidate.valid_seconds == 0u &&
+                 candidate.preferred_seconds != 0u))
+                return RIN_DHCPV6_MALFORMED_PACKET;
+            for (prior = 0u; prior < parsed->ia_address_count; ++prior) {
+                if (byte_equal(parsed->ia_addresses[prior].address,
+                               candidate.address,
+                               sizeof(candidate.address)))
+                    return RIN_DHCPV6_MALFORMED_PACKET;
+            }
             parsed->address_seen = 1u;
             while (nested_offset < length) {
                 uint16_t nested_code;
@@ -399,8 +430,7 @@ static int parse_ia_na(const uint8_t* value, uint32_t size,
                         return RIN_DHCPV6_MALFORMED_PACKET;
                     address_status_seen = 1u;
                     address_status = load_be16(nested_option);
-                    if (address_status != 0u && parsed->status_code == 0u)
-                        parsed->status_code = address_status;
+                    candidate.status_code = address_status;
                 }
                 /* Unknown IAaddr suboptions are optional to this client and
                  * were already bounded by the enclosing option length. */
@@ -408,6 +438,23 @@ static int parse_ia_na(const uint8_t* value, uint32_t size,
             }
             if (nested_offset != length)
                 return RIN_DHCPV6_MALFORMED_PACKET;
+            {
+                ParsedIaAddress* stored =
+                    &parsed->ia_addresses[parsed->ia_address_count++];
+                *stored = candidate;
+                /* V1 callers expose one address. Prefer the first successful
+                 * nonzero binding, retaining the first IAADDR as a fallback
+                 * for V2 withdrawal-only replies. */
+                if (candidate.status_code == 0u &&
+                    (!address_usable(parsed->address) ||
+                     (candidate.valid_seconds != 0u &&
+                      parsed->valid_seconds == 0u))) {
+                    byte_copy(parsed->address, candidate.address, 16u);
+                    parsed->preferred_seconds =
+                        candidate.preferred_seconds;
+                    parsed->valid_seconds = candidate.valid_seconds;
+                }
+            }
         } else if (code == DHCPV6_OPTION_STATUS_CODE) {
             if (nested_status_seen || length < 2u)
                 return RIN_DHCPV6_MALFORMED_PACKET;
@@ -1626,5 +1673,623 @@ int rin_dhcpv6_client_stop(RinDhcpv6ClientV1* client) {
 }
 
 void rin_dhcpv6_client_destroy(RinDhcpv6ClientV1* client) {
+    if (client) byte_zero(client, sizeof(*client));
+}
+
+static int client_v2_binding_index(
+    const RinDhcpv6AddressBindingV2* addresses, uint32_t count,
+    const uint8_t address[16])
+{
+    uint32_t index;
+    for (index = 0u; index < count; ++index)
+        if (byte_equal(addresses[index].address, address, 16u))
+            return (int)index;
+    return -1;
+}
+
+int rin_dhcpv6_client_v2_state_valid(const RinDhcpv6ClientV2* client)
+{
+    uint32_t index;
+    if (client == NULL ||
+        client->version != RIN_DHCPV6_CLIENT_V2_VERSION ||
+        client->struct_size != sizeof(*client) || client->reserved != 0u ||
+        client->address_count > RIN_DHCPV6_MAX_IA_ADDRESSES ||
+        client->next_address_generation == 0u ||
+        !client_valid(&client->exchange))
+        return 0;
+    for (index = 0u; index < RIN_DHCPV6_MAX_IA_ADDRESSES; ++index) {
+        const RinDhcpv6AddressBindingV2* binding = &client->addresses[index];
+        uint32_t prior;
+        if (index >= client->address_count) {
+            if (!byte_all_zero(binding, sizeof(*binding))) return 0;
+            continue;
+        }
+        if (!address_usable(binding->address) || binding->reserved != 0u ||
+            binding->generation == 0u ||
+            binding->preferred_until_ms > binding->valid_until_ms ||
+            binding->generation >= client->next_address_generation)
+            return 0;
+        for (prior = 0u; prior < index; ++prior)
+            if (byte_equal(client->addresses[prior].address,
+                           binding->address, 16u))
+                return 0;
+    }
+    if (client->address_count != 0u &&
+        !client_state_has_lease(client->exchange.state) &&
+        client->exchange.state != RIN_DHCPV6_STATE_ADVERTISED &&
+        client->exchange.state != RIN_DHCPV6_STATE_REQUESTING)
+        return 0;
+    return 1;
+}
+
+int rin_dhcpv6_client_v2_init(
+    RinDhcpv6ClientV2* client, const uint8_t* duid, uint32_t duid_size,
+    uint32_t iaid, uint64_t interface_generation)
+{
+    int status;
+    if (client == NULL) return RIN_DHCPV6_INVALID_ARGUMENT;
+    byte_zero(client, sizeof(*client));
+    status = rin_dhcpv6_client_init(&client->exchange, duid, duid_size,
+                                    iaid, interface_generation);
+    if (status != RIN_DHCPV6_OK) {
+        byte_zero(client, sizeof(*client));
+        return status;
+    }
+    client->version = RIN_DHCPV6_CLIENT_V2_VERSION;
+    client->struct_size = sizeof(*client);
+    client->next_address_generation = 1u;
+    return RIN_DHCPV6_OK;
+}
+
+int rin_dhcpv6_client_v2_set_mode(
+    RinDhcpv6ClientV2* client, RinDhcpv6ClientMode mode)
+{
+    if (!rin_dhcpv6_client_v2_state_valid(client))
+        return RIN_DHCPV6_INVALID_ARGUMENT;
+    return rin_dhcpv6_client_set_mode(&client->exchange, mode);
+}
+
+int rin_dhcpv6_client_v2_request_reconfigure(
+    RinDhcpv6ClientV2* client, RinDhcpv6TransmitKind requested_kind,
+    uint64_t now_ms)
+{
+    if (!rin_dhcpv6_client_v2_state_valid(client))
+        return RIN_DHCPV6_INVALID_ARGUMENT;
+    return rin_dhcpv6_client_request_reconfigure(
+        &client->exchange, requested_kind, now_ms);
+}
+
+static uint32_t client_v2_remaining_seconds(uint64_t deadline,
+                                            uint64_t now_ms)
+{
+    uint64_t seconds;
+    if (deadline <= now_ms) return 0u;
+    seconds = (deadline - now_ms) / UINT64_C(1000);
+    if ((deadline - now_ms) % UINT64_C(1000) != 0u) ++seconds;
+    return seconds > UINT32_MAX ? UINT32_MAX : (uint32_t)seconds;
+}
+
+static int client_v2_rewrite_renew_ia(
+    RinDhcpv6ClientV2* client, uint64_t now_ms,
+    RinDhcpv6TransmitV1* transmit)
+{
+    uint8_t rewritten[RIN_DHCPV6_MAX_MESSAGE_SIZE];
+    uint32_t input_offset = 4u;
+    uint32_t output_offset = 0u;
+    uint32_t index;
+    int found = 0;
+    if (!client || !transmit ||
+        (transmit->kind != RIN_DHCPV6_TRANSMIT_REQUEST &&
+         transmit->kind != RIN_DHCPV6_TRANSMIT_RENEW &&
+         transmit->kind != RIN_DHCPV6_TRANSMIT_REBIND))
+        return RIN_DHCPV6_OK;
+    if (transmit->message_size < 4u ||
+        transmit->message_size > sizeof(transmit->message))
+        return RIN_DHCPV6_INVALID_STATE;
+    byte_copy(rewritten, transmit->message, 4u);
+    output_offset = 4u;
+    while (input_offset < transmit->message_size) {
+        uint16_t code;
+        uint16_t length;
+        const uint8_t* value;
+        uint32_t option_start = input_offset;
+        uint32_t option_end;
+        if (transmit->message_size - input_offset < 4u) return
+            RIN_DHCPV6_INVALID_STATE;
+        code = load_be16(transmit->message + input_offset);
+        length = load_be16(transmit->message + input_offset + 2u);
+        input_offset += 4u;
+        if ((uint32_t)length > transmit->message_size - input_offset)
+            return RIN_DHCPV6_INVALID_STATE;
+        value = transmit->message + input_offset;
+        option_end = input_offset + length;
+        if (code != DHCPV6_OPTION_IA_NA) {
+            uint32_t option_size = option_end - option_start;
+            if (option_size > sizeof(rewritten) - output_offset)
+                return RIN_DHCPV6_RANGE_EXHAUSTED;
+            byte_copy(rewritten + output_offset,
+                      transmit->message + option_start, option_size);
+            output_offset += option_size;
+        } else {
+            uint32_t ia_payload_size = 12u;
+            if (found || length < 12u) return RIN_DHCPV6_INVALID_STATE;
+            found = 1;
+            for (index = 0u; index < client->address_count; ++index) {
+                if (client->addresses[index].valid_until_ms > now_ms)
+                    ia_payload_size += 28u;
+            }
+            if (ia_payload_size > UINT16_MAX ||
+                ia_payload_size + 4u > sizeof(rewritten) - output_offset)
+                return RIN_DHCPV6_RANGE_EXHAUSTED;
+            store_be16(rewritten + output_offset, DHCPV6_OPTION_IA_NA);
+            store_be16(rewritten + output_offset + 2u,
+                       (uint16_t)ia_payload_size);
+            byte_copy(rewritten + output_offset + 4u, value, 12u);
+            output_offset += 16u;
+            for (index = 0u; index < client->address_count; ++index) {
+                const RinDhcpv6AddressBindingV2* binding =
+                    &client->addresses[index];
+                uint8_t* option;
+                if (binding->valid_until_ms <= now_ms) continue;
+                option = rewritten + output_offset;
+                store_be16(option, DHCPV6_OPTION_IA_ADDRESS);
+                store_be16(option + 2u, 24u);
+                byte_copy(option + 4u, binding->address, 16u);
+                store_be32(option + 20u, client_v2_remaining_seconds(
+                    binding->preferred_until_ms, now_ms));
+                store_be32(option + 24u, client_v2_remaining_seconds(
+                    binding->valid_until_ms, now_ms));
+                output_offset += 28u;
+            }
+        }
+        input_offset = option_end;
+    }
+    if (!found) return RIN_DHCPV6_INVALID_STATE;
+    if (output_offset > sizeof(transmit->message))
+        return RIN_DHCPV6_RANGE_EXHAUSTED;
+    byte_zero(transmit->message, sizeof(transmit->message));
+    byte_copy(transmit->message, rewritten, output_offset);
+    transmit->message_size = output_offset;
+    client->exchange.pending.message_size = output_offset;
+    byte_zero(client->exchange.pending.message,
+              sizeof(client->exchange.pending.message));
+    byte_copy(client->exchange.pending.message, rewritten, output_offset);
+    byte_zero(rewritten, sizeof(rewritten));
+    return RIN_DHCPV6_OK;
+}
+
+int rin_dhcpv6_client_v2_prepare(
+    RinDhcpv6ClientV2* client, uint32_t new_transaction_id,
+    uint64_t now_ms, RinDhcpv6TransmitV1* transmit_out)
+{
+    int status;
+    if (!rin_dhcpv6_client_v2_state_valid(client))
+        return RIN_DHCPV6_INVALID_ARGUMENT;
+    status = rin_dhcpv6_client_prepare(&client->exchange,
+                                      new_transaction_id, now_ms,
+                                      transmit_out);
+    if (status != RIN_DHCPV6_PACKET_READY) return status;
+    status = client_v2_rewrite_renew_ia(client, now_ms, transmit_out);
+    if (status != RIN_DHCPV6_OK) {
+        /* Do not leave a reserved transmit behind when its expanded IA_NA
+         * cannot fit the bounded wire message. */
+        (void)rin_dhcpv6_client_complete_transmit(
+            &client->exchange, transmit_out, 0);
+        byte_zero(transmit_out, sizeof(*transmit_out));
+    }
+    return status == RIN_DHCPV6_OK ? RIN_DHCPV6_PACKET_READY : status;
+}
+
+int rin_dhcpv6_client_v2_complete_transmit(
+    RinDhcpv6ClientV2* client, const RinDhcpv6TransmitV1* transmit,
+    int sent_successfully)
+{
+    if (!rin_dhcpv6_client_v2_state_valid(client))
+        return RIN_DHCPV6_INVALID_ARGUMENT;
+    return rin_dhcpv6_client_complete_transmit(
+        &client->exchange, transmit, sent_successfully);
+}
+
+static int client_v2_prepare_bindings(
+    RinDhcpv6ClientV2* client, const ParsedMessage* parsed, uint64_t now_ms,
+    uint32_t old_state,
+    RinDhcpv6AddressBindingV2 candidate[RIN_DHCPV6_MAX_IA_ADDRESSES],
+    uint32_t* candidate_count_out, uint64_t* next_generation_out)
+{
+    uint32_t count = 0u;
+    uint32_t index;
+    uint64_t next_generation = client->next_address_generation;
+    int preserve_omitted = old_state == RIN_DHCPV6_STATE_RENEWING ||
+        old_state == RIN_DHCPV6_STATE_REBINDING ||
+        old_state == RIN_DHCPV6_STATE_RECONFIGURE_REBINDING;
+    byte_zero(candidate, sizeof(RinDhcpv6AddressBindingV2) *
+                          RIN_DHCPV6_MAX_IA_ADDRESSES);
+    if (preserve_omitted) {
+        count = client->address_count;
+        byte_copy(candidate, client->addresses,
+                  count * sizeof(candidate[0]));
+    }
+    for (index = 0u; index < parsed->ia_address_count; ++index) {
+        const ParsedIaAddress* parsed_address = &parsed->ia_addresses[index];
+        int found = client_v2_binding_index(candidate, count,
+                                            parsed_address->address);
+        if (parsed_address->status_code != 0u ||
+            parsed_address->valid_seconds == 0u) {
+            if (found >= 0) {
+                uint32_t remove_index = (uint32_t)found;
+                if (remove_index + 1u < count)
+                    byte_copy(&candidate[remove_index],
+                              &candidate[remove_index + 1u],
+                              (count - remove_index - 1u) *
+                                  sizeof(candidate[0]));
+                --count;
+                byte_zero(&candidate[count], sizeof(candidate[count]));
+            }
+            continue;
+        }
+        {
+            RinDhcpv6AddressBindingV2 binding;
+            uint64_t preferred_until;
+            uint64_t valid_until;
+            if (!deadline_from_seconds(now_ms,
+                                       parsed_address->preferred_seconds,
+                                       &preferred_until) ||
+                !deadline_from_seconds(now_ms,
+                                       parsed_address->valid_seconds,
+                                       &valid_until))
+                return RIN_DHCPV6_RANGE_EXHAUSTED;
+            byte_zero(&binding, sizeof(binding));
+            byte_copy(binding.address, parsed_address->address, 16u);
+            binding.preferred_until_ms = preferred_until;
+            binding.valid_until_ms = valid_until;
+            if (found >= 0) {
+                const RinDhcpv6AddressBindingV2* previous =
+                    &candidate[(uint32_t)found];
+                binding.generation = previous->generation;
+                if (previous->preferred_until_ms != preferred_until ||
+                    previous->valid_until_ms != valid_until) {
+                    if (next_generation == UINT64_MAX)
+                        return RIN_DHCPV6_RANGE_EXHAUSTED;
+                    binding.generation = next_generation++;
+                }
+                candidate[(uint32_t)found] = binding;
+            } else {
+                if (count >= RIN_DHCPV6_MAX_IA_ADDRESSES ||
+                    next_generation == UINT64_MAX)
+                    return RIN_DHCPV6_RANGE_EXHAUSTED;
+                binding.generation = next_generation++;
+                candidate[count++] = binding;
+            }
+        }
+    }
+    *candidate_count_out = count;
+    *next_generation_out = next_generation;
+    return RIN_DHCPV6_OK;
+}
+
+/* The v1 exchange engine accepts one IAADDR.  Feed it a bounded synthetic
+ * IA_NA containing one harmless address while the v2 binding set is built
+ * from the original packet above.  The exchange engine still validates the
+ * transaction, DUIDs, IAID, server selection, and every non-address option;
+ * the synthetic address is replaced by the complete v2 set immediately
+ * after commit. */
+static int client_v2_single_address_reply(
+    const uint8_t* message, uint32_t message_size,
+    const ParsedMessage* parsed, const uint8_t address[16],
+    uint8_t output[RIN_DHCPV6_MAX_MESSAGE_SIZE], uint32_t* output_size)
+{
+    uint32_t input_offset = 4u;
+    uint32_t output_offset = 4u;
+    int found_ia = 0;
+    if (!message || !parsed || !address || !output || !output_size ||
+        message_size < 4u || message_size > RIN_DHCPV6_MAX_MESSAGE_SIZE)
+        return RIN_DHCPV6_INVALID_ARGUMENT;
+    byte_zero(output, RIN_DHCPV6_MAX_MESSAGE_SIZE);
+    byte_copy(output, message, 4u);
+    while (input_offset < message_size) {
+        uint32_t option_start = input_offset;
+        uint32_t value_start;
+        uint32_t option_end;
+        uint16_t code;
+        uint16_t length;
+        if (message_size - input_offset < 4u) return
+            RIN_DHCPV6_MALFORMED_PACKET;
+        code = load_be16(message + input_offset);
+        length = load_be16(message + input_offset + 2u);
+        value_start = input_offset + 4u;
+        if ((uint32_t)length > message_size - value_start)
+            return RIN_DHCPV6_MALFORMED_PACKET;
+        option_end = value_start + length;
+        if (code != DHCPV6_OPTION_IA_NA) {
+            uint32_t option_size = option_end - option_start;
+            if (option_size > RIN_DHCPV6_MAX_MESSAGE_SIZE - output_offset)
+                return RIN_DHCPV6_RANGE_EXHAUSTED;
+            byte_copy(output + output_offset, message + option_start,
+                      option_size);
+            output_offset += option_size;
+        } else {
+            uint32_t nested_offset = value_start + 12u;
+            uint32_t ia_start = output_offset;
+            uint32_t ia_length_offset;
+            if (found_ia || length < 12u ||
+                RIN_DHCPV6_MAX_MESSAGE_SIZE - output_offset < 32u)
+                return RIN_DHCPV6_MALFORMED_PACKET;
+            found_ia = 1;
+            store_be16(output + output_offset, DHCPV6_OPTION_IA_NA);
+            ia_length_offset = output_offset + 2u;
+            byte_copy(output + output_offset + 4u, message + value_start,
+                      12u);
+            /* Keep the shared IA_NA T1/T2 values intact; the v1 exchange
+             * engine validates them against this bounded synthetic address. */
+            store_be32(output + output_offset + 8u, parsed->t1_seconds);
+            store_be32(output + output_offset + 12u, parsed->t2_seconds);
+            output_offset += 16u;
+            store_be16(output + output_offset, DHCPV6_OPTION_IA_ADDRESS);
+            store_be16(output + output_offset + 2u, 24u);
+            byte_copy(output + output_offset + 4u, address, 16u);
+            store_be32(output + output_offset + 20u,
+                       DHCPV6_MAX_VALID_SECONDS);
+            store_be32(output + output_offset + 24u,
+                       DHCPV6_MAX_VALID_SECONDS);
+            output_offset += 28u;
+            while (nested_offset < option_end) {
+                uint16_t nested_code;
+                uint16_t nested_length;
+                uint32_t nested_start = nested_offset;
+                uint32_t nested_end;
+                if (option_end - nested_offset < 4u)
+                    return RIN_DHCPV6_MALFORMED_PACKET;
+                nested_code = load_be16(message + nested_offset);
+                nested_length = load_be16(message + nested_offset + 2u);
+                nested_offset += 4u;
+                if ((uint32_t)nested_length > option_end - nested_offset)
+                    return RIN_DHCPV6_MALFORMED_PACKET;
+                nested_end = nested_offset + nested_length;
+                if (nested_code != DHCPV6_OPTION_IA_ADDRESS) {
+                    uint32_t nested_size = nested_end - nested_start;
+                    if (nested_size >
+                        RIN_DHCPV6_MAX_MESSAGE_SIZE - output_offset)
+                        return RIN_DHCPV6_RANGE_EXHAUSTED;
+                    byte_copy(output + output_offset,
+                              message + nested_start, nested_size);
+                    output_offset += nested_size;
+                }
+                nested_offset = nested_end;
+            }
+            if (nested_offset != option_end ||
+                output_offset < ia_start + 4u ||
+                output_offset - ia_start - 4u > UINT16_MAX)
+                return RIN_DHCPV6_MALFORMED_PACKET;
+            store_be16(output + ia_length_offset,
+                       (uint16_t)(output_offset - ia_start - 4u));
+        }
+        input_offset = option_end;
+    }
+    if (!found_ia || output_offset > RIN_DHCPV6_MAX_MESSAGE_SIZE)
+        return RIN_DHCPV6_MALFORMED_PACKET;
+    *output_size = output_offset;
+    return RIN_DHCPV6_OK;
+}
+
+static int client_v2_expected_reply(uint32_t state, uint8_t* type_out,
+                                    int* require_ia_out)
+{
+    if (!type_out || !require_ia_out) return 0;
+    if (state == RIN_DHCPV6_STATE_SOLICITING) {
+        *type_out = DHCPV6_MESSAGE_ADVERTISE;
+        *require_ia_out = 1;
+        return 1;
+    }
+    if (state == RIN_DHCPV6_STATE_REQUESTING ||
+        state == RIN_DHCPV6_STATE_RENEWING ||
+        state == RIN_DHCPV6_STATE_REBINDING ||
+        state == RIN_DHCPV6_STATE_RECONFIGURE_REBINDING) {
+        *type_out = DHCPV6_MESSAGE_REPLY;
+        *require_ia_out = 1;
+        return 1;
+    }
+    if (state == RIN_DHCPV6_STATE_INFORMATION_REQUESTING ||
+        state == RIN_DHCPV6_STATE_RECONFIGURE_INFORMATION_REQUESTING) {
+        *type_out = DHCPV6_MESSAGE_REPLY;
+        *require_ia_out = 0;
+        return 1;
+    }
+    return 0;
+}
+
+int rin_dhcpv6_client_v2_receive(
+    RinDhcpv6ClientV2* client, const uint8_t* message,
+    uint32_t message_size, uint64_t now_ms)
+{
+    ParsedMessage parsed;
+    RinDhcpv6AddressBindingV2 candidate[RIN_DHCPV6_MAX_IA_ADDRESSES];
+    RinDhcpv6ClientV1 exchange_before;
+    uint8_t normalized_message[RIN_DHCPV6_MAX_MESSAGE_SIZE];
+    uint32_t normalized_size = 0u;
+    uint32_t candidate_count = 0u;
+    uint32_t old_state;
+    uint8_t expected_type;
+    int require_ia;
+    int parsed_status;
+    int status;
+    uint64_t next_generation = client != NULL
+        ? client->next_address_generation : 0u;
+    uint64_t maximum_valid = 0u;
+    uint32_t index;
+    if (!rin_dhcpv6_client_v2_state_valid(client) || !message ||
+        message_size < 4u || message_size > RIN_DHCPV6_MAX_MESSAGE_SIZE ||
+        memory_overlaps(client, sizeof(*client), message, message_size))
+        return RIN_DHCPV6_INVALID_ARGUMENT;
+    if (now_ms < client->exchange.last_now_ms)
+        return RIN_DHCPV6_CLOCK_ROLLBACK;
+    old_state = client->exchange.state;
+    if (!client_v2_expected_reply(old_state, &expected_type, &require_ia))
+        return RIN_DHCPV6_INVALID_STATE;
+    byte_zero(&parsed, sizeof(parsed));
+    parsed_status = parse_message(message, message_size, expected_type,
+                                  require_ia, &parsed);
+    if (parsed_status != RIN_DHCPV6_OK) {
+        status = rin_dhcpv6_client_receive(
+            &client->exchange, message, message_size, now_ms);
+        byte_zero(&parsed, sizeof(parsed));
+        return status;
+    }
+    if (require_ia &&
+        client_v2_prepare_bindings(client, &parsed, now_ms, old_state,
+                                   candidate, &candidate_count,
+                                   &next_generation) != RIN_DHCPV6_OK) {
+        byte_zero(&parsed, sizeof(parsed));
+        byte_zero(candidate, sizeof(candidate));
+        return RIN_DHCPV6_RANGE_EXHAUSTED;
+    }
+    exchange_before = client->exchange;
+    if (require_ia &&
+        (candidate_count != 0u || parsed.ia_address_count != 0u)) {
+        const uint8_t* exchange_address = exchange_before.address;
+        if (!address_usable(exchange_address))
+            exchange_address = candidate[0].address;
+        parsed_status = client_v2_single_address_reply(
+            message, message_size, &parsed, exchange_address,
+            normalized_message, &normalized_size);
+        if (parsed_status != RIN_DHCPV6_OK) {
+            byte_zero(&parsed, sizeof(parsed));
+            byte_zero(candidate, sizeof(candidate));
+            byte_zero(normalized_message, sizeof(normalized_message));
+            return parsed_status;
+        }
+        status = rin_dhcpv6_client_receive(
+            &client->exchange, normalized_message, normalized_size, now_ms);
+    } else {
+        status = rin_dhcpv6_client_receive(
+            &client->exchange, message, message_size, now_ms);
+    }
+    if (status == RIN_DHCPV6_OFFER_READY && require_ia) {
+        client->address_count = candidate_count;
+        client->next_address_generation = next_generation;
+        byte_zero(client->addresses, sizeof(client->addresses));
+        if (candidate_count != 0u)
+            byte_copy(client->addresses, candidate,
+                      candidate_count * sizeof(candidate[0]));
+    } else if (status == RIN_DHCPV6_LEASE_READY && require_ia) {
+        client->address_count = candidate_count;
+        client->next_address_generation = next_generation;
+        byte_zero(client->addresses, sizeof(client->addresses));
+        if (candidate_count != 0u) {
+            byte_copy(client->addresses, candidate,
+                      candidate_count * sizeof(candidate[0]));
+            byte_copy(client->exchange.address, candidate[0].address, 16u);
+            client->exchange.preferred_until_ms =
+                candidate[0].preferred_until_ms;
+            for (index = 0u; index < candidate_count; ++index)
+                if (client->addresses[index].valid_until_ms > maximum_valid)
+                    maximum_valid = client->addresses[index].valid_until_ms;
+            if (maximum_valid < client->exchange.rebind_at_ms) {
+                uint64_t floor = client->exchange.rebind_at_ms;
+                if (floor != UINT64_MAX) ++floor;
+                if (floor > maximum_valid) maximum_valid = floor;
+            }
+            client->exchange.expires_at_ms = maximum_valid;
+        } else if (client_state_has_lease(old_state)) {
+            /* An IA_NA can withdraw its final IAADDR. Keep the association
+             * transaction alive while dhcpd clears the published addresses. */
+            byte_copy(client->exchange.address, exchange_before.address, 16u);
+            client->exchange.renew_at_ms = exchange_before.renew_at_ms;
+            client->exchange.rebind_at_ms = exchange_before.rebind_at_ms;
+            client->exchange.expires_at_ms = exchange_before.expires_at_ms;
+        } else if (parsed.ia_address_count != 0u) {
+            /* A first Reply may contain only zero-lifetime IAADDRs. Keep the
+             * accepted IA_NA transaction so a later Renew can acquire an
+             * address while the empty set remains unpublished. */
+            byte_copy(client->exchange.address, exchange_before.address, 16u);
+        }
+    }
+    byte_zero(&parsed, sizeof(parsed));
+    byte_zero(candidate, sizeof(candidate));
+    byte_zero(normalized_message, sizeof(normalized_message));
+    return status;
+}
+
+int rin_dhcpv6_client_v2_get_lease(
+    RinDhcpv6ClientV2* client, uint64_t now_ms,
+    RinDhcpv6LeaseV2* lease_out)
+{
+    RinDhcpv6AddressBindingV2 live[RIN_DHCPV6_MAX_IA_ADDRESSES];
+    uint32_t live_count = 0u;
+    uint32_t index;
+    uint64_t maximum_valid = 0u;
+    if (memory_overlaps(client, sizeof(*client), lease_out,
+                        sizeof(*lease_out)))
+        return RIN_DHCPV6_INVALID_ARGUMENT;
+    if (lease_out) byte_zero(lease_out, sizeof(*lease_out));
+    if (!rin_dhcpv6_client_v2_state_valid(client) || !lease_out)
+        return RIN_DHCPV6_INVALID_ARGUMENT;
+    if (!time_valid(&client->exchange, now_ms))
+        return RIN_DHCPV6_CLOCK_ROLLBACK;
+    if (!client_has_lease(&client->exchange)) return RIN_DHCPV6_NOT_FOUND;
+    byte_zero(live, sizeof(live));
+    for (index = 0u; index < client->address_count; ++index) {
+        const RinDhcpv6AddressBindingV2* binding = &client->addresses[index];
+        if (now_ms >= binding->valid_until_ms) continue;
+        live[live_count++] = *binding;
+        if (binding->valid_until_ms > maximum_valid)
+            maximum_valid = binding->valid_until_ms;
+    }
+    if (now_ms >= client->exchange.expires_at_ms) {
+        client->exchange.last_now_ms = now_ms;
+        (void)expire_lease(&client->exchange);
+        client->address_count = 0u;
+        byte_zero(client->addresses, sizeof(client->addresses));
+        byte_zero(live, sizeof(live));
+        return RIN_DHCPV6_LEASE_EXPIRED;
+    }
+    if (live_count != client->address_count) {
+        client->address_count = live_count;
+        byte_zero(client->addresses, sizeof(client->addresses));
+        if (live_count != 0u)
+            byte_copy(client->addresses, live,
+                      live_count * sizeof(live[0]));
+    }
+    if (live_count != 0u) {
+        byte_copy(client->exchange.address, live[0].address, 16u);
+        client->exchange.preferred_until_ms =
+            live[0].preferred_until_ms;
+    }
+    client->exchange.last_now_ms = now_ms;
+    lease_out->version = RIN_DHCPV6_CLIENT_V2_VERSION;
+    lease_out->struct_size = sizeof(*lease_out);
+    lease_out->interface_generation = client->exchange.interface_generation;
+    lease_out->lease_generation = client->exchange.lease_generation;
+    lease_out->renew_at_ms = client->exchange.renew_at_ms;
+    lease_out->rebind_at_ms = client->exchange.rebind_at_ms;
+    lease_out->expires_at_ms = live_count != 0u
+        ? maximum_valid : client->exchange.expires_at_ms;
+    lease_out->address_count = live_count;
+    lease_out->dns_server_count = client->exchange.dns_server_count;
+    lease_out->state = client->exchange.state;
+    if (live_count != 0u)
+        byte_copy(lease_out->addresses, live,
+                  live_count * sizeof(live[0]));
+    for (index = 0u; index < lease_out->dns_server_count; ++index)
+        byte_copy(lease_out->dns_servers[index],
+                  client->exchange.dns_servers[index], 16u);
+    byte_zero(live, sizeof(live));
+    return RIN_DHCPV6_OK;
+}
+
+int rin_dhcpv6_client_v2_stop(RinDhcpv6ClientV2* client)
+{
+    int status;
+    if (!rin_dhcpv6_client_v2_state_valid(client))
+        return RIN_DHCPV6_INVALID_ARGUMENT;
+    status = rin_dhcpv6_client_stop(&client->exchange);
+    if (status == RIN_DHCPV6_OK) {
+        client->address_count = 0u;
+        byte_zero(client->addresses, sizeof(client->addresses));
+    }
+    return status;
+}
+
+void rin_dhcpv6_client_v2_destroy(RinDhcpv6ClientV2* client)
+{
     if (client) byte_zero(client, sizeof(*client));
 }
