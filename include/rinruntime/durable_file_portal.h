@@ -21,7 +21,9 @@ typedef enum RinRuntimeDurableFilePortalResult {
     /* A well-formed listing reached its end.  This is not a kernel failure. */
     RINRUNTIME_DURABLE_FILE_PORTAL_NOT_FOUND = -4,
     /* SETTINGS_REVOKE_STATUS is still waiting for the physical prompt. */
-    RINRUNTIME_DURABLE_FILE_PORTAL_PENDING = -5
+    RINRUNTIME_DURABLE_FILE_PORTAL_PENDING = -5,
+    /* A Settings list page no longer matches the requested generation. */
+    RINRUNTIME_DURABLE_FILE_PORTAL_STALE = -6
 } RinRuntimeDurableFilePortalResult;
 
 /* Recent-item reopen is deliberately bounded. The helper scans only the
@@ -56,6 +58,18 @@ RinRuntimeDurableFilePortalResult rinruntime_file_portal_durable_list(
 RinRuntimeDurableFilePortalResult rinruntime_file_portal_settings_list(
     uint64_t cursor, RinFilePortalSettingsEntryV1* entry_out,
     uint64_t* next_cursor_out);
+
+/* Lists up to PAGE_CAPACITY Settings grants in one authenticated IPC.  Pass
+ * expected_generation=0 only for the first page; subsequent pages must pass
+ * the generation returned by that first page.  A generation race returns
+ * STALE and clears all outputs.  next_cursor_out is zero at the end. */
+RinRuntimeDurableFilePortalResult
+rinruntime_file_portal_settings_list_page(
+    uint64_t cursor, uint64_t expected_generation,
+    RinFilePortalSettingsEntryV1 entries_out[
+        RIN_FILE_PORTAL_SETTINGS_LIST_PAGE_CAPACITY],
+    uint32_t* entry_count_out, uint64_t* next_cursor_out,
+    uint64_t* database_generation_out);
 
 /* Starts, observes, and retires a Settings durable-grant revoke request. The
  * request remains pending until the kernel-owned physical prompt is

@@ -312,6 +312,8 @@ RinRuntimeDurableFilePortalResult rinruntime_file_portal_durable_list(
         return RINRUNTIME_DURABLE_FILE_PORTAL_NOT_FOUND;
     }
     if (result != RIN_RESULT_OK) {
+        memset(entries_out, 0, sizeof(RinFilePortalSettingsEntryV1) *
+                                    RIN_FILE_PORTAL_SETTINGS_LIST_PAGE_CAPACITY);
         memset(&call, 0, sizeof(call));
         return RINRUNTIME_DURABLE_FILE_PORTAL_KERNEL_REJECTED;
     }
@@ -375,6 +377,115 @@ RinRuntimeDurableFilePortalResult rinruntime_file_portal_settings_list(
     }
     *entry_out = call.settings_entry;
     *next_cursor_out = call.file_object_id;
+    memset(&call, 0, sizeof(call));
+    return RINRUNTIME_DURABLE_FILE_PORTAL_OK;
+}
+
+RinRuntimeDurableFilePortalResult
+rinruntime_file_portal_settings_list_page(
+    uint64_t cursor, uint64_t expected_generation,
+    RinFilePortalSettingsEntryV1 entries_out[
+        RIN_FILE_PORTAL_SETTINGS_LIST_PAGE_CAPACITY],
+    uint32_t* entry_count_out, uint64_t* next_cursor_out,
+    uint64_t* database_generation_out)
+{
+    RinFilePortalCallV1 call;
+    uint64_t entries_address;
+    int result;
+    uint32_t count;
+    uint32_t index;
+
+    if (entries_out != NULL)
+        memset(entries_out, 0, sizeof(RinFilePortalSettingsEntryV1) *
+                                    RIN_FILE_PORTAL_SETTINGS_LIST_PAGE_CAPACITY);
+    if (entry_count_out != NULL) *entry_count_out = 0u;
+    if (next_cursor_out != NULL) *next_cursor_out = 0u;
+    if (database_generation_out != NULL) *database_generation_out = 0u;
+    if (cursor > UINT32_MAX || (expected_generation == 0u && cursor != 0u) ||
+        entries_out == NULL || entry_count_out == NULL ||
+        next_cursor_out == NULL || database_generation_out == NULL)
+        return RINRUNTIME_DURABLE_FILE_PORTAL_INVALID_ARGUMENT;
+
+    entries_address = (uint64_t)(uintptr_t)entries_out;
+    if (entries_address == 0u ||
+        (uint64_t)(uintptr_t)entries_address != entries_address)
+        return RINRUNTIME_DURABLE_FILE_PORTAL_INVALID_ARGUMENT;
+    memset(&call, 0, sizeof(call));
+    call.struct_size = sizeof(call);
+    call.version = RIN_FILE_PORTAL_CALL_VERSION;
+    call.operation = RIN_FILE_PORTAL_OPERATION_SETTINGS_LIST_PAGE;
+    call.descriptor = -1;
+    call.process_fd = -1;
+    call.file_object_id = cursor;
+    call.new_generation = expected_generation;
+    call.reserved_status = RIN_FILE_PORTAL_SETTINGS_LIST_PAGE_CAPACITY;
+    call.reserved[0] = entries_address;
+    result = rin_file_portal_call(&call);
+    if (result == RIN_RESULT_NOT_FOUND || result == RIN_RESULT_BUSY) {
+        const int unchanged = call.struct_size == sizeof(call) &&
+            call.version == RIN_FILE_PORTAL_CALL_VERSION &&
+            call.operation == RIN_FILE_PORTAL_OPERATION_SETTINGS_LIST_PAGE &&
+            call.descriptor == -1 && call.requested_rights == 0u &&
+            call.target_process_id == 0u && call.descriptor_flags == 0u &&
+            call.target_process_cookie == 0u && call.granted_rights == 0u &&
+            call.process_fd == -1 && call.file_object_id == cursor &&
+            call.expires_at_epoch == 0u && call.request_id == 0u &&
+            call.new_generation == expected_generation &&
+            call.request_status == 0 &&
+            call.reserved_status ==
+                RIN_FILE_PORTAL_SETTINGS_LIST_PAGE_CAPACITY &&
+            call.reserved[0] == entries_address &&
+            durable_all_zero((const uint8_t*)&call.settings_entry,
+                             sizeof(call.settings_entry));
+        memset(&call, 0, sizeof(call));
+        if (!unchanged)
+            return RINRUNTIME_DURABLE_FILE_PORTAL_MALFORMED_REPLY;
+        return result == RIN_RESULT_NOT_FOUND
+            ? RINRUNTIME_DURABLE_FILE_PORTAL_NOT_FOUND
+            : RINRUNTIME_DURABLE_FILE_PORTAL_STALE;
+    }
+    if (result != RIN_RESULT_OK) {
+        memset(&call, 0, sizeof(call));
+        return RINRUNTIME_DURABLE_FILE_PORTAL_KERNEL_REJECTED;
+    }
+    count = call.granted_rights;
+    if (call.struct_size != sizeof(call) ||
+        call.version != RIN_FILE_PORTAL_CALL_VERSION ||
+        call.operation != RIN_FILE_PORTAL_OPERATION_SETTINGS_LIST_PAGE ||
+        call.descriptor != -1 || call.requested_rights != 0u ||
+        call.target_process_id != 0u || call.descriptor_flags != 0u ||
+        call.target_process_cookie != 0u || count == 0u ||
+        count > RIN_FILE_PORTAL_SETTINGS_LIST_PAGE_CAPACITY ||
+        call.process_fd != -1 || call.expires_at_epoch != 0u ||
+        call.request_id != 0u || call.new_generation == 0u ||
+        (expected_generation != 0u &&
+         call.new_generation != expected_generation) ||
+        call.request_status != 0 || call.reserved_status !=
+            RIN_FILE_PORTAL_SETTINGS_LIST_PAGE_CAPACITY ||
+        call.reserved[0] != entries_address ||
+        (call.file_object_id != 0u &&
+         (cursor > UINT32_MAX - count ||
+          call.file_object_id != cursor + count)) ||
+        durable_all_zero((const uint8_t*)&call.settings_entry,
+                         sizeof(call.settings_entry))) {
+        memset(entries_out, 0, sizeof(RinFilePortalSettingsEntryV1) *
+                                    RIN_FILE_PORTAL_SETTINGS_LIST_PAGE_CAPACITY);
+        memset(&call, 0, sizeof(call));
+        return RINRUNTIME_DURABLE_FILE_PORTAL_MALFORMED_REPLY;
+    }
+    for (index = 0u; index < count; ++index) {
+        if (!settings_entry_valid(&entries_out[index]) ||
+            entries_out[index].database_generation != call.new_generation) {
+            memset(entries_out, 0,
+                   sizeof(RinFilePortalSettingsEntryV1) *
+                       RIN_FILE_PORTAL_SETTINGS_LIST_PAGE_CAPACITY);
+            memset(&call, 0, sizeof(call));
+            return RINRUNTIME_DURABLE_FILE_PORTAL_MALFORMED_REPLY;
+        }
+    }
+    *entry_count_out = count;
+    *next_cursor_out = call.file_object_id;
+    *database_generation_out = call.new_generation;
     memset(&call, 0, sizeof(call));
     return RINRUNTIME_DURABLE_FILE_PORTAL_OK;
 }
