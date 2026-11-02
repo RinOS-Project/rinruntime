@@ -119,7 +119,7 @@ static inline int rin_webcontent_service_request_payload_length_valid(
                    sizeof(RinWebContentClipboardOwnerRequestV1) +
                    RIN_WEBCONTENT_CLIPBOARD_OWNER_MAX_FORMATS *
                        sizeof(RinWebContentClipboardOwnerFormatV1) +
-                   RIN_WEBCONTENT_CLIPBOARD_OWNER_MAX_DATA_BYTES;
+                   UINT64_C(16777216);
     case RIN_WEBCONTENT_CMD_TLS_IDENTITY_OWNER_V1:
         return header->payload_len >=
                    sizeof(RinWebContentTlsIdentityOwnerRequestV1) &&

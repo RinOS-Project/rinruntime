@@ -1680,7 +1680,33 @@ static inline int rin_webcontent_client_clipboard_owner_request_valid(
                request->offset <=
                    RIN_WEBCONTENT_CLIPBOARD_OWNER_MAX_DATA_BYTES;
     }
-    if (request->operation != RIN_WEBCONTENT_CLIPBOARD_OWNER_WRITE ||
+    if (request->operation ==
+        RIN_WEBCONTENT_CLIPBOARD_OWNER_WRITE_CHUNK) {
+        return request->format_count == 0u &&
+               request->format_index <
+                   RIN_WEBCONTENT_CLIPBOARD_OWNER_MAX_FORMATS &&
+               request->chunk_size != 0u &&
+               request->chunk_size <=
+                   RIN_WEBCONTENT_CLIPBOARD_OWNER_MAX_CHUNK_BYTES &&
+               request->generation != 0u &&
+               request->offset <=
+                   RIN_WEBCONTENT_CLIPBOARD_OWNER_MAX_DATA_BYTES -
+                       request->chunk_size &&
+               payload_len == sizeof(*request) + request->chunk_size;
+    }
+    if (request->operation ==
+            RIN_WEBCONTENT_CLIPBOARD_OWNER_WRITE_COMMIT ||
+        request->operation ==
+            RIN_WEBCONTENT_CLIPBOARD_OWNER_WRITE_ABORT) {
+        return payload_len == sizeof(*request) &&
+               request->format_count == 0u &&
+               request->format_index == 0u && request->chunk_size == 0u &&
+               request->generation != 0u && request->offset == 0u;
+    }
+    const int chunked_begin = request->operation ==
+        RIN_WEBCONTENT_CLIPBOARD_OWNER_WRITE_BEGIN;
+    if ((!chunked_begin && request->operation !=
+             RIN_WEBCONTENT_CLIPBOARD_OWNER_WRITE) ||
         request->format_count == 0u ||
         request->format_count > RIN_WEBCONTENT_CLIPBOARD_OWNER_MAX_FORMATS ||
         request->format_index != 0u || request->chunk_size != 0u ||
@@ -1721,6 +1747,12 @@ static inline int rin_webcontent_client_clipboard_owner_request_valid(
         }
         total_data_size += format->data_size;
     }
+    if (chunked_begin)
+        return expected_size == payload_len;
+    /* Keep the old one-message operation bounded while new clients stream
+     * larger offers through WRITE_BEGIN/WRITE_CHUNK/WRITE_COMMIT. */
+    if (total_data_size > UINT64_C(16777216))
+        return 0;
     if (total_data_size > SIZE_MAX - expected_size)
         return 0;
     expected_size += (size_t)total_data_size;
