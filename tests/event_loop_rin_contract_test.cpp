@@ -138,15 +138,19 @@ int main() {
     assert(!backend.wait(duplicate, 2u, g_now, &ready));
     assert(ready.id == 0u && ready.events == 0u);
 
-    /* The public SDK wait-set identifies readiness by opaque handle, so two
-     * distinct tags for one handle are rejected before item publication. */
+    /* Duplicate native handles publish one wait-set item while readiness is
+     * returned to each logical watch in round-robin order. */
     duplicate[1].id = 8u;
     const uint32_t set_items_before_duplicate_handle = g_set_items_calls;
     ready = {99u, RinRuntime::EventLoop::WAIT_READABLE};
-    assert(!backend.wait(duplicate, 2u, g_now, &ready));
-    assert(ready.id == 0u && ready.events == 0u);
+    assert(backend.wait(duplicate, 2u, g_now, &ready));
+    assert(ready.id == 7u &&
+           ready.events == RinRuntime::EventLoop::WAIT_READABLE);
+    assert(backend.wait(duplicate, 2u, g_now, &ready));
+    assert(ready.id == 8u &&
+           ready.events == RinRuntime::EventLoop::WAIT_READABLE);
     assert(backend.initialized());
-    assert(g_set_items_calls == set_items_before_duplicate_handle);
+    assert(g_set_items_calls == set_items_before_duplicate_handle + 2u);
 
     /* A clock rollback must fail before the SDK wait receives a new timeout;
      * otherwise a stale deadline can become an unbounded sleep. */

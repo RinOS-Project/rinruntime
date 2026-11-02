@@ -179,9 +179,10 @@ public:
                 item.handle = static_cast<RinHandle>(request.nativeHandle);
                 item.events = request.events;
                 item.observed = 0u;
-                /* Tags identify the coalesced native handle. Logical watch
-                 * IDs are selected below from the original requests. */
-                item.user_tag = static_cast<std::uint64_t>(group) + 1u;
+                /* Preserve the first logical watch ID as the handle group's
+                 * tag; readiness is mapped fairly across all matching IDs
+                 * after the kernel returns this coalesced item. */
+                item.user_tag = request.id;
             } else {
                 items_[group].events |= request.events;
             }

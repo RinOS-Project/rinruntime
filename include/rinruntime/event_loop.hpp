@@ -120,6 +120,11 @@ public:
         std::uint32_t events = 0u;
     };
 
+    /* Multiple logical requests may name one nativeHandle. Adapters may
+     * coalesce that native wait item, but return one ready WaitId and only
+     * the event bits requested by that logical request. Repeated level-ready
+     * results rotate among the matching IDs. */
+
     struct WaitResult {
         WaitId id = 0u;
         std::uint32_t events = 0u;
@@ -166,6 +171,7 @@ private:
     Size deliveryPayloadSlot_ = kNoCompositionPayload;
     Size eventHead_ = 0u;
     Size eventCount_ = 0u;
+    Size nextDueTimerIndex_ = 0u;
     std::uint32_t nextGeneration_ = 1u;
     bool generationExhausted_ = false;
     bool wakePending_ = false;
@@ -295,7 +301,8 @@ private:
         if (stored == nullptr) return false;
         StoredEvent captured;
         captured.event = event;
-        if (event.type == EventType::TextComposition) {
+        if (event.type == EventType::TextComposition ||
+            event.compositionSize != 0u) {
             captured.event.compositionText = nullptr;
             if (event.compositionSize != 0u) {
                 const Size slot = allocateCompositionPayload(
@@ -327,13 +334,16 @@ private:
     void deliverStoredEvent(const StoredEvent& stored,
                             Event* output) noexcept {
         *output = stored.event;
-        if (stored.event.type != EventType::TextComposition) return;
-        if (stored.event.compositionSize == 0u) {
-            output->compositionText = nullptr;
+        if (stored.payloadSlot >= kCompositionPayloadCapacity) {
+            if (stored.event.type == EventType::TextComposition &&
+                stored.event.compositionSize != 0u)
+                *output = {};
+            else if (stored.event.type == EventType::TextComposition)
+                output->compositionText = nullptr;
             return;
         }
-        if (stored.payloadSlot >= kCompositionPayloadCapacity) {
-            *output = {};
+        if (stored.event.compositionSize == 0u) {
+            output->compositionText = nullptr;
             return;
         }
         const CompositionPayload& payload =
@@ -353,7 +363,8 @@ private:
     bool takeDueTimer(std::uint64_t now, Event* output) noexcept {
         Size selected = kTimerCapacity;
         std::uint64_t selectedDeadline = UINT64_MAX;
-        for (Size index = 0u; index < kTimerCapacity; ++index) {
+        for (Size offset = 0u; offset < kTimerCapacity; ++offset) {
+            const Size index = (nextDueTimerIndex_ + offset) % kTimerCapacity;
             if (timers_[index].active && timers_[index].deadline <= now &&
                 (selected == kTimerCapacity ||
                  timers_[index].deadline < selectedDeadline)) {
@@ -362,6 +373,7 @@ private:
             }
         }
         if (selected == kTimerCapacity) return false;
+        nextDueTimerIndex_ = (selected + 1u) % kTimerCapacity;
         deliverStoredEvent(timers_[selected].event, output);
         releaseStoredEvent(&timers_[selected].event);
         timers_[selected] = Timer{};
@@ -672,6 +684,7 @@ public:
     void clear() noexcept {
         eventHead_ = 0u;
         eventCount_ = 0u;
+        nextDueTimerIndex_ = 0u;
         wakePending_ = false;
         preferQueuedEvent_ = false;
         for (StoredEvent& event : events_) releaseStoredEvent(&event);
