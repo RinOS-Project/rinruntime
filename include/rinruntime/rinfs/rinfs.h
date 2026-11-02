@@ -1157,6 +1157,10 @@ int rinfs_resize(RinFS_Mount* mount, uint64_t target_blocks);
 
 /* Inode operations */
 int rinfs_inode_read(RinFS_Mount* mount, uint64_t ino, RinFS_Inode* inode);
+/* Cached-only metadata lookup for constrained openat2 resolution. Returns
+ * BUSY when the inode image is not resident and never falls back to disk. */
+int rinfs_inode_read_cached(RinFS_Mount* mount, uint64_t ino,
+                            RinFS_Inode* inode);
 int rinfs_inode_write(RinFS_Mount* mount, uint64_t ino, const RinFS_Inode* inode);
 /* Atomically synchronizes access ACL entries and permission mode bits. */
 int rinfs_inode_set_mode(RinFS_Mount* mount, uint64_t ino, uint32_t mode);
@@ -1411,6 +1415,10 @@ int rinfs_inode_copy_persistent_flags(RinFS_Mount* source_mount,
 
 /* File operations */
 int rinfs_lookup(RinFS_Mount* mount, uint64_t dir_ino, const char* name, uint64_t* ino);
+/* Cached-only dentry lookup. Returns BUSY on a cache miss without reading
+ * directory blocks. */
+int rinfs_lookup_cached(RinFS_Mount* mount, uint64_t dir_ino,
+                        const char* name, uint64_t* ino);
 int rinfs_dirent_add(RinFS_Mount* mount, uint64_t dir_ino, const char* name,
                      uint64_t child_ino, uint8_t file_type);
 int rinfs_path_lookup(RinFS_Mount* mount, const char* path, uint64_t* ino,
@@ -1632,6 +1640,10 @@ int rinfs_open(RinFS_Mount* mount, const char* path, int flags, RinFS_File* file
  * racing a symlink substitution between a checked lookup and file I/O. */
 int rinfs_open_ino(RinFS_Mount* mount, uint64_t ino, int flags,
                    RinFS_File* file);
+/* Opens an inode only when its metadata remains resident; it skips deferred
+ * delete reaping and never converts a cache miss into block I/O. */
+int rinfs_open_ino_cached(RinFS_Mount* mount, uint64_t ino, int flags,
+                          RinFS_File* file);
 int rinfs_close(RinFS_File* file);
 /* Exact close owners report only (consumed=1,retryable=0) or
  * (consumed=0,retryable=1); (0,0) leaves the caller's owner quarantined.
@@ -1685,6 +1697,11 @@ int64_t rinfs_tell(RinFS_File* file);
  * file description's current position. */
 int rinfs_truncate(RinFS_File* file, uint64_t size);
 int rinfs_fsync(RinFS_File* file);
+/* Synchronously write back dirty cache pages intersecting [offset, offset +
+ * length). A zero length extends through EOF. This does not commit unrelated
+ * inode metadata or flush the device cache; use fsync() for that boundary. */
+int rinfs_sync_file_range(RinFS_File* file, uint64_t offset,
+                          uint64_t length);
 
 /* Directory operations */
 /* Pin and close-reference publication is one transaction. If an error is

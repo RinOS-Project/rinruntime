@@ -7006,15 +7006,14 @@ static int rinfs_page_cache_sync(RinFS_Mount* mount, uint64_t inode_num,
         }
         for (index = 0u; index < RINFS_PAGE_CACHE_CAPACITY; ++index) {
             RinFS_PageCacheEntry* entry = &cache->entries[index];
-            if (!entry->valid ||
+            if (!entry->valid || entry->page_index < range_page_start ||
                 (inode_num != 0u && entry->inode_num != inode_num) ||
                 (inode_generation != 0u &&
                  entry->inode_generation != inode_generation) ||
                 (content_version != 0u &&
                  entry->content_version != content_version) ||
                 (page_end != 0u &&
-                 (entry->page_index < range_page_start ||
-                  entry->page_index >= page_end))) continue;
+                 entry->page_index >= page_end)) continue;
             if (entry->migrating) {
                 matching_writeback_in_progress = 1;
                 continue;
@@ -23694,6 +23693,64 @@ int rinfs_fsync(RinFS_File* file) {
                                   &file->inode);
     release_result = rinfs_close_ref_end_operation(&operation);
     return release_result == RINFS_OK ? result : release_result;
+}
+
+int rinfs_sync_file_range(RinFS_File* file, uint64_t offset,
+                          uint64_t length) {
+    RinFS_CloseReferenceOperationLease operation;
+    RinFS_ContentLeaseNode* content_lease = NULL;
+    RinFS_Inode inode;
+    uint64_t content_lease_token = 0u;
+    uint64_t page_end = 0u;
+    uint64_t first_page;
+    int result;
+    int content_release_result;
+    int operation_release_result;
+
+    if (length != 0u && offset > UINT64_MAX - length)
+        return RINFS_ERR_OVERFLOW;
+    result = rinfs_file_operation_begin(file, &operation);
+    if (result != RINFS_OK) return result;
+    if (file->inode_num == 0u || file->inode.i_generation == 0u) {
+        result = RINFS_ERR_STALE;
+        goto sync_file_range_finish;
+    }
+
+    /* Hold this inode's content read lease from identity lookup through the
+     * device flush. Concurrent write/truncate operations cannot change the
+     * page-cache version or block map while the selected range is written. */
+    result = rinfs_content_lease_acquire(
+        file->mount, file->inode_num, file->inode.i_generation, 0,
+        &content_lease, &content_lease_token);
+    if (result != RINFS_OK) goto sync_file_range_finish;
+    result = rinfs_inode_read(file->mount, file->inode_num, &inode);
+    if (result != RINFS_OK) goto sync_file_range_release_content;
+    if (inode.i_generation != file->inode.i_generation ||
+        (inode.i_mode >> 12u) != RINFS_FT_REG) {
+        result = RINFS_ERR_STALE;
+        goto sync_file_range_release_content;
+    }
+
+    first_page = offset / RINFS_PAGE_CACHE_PAGE_SIZE;
+    if (length != 0u) {
+        uint64_t range_end = offset + length;
+        page_end = range_end / RINFS_PAGE_CACHE_PAGE_SIZE;
+        if (range_end % RINFS_PAGE_CACHE_PAGE_SIZE != 0u) ++page_end;
+    }
+    result = rinfs_page_cache_sync(
+        file->mount, file->inode_num, inode.i_generation,
+        rinfs_mount_has_content_versions(file->mount)
+            ? rinfs_inode_content_version_raw(&inode) : 0u,
+        first_page, page_end, 0u);
+sync_file_range_release_content:
+    content_release_result = rinfs_content_lease_release(
+        file->mount, file->inode_num, file->inode.i_generation,
+        content_lease_token, 0);
+    if (content_release_result != RINFS_OK) result = content_release_result;
+sync_file_range_finish:
+    operation_release_result = rinfs_close_ref_end_operation(&operation);
+    return operation_release_result == RINFS_OK
+        ? result : operation_release_result;
 }
 
 int rinfs_truncate(RinFS_File* file, uint64_t size) {
