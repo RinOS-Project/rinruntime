@@ -2,9 +2,10 @@
 /*
  * Backend-independent bounded event-loop model.
  *
- * The loop owns only queue and timer metadata.  An OS adapter is responsible
- * for waiting on native handles and translating them into Event values; this
- * type deliberately performs no syscalls and never allocates.
+ * The loop owns only bounded queue, timer, watch, and composition metadata.
+ * An OS adapter is responsible for waiting on native handles and translating
+ * them into Event values; this type deliberately performs no syscalls and
+ * never allocates.
  */
 
 #ifndef RINRUNTIME_EVENT_LOOP_HPP
@@ -95,6 +96,9 @@ public:
     static constexpr Size kTimerCapacity = 32u;
     static constexpr Size kWaitCapacity = 16u;
     static constexpr Size kMaxCompositionBytes = kMaxTextCompositionBytes;
+    /* Composition payloads are copied into a bounded pool.  Ordinary events
+     * still use the full queue/timer/watch capacities when the pool is full. */
+    static constexpr Size kCompositionPayloadCapacity = 16u;
     using TimerId = std::uint64_t;
     using WaitId = std::uint64_t;
 
@@ -125,9 +129,24 @@ public:
                                   std::uint64_t, WaitResult*);
 
 private:
+    static constexpr Size kNoCompositionPayload =
+        kCompositionPayloadCapacity;
+
+    struct StoredEvent {
+        Event event = {};
+        Size payloadSlot = kNoCompositionPayload;
+        std::uint64_t payloadGeneration = 0u;
+    };
+
+    struct CompositionPayload {
+        char bytes[kMaxCompositionBytes + 1u] = {};
+        Size references = 0u;
+        std::uint64_t generation = 0u;
+    };
+
     struct Timer {
         std::uint64_t deadline = 0u;
-        Event event = {};
+        StoredEvent event = {};
         std::uint32_t generation = 0u;
         bool active = false;
     };
@@ -135,20 +154,23 @@ private:
     struct Watch {
         std::uint64_t nativeHandle = 0u;
         std::uint32_t events = 0u;
-        Event event = {};
+        StoredEvent event = {};
         std::uint32_t generation = 0u;
         bool active = false;
     };
 
-    Event events_[kEventCapacity] = {};
+    StoredEvent events_[kEventCapacity] = {};
     Timer timers_[kTimerCapacity] = {};
     Watch watches_[kWaitCapacity] = {};
+    CompositionPayload compositionPayloads_[kCompositionPayloadCapacity] = {};
+    Size deliveryPayloadSlot_ = kNoCompositionPayload;
     Size eventHead_ = 0u;
     Size eventCount_ = 0u;
     std::uint32_t nextGeneration_ = 1u;
     bool generationExhausted_ = false;
     bool wakePending_ = false;
     bool waitBackendInFlight_ = false;
+    bool preferQueuedEvent_ = false;
 
     static bool validEvent(const Event& event) noexcept {
         return event.type != EventType::None &&
@@ -182,6 +204,13 @@ private:
                left.compositionSelectionStart ==
                    right.compositionSelectionStart &&
                left.compositionSelectionEnd == right.compositionSelectionEnd;
+    }
+
+    static bool sameStoredEvent(const StoredEvent& left,
+                                const StoredEvent& right) noexcept {
+        return sameEvent(left.event, right.event) &&
+               left.payloadSlot == right.payloadSlot &&
+               left.payloadGeneration == right.payloadGeneration;
     }
 
     static TimerId makeTimerId(Size index, std::uint32_t generation) {
@@ -232,6 +261,95 @@ private:
         return result;
     }
 
+    Size allocateCompositionPayload(const char* bytes, Size size) noexcept {
+        if (bytes == nullptr || size == 0u || size > kMaxCompositionBytes)
+            return kNoCompositionPayload;
+        for (Size index = 0u; index < kCompositionPayloadCapacity; ++index) {
+            CompositionPayload& payload = compositionPayloads_[index];
+            if (payload.references != 0u || payload.generation == UINT64_MAX)
+                continue;
+            ++payload.generation;
+            payload.references = 1u;
+            for (Size offset = 0u; offset < size; ++offset)
+                payload.bytes[offset] = bytes[offset];
+            payload.bytes[size] = '\0';
+            return index;
+        }
+        return kNoCompositionPayload;
+    }
+
+    void retainCompositionPayload(Size slot) noexcept {
+        if (slot < kCompositionPayloadCapacity)
+            ++compositionPayloads_[slot].references;
+    }
+
+    void releaseCompositionPayload(Size slot) noexcept {
+        if (slot >= kCompositionPayloadCapacity) return;
+        CompositionPayload& payload = compositionPayloads_[slot];
+        if (payload.references == 0u) return;
+        --payload.references;
+        if (payload.references == 0u) payload.bytes[0] = '\0';
+    }
+
+    bool captureEvent(const Event& event, StoredEvent* stored) noexcept {
+        if (stored == nullptr) return false;
+        StoredEvent captured;
+        captured.event = event;
+        if (event.type == EventType::TextComposition) {
+            captured.event.compositionText = nullptr;
+            if (event.compositionSize != 0u) {
+                const Size slot = allocateCompositionPayload(
+                    event.compositionText, event.compositionSize);
+                if (slot == kNoCompositionPayload) return false;
+                captured.payloadSlot = slot;
+                captured.payloadGeneration =
+                    compositionPayloads_[slot].generation;
+            }
+        }
+        *stored = captured;
+        return true;
+    }
+
+    void releaseStoredEvent(StoredEvent* stored) noexcept {
+        if (stored == nullptr) return;
+        if (stored->payloadSlot < kCompositionPayloadCapacity &&
+            compositionPayloads_[stored->payloadSlot].generation ==
+                stored->payloadGeneration)
+            releaseCompositionPayload(stored->payloadSlot);
+        *stored = StoredEvent{};
+    }
+
+    void releaseDeliveryPayload() noexcept {
+        releaseCompositionPayload(deliveryPayloadSlot_);
+        deliveryPayloadSlot_ = kNoCompositionPayload;
+    }
+
+    void deliverStoredEvent(const StoredEvent& stored,
+                            Event* output) noexcept {
+        *output = stored.event;
+        if (stored.event.type != EventType::TextComposition) return;
+        if (stored.event.compositionSize == 0u) {
+            output->compositionText = nullptr;
+            return;
+        }
+        if (stored.payloadSlot >= kCompositionPayloadCapacity) {
+            *output = {};
+            return;
+        }
+        const CompositionPayload& payload =
+            compositionPayloads_[stored.payloadSlot];
+        /* Slot generations prevent stale references from becoming valid after
+         * a cancelled timer or updated watch frees and reuses a pool entry. */
+        if (payload.references == 0u ||
+            payload.generation != stored.payloadGeneration) {
+            *output = {};
+            return;
+        }
+        retainCompositionPayload(stored.payloadSlot);
+        deliveryPayloadSlot_ = stored.payloadSlot;
+        output->compositionText = payload.bytes;
+    }
+
     bool takeDueTimer(std::uint64_t now, Event* output) noexcept {
         Size selected = kTimerCapacity;
         std::uint64_t selectedDeadline = UINT64_MAX;
@@ -244,8 +362,19 @@ private:
             }
         }
         if (selected == kTimerCapacity) return false;
-        *output = timers_[selected].event;
+        deliverStoredEvent(timers_[selected].event, output);
+        releaseStoredEvent(&timers_[selected].event);
         timers_[selected] = Timer{};
+        return true;
+    }
+
+    bool takeQueuedEvent(Event* output) noexcept {
+        if (output == nullptr || eventCount_ == 0u) return false;
+        deliverStoredEvent(events_[eventHead_], output);
+        releaseStoredEvent(&events_[eventHead_]);
+        eventHead_ = (eventHead_ + 1u) % kEventCapacity;
+        --eventCount_;
+        preferQueuedEvent_ = false;
         return true;
     }
 
@@ -295,8 +424,10 @@ public:
 
     bool post(const Event& event) noexcept {
         if (!validEvent(event) || eventCount_ >= kEventCapacity) return false;
+        StoredEvent captured;
+        if (!captureEvent(event, &captured)) return false;
         const Size slot = (eventHead_ + eventCount_) % kEventCapacity;
-        events_[slot] = event;
+        events_[slot] = captured;
         ++eventCount_;
         wakePending_ = true;
         return true;
@@ -310,10 +441,15 @@ public:
         for (Size index = 0u; index < kTimerCapacity; ++index) {
             Timer& timer = timers_[index];
             if (timer.active) continue;
+            StoredEvent captured;
+            if (!captureEvent(event, &captured)) return 0u;
             const std::uint32_t generation = allocateGeneration();
-            if (generation == 0u) return 0u;
+            if (generation == 0u) {
+                releaseStoredEvent(&captured);
+                return 0u;
+            }
             timer.deadline = deadline;
-            timer.event = event;
+            timer.event = captured;
             timer.generation = generation;
             timer.active = true;
             wakePending_ = true;
@@ -330,11 +466,16 @@ public:
         for (Size index = 0u; index < kWaitCapacity; ++index) {
             Watch& candidate = watches_[index];
             if (candidate.active) continue;
+            StoredEvent captured;
+            if (!captureEvent(event, &captured)) return 0u;
             const std::uint32_t generation = allocateGeneration();
-            if (generation == 0u) return 0u;
+            if (generation == 0u) {
+                releaseStoredEvent(&captured);
+                return 0u;
+            }
             candidate.nativeHandle = nativeHandle;
             candidate.events = events;
-            candidate.event = event;
+            candidate.event = captured;
             candidate.generation = generation;
             candidate.active = true;
             wakePending_ = true;
@@ -354,9 +495,12 @@ public:
             return false;
         Watch* watch = watchForId(id);
         if (watch == nullptr) return false;
+        StoredEvent captured;
+        if (!captureEvent(event, &captured)) return false;
+        releaseStoredEvent(&watch->event);
         watch->nativeHandle = nativeHandle;
         watch->events = events;
-        watch->event = event;
+        watch->event = captured;
         wakePending_ = true;
         return true;
     }
@@ -367,6 +511,7 @@ public:
         if (!decodeTimerId(id, &index, &generation)) return false;
         Timer& timer = timers_[index];
         if (!timer.active || timer.generation != generation) return false;
+        releaseStoredEvent(&timer.event);
         timer = Timer{};
         /* Cancelling a timer changes the deadline observed by an adapter.
          * Preserve the same wake contract as unwatch(): a caller that has
@@ -379,6 +524,7 @@ public:
     bool unwatch(WaitId id) noexcept {
         Watch* watch = watchForId(id);
         if (watch == nullptr) return false;
+        releaseStoredEvent(&watch->event);
         *watch = Watch{};
         wakePending_ = true;
         return true;
@@ -386,18 +532,27 @@ public:
 
     bool runOne(std::uint64_t now, Event* output) noexcept {
         if (output == nullptr) return false;
+        releaseDeliveryPayload();
         *output = {};
         /* UINT64_MAX is the public adapter's no-deadline sentinel, not a
          * usable monotonic clock sample.  Do not turn an invalid clock into
          * an observation that every finite timer is due.  Queued events are
          * independent of the clock and remain drainable below. */
-        if (now != UINT64_MAX && takeDueTimer(now, output)) return true;
-        if (eventCount_ == 0u) return false;
-        *output = events_[eventHead_];
-        events_[eventHead_] = Event{};
-        eventHead_ = (eventHead_ + 1u) % kEventCapacity;
-        --eventCount_;
-        return true;
+        const bool timerMayBeDue = now != UINT64_MAX;
+        if (timerMayBeDue && preferQueuedEvent_ && eventCount_ != 0u) {
+            /* After a timer dispatch, give already-queued work the next turn.
+             * This remains true even if the preceding callback posted the
+             * event after the timer was returned to its caller. */
+            Size dueTimerCount = 0u;
+            for (const Timer& timer : timers_)
+                if (timer.active && timer.deadline <= now) ++dueTimerCount;
+            if (dueTimerCount != 0u) return takeQueuedEvent(output);
+        }
+        if (timerMayBeDue && takeDueTimer(now, output)) {
+            preferQueuedEvent_ = true;
+            return true;
+        }
+        return takeQueuedEvent(output);
     }
 
     bool runOneCancellable(std::uint64_t now, Event* output,
@@ -440,7 +595,7 @@ public:
         if (backend == nullptr) return false;
 
         WaitRequest requests[kWaitCapacity] = {};
-        Event requestEvents[kWaitCapacity] = {};
+        StoredEvent requestEvents[kWaitCapacity] = {};
         Size count = 0u;
         for (Size index = 0u; index < kWaitCapacity; ++index) {
             const Watch& watch = watches_[index];
@@ -473,9 +628,9 @@ public:
             if (watch == nullptr ||
                 watch->nativeHandle != requests[index].nativeHandle ||
                 watch->events != requests[index].events ||
-                !sameEvent(watch->event, requestEvents[index]))
+                !sameStoredEvent(watch->event, requestEvents[index]))
                 return false;
-            *output = watch->event;
+            deliverStoredEvent(watch->event, output);
             return true;
         }
         return false;
@@ -518,9 +673,16 @@ public:
         eventHead_ = 0u;
         eventCount_ = 0u;
         wakePending_ = false;
-        for (Event& event : events_) event = Event{};
-        for (Timer& timer : timers_) timer = Timer{};
-        for (Watch& watch : watches_) watch = Watch{};
+        preferQueuedEvent_ = false;
+        for (StoredEvent& event : events_) releaseStoredEvent(&event);
+        for (Timer& timer : timers_) {
+            releaseStoredEvent(&timer.event);
+            timer = Timer{};
+        }
+        for (Watch& watch : watches_) {
+            releaseStoredEvent(&watch.event);
+            watch = Watch{};
+        }
     }
 };
 

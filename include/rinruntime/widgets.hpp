@@ -1128,6 +1128,7 @@ class Tree : public Widget {
     };
 
     static constexpr size_t kMaxItems = 4096u;
+    static constexpr size_t kMaxDepth = 64u;
     static constexpr size_t kMaxLabelBytes = 4096u;
     std::vector<TreeItem> roots_;
     size_t itemCount_ = 0u;
@@ -1172,6 +1173,15 @@ class Tree : public Widget {
         for (const auto& value : values) {
             if (value.id == id) return parent;
             uint64_t nested = parentOf(value.children, id, value.id);
+            if (nested != 0u) return nested;
+        }
+        return 0u;
+    }
+    static size_t depthOf(const std::vector<TreeItem>& values, uint64_t id,
+                          size_t depth = 1u) {
+        for (const auto& value : values) {
+            if (value.id == id) return depth;
+            const size_t nested = depthOf(value.children, id, depth + 1u);
             if (nested != 0u) return nested;
         }
         return 0u;
@@ -1271,7 +1281,7 @@ public:
                 nextId_ == 0u)
                 return 0u;
             TreeItem* parent = findIn(roots_, parentId);
-            if (!parent) return 0u;
+            if (!parent || depthOf(roots_, parentId) >= kMaxDepth) return 0u;
             TreeItem value;
             value.id = nextId_;
             value.label = label;

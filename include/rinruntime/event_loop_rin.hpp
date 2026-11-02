@@ -50,6 +50,7 @@ private:
     RinWaitSet waitSet_ = RIN_HANDLE_INVALID;
     RinWaitItemV1 items_[EventLoop::kWaitCapacity] = {};
     Size itemCount_ = 0u;
+    Size nextReadyIndex_ = 0u;
     std::uint64_t lastNow_ = 0u;
     bool haveLastNow_ = false;
 
@@ -65,12 +66,6 @@ private:
                 return false;
             for (Size prior = 0u; prior < index; ++prior) {
                 if (requests[prior].id == request.id) return false;
-                /* The SDK wait-set owner uses the opaque handle as the
-                 * readiness identity. Two tags for one handle would make a
-                 * returned index ambiguous; reject it before mutating the
-                 * target-side item list. */
-                if (requests[prior].nativeHandle == request.nativeHandle)
-                    return false;
             }
         }
         return true;
@@ -132,6 +127,7 @@ public:
              * lower than the retired session's last sample. */
             for (RinWaitItemV1& item : items_) item = {};
             itemCount_ = 0u;
+            nextReadyIndex_ = 0u;
             lastNow_ = 0u;
             haveLastNow_ = false;
         }
@@ -170,17 +166,35 @@ public:
             previousItems[index] = items_[index];
         const Size previousItemCount = itemCount_;
 
+        Size publishedCount = 0u;
         for (Size index = 0u; index < count; ++index) {
             const EventLoop::WaitRequest& request = requests[index];
-            items_[index].handle = static_cast<RinHandle>(request.nativeHandle);
-            items_[index].events = request.events;
-            items_[index].observed = 0u;
-            items_[index].user_tag = request.id;
+            Size group = 0u;
+            while (group < publishedCount &&
+                   items_[group].handle !=
+                       static_cast<RinHandle>(request.nativeHandle))
+                ++group;
+            if (group == publishedCount) {
+                RinWaitItemV1& item = items_[publishedCount++];
+                item.handle = static_cast<RinHandle>(request.nativeHandle);
+                item.events = request.events;
+                item.observed = 0u;
+                /* Tags identify the coalesced native handle. Logical watch
+                 * IDs are selected below from the original requests. */
+                item.user_tag = static_cast<std::uint64_t>(group) + 1u;
+            } else {
+                items_[group].events |= request.events;
+            }
         }
+        for (Size index = publishedCount; index < EventLoop::kWaitCapacity;
+             ++index)
+            items_[index] = {};
         const RinSliceV1 itemSlice = {
-            static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(
-                items_)),
-            static_cast<std::uint64_t>(count * sizeof(items_[0]))};
+            publishedCount == 0u
+                ? 0u
+                : static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(
+                      items_)),
+            static_cast<std::uint64_t>(publishedCount * sizeof(items_[0]))};
         if (rin_wait_set_set_items_v1(waitSet_, itemSlice) != RIN_SUCCESS) {
             /* A failed item publication leaves the target-side wait-set
              * state unspecified.  Do not keep serving with local item bytes
@@ -190,11 +204,12 @@ public:
             waitSet_ = RIN_HANDLE_INVALID;
             for (RinWaitItemV1& item : items_) item = {};
             itemCount_ = 0u;
+            nextReadyIndex_ = 0u;
             lastNow_ = 0u;
             haveLastNow_ = false;
             return false;
         }
-        itemCount_ = count;
+        itemCount_ = publishedCount;
 
         /* The item publication is a bounded syscall and may consume time.
          * Recompute once before waiting so a deadline cannot be extended by
@@ -223,6 +238,7 @@ public:
                 waitSet_ = RIN_HANDLE_INVALID;
                 for (RinWaitItemV1& item : items_) item = {};
                 itemCount_ = 0u;
+                nextReadyIndex_ = 0u;
             }
             return false;
         }
@@ -236,13 +252,26 @@ public:
             return false;
         for (std::uint64_t reserved : result.reserved)
             if (reserved != 0u) return false;
-        if (result.index >= count || result.user_tag != items_[result.index].user_tag ||
+        if (result.index >= itemCount_ ||
+            result.user_tag != items_[result.index].user_tag ||
             result.events == 0u ||
             (result.events & ~items_[result.index].events) != 0u)
             return false;
-        ready->id = items_[result.index].user_tag;
-        ready->events = result.events;
-        return true;
+        const RinHandle readyHandle = items_[result.index].handle;
+        const Size start = count == 0u ? 0u : nextReadyIndex_ % count;
+        for (Size offset = 0u; offset < count; ++offset) {
+            const Size requestIndex = (start + offset) % count;
+            const EventLoop::WaitRequest& request = requests[requestIndex];
+            if (request.nativeHandle != static_cast<std::uint64_t>(readyHandle))
+                continue;
+            const std::uint32_t matched = result.events & request.events;
+            if (matched == 0u) continue;
+            ready->id = request.id;
+            ready->events = matched;
+            nextReadyIndex_ = (requestIndex + 1u) % count;
+            return true;
+        }
+        return false;
     }
 
     static bool waitFunction(void* context,
