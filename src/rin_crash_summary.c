@@ -206,3 +206,21 @@ int rin_crash_history_ack_local(uint64_t sequence)
     summary_zero(&ack, (uint32_t)sizeof(ack));
     return (int)result;
 }
+
+int rin_crash_pending_minidumps_ack_local(uint64_t queue_sequence)
+{
+    RinCrashPendingAckV1 ack;
+    intptr_t result;
+    summary_zero(&ack, (uint32_t)sizeof(ack));
+    ack.struct_size = (uint32_t)sizeof(ack);
+    ack.version = RIN_CRASH_PENDING_ACK_VERSION;
+    ack.queue_sequence = queue_sequence;
+#if defined(_WIN32)
+    result = (intptr_t)RIN_RESULT_NOT_SUPPORTED;
+#else
+    result = _syscall2((uintptr_t)RIN_SYS_CRASH_SUMMARY_GET,
+                       (uintptr_t)&ack, (uintptr_t)sizeof(ack));
+#endif
+    summary_zero(&ack, (uint32_t)sizeof(ack));
+    return (int)result;
+}
