@@ -350,7 +350,14 @@ enum {
     RINFS_RENAME_OUTCOME_COMMITTED = 1u << 0,
     RINFS_RENAME_OUTCOME_CHANGED = 1u << 1,
     RINFS_RENAME_OUTCOME_REPLACED = 1u << 2,
-    RINFS_RENAME_OUTCOME_REPLACED_REMAINS = 1u << 3
+    RINFS_RENAME_OUTCOME_REPLACED_REMAINS = 1u << 3,
+    RINFS_RENAME_OUTCOME_EXCHANGED = 1u << 4
+};
+
+enum {
+    RINFS_RENAME_MODE_REPLACE = 0,
+    RINFS_RENAME_MODE_NOREPLACE = 1,
+    RINFS_RENAME_MODE_EXCHANGE = 2
 };
 
 typedef struct {
@@ -1585,10 +1592,11 @@ int rinfs_rename_expected(
     uint64_t new_dir, const char* new_name, uint64_t expected_source_inode,
     uint32_t expected_source_generation);
 /* Rename against generation-checked parent/source/destination identities and
- * return the objects actually changed by the journal transaction. For a
- * replacing rename, a zero expected_destination_inode means the destination
- * must be absent; no-replace mode enforces absence in the transaction itself.
- * Outcome COMMITTED remains set if later scope release reports an error. */
+ * return the objects actually changed by the journal transaction. REPLACE
+ * uses expected_destination_inode to guard an existing destination;
+ * NOREPLACE enforces absence in the transaction; EXCHANGE requires and swaps
+ * both entries in one rename journal transaction. Outcome COMMITTED remains
+ * set if later scope release reports an error. */
 int rinfs_rename_with_outcome(
     RinFS_Mount* mount, uint64_t old_dir, const char* old_name,
     uint32_t expected_old_parent_generation,
@@ -1597,7 +1605,7 @@ int rinfs_rename_with_outcome(
     uint64_t expected_source_inode, uint32_t expected_source_generation,
     uint64_t expected_destination_inode,
     uint32_t expected_destination_generation,
-    int no_replace, int update_if_newer, uint64_t source_mtime,
+    int rename_mode, int update_if_newer, uint64_t source_mtime,
     RinFS_RenameOutcome* outcome);
 /* 1回のジャーナルトランザクションで宛先を置換する。宛先が新しい場合は
  * RINFS_ERR_EXISTを返し、変更しない。 */

@@ -10207,6 +10207,7 @@ static int device_discard(const RinFS_DeviceOps* ops, int dev_id,
 #define RINFS_RENAME_JOURNAL_ACTIVE  1u
 #define RINFS_RENAME_HAS_REPLACED    0x01u
 #define RINFS_RENAME_RMDIR           0x02u
+#define RINFS_RENAME_EXCHANGE        0x04u
 
 #define RINFS_RESIZE_JOURNAL_MAGIC   0x4A535252u /* "RRSJ" */
 #define RINFS_RESIZE_JOURNAL_VERSION 1u
@@ -13328,7 +13329,8 @@ static int rinfs_journal_begin_rename(RinFS_Mount* mount,
                                       uint64_t old_dir, const char* old_name,
                                       uint64_t new_dir, const char* new_name,
                                       uint64_t old_ino, uint8_t old_type,
-                                      int has_replaced, uint64_t replaced_ino) {
+                                      int has_replaced, uint64_t replaced_ino,
+                                      int exchange) {
     if ((mount->sb.s_compat_features & RINFS_FEATURE_COMPAT_RENAME_JOURNAL) == 0) {
         return RINFS_OK;
     }
@@ -13344,6 +13346,7 @@ static int rinfs_journal_begin_rename(RinFS_Mount* mount,
     record.replaced_ino = replaced_ino;
     record.old_type = old_type;
     record.flags = has_replaced ? RINFS_RENAME_HAS_REPLACED : 0;
+    if (exchange) record.flags |= RINFS_RENAME_EXCHANGE;
     record.old_name_len = (uint16_t)rinfs_strlen(old_name);
     record.new_name_len = (uint16_t)rinfs_strlen(new_name);
     rinfs_memcpy(record.old_name, old_name, record.old_name_len + 1);
@@ -29643,7 +29646,10 @@ static int rinfs_rename_journal_recover(RinFS_Mount* mount) {
     if (mount->readonly) return RINFS_ERR_ROFS;
     if ((record.flags & RINFS_RENAME_RMDIR) != 0u)
         return rinfs_rmdir_journal_recover(mount, &record);
-    if ((record.flags & ~RINFS_RENAME_HAS_REPLACED) != 0 ||
+    if ((record.flags & ~(RINFS_RENAME_HAS_REPLACED |
+                          RINFS_RENAME_EXCHANGE)) != 0 ||
+        ((record.flags & RINFS_RENAME_EXCHANGE) != 0u &&
+         (record.flags & RINFS_RENAME_HAS_REPLACED) == 0u) ||
         record.old_dir == 0 || record.old_dir > mount->sb.s_inode_count ||
         record.new_dir == 0 || record.new_dir > mount->sb.s_inode_count ||
         record.old_ino == 0 || record.old_ino > mount->sb.s_inode_count ||
@@ -29661,6 +29667,69 @@ static int rinfs_rename_journal_recover(RinFS_Mount* mount) {
     if (err != RINFS_OK || !rinfs_check_inode_type(moved_inode.i_mode) ||
         (moved_inode.i_mode >> 12) != record.old_type) {
         return RINFS_ERR_CORRUPT;
+    }
+
+    if ((record.flags & RINFS_RENAME_EXCHANGE) != 0u) {
+        RinFS_Inode exchanged_inode;
+        uint64_t old_observed = 0u;
+        uint64_t new_observed = 0u;
+        int old_state;
+        int new_state;
+        err = rinfs_inode_read(mount, record.replaced_ino,
+                               &exchanged_inode);
+        if (err != RINFS_OK ||
+            !rinfs_check_inode_type(exchanged_inode.i_mode) ||
+            (exchanged_inode.i_mode >> 12u) != record.old_type)
+            return RINFS_ERR_CORRUPT;
+
+        old_state = rinfs_lookup(mount, record.old_dir, record.old_name,
+                                 &old_observed);
+        new_state = rinfs_lookup(mount, record.new_dir, record.new_name,
+                                 &new_observed);
+        if ((old_state != RINFS_OK && old_state != RINFS_ERR_NOENT) ||
+            (new_state != RINFS_OK && new_state != RINFS_ERR_NOENT) ||
+            (old_state == RINFS_OK && old_observed != record.old_ino &&
+             old_observed != record.replaced_ino) ||
+            (new_state == RINFS_OK && new_observed != record.old_ino &&
+             new_observed != record.replaced_ino))
+            return RINFS_ERR_CORRUPT;
+
+        /* Recovery runs before the mount is exposed. Remove only one of the
+         * two identities recorded by the active intent, then materialize the
+         * final swapped state. An unrelated entry is never overwritten. */
+        if (old_state == RINFS_OK) {
+            err = rinfs_dirent_remove(mount, record.old_dir,
+                                      record.old_name);
+            if (err != RINFS_OK) return err;
+        }
+        if (new_state == RINFS_OK) {
+            err = rinfs_dirent_remove(mount, record.new_dir,
+                                      record.new_name);
+            if (err != RINFS_OK) return err;
+        }
+        err = rinfs_dirent_add(mount, record.old_dir, record.old_name,
+                               record.replaced_ino, record.old_type);
+        if (err != RINFS_OK) return err;
+        err = rinfs_dirent_add(mount, record.new_dir, record.new_name,
+                               record.old_ino, record.old_type);
+        if (err != RINFS_OK) return err;
+        if (record.old_type == RINFS_FT_DIR &&
+            record.old_dir != record.new_dir) {
+            err = rinfs_dir_update_dotdot(mount, record.old_ino,
+                                          record.new_dir);
+            if (err != RINFS_OK) return err;
+            err = rinfs_dir_update_dotdot(mount, record.replaced_ino,
+                                          record.old_dir);
+            if (err != RINFS_OK) return err;
+        }
+        err = rinfs_dir_recount_links(mount, record.old_dir);
+        if (err != RINFS_OK) return err;
+        if (record.new_dir != record.old_dir) {
+            err = rinfs_dir_recount_links(mount, record.new_dir);
+            if (err != RINFS_OK) return err;
+        }
+        rinfs_debug("[RinFS] Replayed interrupted rename exchange\\n");
+        return rinfs_journal_finish(mount);
     }
 
     uint64_t ino;
@@ -29811,9 +29880,37 @@ static void rinfs_rename_identity_capture(
     identity->links = inode->i_links;
 }
 
+/* Resolve ancestry while the rename journal transaction lock is held so two
+ * concurrent directory exchanges cannot create a cycle between preflight
+ * and publication. */
+static int rinfs_directory_contains(RinFS_Mount* mount,
+                                    uint64_t ancestor_ino,
+                                    uint64_t candidate_ino,
+                                    int* contains_out) {
+    uint64_t current = candidate_ino;
+    if (!mount || !contains_out || ancestor_ino == 0u ||
+        candidate_ino == 0u)
+        return RINFS_ERR_INVAL;
+    *contains_out = 0;
+    for (uint64_t depth = 0u; depth <= mount->sb.s_inode_count; ++depth) {
+        uint64_t parent = 0u;
+        int result;
+        if (current == ancestor_ino) {
+            *contains_out = 1;
+            return RINFS_OK;
+        }
+        if (current == RINFS_INODE_ROOT) return RINFS_OK;
+        result = rinfs_lookup(mount, current, "..", &parent);
+        if (result != RINFS_OK) return result;
+        if (parent == 0u || parent == current) return RINFS_ERR_CORRUPT;
+        current = parent;
+    }
+    return RINFS_ERR_CORRUPT;
+}
+
 static int rinfs_rename_impl(RinFS_Mount* mount, uint64_t old_dir,
                              const char* old_name, uint64_t new_dir,
-                             const char* new_name, int no_replace,
+                             const char* new_name, int rename_mode,
                              uint64_t expected_source_inode,
                              uint32_t expected_source_generation,
                              uint32_t expected_old_parent_generation,
@@ -29825,7 +29922,14 @@ static int rinfs_rename_impl(RinFS_Mount* mount, uint64_t old_dir,
                              uint64_t source_mtime,
                              RinFS_RenameOutcome* outcome) {
     int prepare_error;
-    if (!mount || !mount->mounted || !old_name || !new_name) return RINFS_ERR_INVAL;
+    if (!mount || !mount->mounted || !old_name || !new_name ||
+        rename_mode < RINFS_RENAME_MODE_REPLACE ||
+        rename_mode > RINFS_RENAME_MODE_EXCHANGE)
+        return RINFS_ERR_INVAL;
+    if (rename_mode == RINFS_RENAME_MODE_EXCHANGE &&
+        (mount->sb.s_compat_features &
+         RINFS_FEATURE_COMPAT_RENAME_JOURNAL) == 0u)
+        return RINFS_ERR_NOT_SUPPORTED;
     prepare_error = rinfs_mount_prepare_write(mount);
     if (prepare_error != RINFS_OK) return prepare_error;
 
@@ -29892,7 +29996,8 @@ static int rinfs_rename_impl(RinFS_Mount* mount, uint64_t old_dir,
     int has_new_existing = 0;
     err = rinfs_lookup(mount, new_dir, new_name, &new_existing_ino);
     if (err == RINFS_OK) {
-        if (no_replace) return RINFS_ERR_EXIST;
+        if (rename_mode == RINFS_RENAME_MODE_NOREPLACE)
+            return RINFS_ERR_EXIST;
         has_new_existing = 1;
         err = rinfs_inode_read(mount, new_existing_ino, &new_existing_inode);
         if (err != RINFS_OK) return err;
@@ -29910,7 +30015,8 @@ static int rinfs_rename_impl(RinFS_Mount* mount, uint64_t old_dir,
          * this check and the atomic rename. */
         if (update_if_newer && new_existing_inode.i_mtime >= source_mtime)
             return RINFS_ERR_EXIST;
-        if (new_type == RINFS_FT_DIR) {
+        if (rename_mode != RINFS_RENAME_MODE_EXCHANGE &&
+            new_type == RINFS_FT_DIR) {
             err = rinfs_dir_is_effectively_empty(mount, new_existing_ino,
                                                   &new_existing_inode);
             if (err != RINFS_OK) return err;
@@ -29918,6 +30024,9 @@ static int rinfs_rename_impl(RinFS_Mount* mount, uint64_t old_dir,
     } else if (err != RINFS_ERR_NOENT) {
         return err;
     }
+
+    if (rename_mode == RINFS_RENAME_MODE_EXCHANGE && !has_new_existing)
+        return RINFS_ERR_NOENT;
 
     if (verify_destination &&
         ((expected_destination_inode == 0u && has_new_existing) ||
@@ -29928,14 +30037,107 @@ static int rinfs_rename_impl(RinFS_Mount* mount, uint64_t old_dir,
                expected_destination_generation))))
         return RINFS_ERR_STALE;
 
+    if (rename_mode == RINFS_RENAME_MODE_EXCHANGE) {
+        int destination_delete_on_close;
+        uint8_t new_type = new_existing_inode.i_mode >> 12;
+        int contains = 0;
+        if (((old_type == RINFS_FT_DIR) !=
+             (new_type == RINFS_FT_DIR)))
+            return old_type == RINFS_FT_DIR
+                ? RINFS_ERR_NOTDIR : RINFS_ERR_ISDIR;
+        destination_delete_on_close = rinfs_delete_on_close_path_registered(
+            mount, new_dir, new_parent_inode.i_generation,
+            new_existing_ino, new_existing_inode.i_generation, new_name);
+        if (destination_delete_on_close < 0)
+            return destination_delete_on_close;
+        if (old_delete_on_close || destination_delete_on_close)
+            return RINFS_ERR_BUSY;
+        if (old_type == RINFS_FT_DIR && old_dir != new_dir) {
+            err = rinfs_directory_contains(mount, old_ino, new_dir,
+                                           &contains);
+            if (err != RINFS_OK) return err;
+            if (contains) return RINFS_ERR_INVAL;
+            err = rinfs_directory_contains(mount, new_existing_ino, old_dir,
+                                           &contains);
+            if (err != RINFS_OK) return err;
+            if (contains) return RINFS_ERR_INVAL;
+        }
+    }
+
     err = rinfs_journal_begin_rename(mount, old_dir, old_name, new_dir, new_name,
                                      old_ino, old_type, has_new_existing,
-                                     new_existing_ino);
+                                     new_existing_ino,
+                                     rename_mode == RINFS_RENAME_MODE_EXCHANGE);
     if (err != RINFS_OK) {
         if ((mount->sb.s_compat_features &
              RINFS_FEATURE_COMPAT_RENAME_JOURNAL) != 0u)
             rinfs_mount_recovery_fence(
                 mount, RINFS_READONLY_RECOVERY_NAMESPACE_JOURNAL, err);
+        return err;
+    }
+
+    if (rename_mode == RINFS_RENAME_MODE_EXCHANGE) {
+        uint8_t new_type = new_existing_inode.i_mode >> 12;
+        err = rinfs_dirent_remove(mount, old_dir, old_name);
+        if (err == RINFS_OK)
+            err = rinfs_dirent_remove(mount, new_dir, new_name);
+        if (err == RINFS_OK)
+            err = rinfs_dirent_add(mount, old_dir, old_name,
+                                   new_existing_ino, new_type);
+        if (err == RINFS_OK)
+            err = rinfs_dirent_add(mount, new_dir, new_name,
+                                   old_ino, old_type);
+        if (err != RINFS_OK) {
+            rinfs_mount_recovery_fence(
+                mount, RINFS_READONLY_RECOVERY_NAMESPACE_JOURNAL, err);
+            return err;
+        }
+        if (old_type == RINFS_FT_DIR && old_dir != new_dir) {
+            err = rinfs_dir_update_dotdot(mount, old_ino, new_dir);
+            if (err == RINFS_OK)
+                err = rinfs_dir_update_dotdot(mount, new_existing_ino,
+                                              old_dir);
+            if (err != RINFS_OK) {
+                rinfs_mount_recovery_fence(
+                    mount, RINFS_READONLY_RECOVERY_NAMESPACE_JOURNAL, err);
+                return err;
+            }
+        }
+        err = rinfs_dir_recount_links(mount, old_dir);
+        if (err == RINFS_OK && new_dir != old_dir)
+            err = rinfs_dir_recount_links(mount, new_dir);
+        if (err != RINFS_OK) {
+            rinfs_mount_recovery_fence(
+                mount, RINFS_READONLY_RECOVERY_NAMESPACE_JOURNAL, err);
+            return err;
+        }
+        rinfs_touch_changed(&old_inode);
+        rinfs_touch_changed(&new_existing_inode);
+        err = rinfs_inode_write(mount, old_ino, &old_inode);
+        if (err == RINFS_OK)
+            err = rinfs_inode_write(mount, new_existing_ino,
+                                    &new_existing_inode);
+        if (err == RINFS_OK) err = rinfs_sync(mount);
+        if (err != RINFS_OK) {
+            rinfs_mount_recovery_fence(
+                mount, RINFS_READONLY_RECOVERY_NAMESPACE_JOURNAL, err);
+            return err;
+        }
+        err = rinfs_journal_finish(mount);
+        if (err == RINFS_OK && outcome) {
+            rinfs_rename_identity_capture(&outcome->source, old_ino,
+                                          &old_inode);
+            rinfs_rename_identity_capture(&outcome->replaced,
+                                          new_existing_ino,
+                                          &new_existing_inode);
+            rinfs_rename_identity_capture(&outcome->source_parent, old_dir,
+                                          &old_parent_inode);
+            rinfs_rename_identity_capture(&outcome->destination_parent,
+                                          new_dir, &new_parent_inode);
+            outcome->flags |= RINFS_RENAME_OUTCOME_COMMITTED |
+                              RINFS_RENAME_OUTCOME_CHANGED |
+                              RINFS_RENAME_OUTCOME_EXCHANGED;
+        }
         return err;
     }
 
@@ -33844,7 +34046,7 @@ int rinfs_rename_with_outcome(
     uint64_t expected_source_inode, uint32_t expected_source_generation,
     uint64_t expected_destination_inode,
     uint32_t expected_destination_generation,
-    int no_replace, int update_if_newer, uint64_t source_mtime,
+    int rename_mode, int update_if_newer, uint64_t source_mtime,
     RinFS_RenameOutcome* outcome) {
     RinFS_MountOperationScope operation = {0};
     int error;
@@ -33857,9 +34059,12 @@ int rinfs_rename_with_outcome(
          expected_destination_generation != 0u) ||
         (expected_destination_inode != 0u &&
          expected_destination_generation == 0u) ||
-        (no_replace != 0 && no_replace != 1) ||
+        rename_mode < RINFS_RENAME_MODE_REPLACE ||
+        rename_mode > RINFS_RENAME_MODE_EXCHANGE ||
         (update_if_newer != 0 && update_if_newer != 1) ||
-        (no_replace && update_if_newer) ||
+        (rename_mode != RINFS_RENAME_MODE_REPLACE && update_if_newer) ||
+        (rename_mode == RINFS_RENAME_MODE_EXCHANGE &&
+         expected_destination_inode == 0u) ||
         (!update_if_newer && source_mtime != 0u))
         return RINFS_ERR_INVAL;
     error = rinfs_mount_operation_scope_begin(mount, &operation);
@@ -33867,11 +34072,12 @@ int rinfs_rename_with_outcome(
     error = rinfs_journal_transaction_lock(mount);
     if (error == RINFS_OK) {
         error = rinfs_rename_impl(
-            mount, old_dir, old_name, new_dir, new_name, no_replace,
+            mount, old_dir, old_name, new_dir, new_name, rename_mode,
             expected_source_inode, expected_source_generation,
             expected_old_parent_generation,
             expected_new_parent_generation, expected_destination_inode,
-            expected_destination_generation, no_replace ? 0 : 1,
+            expected_destination_generation,
+            rename_mode == RINFS_RENAME_MODE_NOREPLACE ? 0 : 1,
             update_if_newer, source_mtime, outcome);
         error = rinfs_journal_transaction_unlock_status(mount, error);
     }
