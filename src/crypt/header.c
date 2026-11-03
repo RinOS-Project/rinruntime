@@ -124,7 +124,10 @@ int rin_crypt_header_validate(const RinCryptVolumeHeaderV1* header,
     uint32_t index;
 
     if (!header || !header_equal(header->magic, magic, sizeof(magic)) ||
-        header_read_le16(header->version) != RIN_CRYPT_HEADER_VERSION ||
+        (header_read_le16(header->version) !=
+             RIN_CRYPT_HEADER_VERSION_LEGACY &&
+         header_read_le16(header->version) !=
+             RIN_CRYPT_HEADER_VERSION_AUTHENTICATED) ||
         header_read_le16(header->header_size) != RIN_CRYPT_HEADER_SIZE ||
         header_read_le64(header->generation) == 0u ||
         header_is_zero(header->volume_id, sizeof(header->volume_id)) ||
@@ -169,9 +172,9 @@ int rin_crypt_header_validate(const RinCryptVolumeHeaderV1* header,
     return RIN_CRYPT_HEADER_OK;
 }
 
-int rin_crypt_header_format_initial_v1(
+static int header_format_initial(
     const RinCryptKeyslotV1* keyslots, uint32_t keyslot_count,
-    RinCryptVolumeHeaderV1* header)
+    RinCryptVolumeHeaderV1* header, uint16_t format_version)
 {
     static const uint8_t magic[4] = {'R', 'V', 'H', '1'};
     RinCryptVolumeHeaderV1 candidate;
@@ -210,7 +213,7 @@ int rin_crypt_header_format_initial_v1(
         }
     }
     header_copy(candidate.magic, magic, sizeof(magic));
-    header_write_le16(candidate.version, RIN_CRYPT_HEADER_VERSION);
+    header_write_le16(candidate.version, format_version);
     header_write_le16(candidate.header_size, RIN_CRYPT_HEADER_SIZE);
     header_write_le32(candidate.state,
                       RIN_CRYPT_HEADER_STATE_COMMITTED);
@@ -236,6 +239,22 @@ done:
         header_zero(header, sizeof(*header));
     }
     return result;
+}
+
+int rin_crypt_header_format_initial_v1(
+    const RinCryptKeyslotV1* keyslots, uint32_t keyslot_count,
+    RinCryptVolumeHeaderV1* header)
+{
+    return header_format_initial(keyslots, keyslot_count, header,
+                                 RIN_CRYPT_HEADER_VERSION_LEGACY);
+}
+
+int rin_crypt_header_format_initial_v2(
+    const RinCryptKeyslotV1* keyslots, uint32_t keyslot_count,
+    RinCryptVolumeHeaderV1* header)
+{
+    return header_format_initial(keyslots, keyslot_count, header,
+                                 RIN_CRYPT_HEADER_VERSION_AUTHENTICATED);
 }
 
 int rin_crypt_header_find_keyslot(

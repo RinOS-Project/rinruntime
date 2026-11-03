@@ -6,7 +6,9 @@
 
 #include "keyslot.h"
 
-#define RIN_CRYPT_HEADER_VERSION 1u
+#define RIN_CRYPT_HEADER_VERSION_LEGACY 1u
+#define RIN_CRYPT_HEADER_VERSION_AUTHENTICATED 2u
+#define RIN_CRYPT_HEADER_VERSION RIN_CRYPT_HEADER_VERSION_AUTHENTICATED
 #define RIN_CRYPT_HEADER_SIZE 512u
 #define RIN_CRYPT_HEADER_COPY_COUNT 2u
 #define RIN_CRYPT_HEADER_KEYSLOT_COUNT 2u
@@ -50,6 +52,9 @@ _Static_assert(sizeof(RinCryptVolumeHeaderV1) == RIN_CRYPT_HEADER_SIZE,
 #endif
 
 int rin_crypt_header_format_initial_v1(
+    const RinCryptKeyslotV1* keyslots, uint32_t keyslot_count,
+    RinCryptVolumeHeaderV1* header);
+int rin_crypt_header_format_initial_v2(
     const RinCryptKeyslotV1* keyslots, uint32_t keyslot_count,
     RinCryptVolumeHeaderV1* header);
 int rin_crypt_header_validate(const RinCryptVolumeHeaderV1* header,

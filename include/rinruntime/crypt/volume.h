@@ -6,7 +6,7 @@
 #include <rin/crypt.h>
 #include <crypto/aes.h>
 
-#define RIN_CRYPT_SESSION_MAGIC UINT32_C(0x31584352) /* "RCX1" */
+#define RIN_CRYPT_SESSION_MAGIC UINT32_C(0x32584352) /* "RCX2" */
 
 #ifdef __cplusplus
 extern "C" {
@@ -36,6 +36,9 @@ typedef struct RinCryptSession {
     uint32_t evidence_flags;
     uint32_t active;
     uint64_t key_epoch;
+    /* Domain-separated HKDF key for product volume sector authentication. */
+    uint8_t volume_id[RIN_CRYPT_VOLUME_ID_SIZE];
+    uint8_t integrity_key[32];
     aes_ctx data_key;
     aes_ctx tweak_key;
 } RinCryptSession;

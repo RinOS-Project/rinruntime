@@ -1,6 +1,8 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 #include "rinruntime/crypt/volume.h"
 
+#include "libs/rintls/crypto/hmac.h"
+
 static void crypt_zero(void* pointer, uint32_t size)
 {
     volatile uint8_t* output = (volatile uint8_t*)pointer;
@@ -111,6 +113,9 @@ int rin_crypt_session_open(RinCryptSession* session,
     uint32_t evidence_flags = 0u;
     uint32_t required_flags;
     uint32_t volume_unlock_method;
+    uint8_t integrity_info[48];
+    static const uint8_t integrity_domain[] =
+        "RinOS RinCrypt sector authentication v2";
     int result;
 
     if (!session || !config ||
@@ -161,6 +166,14 @@ int rin_crypt_session_open(RinCryptSession* session,
         return RIN_CRYPT_KEY_REJECTED;
     }
 
+    crypt_zero(integrity_info, sizeof(integrity_info));
+    if (config->key_request.purpose == RIN_CRYPT_PURPOSE_VOLUME &&
+        crypt_is_zero(config->key_request.volume_id,
+                      sizeof(config->key_request.volume_id))) {
+        crypt_zero(key, sizeof(key));
+        return RIN_CRYPT_KEY_REJECTED;
+    }
+
     crypt_zero(session, sizeof(*session));
     if (aes_init(&session->data_key, key, AES256_KEY_SIZE) != 0 ||
         aes_init(&session->tweak_key, key + AES256_KEY_SIZE,
@@ -172,9 +185,28 @@ int rin_crypt_session_open(RinCryptSession* session,
     session->data_unit_size = config->data_unit_size;
     session->evidence_flags = evidence_flags;
     session->key_epoch = key_epoch;
+    if (config->key_request.purpose == RIN_CRYPT_PURPOSE_VOLUME) {
+        uint32_t index;
+        for (index = 0u; index < RIN_CRYPT_VOLUME_ID_SIZE; ++index) {
+            session->volume_id[index] = config->key_request.volume_id[index];
+        }
+        for (index = 0u; index < 8u; ++index) {
+            integrity_info[sizeof(integrity_domain) - 1u + index] =
+                (uint8_t)(key_epoch >> (index * 8u));
+        }
+        for (index = 0u; index < sizeof(integrity_domain) - 1u; ++index) {
+            integrity_info[index] = integrity_domain[index];
+        }
+        hkdf_sha256(session->volume_id, sizeof(session->volume_id), key,
+                    sizeof(key), integrity_info,
+                    sizeof(integrity_domain) - 1u + 8u,
+                    session->integrity_key,
+                    sizeof(session->integrity_key));
+    }
     session->magic = RIN_CRYPT_SESSION_MAGIC;
     __atomic_store_n(&session->active, 1u, __ATOMIC_RELEASE);
     crypt_zero(key, sizeof(key));
+    crypt_zero(integrity_info, sizeof(integrity_info));
     return RIN_CRYPT_OK;
 }
 
