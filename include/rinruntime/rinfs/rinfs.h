@@ -64,6 +64,9 @@
 #define RINFS_FEATURE_INCOMPAT_OPERATION_OWNER_TOKEN 0x00000020u
 #define RINFS_FEATURE_INCOMPAT_PROJECT_IDS 0x00000040u
 #define RINFS_FEATURE_INCOMPAT_DISK_QUOTAS 0x00000080u
+/* Quota policies are stored in a checksummed block chain rooted by one
+ * root-inode xattr; older quota readers must reject this format. */
+#define RINFS_FEATURE_INCOMPAT_QUOTA_INDEX 0x00000100u
 #define RINFS_INODE_SPECIAL_DEVICE_OFFSET 24u
 #define RINFS_INODE_OPERATION_OWNER_TOKEN_OFFSET 28u
 #define RINFS_INODE_OPERATION_OWNER_TOKEN_BYTES 16u
@@ -75,7 +78,8 @@
      RINFS_FEATURE_INCOMPAT_RESTORE_PENDING | \
      RINFS_FEATURE_INCOMPAT_OPERATION_OWNER_TOKEN | \
      RINFS_FEATURE_INCOMPAT_PROJECT_IDS | \
-     RINFS_FEATURE_INCOMPAT_DISK_QUOTAS)
+     RINFS_FEATURE_INCOMPAT_DISK_QUOTAS | \
+     RINFS_FEATURE_INCOMPAT_QUOTA_INDEX)
 
 enum {
     RINFS_READ_ADVICE_NORMAL = 0,
@@ -358,6 +362,10 @@ enum {
     RINFS_QUOTA_WARNING_BLOCK_GRACE_EXPIRED = 1u << 2,
     RINFS_QUOTA_WARNING_INODE_GRACE_EXPIRED = 1u << 3
 };
+
+typedef void (*RinFS_QuotaWarningNotifierV1)(
+    void* context, uint32_t quota_type, uint32_t id,
+    uint32_t warning_flags);
 
 typedef struct {
     uint32_t struct_size;
@@ -772,6 +780,8 @@ struct RinFS_Mount {
      * mutation that consumes them. The shared-owner token permits recovery
      * when a process dies while holding the reservation gate. */
     volatile uint32_t quota_operation_lock;
+    RinFS_QuotaWarningNotifierV1 quota_warning_notifier;
+    void* quota_warning_notifier_context;
     /* Volatile next-fit hint. The bitmap remains authoritative; a new mount
      * starts from the first allocatable block and may wrap to find holes. */
     uint64_t         block_allocation_cursor;
@@ -1463,6 +1473,9 @@ int rinfs_xattr_remove(RinFS_Mount* mount, uint64_t ino, const char* name,
 int rinfs_quota_set(RinFS_Mount* mount, const RinFS_QuotaV1* quota);
 int rinfs_quota_query(RinFS_Mount* mount, uint32_t quota_type, uint32_t id,
                       RinFS_QuotaV1* quota_out);
+int rinfs_quota_set_warning_notifier(
+    RinFS_Mount* mount, RinFS_QuotaWarningNotifierV1 notifier,
+    void* context);
 int rinfs_inode_project_id_set(RinFS_Mount* mount, uint64_t ino,
                                uint32_t project_id);
 /* VFS metadata updates that may transfer an inode between quota owners use
