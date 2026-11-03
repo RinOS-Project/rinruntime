@@ -22290,6 +22290,11 @@ int rinfs_quota_query(RinFS_Mount* mount, uint32_t quota_type, uint32_t id,
             now >= quota_out->block_grace_deadline)
             quota_out->warning_flags |=
                 RINFS_QUOTA_WARNING_BLOCK_GRACE_EXPIRED;
+    } else {
+        /* A prior over-limit attempt may have persisted a grace start before
+         * its mutation later failed. Do not expose that stale deadline once
+         * the reconstructed live usage is back at or below the soft limit. */
+        quota_out->block_grace_deadline = 0u;
     }
     if ((quota_out->flags & RINFS_QUOTA_INODE_SOFT) != 0u &&
         quota_out->inodes_used > quota_out->inode_soft) {
@@ -22298,6 +22303,8 @@ int rinfs_quota_query(RinFS_Mount* mount, uint32_t quota_type, uint32_t id,
             now >= quota_out->inode_grace_deadline)
             quota_out->warning_flags |=
                 RINFS_QUOTA_WARNING_INODE_GRACE_EXPIRED;
+    } else {
+        quota_out->inode_grace_deadline = 0u;
     }
 done:
     if (quota_locked) {
@@ -22462,9 +22469,170 @@ static int rinfs_quota_operation_end(RinFS_QuotaOperation* operation,
         ? operation_error : unlock_error;
 }
 
+/* Charge directory blocks to the directory owner when a named create would
+ * have to grow its parent. This runs before the directory writer lease is
+ * taken: quota grace records live on the root inode, so updating one while
+ * mutating the root directory itself would recursively acquire that inode. */
+static int rinfs_quota_parent_growth_reserve(
+    RinFS_QuotaOperation* operation, uint64_t parent_ino,
+    const char* name) {
+    RinFS_Mount* mount;
+    RinFS_Inode parent;
+    uint8_t* block = NULL;
+    uint64_t existing_ino = 0u;
+    uint32_t block_size;
+    uint32_t name_length = 0u;
+    uint16_t required_size;
+    uint64_t offset;
+    uint64_t file_block;
+    uint64_t physical_block = 0u;
+    uint64_t needed_blocks = 0u;
+    uint64_t block_units;
+    uint64_t indices[3] = {0u, 0u, 0u};
+    uint32_t depth = 0u;
+    int needs_growth = 1;
+    int error;
+    if (operation == NULL || operation->locked == 0u ||
+        operation->mount == NULL || name == NULL)
+        return RINFS_ERR_INVAL;
+    mount = operation->mount;
+    while (name_length <= RINFS_NAME_MAX && name[name_length] != '\0')
+        ++name_length;
+    if (name_length == 0u || name_length > RINFS_NAME_MAX ||
+        (name_length == 1u && name[0] == '.') ||
+        (name_length == 2u && name[0] == '.' && name[1] == '.'))
+        return RINFS_OK; /* The normal create path reports its name error. */
+    for (uint32_t index = 0u; index < name_length; ++index) {
+        if (name[index] == '/' || (uint8_t)name[index] < 0x20u ||
+            (uint8_t)name[index] == 0x7fu)
+            return RINFS_OK;
+    }
+    error = rinfs_inode_read(mount, parent_ino, &parent);
+    if (error != RINFS_OK) return error;
+    if ((parent.i_mode >> 12u) != RINFS_FT_DIR)
+        return RINFS_ERR_NOTDIR;
+    error = rinfs_lookup(mount, parent_ino, name, &existing_ino);
+    if (error == RINFS_OK) return RINFS_OK; /* Duplicate; no new block. */
+    if (error != RINFS_ERR_NOENT) return error;
+    block_size = mount->sb.s_block_size;
+    if (block_size == 0u || block_size > RINFS_MAX_BLOCK_SIZE ||
+        parent.i_size % block_size != 0u)
+        return RINFS_ERR_CORRUPT;
+    required_size = rinfs_dirent_record_size(name_length);
+    block = (uint8_t*)rinfs_malloc(block_size);
+    if (block == NULL) return RINFS_ERR_NOMEM;
+    for (offset = 0u; offset < parent.i_size; offset += block_size) {
+        uint64_t logical = offset / block_size;
+        uint64_t physical = 0u;
+        uint32_t block_offset = 0u;
+        error = get_file_block(mount, &parent, logical, &physical);
+        if (error != RINFS_OK) goto done;
+        if (physical == 0u) continue;
+        error = rinfs_block_read(mount, physical, block);
+        if (error != RINFS_OK) goto done;
+        while (block_offset + RINFS_DIRENT_HEADER_SIZE <= block_size) {
+            RinFS_DirEntry* entry =
+                (RinFS_DirEntry*)(block + block_offset);
+            uint32_t remaining = block_size - block_offset;
+            uint16_t actual_size;
+            if (entry->d_rec_len == 0u) {
+                if (remaining >= required_size) needs_growth = 0;
+                break;
+            }
+            if (!rinfs_dirent_valid(mount, entry, block_offset,
+                                    parent_ino)) {
+                error = RINFS_ERR_CORRUPT;
+                goto done;
+            }
+            if (entry->d_inode == 0u &&
+                entry->d_rec_len >= required_size) {
+                needs_growth = 0;
+                break;
+            }
+            actual_size = rinfs_dirent_record_size(entry->d_name_len);
+            if (entry->d_rec_len >= actual_size &&
+                entry->d_rec_len - actual_size >= required_size) {
+                needs_growth = 0;
+                break;
+            }
+            block_offset += entry->d_rec_len;
+        }
+        if (!needs_growth) break;
+    }
+    if (!needs_growth) {
+        error = RINFS_OK;
+        goto done;
+    }
+    file_block = parent.i_size / block_size;
+    error = get_file_block(mount, &parent, file_block, &physical_block);
+    if (error != RINFS_OK) goto done;
+    if (physical_block == 0u) {
+        error = rinfs_file_block_path(mount, file_block, &depth, indices);
+        if (error != RINFS_OK) goto done;
+        if (depth == 0u) {
+            needed_blocks = 1u;
+        } else {
+            uint64_t root = depth == 1u ? parent.i_indirect1
+                : depth == 2u ? parent.i_indirect2 : parent.i_indirect3;
+            uint64_t* pointers = NULL;
+            uint64_t current = root;
+            int missing = 0;
+            if (root == 0u) {
+                needed_blocks = (uint64_t)depth + 1u;
+            } else if (!rinfs_valid_allocated_block(mount, root)) {
+                error = RINFS_ERR_CORRUPT;
+                goto done;
+            } else {
+                pointers = (uint64_t*)rinfs_malloc(block_size);
+                if (pointers == NULL) {
+                    error = RINFS_ERR_NOMEM;
+                    goto done;
+                }
+                for (uint32_t level = 0u; level + 1u < depth; ++level) {
+                    uint64_t child;
+                    error = rinfs_block_read(mount, current, pointers);
+                    if (error != RINFS_OK) break;
+                    child = pointers[indices[level]];
+                    if (child == 0u) {
+                        needed_blocks = (uint64_t)(depth - level);
+                        missing = 1;
+                        break;
+                    }
+                    if (!rinfs_valid_allocated_block(mount, child)) {
+                        error = RINFS_ERR_CORRUPT;
+                        break;
+                    }
+                    current = child;
+                }
+                if (error == RINFS_OK && !missing) {
+                    error = rinfs_block_read(mount, current, pointers);
+                    if (error == RINFS_OK)
+                        needed_blocks = pointers[indices[depth - 1u]] == 0u
+                            ? 1u : 0u;
+                }
+                rinfs_free(pointers);
+                if (error != RINFS_OK) goto done;
+            }
+        }
+    }
+    block_units = block_size / RINFS_SECTOR_SIZE;
+    if (block_units == 0u || needed_blocks > UINT64_MAX / block_units) {
+        error = RINFS_ERR_OVERFLOW;
+        goto done;
+    }
+    error = rinfs_quota_operation_check(
+        operation, parent.i_uid, parent.i_gid,
+        rinfs_inode_project_id(mount, &parent), needed_blocks * block_units,
+        0u);
+done:
+    rinfs_free(block);
+    return error;
+}
+
 static int rinfs_quota_create_begin(
     RinFS_Mount* mount, uint64_t parent_ino, uint32_t uid, uint32_t gid,
-    uint64_t initial_block_units, RinFS_QuotaOperation* operation) {
+    const char* name, uint64_t initial_block_units,
+    RinFS_QuotaOperation* operation) {
     RinFS_Inode parent;
     int error;
     error = rinfs_quota_operation_lock(mount, operation);
@@ -22476,6 +22644,9 @@ static int rinfs_quota_create_begin(
             (parent.i_mode & 02000u) != 0u ? parent.i_gid : gid,
             rinfs_inode_project_id(mount, &parent), initial_block_units,
             1u);
+    if (error == RINFS_OK && name != NULL)
+        error = rinfs_quota_parent_growth_reserve(
+            operation, parent_ino, name);
     if (error != RINFS_OK)
         return rinfs_quota_operation_end(operation, error);
     return RINFS_OK;
@@ -22534,8 +22705,10 @@ int rinfs_inode_write_with_quota(RinFS_Mount* mount, uint64_t ino,
     RinFS_MountOperationScope scope = {0};
     RinFS_QuotaOperation quota_operation = {0};
     RinFS_Inode current;
+    RinFS_Inode candidate;
     uint32_t old_project_id;
     uint32_t new_project_id;
+    uint64_t block_delta;
     int error;
     if (mount == NULL || inode == NULL || ino == 0u ||
         ino > mount->sb.s_inode_count)
@@ -22551,25 +22724,45 @@ int rinfs_inode_write_with_quota(RinFS_Mount* mount, uint64_t ino,
         error = RINFS_ERR_STALE;
         goto done;
     }
+    /* This entry point is used for metadata-only owner changes. Reject a
+     * stale inode snapshot instead of overwriting a concurrent allocation,
+     * xattr, link-count, or recovery-state update while applying chown. */
+    candidate = *inode;
+    candidate.i_uid = current.i_uid;
+    candidate.i_gid = current.i_gid;
+    candidate.i_mode = current.i_mode;
+    candidate.i_ctime = current.i_ctime;
+    if (rinfs_memcmp(&candidate, &current, sizeof(current)) != 0) {
+        error = RINFS_ERR_STALE;
+        goto done;
+    }
     if (!rinfs_inode_time_metadata_valid(mount, inode)) {
         error = RINFS_ERR_CORRUPT;
         goto done;
     }
     old_project_id = rinfs_inode_project_id(mount, &current);
     new_project_id = rinfs_inode_project_id(mount, inode);
-    if (inode->i_uid != current.i_uid) {
+    block_delta = inode->i_blocks > current.i_blocks
+        ? inode->i_blocks - current.i_blocks : 0u;
+    if (inode->i_uid != current.i_uid || block_delta != 0u) {
         error = rinfs_quota_reserve_one(
-            mount, RINFS_QUOTA_UID, inode->i_uid, current.i_blocks, 1u);
+            mount, RINFS_QUOTA_UID, inode->i_uid,
+            inode->i_uid != current.i_uid ? inode->i_blocks : block_delta,
+            inode->i_uid != current.i_uid ? 1u : 0u);
         if (error != RINFS_OK) goto done;
     }
-    if (inode->i_gid != current.i_gid) {
+    if (inode->i_gid != current.i_gid || block_delta != 0u) {
         error = rinfs_quota_reserve_one(
-            mount, RINFS_QUOTA_GID, inode->i_gid, current.i_blocks, 1u);
+            mount, RINFS_QUOTA_GID, inode->i_gid,
+            inode->i_gid != current.i_gid ? inode->i_blocks : block_delta,
+            inode->i_gid != current.i_gid ? 1u : 0u);
         if (error != RINFS_OK) goto done;
     }
-    if (new_project_id != old_project_id) {
+    if (new_project_id != old_project_id || block_delta != 0u) {
         error = rinfs_quota_reserve_one(
-            mount, RINFS_QUOTA_PROJECT, new_project_id, current.i_blocks, 1u);
+            mount, RINFS_QUOTA_PROJECT, new_project_id,
+            new_project_id != old_project_id ? inode->i_blocks : block_delta,
+            new_project_id != old_project_id ? 1u : 0u);
         if (error != RINFS_OK) goto done;
     }
     error = rinfs_inode_write(mount, ino, inode);
@@ -22656,6 +22849,7 @@ static int rinfs_content_inode_equal(const RinFS_Mount* mount,
     if (left->i_generation != right->i_generation ||
         (left->i_mode >> 12u) != (right->i_mode >> 12u) ||
         left->i_size != right->i_size ||
+        left->i_blocks != right->i_blocks ||
         left->i_indirect1 != right->i_indirect1 ||
         left->i_indirect2 != right->i_indirect2 ||
         left->i_indirect3 != right->i_indirect3 ||
@@ -31778,10 +31972,17 @@ done:
 int rinfs_link_tmpfile(RinFS_File* file, uint64_t dir_ino,
                        const char* name) {
     RinFS_CloseReferenceOperationLease operation;
+    RinFS_QuotaOperation quota_operation = {0};
     int result = rinfs_file_operation_begin(file, &operation);
     int release_result;
     if (result != RINFS_OK) return result;
-    result = rinfs_link_tmpfile_core(file, dir_ino, name);
+    result = rinfs_quota_operation_lock(file->mount, &quota_operation);
+    if (result == RINFS_OK)
+        result = rinfs_quota_parent_growth_reserve(
+            &quota_operation, dir_ino, name);
+    if (result == RINFS_OK)
+        result = rinfs_link_tmpfile_core(file, dir_ino, name);
+    result = rinfs_quota_operation_end(&quota_operation, result);
     release_result = rinfs_close_ref_end_operation(&operation);
     return release_result == RINFS_OK ? result : release_result;
 }
@@ -34702,7 +34903,7 @@ int rinfs_createat_owned(RinFS_Mount* mount, uint64_t parent_ino,
         return RINFS_ERR_INVAL;
     error = rinfs_mount_operation_scope_begin(mount, &operation);
     if (error != RINFS_OK) return error;
-    error = rinfs_quota_create_begin(mount, parent_ino, uid, gid, 0u,
+    error = rinfs_quota_create_begin(mount, parent_ino, uid, gid, name, 0u,
                                      &quota_operation);
     if (error != RINFS_OK)
         return rinfs_mount_operation_scope_finish(&operation, error);
@@ -34727,7 +34928,7 @@ int rinfs_createat_owned_identity(
         return RINFS_ERR_INVAL;
     error = rinfs_mount_operation_scope_begin(mount, &operation);
     if (error != RINFS_OK) return error;
-    error = rinfs_quota_create_begin(mount, parent_ino, uid, gid, 0u,
+    error = rinfs_quota_create_begin(mount, parent_ino, uid, gid, name, 0u,
                                      &quota_operation);
     if (error != RINFS_OK)
         return rinfs_mount_operation_scope_finish(&operation, error);
@@ -34753,7 +34954,7 @@ int rinfs_createat_owned_operation_token(
         return RINFS_ERR_INVAL;
     error = rinfs_mount_operation_scope_begin(mount, &operation);
     if (error != RINFS_OK) return error;
-    error = rinfs_quota_create_begin(mount, parent_ino, uid, gid, 0u,
+    error = rinfs_quota_create_begin(mount, parent_ino, uid, gid, name, 0u,
                                      &quota_operation);
     if (error != RINFS_OK)
         return rinfs_mount_operation_scope_finish(&operation, error);
@@ -34778,7 +34979,7 @@ int rinfs_mknodat_owned(RinFS_Mount* mount, uint64_t parent_ino,
         return RINFS_ERR_INVAL;
     error = rinfs_mount_operation_scope_begin(mount, &operation);
     if (error != RINFS_OK) return error;
-    error = rinfs_quota_create_begin(mount, parent_ino, uid, gid, 0u,
+    error = rinfs_quota_create_begin(mount, parent_ino, uid, gid, name, 0u,
                                      &quota_operation);
     if (error != RINFS_OK)
         return rinfs_mount_operation_scope_finish(&operation, error);
@@ -34805,7 +35006,7 @@ int rinfs_mknodat_owned_identity(
         return RINFS_ERR_INVAL;
     error = rinfs_mount_operation_scope_begin(mount, &operation);
     if (error != RINFS_OK) return error;
-    error = rinfs_quota_create_begin(mount, parent_ino, uid, gid, 0u,
+    error = rinfs_quota_create_begin(mount, parent_ino, uid, gid, name, 0u,
                                      &quota_operation);
     if (error != RINFS_OK)
         return rinfs_mount_operation_scope_finish(&operation, error);
@@ -34828,7 +35029,7 @@ int rinfs_create_tmpfile_owned(RinFS_Mount* mount, uint64_t parent_ino,
         return RINFS_ERR_INVAL;
     error = rinfs_mount_operation_scope_begin(mount, &operation);
     if (error != RINFS_OK) return error;
-    error = rinfs_quota_create_begin(mount, parent_ino, uid, gid, 0u,
+    error = rinfs_quota_create_begin(mount, parent_ino, uid, gid, NULL, 0u,
                                      &quota_operation);
     if (error != RINFS_OK)
         return rinfs_mount_operation_scope_finish(&operation, error);
@@ -34851,7 +35052,7 @@ int rinfs_mkdirat_owned(RinFS_Mount* mount, uint64_t parent_ino,
     error = rinfs_mount_operation_scope_begin(mount, &operation);
     if (error != RINFS_OK) return error;
     error = rinfs_quota_create_begin(
-        mount, parent_ino, uid, gid,
+        mount, parent_ino, uid, gid, name,
         mount->sb.s_block_size / RINFS_SECTOR_SIZE, &quota_operation);
     if (error != RINFS_OK)
         return rinfs_mount_operation_scope_finish(&operation, error);
@@ -34877,7 +35078,7 @@ int rinfs_mkdirat_owned_operation_token(
     error = rinfs_mount_operation_scope_begin(mount, &operation);
     if (error != RINFS_OK) return error;
     error = rinfs_quota_create_begin(
-        mount, parent_ino, uid, gid,
+        mount, parent_ino, uid, gid, name,
         mount->sb.s_block_size / RINFS_SECTOR_SIZE, &quota_operation);
     if (error != RINFS_OK)
         return rinfs_mount_operation_scope_finish(&operation, error);
@@ -34901,7 +35102,7 @@ int rinfs_mkdirat_open_owned(RinFS_Mount* mount, uint64_t parent_ino,
     error = rinfs_mount_operation_scope_begin(mount, &operation);
     if (error != RINFS_OK) return error;
     error = rinfs_quota_create_begin(
-        mount, parent_ino, uid, gid,
+        mount, parent_ino, uid, gid, name,
         mount->sb.s_block_size / RINFS_SECTOR_SIZE, &quota_operation);
     if (error != RINFS_OK)
         return rinfs_mount_operation_scope_finish(&operation, error);
@@ -35049,11 +35250,18 @@ int rinfs_rmdir_entry_expected(RinFS_Mount* mount, uint64_t parent_ino,
 int rinfs_link(RinFS_Mount* mount, uint64_t dir_ino, const char* name,
                uint64_t target_ino) {
     RinFS_MountOperationScope operation = {0};
+    RinFS_QuotaOperation quota_operation = {0};
     int error;
     if (!mount || !mount->mounted || !name) return RINFS_ERR_INVAL;
     error = rinfs_mount_operation_scope_begin(mount, &operation);
     if (error != RINFS_OK) return error;
-    error = rinfs_link_unscoped(mount, dir_ino, name, target_ino);
+    error = rinfs_quota_operation_lock(mount, &quota_operation);
+    if (error == RINFS_OK)
+        error = rinfs_quota_parent_growth_reserve(
+            &quota_operation, dir_ino, name);
+    if (error == RINFS_OK)
+        error = rinfs_link_unscoped(mount, dir_ino, name, target_ino);
+    error = rinfs_quota_operation_end(&quota_operation, error);
     return rinfs_mount_operation_scope_finish(&operation, error);
 }
 
@@ -35065,7 +35273,7 @@ int rinfs_symlink_owned(RinFS_Mount* mount, uint64_t dir_ino,
     uint64_t block_delta = target != NULL &&
                            rinfs_strlen(target) >= sizeof(((RinFS_Inode*)0)->i_block)
         ? (mount != NULL && mount->sb.s_block_size >= RINFS_SECTOR_SIZE
-               ? (uint64_t)(mount->sb.s_block_size / RINFS_SECTOR_SIZE) * 4u
+               ? (uint64_t)(mount->sb.s_block_size / RINFS_SECTOR_SIZE)
                : 0u)
         : 0u;
     int error;
@@ -35073,7 +35281,8 @@ int rinfs_symlink_owned(RinFS_Mount* mount, uint64_t dir_ino,
         return RINFS_ERR_INVAL;
     error = rinfs_mount_operation_scope_begin(mount, &operation);
     if (error != RINFS_OK) return error;
-    error = rinfs_quota_create_begin(mount, dir_ino, uid, gid, block_delta,
+    error = rinfs_quota_create_begin(mount, dir_ino, uid, gid, name,
+                                     block_delta,
                                      &quota_operation);
     if (error != RINFS_OK)
         return rinfs_mount_operation_scope_finish(&operation, error);
@@ -35092,7 +35301,7 @@ int rinfs_symlink_owned_operation_token(
     uint64_t block_delta = target != NULL &&
                            rinfs_strlen(target) >= sizeof(((RinFS_Inode*)0)->i_block)
         ? (mount != NULL && mount->sb.s_block_size >= RINFS_SECTOR_SIZE
-               ? (uint64_t)(mount->sb.s_block_size / RINFS_SECTOR_SIZE) * 4u
+               ? (uint64_t)(mount->sb.s_block_size / RINFS_SECTOR_SIZE)
                : 0u)
         : 0u;
     int error;
@@ -35104,7 +35313,8 @@ int rinfs_symlink_owned_operation_token(
         return RINFS_ERR_INVAL;
     error = rinfs_mount_operation_scope_begin(mount, &operation);
     if (error != RINFS_OK) return error;
-    error = rinfs_quota_create_begin(mount, dir_ino, uid, gid, block_delta,
+    error = rinfs_quota_create_begin(mount, dir_ino, uid, gid, name,
+                                     block_delta,
                                      &quota_operation);
     if (error != RINFS_OK)
         return rinfs_mount_operation_scope_finish(&operation, error);
