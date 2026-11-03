@@ -26347,12 +26347,19 @@ static int rinfs_dirent_add_unscoped(
 int rinfs_dirent_add(RinFS_Mount* mount, uint64_t dir_ino, const char* name,
                      uint64_t child_ino, uint8_t file_type) {
     RinFS_MountOperationScope operation = {0};
+    RinFS_QuotaOperation quota_operation = {0};
     int error;
     if (!mount || !mount->mounted) return RINFS_ERR_INVAL;
     error = rinfs_mount_operation_scope_begin(mount, &operation);
     if (error != RINFS_OK) return error;
-    error = rinfs_dirent_add_unscoped(
-        mount, dir_ino, name, child_ino, file_type);
+    error = rinfs_quota_operation_lock(mount, &quota_operation);
+    if (error == RINFS_OK)
+        error = rinfs_quota_parent_growth_reserve(
+            &quota_operation, dir_ino, name);
+    if (error == RINFS_OK)
+        error = rinfs_dirent_add_unscoped(
+            mount, dir_ino, name, child_ino, file_type);
+    error = rinfs_quota_operation_end(&quota_operation, error);
     return rinfs_mount_operation_scope_finish(&operation, error);
 }
 
@@ -30734,11 +30741,13 @@ static int rinfs_rename_journal_recover(RinFS_Mount* mount) {
                                       record.new_name);
             if (err != RINFS_OK) return err;
         }
-        err = rinfs_dirent_add(mount, record.old_dir, record.old_name,
-                               record.replaced_ino, record.old_type);
+        err = rinfs_dirent_add_unscoped(
+            mount, record.old_dir, record.old_name, record.replaced_ino,
+            record.old_type);
         if (err != RINFS_OK) return err;
-        err = rinfs_dirent_add(mount, record.new_dir, record.new_name,
-                               record.old_ino, record.old_type);
+        err = rinfs_dirent_add_unscoped(
+            mount, record.new_dir, record.new_name, record.old_ino,
+            record.old_type);
         if (err != RINFS_OK) return err;
         if (record.old_type == RINFS_FT_DIR &&
             record.old_dir != record.new_dir) {
@@ -30771,8 +30780,9 @@ static int rinfs_rename_journal_recover(RinFS_Mount* mount) {
         err = RINFS_ERR_NOENT;
     }
     if (err == RINFS_ERR_NOENT) {
-        err = rinfs_dirent_add(mount, record.new_dir, record.new_name,
-                               record.old_ino, record.old_type);
+        err = rinfs_dirent_add_unscoped(
+            mount, record.new_dir, record.new_name, record.old_ino,
+            record.old_type);
     }
     if (err != RINFS_OK) return err;
 
@@ -31109,11 +31119,11 @@ static int rinfs_rename_impl(RinFS_Mount* mount, uint64_t old_dir,
         if (err == RINFS_OK)
             err = rinfs_dirent_remove(mount, new_dir, new_name);
         if (err == RINFS_OK)
-            err = rinfs_dirent_add(mount, old_dir, old_name,
-                                   new_existing_ino, new_type);
+            err = rinfs_dirent_add_unscoped(
+                mount, old_dir, old_name, new_existing_ino, new_type);
         if (err == RINFS_OK)
-            err = rinfs_dirent_add(mount, new_dir, new_name,
-                                   old_ino, old_type);
+            err = rinfs_dirent_add_unscoped(
+                mount, new_dir, new_name, old_ino, old_type);
         if (err != RINFS_OK) {
             rinfs_mount_recovery_fence(
                 mount, RINFS_READONLY_RECOVERY_NAMESPACE_JOURNAL, err);
@@ -31181,12 +31191,14 @@ static int rinfs_rename_impl(RinFS_Mount* mount, uint64_t old_dir,
         }
     }
 
-    err = rinfs_dirent_add(mount, new_dir, new_name, old_ino, old_type);
+    err = rinfs_dirent_add_unscoped(
+        mount, new_dir, new_name, old_ino, old_type);
     if (err != RINFS_OK) {
         int rollback_err = RINFS_OK;
         if (has_new_existing) {
             uint8_t t = new_existing_inode.i_mode >> 12;
-            rollback_err = rinfs_dirent_add(mount, new_dir, new_name, new_existing_ino, t);
+            rollback_err = rinfs_dirent_add_unscoped(
+                mount, new_dir, new_name, new_existing_ino, t);
         }
         if (rollback_err == RINFS_OK)
             rollback_err = rinfs_journal_finish(mount);
@@ -31215,7 +31227,8 @@ static int rinfs_rename_impl(RinFS_Mount* mount, uint64_t old_dir,
         int rollback_err = rinfs_dirent_remove(mount, new_dir, new_name);
         if (has_new_existing) {
             uint8_t t = new_existing_inode.i_mode >> 12;
-            int restore_err = rinfs_dirent_add(mount, new_dir, new_name, new_existing_ino, t);
+            int restore_err = rinfs_dirent_add_unscoped(
+                mount, new_dir, new_name, new_existing_ino, t);
             if (rollback_err == RINFS_OK) rollback_err = restore_err;
         }
         if (rollback_err == RINFS_OK)
@@ -31233,7 +31246,8 @@ static int rinfs_rename_impl(RinFS_Mount* mount, uint64_t old_dir,
     if (old_type == RINFS_FT_DIR && old_dir != new_dir) {
         err = rinfs_dir_update_dotdot(mount, old_ino, new_dir);
         if (err != RINFS_OK) {
-            int rollback_err = rinfs_dirent_add(mount, old_dir, old_name, old_ino, old_type);
+            int rollback_err = rinfs_dirent_add_unscoped(
+                mount, old_dir, old_name, old_ino, old_type);
             if (rollback_err == RINFS_OK && old_delete_on_close)
                 rollback_err = rinfs_dirent_mark_delete_on_close(
                     mount, old_dir, old_name, old_ino);
@@ -31241,8 +31255,8 @@ static int rinfs_rename_impl(RinFS_Mount* mount, uint64_t old_dir,
             if (rollback_err == RINFS_OK) rollback_err = remove_err;
             if (has_new_existing) {
                 uint8_t t = new_existing_inode.i_mode >> 12;
-                int restore_err = rinfs_dirent_add(mount, new_dir, new_name,
-                                                   new_existing_ino, t);
+                int restore_err = rinfs_dirent_add_unscoped(
+                    mount, new_dir, new_name, new_existing_ino, t);
                 if (rollback_err == RINFS_OK) rollback_err = restore_err;
             }
             if (rollback_err == RINFS_OK)
@@ -31334,16 +31348,22 @@ static int rinfs_rename_impl(RinFS_Mount* mount, uint64_t old_dir,
 int rinfs_rename(RinFS_Mount* mount, uint64_t old_dir, const char* old_name,
                  uint64_t new_dir, const char* new_name) {
     RinFS_MountOperationScope operation = {0};
+    RinFS_QuotaOperation quota_operation = {0};
     int result;
     result = rinfs_mount_operation_scope_begin(mount, &operation);
     if (result != RINFS_OK) return result;
-    result = rinfs_journal_transaction_lock(mount);
+    result = rinfs_quota_operation_lock(mount, &quota_operation);
+    if (result == RINFS_OK)
+        result = rinfs_quota_parent_growth_reserve(
+            &quota_operation, new_dir, new_name);
+    if (result == RINFS_OK) result = rinfs_journal_transaction_lock(mount);
     if (result == RINFS_OK) {
         result = rinfs_rename_impl(mount, old_dir, old_name, new_dir, new_name,
                                    0, 0u, 0u, 0u, 0u, 0u, 0u, 0, 0,
                                    0u, NULL);
         result = rinfs_journal_transaction_unlock_status(mount, result);
     }
+    result = rinfs_quota_operation_end(&quota_operation, result);
     return rinfs_mount_operation_scope_finish(&operation, result);
 }
 
@@ -31351,27 +31371,38 @@ int rinfs_rename_no_replace(RinFS_Mount* mount, uint64_t old_dir,
                             const char* old_name, uint64_t new_dir,
                             const char* new_name) {
     RinFS_MountOperationScope operation = {0};
+    RinFS_QuotaOperation quota_operation = {0};
     int result;
     result = rinfs_mount_operation_scope_begin(mount, &operation);
     if (result != RINFS_OK) return result;
-    result = rinfs_journal_transaction_lock(mount);
+    result = rinfs_quota_operation_lock(mount, &quota_operation);
+    if (result == RINFS_OK)
+        result = rinfs_quota_parent_growth_reserve(
+            &quota_operation, new_dir, new_name);
+    if (result == RINFS_OK) result = rinfs_journal_transaction_lock(mount);
     if (result == RINFS_OK) {
         result = rinfs_rename_impl(mount, old_dir, old_name, new_dir, new_name,
                                    1, 0u, 0u, 0u, 0u, 0u, 0u, 0, 0,
                                    0u, NULL);
         result = rinfs_journal_transaction_unlock_status(mount, result);
     }
+    result = rinfs_quota_operation_end(&quota_operation, result);
     return rinfs_mount_operation_scope_finish(&operation, result);
 }
 
 static int rinfs_rename_no_replace_expected_unscoped(
     RinFS_Mount* mount, uint64_t old_dir, const char* old_name,
     uint64_t new_dir, const char* new_name, uint64_t expected_source_inode,
-    uint32_t expected_source_generation) {
+    uint32_t expected_source_generation,
+    RinFS_QuotaOperation* quota_operation) {
     int result;
     if (!mount || expected_source_inode == 0u ||
-        expected_source_generation == 0u)
+        expected_source_generation == 0u || quota_operation == NULL ||
+        quota_operation->locked == 0u)
         return RINFS_ERR_INVAL;
+    result = rinfs_quota_parent_growth_reserve(
+        quota_operation, new_dir, new_name);
+    if (result != RINFS_OK) return result;
     result = rinfs_journal_transaction_lock(mount);
     if (result != RINFS_OK) return result;
     result = rinfs_rename_impl(mount, old_dir, old_name, new_dir, new_name,
@@ -31384,11 +31415,16 @@ static int rinfs_rename_no_replace_expected_unscoped(
 static int rinfs_rename_expected_unscoped(
     RinFS_Mount* mount, uint64_t old_dir, const char* old_name,
     uint64_t new_dir, const char* new_name, uint64_t expected_source_inode,
-    uint32_t expected_source_generation) {
+    uint32_t expected_source_generation,
+    RinFS_QuotaOperation* quota_operation) {
     int result;
     if (!mount || expected_source_inode == 0u ||
-        expected_source_generation == 0u)
+        expected_source_generation == 0u || quota_operation == NULL ||
+        quota_operation->locked == 0u)
         return RINFS_ERR_INVAL;
+    result = rinfs_quota_parent_growth_reserve(
+        quota_operation, new_dir, new_name);
+    if (result != RINFS_OK) return result;
     result = rinfs_journal_transaction_lock(mount);
     if (result != RINFS_OK) return result;
     result = rinfs_rename_impl(mount, old_dir, old_name, new_dir, new_name,
@@ -31827,7 +31863,8 @@ static int rinfs_link_unscoped(RinFS_Mount* mount, uint64_t dir_ino,
 
     /* Add directory entry pointing to target */
     uint8_t file_type = target_inode.i_mode >> 12;
-    err = rinfs_dirent_add(mount, dir_ino, name, target_ino, file_type);
+    err = rinfs_dirent_add_unscoped(
+        mount, dir_ino, name, target_ino, file_type);
     if (err != RINFS_OK) return err;
 
     /* Increment link count on target */
@@ -31914,8 +31951,8 @@ static int rinfs_link_tmpfile_core(RinFS_File* file, uint64_t dir_ino,
     }
     if (result != RINFS_ERR_NOENT) goto done;
 
-    result = rinfs_dirent_add(mount, dir_ino, name, file->inode_num,
-                              RINFS_FT_REG);
+    result = rinfs_dirent_add_unscoped(
+        mount, dir_ino, name, file->inode_num, RINFS_FT_REG);
     if (result != RINFS_OK) {
         int lookup = rinfs_lookup(mount, dir_ino, name, &existing_ino);
         if (lookup != RINFS_OK || existing_ino != file->inode_num)
@@ -32109,7 +32146,8 @@ static int rinfs_symlink_owned_unscoped(
     }
 
     /* Add directory entry */
-    err = rinfs_dirent_add(mount, dir_ino, name, link_ino, RINFS_FT_LNK);
+    err = rinfs_dirent_add_unscoped(
+        mount, dir_ino, name, link_ino, RINFS_FT_LNK);
     if (err != RINFS_OK) {
         if (link_inode.i_block[0]) {
             rinfs_block_free(mount, link_inode.i_block[0]);
@@ -35118,15 +35156,20 @@ int rinfs_rename_no_replace_expected(
     uint64_t new_dir, const char* new_name, uint64_t expected_source_inode,
     uint32_t expected_source_generation) {
     RinFS_MountOperationScope operation = {0};
+    RinFS_QuotaOperation quota_operation = {0};
     int error;
     if (!mount || expected_source_inode == 0u ||
         expected_source_generation == 0u)
         return RINFS_ERR_INVAL;
     error = rinfs_mount_operation_scope_begin(mount, &operation);
     if (error != RINFS_OK) return error;
+    error = rinfs_quota_operation_lock(mount, &quota_operation);
+    if (error != RINFS_OK)
+        return rinfs_mount_operation_scope_finish(&operation, error);
     error = rinfs_rename_no_replace_expected_unscoped(
         mount, old_dir, old_name, new_dir, new_name, expected_source_inode,
-        expected_source_generation);
+        expected_source_generation, &quota_operation);
+    error = rinfs_quota_operation_end(&quota_operation, error);
     return rinfs_mount_operation_scope_finish(&operation, error);
 }
 
@@ -35135,15 +35178,20 @@ int rinfs_rename_expected(
     uint64_t new_dir, const char* new_name, uint64_t expected_source_inode,
     uint32_t expected_source_generation) {
     RinFS_MountOperationScope operation = {0};
+    RinFS_QuotaOperation quota_operation = {0};
     int error;
     if (!mount || expected_source_inode == 0u ||
         expected_source_generation == 0u)
         return RINFS_ERR_INVAL;
     error = rinfs_mount_operation_scope_begin(mount, &operation);
     if (error != RINFS_OK) return error;
+    error = rinfs_quota_operation_lock(mount, &quota_operation);
+    if (error != RINFS_OK)
+        return rinfs_mount_operation_scope_finish(&operation, error);
     error = rinfs_rename_expected_unscoped(
         mount, old_dir, old_name, new_dir, new_name, expected_source_inode,
-        expected_source_generation);
+        expected_source_generation, &quota_operation);
+    error = rinfs_quota_operation_end(&quota_operation, error);
     return rinfs_mount_operation_scope_finish(&operation, error);
 }
 
@@ -35158,6 +35206,7 @@ int rinfs_rename_with_outcome(
     int rename_mode, int update_if_newer, uint64_t source_mtime,
     RinFS_RenameOutcome* outcome) {
     RinFS_MountOperationScope operation = {0};
+    RinFS_QuotaOperation quota_operation = {0};
     int error;
     if (outcome) rinfs_memset(outcome, 0, sizeof(*outcome));
     if (!mount || !old_name || !new_name || !outcome ||
@@ -35178,7 +35227,11 @@ int rinfs_rename_with_outcome(
         return RINFS_ERR_INVAL;
     error = rinfs_mount_operation_scope_begin(mount, &operation);
     if (error != RINFS_OK) return error;
-    error = rinfs_journal_transaction_lock(mount);
+    error = rinfs_quota_operation_lock(mount, &quota_operation);
+    if (error == RINFS_OK)
+        error = rinfs_quota_parent_growth_reserve(
+            &quota_operation, new_dir, new_name);
+    if (error == RINFS_OK) error = rinfs_journal_transaction_lock(mount);
     if (error == RINFS_OK) {
         error = rinfs_rename_impl(
             mount, old_dir, old_name, new_dir, new_name, rename_mode,
@@ -35190,6 +35243,7 @@ int rinfs_rename_with_outcome(
             update_if_newer, source_mtime, outcome);
         error = rinfs_journal_transaction_unlock_status(mount, error);
     }
+    error = rinfs_quota_operation_end(&quota_operation, error);
     return rinfs_mount_operation_scope_finish(&operation, error);
 }
 
@@ -35199,17 +35253,23 @@ int rinfs_rename_if_newer(RinFS_Mount* mount, uint64_t old_dir,
                           const char* old_name, uint64_t new_dir,
                           const char* new_name, uint64_t source_mtime) {
     RinFS_MountOperationScope operation = {0};
+    RinFS_QuotaOperation quota_operation = {0};
     int error;
     if (!mount || !old_name || !new_name) return RINFS_ERR_INVAL;
     error = rinfs_mount_operation_scope_begin(mount, &operation);
     if (error != RINFS_OK) return error;
-    error = rinfs_journal_transaction_lock(mount);
+    error = rinfs_quota_operation_lock(mount, &quota_operation);
+    if (error == RINFS_OK)
+        error = rinfs_quota_parent_growth_reserve(
+            &quota_operation, new_dir, new_name);
+    if (error == RINFS_OK) error = rinfs_journal_transaction_lock(mount);
     if (error == RINFS_OK) {
         error = rinfs_rename_impl(mount, old_dir, old_name, new_dir, new_name,
                                   0, 0u, 0u, 0u, 0u, 0u, 0u, 1, 1,
                                   source_mtime, NULL);
         error = rinfs_journal_transaction_unlock_status(mount, error);
     }
+    error = rinfs_quota_operation_end(&quota_operation, error);
     return rinfs_mount_operation_scope_finish(&operation, error);
 }
 
