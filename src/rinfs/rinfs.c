@@ -12151,7 +12151,8 @@ int rinfs_xattr_copy(RinFS_Mount* source_mount, uint64_t source_ino,
     }
     result = rinfs_xattr_load(source_mount, &source, source_block);
     if (result == RINFS_OK) {
-        if (source_mount->sb.s_block_size > destination_mount->sb.s_block_size) {
+        bytes_used = rinfs_xattr_read_u32(source_block + 8u);
+        if (bytes_used > destination_mount->sb.s_block_size) {
             result = RINFS_ERR_NOSPC;
         } else {
             destination_block = (uint8_t*)rinfs_malloc(
@@ -12159,7 +12160,6 @@ int rinfs_xattr_copy(RinFS_Mount* source_mount, uint64_t source_ino,
             if (destination_block == NULL) {
                 result = RINFS_ERR_NOMEM;
             } else {
-                bytes_used = rinfs_xattr_read_u32(source_block + 8u);
                 rinfs_memset(destination_block, 0,
                              destination_mount->sb.s_block_size);
                 rinfs_memcpy(destination_block, source_block, bytes_used);
