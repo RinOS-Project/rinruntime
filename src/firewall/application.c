@@ -53,6 +53,7 @@ int rin_firewall_application_context_apply(
     RinFirewallPacketV1* output)
 {
     uint32_t index;
+    uint64_t packet_fwmark;
     if (output == NULL) return RIN_FIREWALL_INVALID_ARGUMENT;
     application_zero(output, sizeof(*output));
     if (packet == NULL || context == NULL)
@@ -62,6 +63,7 @@ int rin_firewall_application_context_apply(
         packet->namespace_id != context->namespace_id)
         return RIN_FIREWALL_MALFORMED;
     *output = *packet;
+    packet_fwmark = output->reserved[2] & UINT64_C(0xffffffff00000000);
     for (index = 0u; index < RIN_FIREWALL_APPLICATION_ID_SIZE; ++index)
         output->application_id[index] = context->application_id[index];
     /* Process identity is kernel-derived from the authenticated context, not
@@ -73,10 +75,10 @@ int rin_firewall_application_context_apply(
     if ((context->flags &
          RIN_FIREWALL_APPLICATION_FLAG_USER_SESSION_IDENTITY) != 0u) {
         output->flags |= RIN_FIREWALL_PACKET_FLAG_USER_IDENTITY;
-        output->reserved[2] = context->owner_uid;
+        output->reserved[2] = packet_fwmark | context->owner_uid;
     } else {
         output->flags &= (uint16_t)~RIN_FIREWALL_PACKET_FLAG_USER_IDENTITY;
-        output->reserved[2] = 0u;
+        output->reserved[2] = packet_fwmark;
     }
     return RIN_FIREWALL_OK;
 }
