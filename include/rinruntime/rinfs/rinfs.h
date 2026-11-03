@@ -62,6 +62,8 @@
 /* Inode bytes 0xE4-0xF7 hold an operation-recovery owner token when this bit
  * is set. The token is committed before the inode becomes reachable. */
 #define RINFS_FEATURE_INCOMPAT_OPERATION_OWNER_TOKEN 0x00000020u
+#define RINFS_FEATURE_INCOMPAT_PROJECT_IDS 0x00000040u
+#define RINFS_FEATURE_INCOMPAT_DISK_QUOTAS 0x00000080u
 #define RINFS_INODE_SPECIAL_DEVICE_OFFSET 24u
 #define RINFS_INODE_OPERATION_OWNER_TOKEN_OFFSET 28u
 #define RINFS_INODE_OPERATION_OWNER_TOKEN_BYTES 16u
@@ -71,7 +73,9 @@
      RINFS_FEATURE_INCOMPAT_SPECIAL_INODES | \
      RINFS_FEATURE_INCOMPAT_DELETE_ON_CLOSE | \
      RINFS_FEATURE_INCOMPAT_RESTORE_PENDING | \
-     RINFS_FEATURE_INCOMPAT_OPERATION_OWNER_TOKEN)
+     RINFS_FEATURE_INCOMPAT_OPERATION_OWNER_TOKEN | \
+     RINFS_FEATURE_INCOMPAT_PROJECT_IDS | \
+     RINFS_FEATURE_INCOMPAT_DISK_QUOTAS)
 
 enum {
     RINFS_READ_ADVICE_NORMAL = 0,
@@ -79,6 +83,7 @@ enum {
     RINFS_READ_ADVICE_SEQUENTIAL = 2,
     RINFS_READ_ADVICE_NOREUSE = 3
 };
+#define RINFS_QUOTA_VERSION 1u
 
 /* Internal descriptor flag enabling page-cache-bypassing aligned I/O. */
 #define RINFS_O_DIRECT 0x0800
@@ -335,6 +340,47 @@ RINRUNTIME_STATIC_ASSERT(offsetof(RinFS_Inode, i_generation) == 0xC0u &&
                          "RinFS inode disk ABI offsets changed");
 RINRUNTIME_STATIC_ASSERT(offsetof(RinFS_Inode, i_reserved) + 20u == 0xDCu,
                          "RinFS content-version high word must remain at 0xDC");
+
+/* Project identifiers occupy inode bytes 0xF8-0xFB only when the
+ * PROJECT_IDS incompat feature is present. */
+#define RINFS_INODE_PROJECT_ID_OFFSET 48u
+
+enum {
+    RINFS_QUOTA_UID = 1u,
+    RINFS_QUOTA_GID = 2u,
+    RINFS_QUOTA_PROJECT = 3u,
+    RINFS_QUOTA_BLOCK_HARD = 1u << 0,
+    RINFS_QUOTA_BLOCK_SOFT = 1u << 1,
+    RINFS_QUOTA_INODE_HARD = 1u << 2,
+    RINFS_QUOTA_INODE_SOFT = 1u << 3,
+    RINFS_QUOTA_WARNING_BLOCK_SOFT = 1u << 0,
+    RINFS_QUOTA_WARNING_INODE_SOFT = 1u << 1,
+    RINFS_QUOTA_WARNING_BLOCK_GRACE_EXPIRED = 1u << 2,
+    RINFS_QUOTA_WARNING_INODE_GRACE_EXPIRED = 1u << 3
+};
+
+typedef struct {
+    uint32_t struct_size;
+    uint32_t version;
+    uint32_t quota_type;
+    uint32_t id;
+    uint32_t flags;
+    uint32_t reserved0;
+    uint64_t block_hard;
+    uint64_t block_soft;
+    uint64_t inode_hard;
+    uint64_t inode_soft;
+    uint64_t block_grace_seconds;
+    uint64_t inode_grace_seconds;
+    uint64_t blocks_used;
+    uint64_t inodes_used;
+    uint64_t block_grace_deadline;
+    uint64_t inode_grace_deadline;
+    uint32_t warning_flags;
+    uint32_t reserved1;
+} RinFS_QuotaV1;
+RINRUNTIME_STATIC_ASSERT(sizeof(RinFS_QuotaV1) == 112u,
+                         "RinFS quota request ABI changed");
 
 /* Identity snapshots captured while the journal transaction lock still owns
  * a rename. These are operation results, not borrowed inode pointers. */
@@ -722,6 +768,10 @@ struct RinFS_Mount {
     /* Shared-memory intents for interrupted bitmap allocation transactions. */
     void* shared_allocation_recovery_logs;
     volatile uint32_t block_allocation_lock;
+    /* Serializes quota usage snapshots, reservations, and the filesystem
+     * mutation that consumes them. The shared-owner token permits recovery
+     * when a process dies while holding the reservation gate. */
+    volatile uint32_t quota_operation_lock;
     /* Volatile next-fit hint. The bitmap remains authoritative; a new mount
      * starts from the first allocatable block and may wrap to find holes. */
     uint64_t         block_allocation_cursor;
@@ -1408,6 +1458,20 @@ int rinfs_xattr_list(RinFS_Mount* mount, uint64_t ino, char* output,
                      uint32_t output_capacity, uint32_t* output_length_out);
 int rinfs_xattr_remove(RinFS_Mount* mount, uint64_t ino, const char* name,
                        uint32_t name_length);
+/* Quota rules are stored as checksummed system xattrs on the root inode;
+ * usage is reconstructed from the inode bitmap and inode table after mount. */
+int rinfs_quota_set(RinFS_Mount* mount, const RinFS_QuotaV1* quota);
+int rinfs_quota_query(RinFS_Mount* mount, uint32_t quota_type, uint32_t id,
+                      RinFS_QuotaV1* quota_out);
+int rinfs_inode_project_id_set(RinFS_Mount* mount, uint64_t ino,
+                               uint32_t project_id);
+/* VFS metadata updates that may transfer an inode between quota owners use
+ * this writer to check the destination quota while holding the reservation
+ * gate through the inode commit. */
+int rinfs_inode_write_with_quota(RinFS_Mount* mount, uint64_t ino,
+                                 const RinFS_Inode* inode);
+uint32_t rinfs_inode_project_id(const RinFS_Mount* mount,
+                                const RinFS_Inode* inode);
 /* Clones the complete validated attribute block into destination.  It never
  * aliases metadata blocks, so later edits cannot mutate the source inode. */
 int rinfs_xattr_copy(RinFS_Mount* source_mount, uint64_t source_ino,
@@ -1769,6 +1833,7 @@ void rinfs_host_fail_flushes_after(int successful_flushes);
 #define RINFS_ERR_STALE     -18
 #define RINFS_ERR_EMLINK    -19
 #define RINFS_ERR_BUSY      -20
+#define RINFS_ERR_QUOTA     -21
 
 /* i_links is a fixed-width on-disk count.  Do not let a hard-link mutation
  * wrap it back to zero: callers receive EMLINK at the POSIX boundary. */
