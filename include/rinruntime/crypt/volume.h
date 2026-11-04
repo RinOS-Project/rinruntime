@@ -43,6 +43,7 @@ typedef struct RinCryptSession {
     aes_ctx tweak_key;
 } RinCryptSession;
 
+/* The output session must not overlap the immutable input config. */
 int rin_crypt_session_open(RinCryptSession* session,
                            const RinCryptSessionConfigV1* config);
 void rin_crypt_session_close(RinCryptSession* session);

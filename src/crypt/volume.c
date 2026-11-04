@@ -3,6 +3,8 @@
 
 #include "libs/rintls/crypto/hmac.h"
 
+#include <stddef.h>
+
 static void crypt_zero(void* pointer, uint32_t size)
 {
     volatile uint8_t* output = (volatile uint8_t*)pointer;
@@ -26,6 +28,21 @@ static int crypt_is_zero(const uint8_t* bytes, uint32_t size)
     uint32_t index;
     for (index = 0u; index < size; ++index) combined |= bytes[index];
     return combined == 0u;
+}
+
+static int crypt_ranges_overlap(const void* first, size_t first_size,
+                                const void* second, size_t second_size)
+{
+    uintptr_t first_address;
+    uintptr_t second_address;
+    if (!first || !second || first_size == 0u || second_size == 0u) return 0;
+    first_address = (uintptr_t)first;
+    second_address = (uintptr_t)second;
+    if (first_size > UINTPTR_MAX - first_address ||
+        second_size > UINTPTR_MAX - second_address)
+        return 1;
+    return first_address < second_address + second_size &&
+           second_address < first_address + first_size;
 }
 
 static void crypt_encode_data_unit(uint64_t data_unit, uint8_t tweak[16])
@@ -119,6 +136,8 @@ int rin_crypt_session_open(RinCryptSession* session,
     int result;
 
     if (!session || !config ||
+        crypt_ranges_overlap(session, sizeof(*session), config,
+                             sizeof(*config)) ||
         config->abi_version != RIN_CRYPT_ABI_VERSION ||
         config->struct_size < sizeof(RinCryptSessionConfigV1) ||
         config->reserved != 0u ||
