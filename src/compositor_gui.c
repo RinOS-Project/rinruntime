@@ -422,15 +422,43 @@ static void runtime_input_ring_unlock(void) {
     __sync_lock_release(&g_input_ring_lock);
 }
 
-static void runtime_input_ring_forget_surface(uint32_t surface_id) {
+static void runtime_input_ring_clear_surface_locked(uint32_t surface_id) {
     uint32_t index;
     if (surface_id == 0u) return;
-    runtime_input_ring_lock();
     for (index = 0u; index < RIN_RUNTIME_INPUT_DEMUX_CAPACITY; ++index)
         if (g_input_ring_demux[index].active != 0u &&
             g_input_ring_demux[index].surface_id == surface_id)
             memset(&g_input_ring_demux[index], 0,
                    sizeof(g_input_ring_demux[index]));
+}
+
+static void runtime_input_ring_activate_surface(
+    RinRuntimeGuiSurface* surface, uint32_t surface_id) {
+    if (!surface || surface_id == 0u) return;
+    runtime_input_ring_lock();
+    surface->id = surface_id;
+    surface->active = 1u;
+    runtime_input_ring_unlock();
+}
+
+static void runtime_input_ring_replace_surface_id(
+    RinRuntimeGuiSurface* surface, uint32_t old_id, uint32_t new_id) {
+    if (!surface || new_id == 0u) return;
+    runtime_input_ring_lock();
+    runtime_input_ring_clear_surface_locked(old_id);
+    surface->id = new_id;
+    runtime_input_ring_unlock();
+}
+
+static void runtime_input_ring_retire_surface(
+    RinRuntimeGuiSurface* surface, uint32_t surface_id) {
+    if (!surface) return;
+    runtime_input_ring_lock();
+    surface->active = 0u;
+    runtime_input_ring_clear_surface_locked(surface_id);
+    memset(surface, 0, sizeof(*surface));
+    surface->shm_handles[0] = -1;
+    surface->shm_handles[1] = -1;
     runtime_input_ring_unlock();
 }
 
@@ -1760,8 +1788,7 @@ static int runtime_rebind_surface(RinRuntimeGuiSurface* surface) {
                         &new_id, sizeof(new_id), &reply_size, &status) != 0 ||
         status != 0 || reply_size != sizeof(new_id) || new_id == 0u)
         return -1;
-    surface->id = new_id;
-    runtime_input_ring_forget_surface(old_id);
+    runtime_input_ring_replace_surface_id(surface, old_id, new_id);
     if ((surface->surface_flags & RIN_COMPOSITOR_SURFACE_FLAG_CURSOR) != 0u)
         surface->cursor_generation = 0u;
     surface->input_poll_pending = 0u;
@@ -1770,7 +1797,7 @@ static int runtime_rebind_surface(RinRuntimeGuiSurface* surface) {
     memset(&surface->pending_input_event, 0,
            sizeof(surface->pending_input_event));
     if (runtime_attach_existing_buffers(surface) != 0) {
-        surface->id = old_id;
+        runtime_input_ring_replace_surface_id(surface, new_id, old_id);
         return -1;
     }
     memset(&title, 0, sizeof(title));
@@ -1940,11 +1967,8 @@ static void runtime_destroy_local_surface(RinRuntimeGuiSurface* surface) {
     int any_active = 0;
     if (!surface) return;
     old_id = surface->id;
-    runtime_input_ring_forget_surface(old_id);
     runtime_release_buffers(surface);
-    memset(surface, 0, sizeof(*surface));
-    surface->shm_handles[0] = -1;
-    surface->shm_handles[1] = -1;
+    runtime_input_ring_retire_surface(surface, old_id);
     for (index = 0u; index < RIN_RUNTIME_GUI_MAX_SURFACES; ++index)
         if (g_surfaces[index].active != 0u) {
             any_active = 1;
@@ -1955,6 +1979,7 @@ static void runtime_destroy_local_surface(RinRuntimeGuiSurface* surface) {
 
 static RinRuntimeGuiSurface* runtime_new_surface(void) {
     uint32_t index;
+    runtime_input_ring_lock();
     for (index = 0u; index < RIN_RUNTIME_GUI_MAX_SURFACES; ++index) {
         if (!g_surfaces[index].active) {
             if (g_handle_generations[index] == UINT32_MAX) continue;
@@ -1968,9 +1993,11 @@ static RinRuntimeGuiSurface* runtime_new_surface(void) {
                 (RinRuntimeGuiHandle)(((uint64_t)generation *
                                        RIN_RUNTIME_GUI_MAX_SURFACES) +
                                       index + 1u);
+            runtime_input_ring_unlock();
             return &g_surfaces[index];
         }
     }
+    runtime_input_ring_unlock();
     return 0;
 }
 
@@ -2057,8 +2084,7 @@ RinRuntimeGuiHandle wnd_create_flags(const char* title, int x, int y, int w,
         return 0;
     surface = runtime_new_surface();
     if (!surface) goto fail_server_surface;
-    surface->active = 1u;
-    surface->id = id;
+    runtime_input_ring_activate_surface(surface, id);
     surface->width = (uint32_t)w;
     surface->height = (uint32_t)h;
     surface->x = x;
