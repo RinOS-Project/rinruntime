@@ -320,7 +320,8 @@ RinCrashRecordResult rin_crash_record_add_section(
     }
     already_present = crash_draft_has_section(record, &header, type);
     if (already_present != 0 ||
-        !crash_section_content_valid(type, data, size)) {
+        !crash_section_content_valid(type, data, size,
+                                     header.architecture)) {
         return RIN_CRASH_RECORD_INVALID;
     }
     padded_size = (size + 7u) & ~UINT32_C(7);
