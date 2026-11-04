@@ -416,6 +416,87 @@ static inline int rin_crypt_integrity_is_ready(
            RIN_CRYPT_INTEGRITY_STATE_READY;
 }
 
+/* An authenticated empty descriptor keeps one valid journal state available
+ * while its mirrored peer is being replaced or cleared. A torn write to the
+ * other descriptor can therefore be distinguished from a pending update. */
+static inline void rin_crypt_integrity_empty_journal_mac(
+    const uint8_t key[32],
+    const uint8_t volume_id[RIN_CRYPT_VOLUME_ID_SIZE],
+    const uint8_t descriptor[512], uint8_t mac[32])
+{
+    static const uint8_t domain[] = "RinOS RCT2 empty write-ahead journal";
+    hmac_sha256_ctx hmac;
+    hmac_sha256_init(&hmac, key, 32u);
+    hmac_sha256_update(&hmac, domain, sizeof(domain) - 1u);
+    hmac_sha256_update(&hmac, volume_id, RIN_CRYPT_VOLUME_ID_SIZE);
+    hmac_sha256_update(&hmac, descriptor, 40u);
+    hmac_sha256_final(&hmac, mac);
+    rin_crypt_integrity_zero(&hmac, sizeof(hmac));
+}
+
+static inline int rin_crypt_integrity_empty_journal_valid(
+    const uint8_t descriptor[512], const uint8_t key[32],
+    const uint8_t volume_id[RIN_CRYPT_VOLUME_ID_SIZE], uint64_t key_epoch)
+{
+    static const uint8_t magic[4] = {'R', 'C', 'J', '2'};
+    uint8_t mac[32];
+    uint8_t difference = 0u;
+    uint32_t index;
+    if (!descriptor || !key || !volume_id || key_epoch == 0u ||
+        descriptor[0] != magic[0] || descriptor[1] != magic[1] ||
+        descriptor[2] != magic[2] || descriptor[3] != magic[3] ||
+        rin_crypt_integrity_read_le32(descriptor + 4u) !=
+            RIN_CRYPT_INTEGRITY_VERSION || descriptor[28] != 1u ||
+        rin_crypt_integrity_read_le64(descriptor + 32u) != key_epoch) {
+        return 0;
+    }
+    for (index = 8u; index < 28u; ++index) difference |= descriptor[index];
+    for (index = 29u; index < 32u; ++index) difference |= descriptor[index];
+    for (index = 72u; index < RIN_CRYPT_INTEGRITY_BLOCK_SIZE; ++index)
+        difference |= descriptor[index];
+    if (difference != 0u) return 0;
+    rin_crypt_integrity_empty_journal_mac(key, volume_id, descriptor, mac);
+    difference = 0u;
+    for (index = 0u; index < sizeof(mac); ++index)
+        difference |= (uint8_t)(mac[index] ^ descriptor[40u + index]);
+    rin_crypt_integrity_zero(mac, sizeof(mac));
+    return difference == 0u;
+}
+
+static inline int rin_crypt_integrity_empty_journal_write(
+    const RinCryptIntegrityLayout* layout, const uint8_t key[32],
+    const uint8_t volume_id[RIN_CRYPT_VOLUME_ID_SIZE], uint64_t key_epoch,
+    const RinCryptIntegrityIo* io, uint64_t copy_index,
+    uint8_t scratch[1536])
+{
+    static const uint8_t magic[4] = {'R', 'C', 'J', '2'};
+    uint8_t* descriptor = scratch;
+    uint64_t lba;
+    if (!rin_crypt_integrity_layout_valid(layout) || !key || !volume_id ||
+        key_epoch == 0u || !io || !io->write_block || !io->flush ||
+        !scratch || copy_index >= 2u ||
+        layout->journal_first_lba > UINT64_MAX - copy_index) {
+        return RIN_CRYPT_INTEGRITY_INVALID;
+    }
+    lba = layout->journal_first_lba + copy_index;
+    rin_crypt_integrity_zero(descriptor, RIN_CRYPT_INTEGRITY_BLOCK_SIZE);
+    descriptor[0] = magic[0]; descriptor[1] = magic[1];
+    descriptor[2] = magic[2]; descriptor[3] = magic[3];
+    rin_crypt_integrity_write_le32(descriptor + 4u,
+                                   RIN_CRYPT_INTEGRITY_VERSION);
+    descriptor[28] = 1u;
+    rin_crypt_integrity_write_le64(descriptor + 32u, key_epoch);
+    rin_crypt_integrity_empty_journal_mac(key, volume_id, descriptor,
+                                          descriptor + 40u);
+    if (io->write_block(io->context, lba, descriptor, 0u) != 0 ||
+        io->flush(io->context) != 0) {
+        rin_crypt_integrity_zero(scratch, 1536u);
+        return RIN_CRYPT_INTEGRITY_IO;
+    }
+    rin_crypt_integrity_zero(scratch, 1536u);
+    return RIN_CRYPT_INTEGRITY_OK;
+}
+
 /* Establish the authenticated tag table before an installer exposes the new
  * volume. A pending, MACed state permits this initialization to restart after
  * power loss; normal readers reject pending or absent state. It zeros the raw
@@ -457,7 +538,7 @@ static inline int rin_crypt_integrity_initialize(
         return RIN_CRYPT_INTEGRITY_IO;
     }
     rin_crypt_integrity_zero(scratch, RIN_CRYPT_INTEGRITY_BLOCK_SIZE);
-    for (index = 0u; index < RIN_CRYPT_INTEGRITY_JOURNAL_BLOCKS; ++index) {
+    for (index = 2u; index < RIN_CRYPT_INTEGRITY_JOURNAL_BLOCKS; ++index) {
         if (io->write_block(io->context,
                             layout->journal_first_lba + index, scratch,
                             0u) != 0) {
@@ -526,6 +607,15 @@ static inline int rin_crypt_integrity_initialize(
         }
     }
     if (io->flush(io->context) != 0) {
+        result = RIN_CRYPT_INTEGRITY_IO;
+        goto done;
+    }
+    if (rin_crypt_integrity_empty_journal_write(
+            layout, key, volume_id, key_epoch, io, 0u, scratch) !=
+            RIN_CRYPT_INTEGRITY_OK ||
+        rin_crypt_integrity_empty_journal_write(
+            layout, key, volume_id, key_epoch, io, 1u, scratch) !=
+            RIN_CRYPT_INTEGRITY_OK) {
         result = RIN_CRYPT_INTEGRITY_IO;
         goto done;
     }
@@ -625,6 +715,8 @@ static inline int rin_crypt_integrity_recover(
     uint64_t physical_lba;
     int first_zero;
     int second_zero;
+    int first_empty;
+    int second_empty;
     int first_valid;
     int second_valid;
     int state;
@@ -662,6 +754,10 @@ static inline int rin_crypt_integrity_recover(
         rin_crypt_integrity_zero(scratch, 1536u);
         return RIN_CRYPT_INTEGRITY_OK;
     }
+    first_empty = !first_zero && rin_crypt_integrity_empty_journal_valid(
+        scratch, key, volume_id, key_epoch);
+    second_empty = !second_zero && rin_crypt_integrity_empty_journal_valid(
+        second_descriptor, key, volume_id, key_epoch);
     if (io->read_block(io->context, layout->journal_first_lba + 2u,
                        scratch + 512u) != 0 ||
         io->read_block(io->context, layout->journal_first_lba + 3u,
@@ -676,7 +772,24 @@ static inline int rin_crypt_integrity_recover(
     second_valid = !second_zero && rin_crypt_integrity_journal_valid(
         second_descriptor, scratch + 512u, scratch + 1024u, key, volume_id,
         key_epoch, layout);
-    if (!first_valid && !second_valid) goto done;
+    if (!first_valid && !second_valid) {
+        if (first_empty || second_empty) {
+            if ((!first_empty &&
+                 rin_crypt_integrity_empty_journal_write(
+                     layout, key, volume_id, key_epoch, io, 0u, scratch) !=
+                     RIN_CRYPT_INTEGRITY_OK) ||
+                (!second_empty &&
+                 rin_crypt_integrity_empty_journal_write(
+                     layout, key, volume_id, key_epoch, io, 1u, scratch) !=
+                     RIN_CRYPT_INTEGRITY_OK)) {
+                result = RIN_CRYPT_INTEGRITY_IO;
+                goto done;
+            }
+            result = RIN_CRYPT_INTEGRITY_OK;
+            goto done;
+        }
+        goto done;
+    }
     if (first_valid && second_valid) {
         difference = 0u;
         for (index = 0u; index < 512u; ++index)
@@ -704,11 +817,12 @@ static inline int rin_crypt_integrity_recover(
         result = RIN_CRYPT_INTEGRITY_IO;
         goto done;
     }
-    rin_crypt_integrity_zero(scratch, 512u);
-    if (io->write_block(io->context, layout->journal_first_lba, scratch,
-                        0u) != 0 ||
-        io->write_block(io->context, layout->journal_first_lba + 1u,
-                        scratch, 0u) != 0 || io->flush(io->context) != 0) {
+    if (rin_crypt_integrity_empty_journal_write(
+            layout, key, volume_id, key_epoch, io, 0u, scratch) !=
+            RIN_CRYPT_INTEGRITY_OK ||
+        rin_crypt_integrity_empty_journal_write(
+            layout, key, volume_id, key_epoch, io, 1u, scratch) !=
+            RIN_CRYPT_INTEGRITY_OK) {
         result = RIN_CRYPT_INTEGRITY_IO;
         goto done;
     }
@@ -812,6 +926,18 @@ static inline int rin_crypt_integrity_write_cipher(
     result = rin_crypt_integrity_recover(layout, key, volume_id, key_epoch,
                                          io, scratch);
     if (result != RIN_CRYPT_INTEGRITY_OK) return result;
+    /* Persist a clean mirror before reusing the shared ciphertext/tag journal
+     * pages. If either descriptor write tears, the other clean copy remains
+     * an authenticated recovery point and the payload has not been touched. */
+    if (rin_crypt_integrity_empty_journal_write(
+            layout, key, volume_id, key_epoch, io, 0u, scratch) !=
+            RIN_CRYPT_INTEGRITY_OK ||
+        rin_crypt_integrity_empty_journal_write(
+            layout, key, volume_id, key_epoch, io, 1u, scratch) !=
+            RIN_CRYPT_INTEGRITY_OK) {
+        result = RIN_CRYPT_INTEGRITY_IO;
+        goto done;
+    }
     physical_lba = layout->payload_first_lba + payload_index;
     payload_position = payload_index;
     rin_crypt_integrity_tag(key, volume_id, key_epoch, payload_position,
@@ -853,11 +979,12 @@ static inline int rin_crypt_integrity_write_cipher(
         result = RIN_CRYPT_INTEGRITY_IO;
         goto done;
     }
-    rin_crypt_integrity_zero(scratch, 512u);
-    if (io->write_block(io->context, layout->journal_first_lba, scratch,
-                        0u) != 0 ||
-        io->write_block(io->context, layout->journal_first_lba + 1u,
-                        scratch, 0u) != 0 || io->flush(io->context) != 0) {
+    if (rin_crypt_integrity_empty_journal_write(
+            layout, key, volume_id, key_epoch, io, 0u, scratch) !=
+            RIN_CRYPT_INTEGRITY_OK ||
+        rin_crypt_integrity_empty_journal_write(
+            layout, key, volume_id, key_epoch, io, 1u, scratch) !=
+            RIN_CRYPT_INTEGRITY_OK) {
         result = RIN_CRYPT_INTEGRITY_IO;
         goto done;
     }
