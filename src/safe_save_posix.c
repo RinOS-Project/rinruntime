@@ -249,7 +249,7 @@ static int posix_sync_file(void* context, uintptr_t handle)
                ? 0 : -1;
 }
 
-static int posix_close(void* context, uintptr_t handle)
+static int posix_safe_save_close(void* context, uintptr_t handle)
 {
     int descriptor;
     (void)context;
@@ -331,7 +331,7 @@ RinRuntimeSafeSaveResult rinruntime_safe_save_posix(
     backend.open_temporary = posix_open_temporary;
     backend.write = posix_write;
     backend.sync_file = posix_sync_file;
-    backend.close = posix_close;
+    backend.close = posix_safe_save_close;
     backend.publish_replace = posix_publish_replace;
     backend.remove_temporary = posix_remove_temporary;
     backend.sync_directory = posix_sync_directory;
