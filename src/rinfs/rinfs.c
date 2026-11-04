@@ -8136,6 +8136,31 @@ static int rinfs_shared_owner_reap_locked(RinFS_Mount* mount) {
         }
     }
     if (!have_dead_owner) return RINFS_OK;
+    if (mount->content_lease_closing ==
+        RINFS_CONTENT_LEASE_CLOSING_FORK) {
+        uint32_t fork_owner_row = mount->content_lease_fork_owner_row;
+        RinFS_SharedOwnerV1* fork_owner;
+        uint32_t fork_owner_state;
+        if (fork_owner_row == 0u ||
+            fork_owner_row > RINFS_SHARED_OWNER_CAPACITY)
+            return RINFS_ERR_CORRUPT;
+        fork_owner = &mount->shared_owner_ledger->owners[fork_owner_row - 1u];
+        fork_owner_state = __atomic_load_n(&fork_owner->state,
+                                            __ATOMIC_ACQUIRE);
+        if (fork_owner_state == RINFS_SHARED_OWNER_ACTIVE) {
+            /* Fork preparation reserves aggregate close counts before the
+             * kernel clones the child's owner row. Rebuilding them from the
+             * ledger in this interval would erase that in-flight reference.
+             * Defer unrelated dead-owner recovery until fork completes. */
+            if (fork_owner->owner_slot == UINT32_MAX ||
+                fork_owner->owner_cookie == 0u ||
+                fork_owner->lock_generation == 0u)
+                return RINFS_ERR_CORRUPT;
+            return RINFS_OK;
+        }
+        if (fork_owner_state != RINFS_SHARED_OWNER_DEAD)
+            return RINFS_ERR_CORRUPT;
+    }
     {
         RinFS_ContentLeaseNode* node =
             (RinFS_ContentLeaseNode*)mount->content_leases;
