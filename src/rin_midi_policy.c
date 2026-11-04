@@ -509,8 +509,6 @@ int rin_midi_packet_v1_is_valid(const RinMidiPacketV1* packet)
     }
     if ((packet->flags & RIN_MIDI_PACKET_TIMESTAMP_VALID) == 0u) {
         if (packet->monotonic_time_ns != 0u) return 0;
-    } else if (packet->monotonic_time_ns == 0u) {
-        return 0;
     }
 
     message_type = packet->words[0] >> 28u;
