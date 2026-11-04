@@ -312,8 +312,6 @@ RinRuntimeDurableFilePortalResult rinruntime_file_portal_durable_list(
         return RINRUNTIME_DURABLE_FILE_PORTAL_NOT_FOUND;
     }
     if (result != RIN_RESULT_OK) {
-        memset(entries_out, 0, sizeof(RinFilePortalSettingsEntryV1) *
-                                    RIN_FILE_PORTAL_SETTINGS_LIST_PAGE_CAPACITY);
         memset(&call, 0, sizeof(call));
         return RINRUNTIME_DURABLE_FILE_PORTAL_KERNEL_REJECTED;
     }
