@@ -341,7 +341,11 @@ static inline int rin_crypt_integrity_state_read(
         scratch, layout, key, volume_id, key_epoch);
     second_state = second_zero ? 0 : rin_crypt_integrity_state_valid(
         second, layout, key, volume_id, key_epoch);
-    if (first_state == RIN_CRYPT_INTEGRITY_STATE_READY ||
+    /* Initialization publishes READY to each mirrored state block in
+     * separate flushes.  A single READY copy is not sufficient: the other
+     * copy may still say PENDING because power was lost during publication.
+     * Requiring both copies also keeps a torn/corrupt marker fail-closed. */
+    if (first_state == RIN_CRYPT_INTEGRITY_STATE_READY &&
         second_state == RIN_CRYPT_INTEGRITY_STATE_READY) {
         result = RIN_CRYPT_INTEGRITY_STATE_READY;
     } else if (first_state == RIN_CRYPT_INTEGRITY_STATE_PENDING ||
@@ -439,13 +443,8 @@ static inline int rin_crypt_integrity_initialize(
         return RIN_CRYPT_INTEGRITY_OK;
     if (state == RIN_CRYPT_INTEGRITY_STATE_IO)
         return RIN_CRYPT_INTEGRITY_IO;
-    if (state == RIN_CRYPT_INTEGRITY_STATE_INVALID) {
-        /* This initializer is the install-only provisioning path. A damaged
-         * or stale marker cannot open a volume; reformatting it here is safe
-         * because the pending marker blocks access until every sector is
-         * zeroed and retagged. */
-        state = RIN_CRYPT_INTEGRITY_STATE_EMPTY;
-    }
+    if (state == RIN_CRYPT_INTEGRITY_STATE_INVALID)
+        return RIN_CRYPT_INTEGRITY_AUTH;
 
     if (rin_crypt_integrity_state_write(
             layout, key, volume_id, key_epoch, io, 0u,
