@@ -501,6 +501,11 @@ static inline int rin_crypt_integrity_empty_journal_write(
  * volume. A pending, MACed state permits this initialization to restart after
  * power loss; normal readers reject pending or absent state. It zeros the raw
  * payload and records a position-bound logical-zero tag for every sector. */
+static inline int rin_crypt_integrity_recover(
+    const RinCryptIntegrityLayout* layout, const uint8_t key[32],
+    const uint8_t volume_id[RIN_CRYPT_VOLUME_ID_SIZE], uint64_t key_epoch,
+    const RinCryptIntegrityIo* io, uint8_t scratch[1536]);
+
 static inline int rin_crypt_integrity_initialize(
     const RinCryptIntegrityLayout* layout, const uint8_t key[32],
     const uint8_t volume_id[RIN_CRYPT_VOLUME_ID_SIZE], uint64_t key_epoch,
@@ -521,7 +526,8 @@ static inline int rin_crypt_integrity_initialize(
     state = rin_crypt_integrity_state_read(layout, key, volume_id, key_epoch,
                                            io, scratch);
     if (state == RIN_CRYPT_INTEGRITY_STATE_READY)
-        return RIN_CRYPT_INTEGRITY_OK;
+        return rin_crypt_integrity_recover(layout, key, volume_id, key_epoch,
+                                           io, scratch);
     if (state == RIN_CRYPT_INTEGRITY_STATE_IO)
         return RIN_CRYPT_INTEGRITY_IO;
     if (state == RIN_CRYPT_INTEGRITY_STATE_INVALID)
@@ -749,11 +755,10 @@ static inline int rin_crypt_integrity_recover(
         first_zero &= scratch[index] == 0u;
         second_zero &= second_descriptor[index] == 0u;
     }
-    if (first_zero && second_zero) {
-        rin_crypt_integrity_zero(second_descriptor, sizeof(second_descriptor));
-        rin_crypt_integrity_zero(scratch, 1536u);
-        return RIN_CRYPT_INTEGRITY_OK;
-    }
+    /* A READY volume publishes two authenticated empty descriptors before
+     * either mirrored state becomes READY. Treat two erased descriptors as
+     * metadata corruption; accepting them would bypass the journal MAC. */
+    if (first_zero && second_zero) goto done;
     first_empty = !first_zero && rin_crypt_integrity_empty_journal_valid(
         scratch, key, volume_id, key_epoch);
     second_empty = !second_zero && rin_crypt_integrity_empty_journal_valid(
