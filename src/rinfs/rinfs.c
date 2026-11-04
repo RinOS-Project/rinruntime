@@ -22660,6 +22660,7 @@ static int rinfs_quota_index_publish_xattr(
     uint32_t block_size;
     uint32_t cursor;
     uint32_t entry_count;
+    uint32_t observed_count = 0u;
     uint32_t bytes_used;
     uint32_t new_count = 0u;
     uint32_t new_bytes_used = RINFS_XATTR_HEADER_BYTES;
@@ -22699,10 +22700,22 @@ static int rinfs_quota_index_publish_xattr(
     entry_count = rinfs_xattr_read_u16(old_block + 6u);
     cursor = RINFS_XATTR_HEADER_BYTES;
     while (cursor < bytes_used) {
+        uint64_t record_size64;
+        uint32_t record_size;
+        if (observed_count >= entry_count) {
+            error = RINFS_ERR_CORRUPT;
+            goto done;
+        }
         uint32_t name_length = rinfs_xattr_read_u16(old_block + cursor);
         uint32_t value_length = rinfs_xattr_read_u32(old_block + cursor + 2u);
-        uint32_t record_size = RINFS_XATTR_RECORD_BYTES + name_length +
-                               value_length;
+        record_size64 = (uint64_t)RINFS_XATTR_RECORD_BYTES + name_length +
+                        value_length;
+        if (record_size64 > (uint64_t)(bytes_used - cursor) ||
+            record_size64 > UINT32_MAX) {
+            error = RINFS_ERR_CORRUPT;
+            goto done;
+        }
+        record_size = (uint32_t)record_size64;
         const char* name = (const char*)old_block + cursor +
                            RINFS_XATTR_RECORD_BYTES;
         uint32_t ignored_type;
@@ -22724,6 +22737,11 @@ static int rinfs_quota_index_publish_xattr(
             ++new_count;
         }
         cursor += record_size;
+        ++observed_count;
+    }
+    if (cursor != bytes_used || observed_count != entry_count) {
+        error = RINFS_ERR_CORRUPT;
+        goto done;
     }
     if (index->record_count != 0u) {
         uint32_t index_name_length =
@@ -23004,6 +23022,10 @@ static int rinfs_quota_table_update(RinFS_Mount* mount,
     if (records != NULL) rinfs_free(records);
     return error;
 }
+
+static void rinfs_quota_warning_notify(RinFS_Mount* mount, uint32_t type,
+                                       uint32_t id,
+                                       uint32_t warning_flags);
 
 int rinfs_quota_set(RinFS_Mount* mount, const RinFS_QuotaV1* quota) {
     RinFS_MountOperationScope operation = {0};
