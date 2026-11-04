@@ -69,15 +69,15 @@ static uint32_t device_resource_rights(uint32_t resource)
 {
     switch (resource) {
         case RIN_APP_RESOURCE_GPU:
-            return RIN_DEVICE_RIGHT_ALL;
+            return RIN_RESOURCE_RIGHT_ALL;
         case RIN_APP_RESOURCE_MICROPHONE:
         case RIN_APP_RESOURCE_CAMERA:
-            return RIN_DEVICE_RIGHT_READ | RIN_DEVICE_RIGHT_CONTROL;
+            return RIN_RESOURCE_RIGHT_READ | RIN_RESOURCE_RIGHT_CONTROL;
         case RIN_APP_RESOURCE_MIDI:
-            return RIN_DEVICE_RIGHT_READ | RIN_DEVICE_RIGHT_WRITE |
-                   RIN_DEVICE_RIGHT_CONTROL;
+            return RIN_RESOURCE_RIGHT_READ | RIN_RESOURCE_RIGHT_WRITE |
+                   RIN_RESOURCE_RIGHT_CONTROL;
         case RIN_APP_RESOURCE_LOCATION:
-            return RIN_DEVICE_RIGHT_READ;
+            return RIN_RESOURCE_RIGHT_READ;
         default:
             return 0u;
     }
@@ -256,7 +256,7 @@ RinDeviceCapabilityStatus rin_device_capability_handle_acquire(
 
     if (lease_out) bytes_zero(lease_out, (uint32_t)sizeof(*lease_out));
     if (!broker || !lease_out || !subject_is_well_formed(subject) ||
-        rights == 0u || (rights & ~RIN_DEVICE_RIGHT_ALL) != 0u ||
+        rights == 0u || (rights & ~RIN_RESOURCE_RIGHT_ALL) != 0u ||
         device_resource_rights(resource) == 0u) {
         return RIN_DEVICE_CAPABILITY_INVALID_ARGUMENT;
     }
@@ -299,7 +299,7 @@ RinDeviceCapabilityStatus rin_device_capability_handle_release(
         lease->struct_size != sizeof(*lease) ||
         lease->version != RIN_DEVICE_CAPABILITY_BROKER_VERSION ||
         lease->flags != 0u || lease->rights == 0u ||
-        (lease->rights & ~RIN_DEVICE_RIGHT_ALL) != 0u ||
+        (lease->rights & ~RIN_RESOURCE_RIGHT_ALL) != 0u ||
         device_resource_rights(lease->resource) == 0u) {
         return RIN_DEVICE_CAPABILITY_INVALID_ARGUMENT;
     }
