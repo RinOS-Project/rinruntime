@@ -2591,6 +2591,94 @@ int wnd_set_modal(RinRuntimeGuiHandle handle, int enabled) {
     return runtime_set_input_policy(handle, RIN_COMPOSITOR_SET_MODAL, enabled);
 }
 
+static int runtime_hotkey_status_result(int32_t status) {
+    if (status == 0) return RIN_RESULT_OK;
+    if (status == -EACCES || status == -EPERM) return RIN_RESULT_ACCESS_DENIED;
+    if (status == -EEXIST) return RIN_RESULT_ALREADY_EXISTS;
+    if (status == -ENOSPC) return RIN_RESULT_TABLE_FULL;
+    if (status == -ENOENT) return RIN_RESULT_NOT_FOUND;
+    if (status == -EINVAL || status == -EPROTO) return RIN_RESULT_INVALID_ARGUMENT;
+    if (status == -EOPNOTSUPP || status == -ENOSYS)
+        return RIN_RESULT_NOT_SUPPORTED;
+    return RIN_RESULT_IO;
+}
+
+int wnd_register_global_hotkey_v1(
+    RinRuntimeGuiHandle handle, uint32_t id, uint16_t modifiers,
+    uint16_t virtual_key, uint8_t scan_code, uint64_t* token_out,
+    int32_t* compositor_status_out) {
+    RinCompositorRegisterGlobalHotkeyV1 request;
+    RinCompositorGlobalHotkeyTokenV1 response;
+    RinRuntimeGuiSurface* surface = 0;
+    uint32_t reply_size = 0u;
+    int32_t status = -1;
+    if (token_out) *token_out = 0u;
+    if (compositor_status_out) *compositor_status_out = -EIO;
+    if (!token_out || !compositor_status_out || id > 0xbfffu ||
+        scan_code == 0u ||
+        (modifiers & ~RIN_COMPOSITOR_GLOBAL_HOTKEY_MOD_KNOWN_MASK) != 0u)
+        return RIN_RESULT_INVALID_ARGUMENT;
+    if (runtime_connect() != 0) return RIN_RESULT_IO;
+    if ((g_compositor_features &
+         RIN_COMPOSITOR_FEATURE_GLOBAL_HOTKEYS) == 0u)
+        return RIN_RESULT_NOT_SUPPORTED;
+    if (handle != 0u) {
+        surface = runtime_surface(handle);
+        if (!surface || surface->id == 0u) return RIN_RESULT_INVALID_HANDLE;
+    }
+    memset(&request, 0, sizeof(request));
+    request.struct_size = sizeof(request);
+    request.version = RIN_COMPOSITOR_GLOBAL_HOTKEY_VERSION;
+    request.id = id;
+    request.modifiers = modifiers;
+    request.virtual_key = virtual_key;
+    request.scan_code = scan_code;
+    request.target_surface_id = surface ? surface->id : 0u;
+    memset(&response, 0, sizeof(response));
+    if (runtime_request(RIN_COMPOSITOR_REGISTER_GLOBAL_HOTKEY,
+                        &request, sizeof(request), &response,
+                        sizeof(response), &reply_size, &status) != 0) {
+        *compositor_status_out = status;
+        return RIN_RESULT_IO;
+    }
+    *compositor_status_out = status;
+    if (status != 0) return runtime_hotkey_status_result(status);
+    if (reply_size != sizeof(response) ||
+        response.struct_size != sizeof(response) ||
+        response.version != RIN_COMPOSITOR_GLOBAL_HOTKEY_VERSION ||
+        response.reserved16 != 0u || response.token == 0u)
+        return RIN_RESULT_CORRUPT_DATA;
+    *token_out = response.token;
+    return RIN_RESULT_OK;
+}
+
+int wnd_unregister_global_hotkey_v1(uint64_t token,
+                                    int32_t* compositor_status_out) {
+    RinCompositorUnregisterGlobalHotkeyV1 request;
+    uint32_t reply_size = 0u;
+    int32_t status = -1;
+    if (compositor_status_out) *compositor_status_out = -EIO;
+    if (!compositor_status_out || token == 0u)
+        return RIN_RESULT_INVALID_ARGUMENT;
+    if (runtime_connect() != 0) return RIN_RESULT_IO;
+    if ((g_compositor_features &
+         RIN_COMPOSITOR_FEATURE_GLOBAL_HOTKEYS) == 0u)
+        return RIN_RESULT_NOT_SUPPORTED;
+    memset(&request, 0, sizeof(request));
+    request.struct_size = sizeof(request);
+    request.version = RIN_COMPOSITOR_GLOBAL_HOTKEY_VERSION;
+    request.token = token;
+    if (runtime_request(RIN_COMPOSITOR_UNREGISTER_GLOBAL_HOTKEY,
+                        &request, sizeof(request), 0, 0u,
+                        &reply_size, &status) != 0) {
+        *compositor_status_out = status;
+        return RIN_RESULT_IO;
+    }
+    *compositor_status_out = status;
+    if (reply_size != 0u) return RIN_RESULT_CORRUPT_DATA;
+    return runtime_hotkey_status_result(status);
+}
+
 int wnd_set_cursor(RinRuntimeGuiHandle handle, uint32_t cursor_type) {
     RinRuntimeGuiSurface* surface = runtime_surface(handle);
     RinCompositorSetCursorV1 request;

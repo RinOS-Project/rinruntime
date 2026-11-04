@@ -210,6 +210,15 @@ int wnd_set_pointer_capture(RinRuntimeGuiHandle handle, int enabled);
 int wnd_set_keyboard_grab(RinRuntimeGuiHandle handle, int enabled);
 int wnd_set_modal(RinRuntimeGuiHandle handle, int enabled);
 int wnd_set_cursor(RinRuntimeGuiHandle handle, uint32_t cursor_type);
+/* RegisterHotKey broker bridge. handle==0 represents a thread registration;
+ * otherwise the registration is bound to that exact live compositor surface.
+ * The compositor status is returned separately from transport status. */
+int wnd_register_global_hotkey_v1(
+    RinRuntimeGuiHandle handle, uint32_t id, uint16_t modifiers,
+    uint16_t virtual_key, uint8_t scan_code, uint64_t* token_out,
+    int32_t* compositor_status_out);
+int wnd_unregister_global_hotkey_v1(uint64_t token,
+                                    int32_t* compositor_status_out);
 /* Publish an already-presented cursor-role surface. The Runtime orders each
  * update for this handle and Compositor rejects stale generations. enabled=0
  * restores the semantic cursor; visible=0 keeps the cursor hidden. */
