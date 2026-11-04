@@ -130,6 +130,7 @@ typedef struct RinDhcpv6ClientV1 {
 typedef struct RinDhcpv6AddressBindingV2 {
     uint8_t address[16];
     uint32_t reserved;
+    uint32_t reserved_alignment;
     uint64_t preferred_until_ms;
     uint64_t valid_until_ms;
     uint64_t generation;

@@ -1705,6 +1705,7 @@ int rin_dhcpv6_client_v2_state_valid(const RinDhcpv6ClientV2* client)
             continue;
         }
         if (!address_usable(binding->address) || binding->reserved != 0u ||
+            binding->reserved_alignment != 0u ||
             binding->generation == 0u ||
             binding->preferred_until_ms > binding->valid_until_ms ||
             binding->generation >= client->next_address_generation)
