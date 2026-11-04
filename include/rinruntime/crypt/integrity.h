@@ -246,6 +246,7 @@ static inline uint64_t rin_crypt_integrity_read_le64(const uint8_t in[8])
 #define RIN_CRYPT_INTEGRITY_STATE_EMPTY 0
 #define RIN_CRYPT_INTEGRITY_STATE_PENDING 1
 #define RIN_CRYPT_INTEGRITY_STATE_READY 2
+#define RIN_CRYPT_INTEGRITY_STATE_READY_PENDING 3
 #define RIN_CRYPT_INTEGRITY_STATE_INVALID (-1)
 #define RIN_CRYPT_INTEGRITY_STATE_IO (-2)
 
@@ -342,14 +343,22 @@ static inline int rin_crypt_integrity_state_read(
     second_state = second_zero ? 0 : rin_crypt_integrity_state_valid(
         second, layout, key, volume_id, key_epoch);
     /* Initialization publishes READY to each mirrored state block in
-     * separate flushes.  A single READY copy is not sufficient: the other
-     * copy may still say PENDING because power was lost during publication.
-     * Requiring both copies also keeps a torn/corrupt marker fail-closed. */
+     * separate flushes. A single READY copy is not sufficient for ordinary
+     * reads, but READY plus a valid PENDING copy is an interrupted final
+     * publish that initialize() can safely finish without rewriting data. */
     if (first_state == RIN_CRYPT_INTEGRITY_STATE_READY &&
         second_state == RIN_CRYPT_INTEGRITY_STATE_READY) {
         result = RIN_CRYPT_INTEGRITY_STATE_READY;
-    } else if (first_state == RIN_CRYPT_INTEGRITY_STATE_PENDING ||
-               second_state == RIN_CRYPT_INTEGRITY_STATE_PENDING) {
+    } else if ((first_state == RIN_CRYPT_INTEGRITY_STATE_READY &&
+                second_state == RIN_CRYPT_INTEGRITY_STATE_PENDING) ||
+               (second_state == RIN_CRYPT_INTEGRITY_STATE_READY &&
+                first_state == RIN_CRYPT_INTEGRITY_STATE_PENDING)) {
+        result = RIN_CRYPT_INTEGRITY_STATE_READY_PENDING;
+    } else if ((first_state == RIN_CRYPT_INTEGRITY_STATE_PENDING &&
+                (second_state == RIN_CRYPT_INTEGRITY_STATE_PENDING ||
+                 second_zero)) ||
+               (second_state == RIN_CRYPT_INTEGRITY_STATE_PENDING &&
+                first_zero)) {
         result = RIN_CRYPT_INTEGRITY_STATE_PENDING;
     } else if (first_zero && second_zero) {
         result = RIN_CRYPT_INTEGRITY_STATE_EMPTY;
@@ -528,6 +537,23 @@ static inline int rin_crypt_integrity_initialize(
     if (state == RIN_CRYPT_INTEGRITY_STATE_READY)
         return rin_crypt_integrity_recover(layout, key, volume_id, key_epoch,
                                            io, scratch);
+    if (state == RIN_CRYPT_INTEGRITY_STATE_READY_PENDING) {
+        /* Data, tags, and clean journal mirrors were flushed before READY
+         * was first published. Finish that final state transition in place;
+         * never restart initialization just because one mirror is pending. */
+        if (rin_crypt_integrity_state_write(
+                layout, key, volume_id, key_epoch, io, 0u,
+                RIN_CRYPT_INTEGRITY_STATE_READY, scratch) !=
+                RIN_CRYPT_INTEGRITY_OK ||
+            rin_crypt_integrity_state_write(
+                layout, key, volume_id, key_epoch, io, 1u,
+                RIN_CRYPT_INTEGRITY_STATE_READY, scratch) !=
+                RIN_CRYPT_INTEGRITY_OK) {
+            return RIN_CRYPT_INTEGRITY_IO;
+        }
+        return rin_crypt_integrity_recover(layout, key, volume_id, key_epoch,
+                                           io, scratch);
+    }
     if (state == RIN_CRYPT_INTEGRITY_STATE_IO)
         return RIN_CRYPT_INTEGRITY_IO;
     if (state == RIN_CRYPT_INTEGRITY_STATE_INVALID)
