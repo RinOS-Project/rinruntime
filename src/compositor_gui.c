@@ -6,6 +6,9 @@
  * draw into it through Aquamarine.  This runtime owns only lifecycle, input,
  * buffer acquisition and presentation; it never owns drawing primitives.
  */
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE 1
+#endif
 #include <rinruntime/window.h>
 #include <rinruntime/drag_drop_client.h>
 #include <rinruntime/detail/drag_drop_owner_protocol.h>
