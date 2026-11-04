@@ -301,10 +301,21 @@ static uint64_t g_input_ring_generation;
 static char g_input_ring_shm_name[RIN_SHM_NAME_MAX];
 static char g_input_ring_wake_name[64];
 #define RIN_RUNTIME_INPUT_BATCH_CAPACITY 8u
+#define RIN_RUNTIME_INPUT_DEMUX_CAPACITY \
+    (RIN_COMPOSITOR_INPUT_RING_MAX_CAPACITY + \
+     RIN_RUNTIME_INPUT_BATCH_CAPACITY)
 static RinCompositorInputRingEventV1
     g_input_ring_batch[RIN_RUNTIME_INPUT_BATCH_CAPACITY];
 static uint32_t g_input_ring_batch_count;
 static uint32_t g_input_ring_batch_index;
+typedef struct RinRuntimeInputDemuxEntry {
+    uint32_t active;
+    uint32_t surface_id;
+    RinCompositorInputRingEventV1 record;
+} RinRuntimeInputDemuxEntry;
+static RinRuntimeInputDemuxEntry
+    g_input_ring_demux[RIN_RUNTIME_INPUT_DEMUX_CAPACITY];
+static volatile int g_input_ring_lock;
 enum {
     RIN_RUNTIME_CLIPBOARD_WATCH_DISCONNECTED = 0u,
     RIN_RUNTIME_CLIPBOARD_WATCH_CONNECTING = 1u,
@@ -402,7 +413,29 @@ static int runtime_role_has_application_icon(uint32_t role) {
            role != RIN_COMPOSITOR_ROLE_CURSOR;
 }
 
+static void runtime_input_ring_lock(void) {
+    while (__sync_lock_test_and_set(&g_input_ring_lock, 1) != 0) {
+    }
+}
+
+static void runtime_input_ring_unlock(void) {
+    __sync_lock_release(&g_input_ring_lock);
+}
+
+static void runtime_input_ring_forget_surface(uint32_t surface_id) {
+    uint32_t index;
+    if (surface_id == 0u) return;
+    runtime_input_ring_lock();
+    for (index = 0u; index < RIN_RUNTIME_INPUT_DEMUX_CAPACITY; ++index)
+        if (g_input_ring_demux[index].active != 0u &&
+            g_input_ring_demux[index].surface_id == surface_id)
+            memset(&g_input_ring_demux[index], 0,
+                   sizeof(g_input_ring_demux[index]));
+    runtime_input_ring_unlock();
+}
+
 static void runtime_drop_input_ring(void) {
+    runtime_input_ring_lock();
     if (g_input_ring_wake) {
         if (g_input_ring_wake_name[0] != '\0')
             (void)sem_unlink(g_input_ring_wake_name);
@@ -420,8 +453,10 @@ static void runtime_drop_input_ring(void) {
     g_input_ring_generation = 0u;
     g_input_ring_batch_count = 0u;
     g_input_ring_batch_index = 0u;
+    memset(g_input_ring_demux, 0, sizeof(g_input_ring_demux));
     g_input_ring_shm_name[0] = '\0';
     g_input_ring_wake_name[0] = '\0';
+    runtime_input_ring_unlock();
 }
 
 static void runtime_close_connection(void) {
@@ -1726,6 +1761,7 @@ static int runtime_rebind_surface(RinRuntimeGuiSurface* surface) {
         status != 0 || reply_size != sizeof(new_id) || new_id == 0u)
         return -1;
     surface->id = new_id;
+    runtime_input_ring_forget_surface(old_id);
     if ((surface->surface_flags & RIN_COMPOSITOR_SURFACE_FLAG_CURSOR) != 0u)
         surface->cursor_generation = 0u;
     surface->input_poll_pending = 0u;
@@ -1900,8 +1936,11 @@ static int runtime_rebind_surfaces(void) {
 
 static void runtime_destroy_local_surface(RinRuntimeGuiSurface* surface) {
     uint32_t index;
+    uint32_t old_id;
     int any_active = 0;
     if (!surface) return;
+    old_id = surface->id;
+    runtime_input_ring_forget_surface(old_id);
     runtime_release_buffers(surface);
     memset(surface, 0, sizeof(*surface));
     surface->shm_handles[0] = -1;
@@ -2219,29 +2258,117 @@ void wnd_resize(RinRuntimeGuiHandle handle, int w, int h) {
     (void)wnd_resize_async(handle, w, h);
 }
 
-static int runtime_ring_pop(RinCompositorInputRingEventV1* event) {
+static int runtime_input_surface_active(uint32_t surface_id) {
+    uint32_t index;
+    for (index = 0u; index < RIN_RUNTIME_GUI_MAX_SURFACES; ++index)
+        if (g_surfaces[index].active != 0u &&
+            g_surfaces[index].id == surface_id)
+            return 1;
+    return 0;
+}
+
+/* Returns 1 with an event, 0 when the ring is empty for this surface, 2 when
+ * the optional ring is unavailable, and -1 when its contents are corrupt. */
+static int runtime_ring_poll_surface(uint32_t surface_id,
+                                     RinGuiNativeEventV1* event) {
+    RinCompositorInputRingHeaderV1* header;
+    uint32_t scanned = 0u;
     int result;
-    if (!event || !g_input_ring_address) return 0;
+    if (surface_id == 0u || !event) return -1;
+    runtime_input_ring_lock();
+    if (!g_input_ring_address) {
+        runtime_input_ring_unlock();
+        return 2;
+    }
+    header = (RinCompositorInputRingHeaderV1*)g_input_ring_address;
     for (;;) {
-        while (g_input_ring_batch_index < g_input_ring_batch_count) {
-            *event = g_input_ring_batch[g_input_ring_batch_index++];
-            if (rin_compositor_input_ring_event_current(
-                    (RinCompositorInputRingHeaderV1*)g_input_ring_address,
-                    event)) {
-                event->trace.t4_client_dequeue_ns = rin_monotonic_ms() *
+        uint32_t oldest_index = RIN_RUNTIME_INPUT_DEMUX_CAPACITY;
+        uint64_t oldest_sequence = UINT64_MAX;
+        uint32_t index;
+        for (index = 0u; index < RIN_RUNTIME_INPUT_DEMUX_CAPACITY; ++index) {
+            RinRuntimeInputDemuxEntry* queued = &g_input_ring_demux[index];
+            if (queued->active != 0u && queued->surface_id == surface_id &&
+                queued->record.trace.sequence < oldest_sequence) {
+                oldest_index = index;
+                oldest_sequence = queued->record.trace.sequence;
+            }
+        }
+        if (oldest_index != RIN_RUNTIME_INPUT_DEMUX_CAPACITY) {
+            RinCompositorInputRingEventV1 queued =
+                g_input_ring_demux[oldest_index].record;
+            memset(&g_input_ring_demux[oldest_index], 0,
+                   sizeof(g_input_ring_demux[oldest_index]));
+            if (rin_compositor_input_ring_event_current(header, &queued)) {
+                queued.trace.t4_client_dequeue_ns = rin_monotonic_ms() *
                                                      UINT64_C(1000000);
-                event->trace.t5_client_callback_ns =
-                    event->trace.t4_client_dequeue_ns;
+                queued.trace.t5_client_callback_ns =
+                    queued.trace.t4_client_dequeue_ns;
+                *event = queued.event;
+                runtime_input_ring_unlock();
                 return 1;
             }
+            continue;
+        }
+        while (g_input_ring_batch_index < g_input_ring_batch_count) {
+            RinCompositorInputRingEventV1 queued =
+                g_input_ring_batch[g_input_ring_batch_index];
+            if (scanned >= RIN_COMPOSITOR_INPUT_RING_MAX_CAPACITY +
+                               RIN_RUNTIME_INPUT_BATCH_CAPACITY) {
+                runtime_input_ring_unlock();
+                return 0;
+            }
+            if (!rin_compositor_input_ring_event_valid(&queued)) {
+                runtime_input_ring_unlock();
+                return -1;
+            }
+            if (!rin_compositor_input_ring_event_current(header, &queued)) {
+                ++g_input_ring_batch_index;
+                ++scanned;
+                continue;
+            }
+            if (queued.surface_id == surface_id) {
+                ++g_input_ring_batch_index;
+                ++scanned;
+                queued.trace.t4_client_dequeue_ns = rin_monotonic_ms() *
+                                                     UINT64_C(1000000);
+                queued.trace.t5_client_callback_ns =
+                    queued.trace.t4_client_dequeue_ns;
+                *event = queued.event;
+                runtime_input_ring_unlock();
+                return 1;
+            }
+            if (!runtime_input_surface_active(queued.surface_id)) {
+                ++g_input_ring_batch_index;
+                ++scanned;
+                continue;
+            }
+            for (index = 0u; index < RIN_RUNTIME_INPUT_DEMUX_CAPACITY;
+                 ++index)
+                if (g_input_ring_demux[index].active == 0u) break;
+            if (index == RIN_RUNTIME_INPUT_DEMUX_CAPACITY) {
+                runtime_input_ring_unlock();
+                return 0;
+            }
+            g_input_ring_demux[index].active = 1u;
+            g_input_ring_demux[index].surface_id = queued.surface_id;
+            g_input_ring_demux[index].record = queued;
+            ++g_input_ring_batch_index;
+            ++scanned;
         }
         g_input_ring_batch_count = 0u;
         g_input_ring_batch_index = 0u;
         result = rin_compositor_input_ring_pop_batch(
-            (RinCompositorInputRingHeaderV1*)g_input_ring_address,
+            header,
             g_input_ring_batch, RIN_RUNTIME_INPUT_BATCH_CAPACITY,
             g_input_ring_bytes, &g_input_ring_batch_count);
-        if (result <= 0) return result;
+        if (result < 0) {
+            runtime_input_ring_unlock();
+            return -1;
+        }
+        if (result == 0) {
+            runtime_input_ring_unlock();
+            return 0;
+        }
     }
 }
 
@@ -2249,7 +2376,6 @@ int wnd_poll_native(RinRuntimeGuiHandle handle, RinGuiNativeEventV1* event,
                     uint32_t* packed_out) {
     RinRuntimeGuiSurface* surface = runtime_surface(handle);
     RinGuiNativeEventV1 received;
-    RinCompositorInputRingEventV1 ring_event;
     int poll_result;
     if (!surface || !event || !packed_out) return -1;
     (void)runtime_async_pump(0u);
@@ -2257,28 +2383,17 @@ int wnd_poll_native(RinRuntimeGuiHandle handle, RinGuiNativeEventV1* event,
     memset(event, 0, sizeof(*event));
     *packed_out = 0u;
     if (runtime_clipboard_watch_pump(event, packed_out) > 0) return 1;
-    memset(&ring_event, 0, sizeof(ring_event));
-    if (g_input_ring_address) {
-        int ring_result = runtime_ring_pop(&ring_event);
+    {
+        int ring_result = runtime_ring_poll_surface(surface->id, &received);
         if (ring_result > 0) {
-            if (ring_event.surface_id != surface->id ||
-                !rin_compositor_input_ring_event_valid(&ring_event)) {
-                /* A client-visible ring record is untrusted input.  Drop the
-                 * optional fast path and keep the authenticated socket
-                 * fallback alive so one stale record cannot destroy all UI
-                 * surfaces. */
-                runtime_drop_input_ring();
-            } else {
-                received = ring_event.event;
-                *event = received;
-                if (received.type == RIN_GUI_NATIVE_EVENT_POINTER_MOVE ||
-                    received.type == RIN_GUI_NATIVE_EVENT_POINTER_BUTTON ||
-                    received.type == RIN_GUI_NATIVE_EVENT_MOUSE_WHEEL ||
-                    received.type == RIN_GUI_NATIVE_EVENT_MOUSE_HORIZONTAL_WHEEL)
-                    surface->focused = 1u;
-                *packed_out = runtime_pack_legacy_event(&received);
-                return 1;
-            }
+            *event = received;
+            if (received.type == RIN_GUI_NATIVE_EVENT_POINTER_MOVE ||
+                received.type == RIN_GUI_NATIVE_EVENT_POINTER_BUTTON ||
+                received.type == RIN_GUI_NATIVE_EVENT_MOUSE_WHEEL ||
+                received.type == RIN_GUI_NATIVE_EVENT_MOUSE_HORIZONTAL_WHEEL)
+                surface->focused = 1u;
+            *packed_out = runtime_pack_legacy_event(&received);
+            return 1;
         }
         if (ring_result == 0) return 0;
         if (ring_result < 0) {
