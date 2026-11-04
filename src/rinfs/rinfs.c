@@ -20005,7 +20005,16 @@ int rinfs_fork_prepare(void) {
     g_rinfs_shared_mount_fork_open_refs_applied = 1u;
     __atomic_store_n(&g_rinfs_shared_mount_fork_prepared, 1u,
                      __ATOMIC_RELEASE);
-    return rinfs_content_unlock_status((RINFS_OK), content_unlock_error);
+    if (content_unlock_error != RINFS_OK) {
+        /* The caller sets its prepared flag only when this function returns
+         * success.  Undo the published fork reservation here so a lock
+         * release error cannot strand the shared mount gates or the extra
+         * close references outside the caller's rollback path. */
+        int rollback_error = rinfs_fork_complete(0);
+        return rollback_error != RINFS_OK ? rollback_error
+                                          : content_unlock_error;
+    }
+    return RINFS_OK;
 
 rollback:
     for (uint32_t prepared_index = 0u;
