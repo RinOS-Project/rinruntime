@@ -757,18 +757,26 @@ static inline int rin_webcontent_client_webauthn_event_valid(
                                           sizeof(event->reserved)))
         return 0;
     if (event->event == RIN_WEBCONTENT_WEBAUTHN_EVENT_CANCEL) {
-        return event->operation == 0u && event->timeout_ms == 0u &&
+        return event->cancel_request_id != 0u &&
+               event->cancel_request_id != event->request_id &&
+               event->operation == 0u && event->timeout_ms == 0u &&
+               event->challenge_size == 0u &&
                event->flags == 0u &&
                rin_webcontent_client_bytes_zero(
                    event->document_url, sizeof(event->document_url)) &&
                rin_webcontent_client_bytes_zero(event->rp_id,
                                                  sizeof(event->rp_id)) &&
+               rin_webcontent_client_bytes_zero(event->challenge,
+                                                 sizeof(event->challenge)) &&
                rin_webcontent_client_bytes_zero(&event->request,
                                                  sizeof(event->request));
     }
     if (event->event != RIN_WEBCONTENT_WEBAUTHN_EVENT_BEGIN ||
+        event->cancel_request_id != 0u ||
         (event->flags & ~known_flags) != 0u || event->timeout_ms == 0u ||
         event->timeout_ms > RIN_WEBCONTENT_WEBAUTHN_TIMEOUT_MAX_MS ||
+        event->challenge_size == 0u ||
+        event->challenge_size > RIN_WEBCONTENT_WEBAUTHN_CHALLENGE_MAX ||
         !rin_webcontent_client_url_valid(event->document_url) ||
         !rin_webcontent_client_bounded_cstr_length(
             event->rp_id, sizeof(event->rp_id), 0, 1, &rp_id_size))
@@ -793,7 +801,10 @@ static inline int rin_webcontent_client_webauthn_event_valid(
         event->request.algorithm_count > 8u ||
         event->request.reserved0 != 0u ||
         !rin_webcontent_client_bytes_zero(event->request.reserved,
-                                          sizeof(event->request.reserved)))
+                                          sizeof(event->request.reserved)) ||
+        !rin_webcontent_client_bytes_zero(
+            event->challenge + event->challenge_size,
+            sizeof(event->challenge) - event->challenge_size))
         return 0;
     return ((event->request.flags & RIN_PASS_WEBAUTHN_FLAG_CROSS_ORIGIN) !=
             0u) ==
@@ -845,14 +856,21 @@ static inline int rin_webcontent_client_webauthn_complete_valid(
         if (completion->result < RIN_RESULT_DEVICE_LOST)
             return 0;
         return completion->result_stream_size == 0u &&
+               completion->client_data_json_size == 0u &&
                rin_webcontent_client_bytes_zero(
                    completion->result_stream,
-                   sizeof(completion->result_stream));
+                   sizeof(completion->result_stream)) &&
+               rin_webcontent_client_bytes_zero(
+                   completion->client_data_json,
+                   sizeof(completion->client_data_json));
     }
     if (completion->result != RIN_RESULT_OK ||
         completion->result_stream_size < sizeof(header) ||
         completion->result_stream_size >
-            RIN_PASS_WEBAUTHN_RESULT_STREAM_MAX)
+            RIN_PASS_WEBAUTHN_RESULT_STREAM_MAX ||
+        completion->client_data_json_size == 0u ||
+        completion->client_data_json_size >
+            RIN_WEBCONTENT_WEBAUTHN_CLIENT_DATA_MAX)
         return 0;
     memcpy(&header, completion->result_stream, sizeof(header));
     expected_size = sizeof(header) + (uint64_t)header.credential_id_size +
@@ -908,8 +926,11 @@ static inline int rin_webcontent_client_webauthn_complete_valid(
          (authenticator_flags & 0x40u) != 0u))
         return 0;
     return rin_webcontent_client_bytes_zero(
-        completion->result_stream + completion->result_stream_size,
-        sizeof(completion->result_stream) - completion->result_stream_size);
+               completion->result_stream + completion->result_stream_size,
+               sizeof(completion->result_stream) - completion->result_stream_size) &&
+           rin_webcontent_client_bytes_zero(
+               completion->client_data_json + completion->client_data_json_size,
+               sizeof(completion->client_data_json) - completion->client_data_json_size);
 }
 
 static inline int rin_webcontent_client_file_picker_complete_valid(

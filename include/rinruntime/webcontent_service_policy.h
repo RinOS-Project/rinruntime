@@ -198,9 +198,11 @@ static inline int rin_webcontent_service_request_valid(
 }
 
 /*
- * Build the extension discovery response. Optional service capabilities stay
- * disabled until their complete producer and TCB completion paths are linked.
- * The output is always cleared, including on invalid input.
+ * Build the extension discovery response. WebAuthn is advertised only now
+ * that DOM production, the authenticated event/completion RPC, and the Browser
+ * TCB consumer are linked. The Browser separately checks live Rin Pass
+ * provider capability before presenting a request. The output is always
+ * cleared, including on invalid input.
  */
 static inline int rin_webcontent_service_capabilities_build(
     const RinWebContentMsgHeader* request,
@@ -223,6 +225,11 @@ static inline int rin_webcontent_service_capabilities_build(
 
     capabilities->struct_size = (uint32_t)sizeof(*capabilities);
     capabilities->version = RIN_WEBCONTENT_EXTENSION_ABI_VERSION;
+    capabilities->capabilities = RIN_WEBCONTENT_CAPABILITY_WEBAUTHN_V1;
+    capabilities->webauthn_min_version =
+        RIN_WEBCONTENT_EXTENSION_ABI_VERSION;
+    capabilities->webauthn_max_version =
+        RIN_WEBCONTENT_EXTENSION_ABI_VERSION;
     return 1;
 }
 
