@@ -310,6 +310,7 @@ static inline void rinfs_spin_preempt_leave(void) {}
     platform_pmm_free_page((uint64_t)(address))
 #endif
 extern uint64_t platform_pmm_alloc_file_cache_page(void);
+extern int platform_pmm_mark_cache_page_hwpoison_pinned(uint64_t address);
 #if defined(__x86_64__)
 extern void platform_pmm_free_page(uint64_t address);
 #else
@@ -24636,7 +24637,7 @@ static int rinfs_mmap_source_numa_migration_impl(
     RinFS_MmapSource* source, uint64_t expected_inode,
     uint64_t reference_generation, uint64_t reference_cookie,
     uint64_t page_index, uint64_t old_physical, uint64_t new_physical,
-    int operation, uint32_t* mapping_count_out) {
+    int operation, int retire_old, uint32_t* mapping_count_out) {
     if (mapping_count_out) *mapping_count_out = 0u;
     if (!source || expected_inode == 0u || old_physical == 0u ||
         page_index > UINT64_MAX / RINFS_PAGE_CACHE_PAGE_SIZE ||
@@ -24645,6 +24646,8 @@ static int rinfs_mmap_source_numa_migration_impl(
         ((operation == RINFS_NUMA_MIGRATION_BEGIN ||
           operation == RINFS_NUMA_MIGRATION_QUERY) &&
          !mapping_count_out) ||
+        (retire_old != 0 && retire_old != 1) ||
+        (retire_old && operation != RINFS_NUMA_MIGRATION_COMMIT) ||
         (operation == RINFS_NUMA_MIGRATION_COMMIT &&
          (new_physical == 0u || new_physical == old_physical ||
           (new_physical & (RINFS_PAGE_CACHE_PAGE_SIZE - 1u)) != 0u)))
@@ -24653,6 +24656,7 @@ static int rinfs_mmap_source_numa_migration_impl(
     (void)reference_generation;
     (void)reference_cookie;
     (void)new_physical;
+    (void)retire_old;
     (void)mapping_count_out;
     return RINFS_ERR_NOT_SUPPORTED;
 #else
@@ -24727,6 +24731,10 @@ static int rinfs_mmap_source_numa_migration_impl(
                     rinfs_kernel_port_physical_to_virtual_v1(new_physical);
                 if (!replacement) {
                     err = RINFS_ERR_INVAL;
+                } else if (retire_old &&
+                           platform_pmm_mark_cache_page_hwpoison_pinned(
+                               old_physical) != 0) {
+                    err = RINFS_ERR_PENDING;
                 } else {
                     retired_physical = entry->physical_address;
                     entry->physical_address = new_physical;
@@ -24762,7 +24770,7 @@ int rinfs_mmap_source_numa_migration_begin(
     if (err != RINFS_OK) return err;
     err = rinfs_mmap_source_numa_migration_impl(
         source, expected_inode, reference_generation, reference_cookie,
-        page_index, old_physical, 0u, RINFS_NUMA_MIGRATION_BEGIN,
+        page_index, old_physical, 0u, RINFS_NUMA_MIGRATION_BEGIN, 0,
         mapping_count_out);
     rinfs_mmap_source_end_operation(
         source, reference_generation, reference_cookie);
@@ -24779,7 +24787,7 @@ int rinfs_mmap_source_numa_migration_query(
     if (err != RINFS_OK) return err;
     err = rinfs_mmap_source_numa_migration_impl(
         source, expected_inode, reference_generation, reference_cookie,
-        page_index, old_physical, 0u, RINFS_NUMA_MIGRATION_QUERY,
+        page_index, old_physical, 0u, RINFS_NUMA_MIGRATION_QUERY, 0,
         mapping_count_out);
     rinfs_mmap_source_end_operation(
         source, reference_generation, reference_cookie);
@@ -24790,7 +24798,7 @@ int rinfs_mmap_source_numa_migration_finish(
     RinFS_MmapSource* source, uint64_t expected_inode,
     uint64_t reference_generation, uint64_t reference_cookie,
     uint64_t page_index, uint64_t old_physical,
-    uint64_t new_physical, int commit) {
+    uint64_t new_physical, int commit, int retire_old) {
     int operation = commit ? RINFS_NUMA_MIGRATION_COMMIT
                            : RINFS_NUMA_MIGRATION_ABORT;
     int err = rinfs_mmap_source_begin_operation(
@@ -24798,7 +24806,7 @@ int rinfs_mmap_source_numa_migration_finish(
     if (err != RINFS_OK) return err;
     err = rinfs_mmap_source_numa_migration_impl(
         source, expected_inode, reference_generation, reference_cookie,
-        page_index, old_physical, new_physical, operation, NULL);
+        page_index, old_physical, new_physical, operation, retire_old, NULL);
     rinfs_mmap_source_end_operation(
         source, reference_generation, reference_cookie);
     return err;
